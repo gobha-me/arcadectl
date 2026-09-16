@@ -124,18 +124,47 @@ func validatePersistentPaths(paths []PersistentPath) error {
 }
 
 func validateSettingsSchema(schema json.RawMessage) error {
+	if len(schema) > 64*1024 {
+		return errors.New("settings schema exceeds the 64 KiB limit")
+	}
 	if len(schema) == 0 {
 		return errors.New("settings schema is required")
 	}
-	var object map[string]any
-	if err := json.Unmarshal(schema, &object); err != nil {
+	var document any
+	if err := json.Unmarshal(schema, &document); err != nil {
 		return fmt.Errorf("settings schema must be valid JSON: %w", err)
+	}
+	object, ok := document.(map[string]any)
+	if !ok {
+		return errors.New("settings schema must be a JSON object")
 	}
 	if object["type"] != "object" {
 		return errors.New("settings schema must describe an object")
 	}
-	if _, hasRemoteReference := object["$ref"]; hasRemoteReference {
-		return errors.New("top-level schema references are not allowed")
+	if err := rejectSchemaReferences(document); err != nil {
+		return err
+	}
+	return nil
+}
+
+func rejectSchemaReferences(value any) error {
+	switch value := value.(type) {
+	case map[string]any:
+		for key, child := range value {
+			switch key {
+			case "$ref", "$dynamicRef", "$id", "$schema":
+				return fmt.Errorf("settings schema keyword %q is not allowed", key)
+			}
+			if err := rejectSchemaReferences(child); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for _, child := range value {
+			if err := rejectSchemaReferences(child); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

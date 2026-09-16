@@ -15,4 +15,5 @@ Contributions should:
 - include tests that demonstrate the claimed behavior.
 
 Run the commands in the README before opening a pull request. Substantive work
-is merged through a pull request after required checks pass.
+is merged through a pull request after required checks pass. When API types
+change, run `make generate` and commit the resulting DeepCopy and CRD artifacts.

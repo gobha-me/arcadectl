@@ -14,6 +14,11 @@ milestone proves one complete Factorio lifecycle: create, configure, start,
 stop, restart, update, back up, restore, decommission without data loss, and
 deliberately destroy.
 
+The current foundation includes a generated `GameServer` CRD and a pure,
+game-neutral Kubernetes resource planner. The planner proves that normal stop
+and deletion semantics retain storage; reconciliation against a cluster is the
+next slice.
+
 A structurally different synthetic adapter participates in conformance tests
 from the beginning. Adding another game must not require changes to the core
 lifecycle controller.
@@ -28,8 +33,8 @@ lifecycle controller.
 - Secrets are referenced; they are never embedded in custom resources,
   status, logs, examples, or backups.
 
-See [the architecture](docs/ARCHITECTURE.md), [the salvage ledger](docs/SALVAGE_LEDGER.md),
-and [the security policy](SECURITY.md).
+See [the architecture](docs/ARCHITECTURE.md), [the lifecycle contract](docs/LIFECYCLE.md),
+[the salvage ledger](docs/SALVAGE_LEDGER.md), and [the security policy](SECURITY.md).
 
 ## Development
 
@@ -38,6 +43,7 @@ Requires Go 1.24 or the toolchain declared in `go.mod`.
 ```sh
 go mod verify
 test -z "$(gofmt -l .)"
+make verify-generated
 go vet ./...
 go test -race ./...
 ```
