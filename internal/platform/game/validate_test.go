@@ -4,6 +4,7 @@
 package game
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -22,6 +23,14 @@ func validDefinition() Definition {
 		PersistentPaths:   []PersistentPath{{Name: "world", MountPath: "/srv/world"}},
 		ReadinessEndpoint: "players",
 		SettingsSchema:    []byte(`{"type":"object","additionalProperties":false}`),
+		ConfigurationTargets: []ConfigurationTarget{{
+			Name:      "server-config",
+			MountPath: "/srv/world/config/server.conf",
+		}},
+		RenderSettings: func(json.RawMessage) (map[string][]byte, error) {
+			return map[string][]byte{"server-config": []byte("enabled=true\n")}, nil
+		},
+		RuntimeIdentity: RuntimeIdentity{UserID: 1000, GroupID: 1000, FSGroup: 1000},
 		Capabilities: Capabilities{
 			ColdBackup:       true,
 			Restore:          true,
@@ -50,8 +59,24 @@ func TestDefinitionValidate(t *testing.T) {
 		{"no player endpoint", func(d *Definition) { d.Endpoints[0].Scope = ScopeAdmin }, "player endpoint"},
 		{"udp readiness", func(d *Definition) { d.Endpoints[0].Protocol = ProtocolUDP }, "must use TCP"},
 		{"root persistence", func(d *Definition) { d.PersistentPaths[0].MountPath = "/" }, "non-root"},
+		{"reserved persistence", func(d *Definition) { d.PersistentPaths[0].MountPath = "/arcadectl/data" }, "reserved platform mount"},
+		{"overlapping persistence", func(d *Definition) {
+			d.PersistentPaths = append(d.PersistentPaths, PersistentPath{Name: "nested", MountPath: "/srv/world/nested"})
+		}, "overlaps"},
+		{"root runtime user", func(d *Definition) { d.RuntimeIdentity.UserID = 0 }, "runtime user ID"},
+		{"root runtime group", func(d *Definition) { d.RuntimeIdentity.GroupID = 0 }, "runtime group ID"},
+		{"root runtime filesystem group", func(d *Definition) { d.RuntimeIdentity.FSGroup = 0 }, "filesystem group ID"},
+		{"configuration outside data", func(d *Definition) { d.ConfigurationTargets[0].MountPath = "/etc/server.conf" }, "nested below"},
+		{"duplicate configuration target", func(d *Definition) {
+			d.ConfigurationTargets = append(d.ConfigurationTargets, d.ConfigurationTargets[0])
+		}, "duplicated"},
+		{"overlapping configuration target", func(d *Definition) {
+			d.ConfigurationTargets = append(d.ConfigurationTargets, ConfigurationTarget{Name: "nested", MountPath: "/srv/world/config/server.conf/nested"})
+		}, "overlaps"},
 		{"restore without backup", func(d *Definition) { d.Capabilities.ColdBackup = false }, "requires cold backup"},
 		{"missing schema", func(d *Definition) { d.SettingsSchema = nil }, "schema is required"},
+		{"missing targets", func(d *Definition) { d.ConfigurationTargets = nil }, "configuration target"},
+		{"missing renderer", func(d *Definition) { d.RenderSettings = nil }, "renderer is required"},
 		{"non-object schema", func(d *Definition) { d.SettingsSchema = []byte(`{"type":"array"}`) }, "describe an object"},
 		{"nested reference", func(d *Definition) {
 			d.SettingsSchema = []byte(`{"type":"object","properties":{"value":{"$ref":"https://example.invalid/schema"}}}`)
@@ -96,9 +121,10 @@ func TestCloneDoesNotAlias(t *testing.T) {
 	clone := original.Clone()
 	clone.Endpoints[0].Name = "changed"
 	clone.PersistentPaths[0].MountPath = "/changed"
+	clone.ConfigurationTargets[0].MountPath = "/changed/config"
 	clone.SettingsSchema[0] = 'x'
 
-	if original.Endpoints[0].Name == "changed" || original.PersistentPaths[0].MountPath == "/changed" || original.SettingsSchema[0] == 'x' {
+	if original.Endpoints[0].Name == "changed" || original.PersistentPaths[0].MountPath == "/changed" || original.ConfigurationTargets[0].MountPath == "/changed/config" || original.SettingsSchema[0] == 'x' {
 		t.Fatal("Clone() returned aliased mutable data")
 	}
 }

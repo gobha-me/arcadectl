@@ -4,6 +4,7 @@
 package games_test
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/gobha-me/arcadectl/internal/games/factorio"
@@ -14,13 +15,26 @@ import (
 func TestDefinitionsConform(t *testing.T) {
 	t.Parallel()
 
-	definitions := []game.Definition{factorio.Definition(), synthetic.Definition()}
-	for _, definition := range definitions {
-		definition := definition
-		t.Run(definition.ID, func(t *testing.T) {
+	tests := []struct {
+		definition game.Definition
+		settings   json.RawMessage
+	}{
+		{factorio.Definition(), json.RawMessage(`{"name":"test","visibility":"private"}`)},
+		{synthetic.Definition(), json.RawMessage(`{}`)},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.definition.ID, func(t *testing.T) {
 			t.Parallel()
-			if err := definition.Validate(); err != nil {
+			if err := test.definition.Validate(); err != nil {
 				t.Fatalf("adapter definition is invalid: %v", err)
+			}
+			files, err := test.definition.RenderSettingsFiles(test.settings)
+			if err != nil {
+				t.Fatalf("adapter settings renderer is invalid: %v", err)
+			}
+			if len(files) != len(test.definition.ConfigurationTargets) {
+				t.Fatalf("rendered files = %d, targets = %d", len(files), len(test.definition.ConfigurationTargets))
 			}
 		})
 	}
@@ -39,5 +53,11 @@ func TestSyntheticAdapterIsARealCounterexample(t *testing.T) {
 	}
 	if len(counterexample.Endpoints) == len(reference.Endpoints) {
 		t.Fatal("synthetic adapter must exercise a different endpoint shape")
+	}
+	if len(counterexample.ConfigurationTargets) == len(reference.ConfigurationTargets) {
+		t.Fatal("synthetic adapter must exercise a different configuration shape")
+	}
+	if counterexample.RuntimeIdentity == reference.RuntimeIdentity {
+		t.Fatal("synthetic adapter must exercise a different runtime identity")
 	}
 }

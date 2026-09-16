@@ -18,6 +18,8 @@ var (
 	digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 )
 
+const platformMountRoot = "/arcadectl"
+
 // Validate checks the complete adapter definition before it can enter a
 // catalog or influence a cluster mutation.
 func (d Definition) Validate() error {
@@ -36,6 +38,9 @@ func (d Definition) Validate() error {
 	if err := validatePersistentPaths(d.PersistentPaths); err != nil {
 		return err
 	}
+	if err := validateRuntimeIdentity(d.RuntimeIdentity); err != nil {
+		return err
+	}
 	if (d.Capabilities.ColdBackup || d.Capabilities.Restore) && len(d.PersistentPaths) == 0 {
 		return errors.New("backup and restore capabilities require persistent paths")
 	}
@@ -44,6 +49,26 @@ func (d Definition) Validate() error {
 	}
 	if err := validateSettingsSchema(d.SettingsSchema); err != nil {
 		return err
+	}
+	if err := validateConfigurationTargets(d.ConfigurationTargets, d.PersistentPaths); err != nil {
+		return err
+	}
+	if d.RenderSettings == nil {
+		return errors.New("settings renderer is required")
+	}
+	return nil
+}
+
+func validateRuntimeIdentity(identity RuntimeIdentity) error {
+	const maxLinuxID = int64(1<<31 - 2)
+	if identity.UserID <= 0 || identity.UserID > maxLinuxID {
+		return errors.New("runtime user ID must be a positive Linux ID")
+	}
+	if identity.GroupID <= 0 || identity.GroupID > maxLinuxID {
+		return errors.New("runtime group ID must be a positive Linux ID")
+	}
+	if identity.FSGroup <= 0 || identity.FSGroup > maxLinuxID {
+		return errors.New("runtime filesystem group ID must be a positive Linux ID")
 	}
 	return nil
 }
@@ -103,7 +128,7 @@ func validateEndpoints(endpoints []Endpoint, readiness string) error {
 
 func validatePersistentPaths(paths []PersistentPath) error {
 	names := make(map[string]struct{}, len(paths))
-	mounts := make(map[string]struct{}, len(paths))
+	mounts := make([]string, 0, len(paths))
 	for _, persistentPath := range paths {
 		if !namePattern.MatchString(persistentPath.Name) {
 			return fmt.Errorf("persistent path %q must have a lowercase DNS-label name", persistentPath.Name)
@@ -114,13 +139,22 @@ func validatePersistentPaths(paths []PersistentPath) error {
 		if !strings.HasPrefix(persistentPath.MountPath, "/") || path.Clean(persistentPath.MountPath) != persistentPath.MountPath || persistentPath.MountPath == "/" {
 			return fmt.Errorf("persistent path %q must be a clean absolute non-root path", persistentPath.Name)
 		}
-		if _, exists := mounts[persistentPath.MountPath]; exists {
-			return fmt.Errorf("persistent mount %q is duplicated", persistentPath.MountPath)
+		if pathsOverlap(platformMountRoot, persistentPath.MountPath) {
+			return fmt.Errorf("persistent path %q overlaps the reserved platform mount root %q", persistentPath.Name, platformMountRoot)
+		}
+		for _, mount := range mounts {
+			if pathsOverlap(mount, persistentPath.MountPath) {
+				return fmt.Errorf("persistent mount %q overlaps %q", persistentPath.MountPath, mount)
+			}
 		}
 		names[persistentPath.Name] = struct{}{}
-		mounts[persistentPath.MountPath] = struct{}{}
+		mounts = append(mounts, persistentPath.MountPath)
 	}
 	return nil
+}
+
+func pathsOverlap(left, right string) bool {
+	return left == right || strings.HasPrefix(left, right+"/") || strings.HasPrefix(right, left+"/")
 }
 
 func validateSettingsSchema(schema json.RawMessage) error {

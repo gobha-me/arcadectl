@@ -31,6 +31,8 @@ jobs:
         run: test -z "$(gofmt -l .)"
       - name: Verify generated API artifacts
         run: make verify-generated
+      - name: Verify pinned runtime assets
+        run: make verify-runtime-assets
       - name: Vet
         run: go vet ./...
       - name: Test with race detector

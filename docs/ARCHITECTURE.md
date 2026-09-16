@@ -38,13 +38,18 @@ A game definition supplies only constrained data:
 - named TCP or UDP endpoints with player, administrator, or internal scope;
 - persistent paths included in cold backup and restore;
 - an optional named TCP readiness endpoint;
-- a bounded JSON settings schema; and
+- a bounded JSON settings schema and a renderer that can supply bytes only for
+  statically declared configuration targets;
+- a certified non-root UID, GID, and filesystem group for the selected image;
+- configuration target paths nested below declared persistent roots; and
 - declared lifecycle capabilities.
 
 Definitions cannot contain arbitrary containers, shell commands, host paths,
 privileged security contexts, raw Kubernetes objects, or inline secrets.
-Future game-specific hooks require a separately reviewed typed contract; they
-will not be smuggled in as shell fragments.
+The settings hook is deliberately narrower than a template or pod hook: it
+cannot select paths, expose secrets, or influence containers. Future
+game-specific hooks require a separately reviewed typed contract; they will not
+be smuggled in as shell fragments.
 
 The core operates only on these generic concepts. Production core packages
 live below `internal/platform` and must not contain Factorio paths, ports, RCON
@@ -72,6 +77,22 @@ assumptions, image names, or save semantics.
 `stop`, `restart`, `update`, controller redeployment, and API unavailability do
 not delete persistent data. Decommissioning removes compute and networking but
 retains the server record and its data.
+
+Validated non-secret settings are rendered into an owned ConfigMap. A pinned,
+non-root init container mounts that ConfigMap read-only and atomically
+materializes its individual files at adapter-declared paths on retained
+storage. This avoids the root-owned parent directory that Kubernetes creates
+for a nested ConfigMap `subPath`, while keeping the game container and init
+container at the adapter's certified runtime identity. A deterministic content
+hash on the pod template triggers recreate-strategy replacement when settings
+change. The ConfigMap is disposable runtime state and is removed on stop; the
+materialized non-secret file remains with retained storage and is atomically
+overwritten from the desired GameServer settings on the next start.
+
+The certified Factorio runtime is a thin derivative of a digest-pinned
+`factoriotools/factorio` image. Its wrapper suppresses only the upstream Bash
+trace stream, which would otherwise expand the generated RCON password into
+container logs; Factorio's normal stdout and stderr remain available.
 
 `destroy` is a different operation. It requires the exact server identity,
 explicit confirmation, and a successful backup by default. An override must be

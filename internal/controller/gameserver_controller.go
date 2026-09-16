@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -50,6 +51,7 @@ type GameServerReconciler struct {
 // +kubebuilder:rbac:groups=arcade.gobha.me,resources=gameservers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch
 
@@ -85,7 +87,6 @@ func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 			return ctrl.Result{}, r.reportFailure(ctx, server, "ReconcileFailed", err, true)
 		}
 	}
-
 	if server.Spec.DesiredState == arcadev1alpha1.DesiredStateStopped {
 		stopping, err := r.deleteControlledRuntime(ctx, server)
 		if err != nil {
@@ -96,7 +97,7 @@ func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 				Type:    readyCondition,
 				Status:  metav1.ConditionFalse,
 				Reason:  "RuntimeStopping",
-				Message: "waiting for game compute and player networking to terminate; persistent data is retained",
+				Message: "waiting for disposable runtime resources to terminate; persistent data is retained",
 			}, nil); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -108,6 +109,10 @@ func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 			Reason:  "Stopped",
 			Message: "game server is stopped; persistent data is retained",
 		}, nil)
+	}
+
+	if err := r.reconcileConfigMap(ctx, plan.Configuration); err != nil {
+		return ctrl.Result{}, r.reportFailure(ctx, server, "ReconcileFailed", err, true)
 	}
 
 	deployment, err := r.reconcileDeployment(ctx, plan.Workload)
@@ -160,6 +165,7 @@ func (r *GameServerReconciler) preflight(ctx context.Context, server *arcadev1al
 		UID:        server.UID,
 	}
 	for _, object := range []client.Object{
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: server.Name + "-configuration", Namespace: server.Namespace}},
 		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: server.Name, Namespace: server.Namespace}},
 		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: server.Name, Namespace: server.Namespace}},
 	} {
@@ -175,6 +181,52 @@ func (r *GameServerReconciler) preflight(ctx context.Context, server *arcadev1al
 		}
 	}
 	return nil
+}
+
+func (r *GameServerReconciler) reconcileConfigMap(ctx context.Context, desired *corev1.ConfigMap) error {
+	existing := &corev1.ConfigMap{}
+	key := client.ObjectKeyFromObject(desired)
+	if err := r.Get(ctx, key, existing); err != nil {
+		if apierrors.IsNotFound(err) {
+			if err := r.Create(ctx, desired.DeepCopy()); err != nil {
+				return fmt.Errorf("create game configuration %s: %w", key, err)
+			}
+			return nil
+		}
+		return fmt.Errorf("get game configuration %s: %w", key, err)
+	}
+	if err := requireControlledBy(existing, desired.OwnerReferences[0]); err != nil {
+		return fmt.Errorf("refuse game configuration %s: %w", key, err)
+	}
+	if configurationMatches(existing, desired) {
+		return nil
+	}
+
+	updated := existing.DeepCopy()
+	updated.Labels = maps.Clone(desired.Labels)
+	updated.Annotations = maps.Clone(desired.Annotations)
+	updated.OwnerReferences = append([]metav1.OwnerReference(nil), desired.OwnerReferences...)
+	updated.Data = maps.Clone(desired.Data)
+	updated.BinaryData = maps.Clone(desired.BinaryData)
+	if desired.Immutable != nil {
+		updated.Immutable = new(bool)
+		*updated.Immutable = *desired.Immutable
+	} else {
+		updated.Immutable = nil
+	}
+	if err := r.Update(ctx, updated); err != nil {
+		return fmt.Errorf("update game configuration %s: %w", key, err)
+	}
+	return nil
+}
+
+func configurationMatches(existing, desired *corev1.ConfigMap) bool {
+	return apiequality.Semantic.DeepEqual(existing.Labels, desired.Labels) &&
+		apiequality.Semantic.DeepEqual(existing.Annotations, desired.Annotations) &&
+		apiequality.Semantic.DeepEqual(existing.OwnerReferences, desired.OwnerReferences) &&
+		apiequality.Semantic.DeepEqual(existing.Data, desired.Data) &&
+		apiequality.Semantic.DeepEqual(existing.BinaryData, desired.BinaryData) &&
+		apiequality.Semantic.DeepEqual(existing.Immutable, desired.Immutable)
 }
 
 func (r *GameServerReconciler) reconcileDataClaim(ctx context.Context, desired *corev1.PersistentVolumeClaim) error {
@@ -318,6 +370,7 @@ func (r *GameServerReconciler) deleteControlledRuntime(ctx context.Context, serv
 		UID:        server.UID,
 	}
 	objects := []client.Object{
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: server.Name + "-configuration", Namespace: server.Namespace}},
 		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: server.Name, Namespace: server.Namespace}},
 		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: server.Name, Namespace: server.Namespace}},
 	}
@@ -421,6 +474,7 @@ func (r *GameServerReconciler) SetupWithManager(manager ctrl.Manager) error {
 	}
 	return ctrl.NewControllerManagedBy(manager).
 		For(&arcadev1alpha1.GameServer{}).
+		Owns(&corev1.ConfigMap{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Watches(&corev1.PersistentVolumeClaim{}, handler.EnqueueRequestsFromMapFunc(func(_ context.Context, object client.Object) []reconcile.Request {

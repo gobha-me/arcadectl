@@ -7,6 +7,9 @@ package kube
 
 import (
 	"bytes"
+	"crypto/sha256"
+	_ "embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -24,21 +27,29 @@ import (
 )
 
 const (
-	LabelManagedBy  = "app.kubernetes.io/managed-by"
-	LabelName       = "app.kubernetes.io/name"
-	LabelInstance   = "app.kubernetes.io/instance"
-	LabelGame       = "arcade.gobha.me/game"
-	LabelDataPolicy = "arcade.gobha.me/data-policy"
-	LabelDataPath   = "arcade.gobha.me/data-path"
-	ManagerName     = "arcadectl"
-	maxSettingsLen  = 64 * 1024
+	LabelManagedBy              = "app.kubernetes.io/managed-by"
+	LabelName                   = "app.kubernetes.io/name"
+	LabelInstance               = "app.kubernetes.io/instance"
+	LabelGame                   = "arcade.gobha.me/game"
+	LabelDataPolicy             = "arcade.gobha.me/data-policy"
+	LabelDataPath               = "arcade.gobha.me/data-path"
+	AnnotationConfigurationHash = "arcade.gobha.me/configuration-sha256"
+	ManagerName                 = "arcadectl"
+	maxSettingsLen              = 64 * 1024
+	configurationVolumeName     = "arcadectl-configuration"
+	configurationSourcePath     = "/arcadectl/configuration"
+	configurationMaterializer   = "busybox@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0"
 )
 
+//go:embed materialize.sh
+var materializeConfigurationScript string
+
 // Plan is the complete resource intent for one GameServer generation.
-// DataClaims always remain present. Workload and PlayerService are nil while
-// stopped, so stop removes active compute and exposure without touching data.
+// DataClaims always remain present. Configuration, Workload, and PlayerService
+// are nil while stopped, so stop removes runtime state without touching data.
 type Plan struct {
 	DataClaims    []*corev1.PersistentVolumeClaim
+	Configuration *corev1.ConfigMap
 	Workload      *appsv1.Deployment
 	PlayerService *corev1.Service
 }
@@ -58,17 +69,22 @@ func Build(server *arcadev1alpha1.GameServer, definition game.Definition) (Plan,
 		}
 		claims = append(claims, buildDataClaim(server, definition, persistentPath.Name, claimName))
 	}
-
+	files, err := definition.RenderSettingsFiles(server.Spec.Settings.Raw)
+	if err != nil {
+		return Plan{}, fmt.Errorf("render configuration: %w", err)
+	}
 	plan := Plan{DataClaims: claims}
 	if server.Spec.DesiredState == arcadev1alpha1.DesiredStateStopped {
 		return plan, nil
 	}
+	configuration := buildConfiguration(server, labels, files)
+	plan.Configuration = configuration
 
 	image, err := game.ResolvedImage(definition.ImageRepository, server.Spec.ImageDigest)
 	if err != nil {
 		return Plan{}, fmt.Errorf("resolve image: %w", err)
 	}
-	plan.Workload = buildWorkload(server, definition, labels, image)
+	plan.Workload = buildWorkload(server, definition, labels, image, files, configuration.Name)
 	plan.PlayerService = buildPlayerService(server, definition, labels)
 	return plan, nil
 }
@@ -115,6 +131,9 @@ func validateIntent(server *arcadev1alpha1.GameServer, definition game.Definitio
 		return err
 	}
 	for _, persistentPath := range definition.PersistentPaths {
+		if persistentPath.Name == configurationVolumeName {
+			return fmt.Errorf("persistent path name %q is reserved by the platform", persistentPath.Name)
+		}
 		if _, err := dataClaimName(server.Name, definition.ID, persistentPath.Name); err != nil {
 			return err
 		}
@@ -227,16 +246,34 @@ func buildDataClaim(server *arcadev1alpha1.GameServer, definition game.Definitio
 
 func controllerReference(server *arcadev1alpha1.GameServer) metav1.OwnerReference {
 	return metav1.OwnerReference{
-		APIVersion:         arcadev1alpha1.GroupVersion.String(),
-		Kind:               "GameServer",
-		Name:               server.Name,
-		UID:                server.UID,
-		Controller:         ptr.To(true),
-		BlockOwnerDeletion: ptr.To(true),
+		APIVersion: arcadev1alpha1.GroupVersion.String(),
+		Kind:       "GameServer",
+		Name:       server.Name,
+		UID:        server.UID,
+		Controller: ptr.To(true),
 	}
 }
 
-func buildWorkload(server *arcadev1alpha1.GameServer, definition game.Definition, labels map[string]string, image string) *appsv1.Deployment {
+func buildConfiguration(server *arcadev1alpha1.GameServer, labels map[string]string, files []game.ConfigurationFile) *corev1.ConfigMap {
+	configurationLabels := cloneMap(labels)
+	configurationLabels[LabelName] = "game-configuration"
+	data := make(map[string][]byte, len(files))
+	for _, file := range files {
+		data[file.Name] = append([]byte(nil), file.Contents...)
+	}
+	return &corev1.ConfigMap{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            server.Name + "-configuration",
+			Namespace:       server.Namespace,
+			Labels:          configurationLabels,
+			OwnerReferences: []metav1.OwnerReference{controllerReference(server)},
+		},
+		BinaryData: data,
+	}
+}
+
+func buildWorkload(server *arcadev1alpha1.GameServer, definition game.Definition, labels map[string]string, image string, files []game.ConfigurationFile, configurationName string) *appsv1.Deployment {
 	containerPorts := make([]corev1.ContainerPort, 0, len(definition.Endpoints))
 	for _, endpoint := range definition.Endpoints {
 		containerPorts = append(containerPorts, corev1.ContainerPort{
@@ -247,10 +284,13 @@ func buildWorkload(server *arcadev1alpha1.GameServer, definition game.Definition
 	}
 
 	volumeMounts := make([]corev1.VolumeMount, 0, len(definition.PersistentPaths))
-	volumes := make([]corev1.Volume, 0, len(definition.PersistentPaths))
+	materializerMounts := make([]corev1.VolumeMount, 0, len(definition.PersistentPaths)+1)
+	volumes := make([]corev1.Volume, 0, len(definition.PersistentPaths)+1)
 	for _, persistentPath := range definition.PersistentPaths {
 		claimName, _ := dataClaimName(server.Name, definition.ID, persistentPath.Name)
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{Name: persistentPath.Name, MountPath: persistentPath.MountPath})
+		mount := corev1.VolumeMount{Name: persistentPath.Name, MountPath: persistentPath.MountPath}
+		volumeMounts = append(volumeMounts, mount)
+		materializerMounts = append(materializerMounts, mount)
 		volumes = append(volumes, corev1.Volume{
 			Name: persistentPath.Name,
 			VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
@@ -258,6 +298,17 @@ func buildWorkload(server *arcadev1alpha1.GameServer, definition game.Definition
 			}},
 		})
 	}
+	materializerMounts = append(materializerMounts, corev1.VolumeMount{
+		Name:      configurationVolumeName,
+		MountPath: configurationSourcePath,
+		ReadOnly:  true,
+	})
+	volumes = append(volumes, corev1.Volume{
+		Name: configurationVolumeName,
+		VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
+			LocalObjectReference: corev1.LocalObjectReference{Name: configurationName},
+		}},
+	})
 
 	container := corev1.Container{
 		Name:            "game",
@@ -277,6 +328,23 @@ func buildWorkload(server *arcadev1alpha1.GameServer, definition game.Definition
 		},
 		SecurityContext: &corev1.SecurityContext{
 			AllowPrivilegeEscalation: ptr.To(false),
+			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		},
+	}
+	materializerArgs := []string{materializeConfigurationScript, "arcadectl-configuration-materializer"}
+	for _, file := range files {
+		materializerArgs = append(materializerArgs, persistentRootForTarget(definition.PersistentPaths, file.MountPath), configurationSourcePath+"/"+file.Name, file.MountPath)
+	}
+	materializer := corev1.Container{
+		Name:            "configuration-materializer",
+		Image:           configurationMaterializer,
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		Command:         []string{"/bin/sh", "-ec"},
+		Args:            materializerArgs,
+		VolumeMounts:    materializerMounts,
+		SecurityContext: &corev1.SecurityContext{
+			AllowPrivilegeEscalation: ptr.To(false),
+			ReadOnlyRootFilesystem:   ptr.To(true),
 			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 		},
 	}
@@ -301,18 +369,47 @@ func buildWorkload(server *arcadev1alpha1.GameServer, definition game.Definition
 			Strategy: appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType},
 			Selector: &metav1.LabelSelector{MatchLabels: cloneMap(labels)},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: cloneMap(labels)},
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: cloneMap(labels),
+					Annotations: map[string]string{
+						AnnotationConfigurationHash: configurationHash(files),
+					},
+				},
 				Spec: corev1.PodSpec{
 					AutomountServiceAccountToken: ptr.To(false),
 					SecurityContext: &corev1.PodSecurityContext{
-						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+						RunAsNonRoot:        ptr.To(true),
+						RunAsUser:           ptr.To(definition.RuntimeIdentity.UserID),
+						RunAsGroup:          ptr.To(definition.RuntimeIdentity.GroupID),
+						FSGroup:             ptr.To(definition.RuntimeIdentity.FSGroup),
+						FSGroupChangePolicy: ptr.To(corev1.FSGroupChangeOnRootMismatch),
+						SeccompProfile:      &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
-					Containers: []corev1.Container{container},
-					Volumes:    volumes,
+					InitContainers: []corev1.Container{materializer},
+					Containers:     []corev1.Container{container},
+					Volumes:        volumes,
 				},
 			},
 		},
 	}
+}
+
+func persistentRootForTarget(paths []game.PersistentPath, target string) string {
+	for _, persistentPath := range paths {
+		if strings.HasPrefix(target, persistentPath.MountPath+"/") {
+			return persistentPath.MountPath
+		}
+	}
+	return ""
+}
+
+func configurationHash(files []game.ConfigurationFile) string {
+	hash := sha256.New()
+	for _, file := range files {
+		_, _ = fmt.Fprintf(hash, "%d:%s:%d:%s:%d:", len(file.Name), file.Name, len(file.MountPath), file.MountPath, len(file.Contents))
+		_, _ = hash.Write(file.Contents)
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func buildPlayerService(server *arcadev1alpha1.GameServer, definition game.Definition, labels map[string]string) *corev1.Service {

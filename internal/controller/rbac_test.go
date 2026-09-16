@@ -42,3 +42,28 @@ func TestControllerRoleCannotDeletePersistentClaims(t *testing.T) {
 		t.Fatal("generated role has no persistent-volume-claim rule")
 	}
 }
+
+func TestControllerRoleCanManageDisposableConfiguration(t *testing.T) {
+	t.Parallel()
+
+	contents, err := os.ReadFile("../../config/rbac/role.yaml")
+	if err != nil {
+		t.Fatalf("read generated controller role: %v", err)
+	}
+	role := &rbacv1.ClusterRole{}
+	if err := yaml.Unmarshal(contents, role); err != nil {
+		t.Fatalf("decode generated controller role: %v", err)
+	}
+	for _, rule := range role.Rules {
+		if !slices.Contains(rule.APIGroups, "") || !slices.Contains(rule.Resources, "configmaps") {
+			continue
+		}
+		for _, required := range []string{"get", "list", "watch", "create", "update", "patch", "delete"} {
+			if !slices.Contains(rule.Verbs, required) {
+				t.Errorf("ConfigMap verbs %v omit %q", rule.Verbs, required)
+			}
+		}
+		return
+	}
+	t.Fatal("generated role has no ConfigMap rule")
+}
