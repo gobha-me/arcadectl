@@ -24,14 +24,14 @@ import (
 )
 
 const (
-	managedByLabel = "app.kubernetes.io/managed-by"
-	nameLabel      = "app.kubernetes.io/name"
-	instanceLabel  = "app.kubernetes.io/instance"
-	gameLabel      = "arcade.gobha.me/game"
-	dataLabel      = "arcade.gobha.me/data-policy"
-	dataPathLabel  = "arcade.gobha.me/data-path"
-	managerName    = "arcadectl"
-	maxSettingsLen = 64 * 1024
+	LabelManagedBy  = "app.kubernetes.io/managed-by"
+	LabelName       = "app.kubernetes.io/name"
+	LabelInstance   = "app.kubernetes.io/instance"
+	LabelGame       = "arcade.gobha.me/game"
+	LabelDataPolicy = "arcade.gobha.me/data-policy"
+	LabelDataPath   = "arcade.gobha.me/data-path"
+	ManagerName     = "arcadectl"
+	maxSettingsLen  = 64 * 1024
 )
 
 // Plan is the complete resource intent for one GameServer generation.
@@ -177,10 +177,10 @@ func validateSettings(schemaBytes, settings []byte) error {
 
 func workloadLabels(server *arcadev1alpha1.GameServer) map[string]string {
 	return map[string]string{
-		managedByLabel: managerName,
-		nameLabel:      "game-server",
-		instanceLabel:  server.Name,
-		gameLabel:      server.Spec.Game,
+		LabelManagedBy: ManagerName,
+		LabelName:      "game-server",
+		LabelInstance:  server.Name,
+		LabelGame:      server.Spec.Game,
 	}
 }
 
@@ -194,12 +194,12 @@ func dataClaimName(serverName, gameID, pathName string) (string, error) {
 
 func buildDataClaim(server *arcadev1alpha1.GameServer, definition game.Definition, pathName, name string) *corev1.PersistentVolumeClaim {
 	labels := map[string]string{
-		managedByLabel: managerName,
-		nameLabel:      "game-data",
-		instanceLabel:  server.Name,
-		gameLabel:      definition.ID,
-		dataLabel:      "retain",
-		dataPathLabel:  pathName,
+		LabelManagedBy:  ManagerName,
+		LabelName:       "game-data",
+		LabelInstance:   server.Name,
+		LabelGame:       definition.ID,
+		LabelDataPolicy: "retain",
+		LabelDataPath:   pathName,
 	}
 	var storageClassName *string
 	if server.Spec.Storage.StorageClassName != nil {

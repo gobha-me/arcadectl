@@ -31,8 +31,13 @@ deleted, but it cannot cascade that deletion into world data.
 
 Claim names include the server name, adapter identity, and persistent-path
 identity. Recreating the same server under a different game therefore cannot
-silently attach the old game's data. A future reconciler must also fail closed
-if an existing claim's labels or requested capacity conflict with the plan.
+silently attach the old game's data. The reconciler also fails closed if an
+existing claim's labels or storage class conflict with the plan.
+
+The controller preflights every existing claim, Deployment, and Service before
+mutation. It refuses foreign ownership or mismatched data identity. Existing
+claims may expand but are never shrunk. Runtime resources are managed with
+server-side apply so API-server defaults do not cause update loops.
 
 ## Operations
 
@@ -46,6 +51,7 @@ if an existing claim's labels or requested capacity conflict with the plan.
 - **Destroy:** not implemented. It will be a separate authorized operation with
   exact identity confirmation and a successful backup by default.
 
-The current repository contains the API, generated CRD, validation, and pure
-resource planner. Adapter-specific settings rendering, the controller, and its
-cluster-side adoption checks are not implemented yet, so it is not deployable.
+The current repository contains the API, generated CRD, validation, pure
+resource planner, controller binary, and generated least-privilege role.
+Adapter-specific settings rendering, deployment packaging, and isolated-cluster
+validation are not implemented yet, so it is not deployable.

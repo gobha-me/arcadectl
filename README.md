@@ -14,10 +14,12 @@ milestone proves one complete Factorio lifecycle: create, configure, start,
 stop, restart, update, back up, restore, decommission without data loss, and
 deliberately destroy.
 
-The current foundation includes a generated `GameServer` CRD and a pure,
-game-neutral Kubernetes resource planner. The planner proves that normal stop
-and deletion semantics retain storage; reconciliation against a cluster is the
-next slice.
+The current foundation includes a generated `GameServer` CRD, a pure,
+game-neutral Kubernetes resource planner, and an idempotent controller. The
+controller starts and stops runtime resources while retaining storage, refuses
+to adopt conflicting resources, and cannot delete persistent claims under its
+generated RBAC policy. Packaging and isolated-cluster validation remain before
+the project is deployable.
 
 A structurally different synthetic adapter participates in conformance tests
 from the beginning. Adding another game must not require changes to the core
