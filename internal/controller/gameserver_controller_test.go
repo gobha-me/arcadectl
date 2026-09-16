@@ -5,12 +5,15 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	arcadev1alpha1 "github.com/gobha-me/arcadectl/api/v1alpha1"
 	"github.com/gobha-me/arcadectl/internal/catalog"
+	"github.com/gobha-me/arcadectl/internal/games/factorio"
+	"github.com/gobha-me/arcadectl/internal/platform/game"
 	platformkube "github.com/gobha-me/arcadectl/internal/platform/kube"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -43,8 +46,12 @@ func TestReconcileRunningThenStoppedRetainsData(t *testing.T) {
 	assertObjectExists(t, kubeClient, request.NamespacedName, deployment)
 	service := &corev1.Service{}
 	assertObjectExists(t, kubeClient, request.NamespacedName, service)
+	configurationKey := types.NamespacedName{Namespace: "games", Name: "factory-configuration"}
+	configuration := &corev1.ConfigMap{}
+	assertObjectExists(t, kubeClient, configurationKey, configuration)
 	assertControlledBy(t, deployment, server.UID)
 	assertControlledBy(t, service, server.UID)
+	assertControlledBy(t, configuration, server.UID)
 
 	claim := &corev1.PersistentVolumeClaim{}
 	if err := kubeClient.Get(context.Background(), types.NamespacedName{Namespace: "games", Name: "factory-factorio-world"}, claim); err != nil {
@@ -58,6 +65,7 @@ func TestReconcileRunningThenStoppedRetainsData(t *testing.T) {
 		t.Fatalf("idempotent Reconcile() error = %v", err)
 	}
 	assertListLength(t, kubeClient, &corev1.PersistentVolumeClaimList{}, 1)
+	assertListLength(t, kubeClient, &corev1.ConfigMapList{}, 1)
 	assertListLength(t, kubeClient, &appsv1.DeploymentList{}, 1)
 	assertListLength(t, kubeClient, &corev1.ServiceList{}, 1)
 
@@ -79,6 +87,7 @@ func TestReconcileRunningThenStoppedRetainsData(t *testing.T) {
 	}
 	assertNotFound(t, kubeClient, request.NamespacedName, &appsv1.Deployment{})
 	assertNotFound(t, kubeClient, request.NamespacedName, &corev1.Service{})
+	assertNotFound(t, kubeClient, configurationKey, &corev1.ConfigMap{})
 	assertObjectExists(t, kubeClient, types.NamespacedName{Namespace: "games", Name: "factory-factorio-world"}, &corev1.PersistentVolumeClaim{})
 	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseStopping, metav1.ConditionFalse, "RuntimeStopping")
 	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
@@ -147,9 +156,124 @@ func TestReconcileRejectsInvalidSpecBeforeMutation(t *testing.T) {
 		t.Fatalf("Reconcile() error = %v, want status-only invalid spec", err)
 	}
 	assertListLength(t, kubeClient, &corev1.PersistentVolumeClaimList{}, 0)
+	assertListLength(t, kubeClient, &corev1.ConfigMapList{}, 0)
 	assertListLength(t, kubeClient, &appsv1.DeploymentList{}, 0)
 	assertListLength(t, kubeClient, &corev1.ServiceList{}, 0)
 	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseFailed, metav1.ConditionFalse, "InvalidSpec")
+}
+
+func TestReconcileRejectsInvalidRenderedOutputBeforeMutation(t *testing.T) {
+	t.Parallel()
+
+	server := controllerTestServer(arcadev1alpha1.DesiredStateRunning)
+	reconciler, kubeClient := newTestReconciler(t, server)
+	definition := factorio.Definition()
+	definition.RenderSettings = func(json.RawMessage) (map[string][]byte, error) {
+		return map[string][]byte{"server-settings": []byte(strings.Repeat("x", game.MaxRenderedSettingsBytes+1))}, nil
+	}
+	reconciler.Catalog = fixedCatalog{definition: definition}
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() error = %v, want status-only invalid spec", err)
+	}
+	assertListLength(t, kubeClient, &corev1.PersistentVolumeClaimList{}, 0)
+	assertListLength(t, kubeClient, &corev1.ConfigMapList{}, 0)
+	assertListLength(t, kubeClient, &appsv1.DeploymentList{}, 0)
+	assertListLength(t, kubeClient, &corev1.ServiceList{}, 0)
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseFailed, metav1.ConditionFalse, "InvalidSpec")
+}
+
+func TestReconcilePreflightRejectsForeignConfigurationBeforeMutation(t *testing.T) {
+	t.Parallel()
+
+	server := controllerTestServer(arcadev1alpha1.DesiredStateRunning)
+	foreign := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "factory-configuration", Namespace: "games"},
+		BinaryData: map[string][]byte{"server-settings": []byte("foreign")},
+	}
+	reconciler, kubeClient := newTestReconciler(t, server, foreign)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)}
+	_, err := reconciler.Reconcile(context.Background(), request)
+	if err == nil || !strings.Contains(err.Error(), "existing resource has no controller owner") {
+		t.Fatalf("Reconcile() error = %v, want foreign-configuration refusal", err)
+	}
+	assertListLength(t, kubeClient, &corev1.PersistentVolumeClaimList{}, 0)
+	assertListLength(t, kubeClient, &appsv1.DeploymentList{}, 0)
+	assertListLength(t, kubeClient, &corev1.ServiceList{}, 0)
+	stored := &corev1.ConfigMap{}
+	assertObjectExists(t, kubeClient, client.ObjectKeyFromObject(foreign), stored)
+	if string(stored.BinaryData["server-settings"]) != "foreign" {
+		t.Fatal("reconciler mutated foreign configuration")
+	}
+}
+
+func TestReconcileSettingsUpdateChangesConfigurationAndRolloutHash(t *testing.T) {
+	t.Parallel()
+
+	server := controllerTestServer(arcadev1alpha1.DesiredStateRunning)
+	reconciler, kubeClient := newTestReconciler(t, server)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("initial Reconcile() error = %v", err)
+	}
+	initialDeployment := &appsv1.Deployment{}
+	assertObjectExists(t, kubeClient, request.NamespacedName, initialDeployment)
+	initialHash := initialDeployment.Spec.Template.Annotations[platformkube.AnnotationConfigurationHash]
+	initialConfiguration := &corev1.ConfigMap{}
+	configurationKey := types.NamespacedName{Namespace: "games", Name: "factory-configuration"}
+	assertObjectExists(t, kubeClient, configurationKey, initialConfiguration)
+	initialConfiguration.BinaryData["stale"] = []byte("must be pruned")
+	if err := kubeClient.Update(context.Background(), initialConfiguration); err != nil {
+		t.Fatalf("add stale configuration key: %v", err)
+	}
+
+	stored := &arcadev1alpha1.GameServer{}
+	if err := kubeClient.Get(context.Background(), request.NamespacedName, stored); err != nil {
+		t.Fatalf("get GameServer: %v", err)
+	}
+	stored.Spec.Settings.Raw = []byte(`{"name":"updated","maxPlayers":16,"visibility":"lan"}`)
+	stored.Generation = 2
+	if err := kubeClient.Update(context.Background(), stored); err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("updated Reconcile() error = %v", err)
+	}
+
+	configuration := &corev1.ConfigMap{}
+	assertObjectExists(t, kubeClient, configurationKey, configuration)
+	contents := string(configuration.BinaryData["server-settings"])
+	if !strings.Contains(contents, `"name": "updated"`) || !strings.Contains(contents, `"lan": true`) {
+		t.Fatalf("updated configuration = %q", contents)
+	}
+	if _, exists := configuration.BinaryData["stale"]; exists {
+		t.Fatal("reconciler retained a stale configuration key")
+	}
+	updatedDeployment := &appsv1.Deployment{}
+	assertObjectExists(t, kubeClient, request.NamespacedName, updatedDeployment)
+	updatedHash := updatedDeployment.Spec.Template.Annotations[platformkube.AnnotationConfigurationHash]
+	if initialHash == "" || updatedHash == initialHash {
+		t.Fatalf("configuration hash did not change: initial=%q updated=%q", initialHash, updatedHash)
+	}
+}
+
+func TestReconcileUnchangedConfigurationDoesNotWrite(t *testing.T) {
+	t.Parallel()
+
+	server := controllerTestServer(arcadev1alpha1.DesiredStateRunning)
+	reconciler, _ := newTestReconciler(t, server)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("initial Reconcile() error = %v", err)
+	}
+	countingClient := &configMapUpdateCountingClient{Client: reconciler.Client}
+	reconciler.Client = countingClient
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("unchanged Reconcile() error = %v", err)
+	}
+	if countingClient.configMapUpdates != 0 {
+		t.Fatalf("unchanged reconcile issued %d ConfigMap updates, want zero", countingClient.configMapUpdates)
+	}
 }
 
 func TestReconcilePreflightRejectsForeignRuntimeBeforeMutation(t *testing.T) {
@@ -290,6 +414,26 @@ func newTestReconciler(t *testing.T, objects ...client.Object) (*GameServerRecon
 	return reconciler, kubeClient
 }
 
+type fixedCatalog struct {
+	definition game.Definition
+}
+
+type configMapUpdateCountingClient struct {
+	client.Client
+	configMapUpdates int
+}
+
+func (c *configMapUpdateCountingClient) Update(ctx context.Context, object client.Object, options ...client.UpdateOption) error {
+	if _, ok := object.(*corev1.ConfigMap); ok {
+		c.configMapUpdates++
+	}
+	return c.Client.Update(ctx, object, options...)
+}
+
+func (c fixedCatalog) Get(string) (game.Definition, error) {
+	return c.definition.Clone(), nil
+}
+
 // applyPatchAsUpdate supplies the fake client behavior it intentionally lacks
 // for server-side apply. API-server apply semantics are covered by the later
 // isolated-cluster suite; these tests exercise reconciliation decisions.
@@ -352,6 +496,8 @@ func assertListLength(t *testing.T, kubeClient client.Client, list client.Object
 	var got int
 	switch list := list.(type) {
 	case *corev1.PersistentVolumeClaimList:
+		got = len(list.Items)
+	case *corev1.ConfigMapList:
 		got = len(list.Items)
 	case *appsv1.DeploymentList:
 		got = len(list.Items)

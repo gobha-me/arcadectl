@@ -15,11 +15,11 @@ stop, restart, update, back up, restore, decommission without data loss, and
 deliberately destroy.
 
 The current foundation includes a generated `GameServer` CRD, a pure,
-game-neutral Kubernetes resource planner, and an idempotent controller. The
-controller starts and stops runtime resources while retaining storage, refuses
-to adopt conflicting resources, and cannot delete persistent claims under its
-generated RBAC policy. Packaging and isolated-cluster validation remain before
-the project is deployable.
+game-neutral Kubernetes resource planner, typed adapter settings rendering, and
+an idempotent controller. The controller starts and stops runtime resources
+while retaining storage, refuses to adopt conflicting resources, and cannot
+delete persistent claims under its generated RBAC policy. Packaging and
+isolated-cluster validation remain before the project is deployable.
 
 A structurally different synthetic adapter participates in conformance tests
 from the beginning. Adding another game must not require changes to the core
@@ -40,12 +40,13 @@ See [the architecture](docs/ARCHITECTURE.md), [the lifecycle contract](docs/LIFE
 
 ## Development
 
-Requires Go 1.24 or the toolchain declared in `go.mod`.
+Requires the Go version declared in `go.mod` (currently Go 1.26).
 
 ```sh
 go mod verify
 test -z "$(gofmt -l .)"
 make verify-generated
+make verify-runtime-assets
 go vet ./...
 go test -race ./...
 ```

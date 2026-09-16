@@ -21,37 +21,42 @@ For a running server, the deterministic planner produces:
 
 - one independently retained persistent volume claim per adapter-declared data
   path;
+- one owned ConfigMap containing only rendered non-secret configuration;
 - a single-replica, recreate-strategy Deployment; and
 - one LoadBalancer Service containing only player-scoped endpoints.
 
-The Deployment and Service have a controlling `GameServer` owner reference.
-The persistent volume claims deliberately have none. Consequently, Kubernetes
-garbage collection can remove compute and networking when a `GameServer` is
-deleted, but it cannot cascade that deletion into world data.
+The ConfigMap, Deployment, and Service have a controlling `GameServer` owner
+reference. The persistent volume claims deliberately have none. Consequently,
+Kubernetes garbage collection can remove disposable runtime state when a
+`GameServer` is deleted, but it cannot cascade that deletion into world data.
 
 Claim names include the server name, adapter identity, and persistent-path
 identity. Recreating the same server under a different game therefore cannot
 silently attach the old game's data. The reconciler also fails closed if an
 existing claim's labels or storage class conflict with the plan.
 
-The controller preflights every existing claim, Deployment, and Service before
-mutation. It refuses foreign ownership or mismatched data identity. Existing
-claims may expand but are never shrunk. Runtime resources are managed with
-server-side apply so API-server defaults do not cause update loops.
+The controller preflights every existing claim, ConfigMap, Deployment, and
+Service before mutation. It refuses foreign ownership or mismatched data
+identity. Existing claims may expand but are never shrunk. Runtime resources
+use deterministic reconciliation. Deployments and Services use server-side
+apply so API-server defaults do not cause update loops; the disposable
+ConfigMap uses exact replacement so stale rendered keys cannot survive.
 
 ## Operations
 
-- **Start:** reconcile retained claims, then create compute and player
+- **Start:** reconcile retained claims, render configuration, atomically
+  materialize it with a non-root init container, then start compute and player
   networking.
-- **Stop:** remove compute and player networking; retain every claim.
-- **Update (planned):** change the digest or validated settings and replace the
-  singleton workload without overlapping game processes.
+- **Stop:** remove configuration, compute, and player networking; retain every
+  claim.
+- **Update:** change the digest or validated settings and replace the singleton
+  workload without overlapping game processes.
 - **Decommission:** delete the `GameServer`; owned runtime resources are
   collected and unowned claims remain.
 - **Destroy:** not implemented. It will be a separate authorized operation with
   exact identity confirmation and a successful backup by default.
 
-The current repository contains the API, generated CRD, validation, pure
-resource planner, controller binary, and generated least-privilege role.
-Adapter-specific settings rendering, deployment packaging, and isolated-cluster
+The current repository contains the API, generated CRD, validation, typed
+adapter settings rendering, pure resource planner, controller binary, and
+generated least-privilege role. Deployment packaging and isolated-cluster
 validation are not implemented yet, so it is not deployable.
