@@ -2,6 +2,8 @@ module github.com/gobha-me/arcadectl
 
 go 1.25.0
 
+toolchain go1.25.14
+
 require (
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	k8s.io/api v0.33.13
