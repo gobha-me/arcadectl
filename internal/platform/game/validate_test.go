@@ -53,6 +53,10 @@ func TestDefinitionValidate(t *testing.T) {
 		{"restore without backup", func(d *Definition) { d.Capabilities.ColdBackup = false }, "requires cold backup"},
 		{"missing schema", func(d *Definition) { d.SettingsSchema = nil }, "schema is required"},
 		{"non-object schema", func(d *Definition) { d.SettingsSchema = []byte(`{"type":"array"}`) }, "describe an object"},
+		{"nested reference", func(d *Definition) {
+			d.SettingsSchema = []byte(`{"type":"object","properties":{"value":{"$ref":"https://example.invalid/schema"}}}`)
+		}, "keyword \"$ref\" is not allowed"},
+		{"oversized schema", func(d *Definition) { d.SettingsSchema = []byte(strings.Repeat(" ", 64*1024+1)) }, "64 KiB"},
 	}
 
 	for _, test := range tests {
