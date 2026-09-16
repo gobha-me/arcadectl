@@ -41,8 +41,8 @@ Future game-specific hooks require a separately reviewed typed contract; they
 will not be smuggled in as shell fragments.
 
 The core operates only on these generic concepts. Production core packages
-must not contain Factorio paths, ports, RCON assumptions, image names, or save
-semantics.
+live below `internal/platform` and must not contain Factorio paths, ports, RCON
+assumptions, image names, or save semantics.
 
 ## Slice-one decisions
 
