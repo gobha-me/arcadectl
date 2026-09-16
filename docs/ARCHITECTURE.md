@@ -23,10 +23,11 @@ account may mutate Arcadectl resources but cannot directly mutate workloads.
 The controller may reconcile approved resources but does not manage users or
 accept public requests.
 
-The first implemented Kubernetes boundary is the `GameServer` API and a pure
-resource planner. It creates independent claims for adapter-declared persistent
-paths and never gives those claims a `GameServer` owner reference. Controller,
-API, and CLI processes remain planned rather than implemented.
+The implemented Kubernetes boundary is the `GameServer` API, a pure resource
+planner, and the controller process. It creates independent claims for
+adapter-declared persistent paths and never gives those claims a `GameServer`
+owner reference. The generated controller role deliberately omits PVC deletion.
+The authenticated API and CLI remain planned rather than implemented.
 
 ## Game adapter contract
 

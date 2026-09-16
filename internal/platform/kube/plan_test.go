@@ -37,11 +37,11 @@ func TestBuildRunningFactorioPlan(t *testing.T) {
 	if len(claim.OwnerReferences) != 0 {
 		t.Fatalf("retained data claim has owner references: %#v", claim.OwnerReferences)
 	}
-	if claim.Labels[dataLabel] != "retain" {
-		t.Errorf("data policy label = %q, want retain", claim.Labels[dataLabel])
+	if claim.Labels[LabelDataPolicy] != "retain" {
+		t.Errorf("data policy label = %q, want retain", claim.Labels[LabelDataPolicy])
 	}
-	if claim.Labels[dataPathLabel] != "world" {
-		t.Errorf("data path label = %q, want world", claim.Labels[dataPathLabel])
+	if claim.Labels[LabelDataPath] != "world" {
+		t.Errorf("data path label = %q, want world", claim.Labels[LabelDataPath])
 	}
 	if plan.Workload == nil || plan.PlayerService == nil {
 		t.Fatalf("running plan = %#v, want workload and service", plan)
@@ -74,8 +74,8 @@ func TestBuildRunningFactorioPlan(t *testing.T) {
 			t.Fatal("administrator endpoint must not be published by the player service")
 		}
 	}
-	plan.Workload.Labels[instanceLabel] = "changed"
-	if plan.PlayerService.Labels[instanceLabel] != "factory" || plan.Workload.Spec.Selector.MatchLabels[instanceLabel] != "factory" {
+	plan.Workload.Labels[LabelInstance] = "changed"
+	if plan.PlayerService.Labels[LabelInstance] != "factory" || plan.Workload.Spec.Selector.MatchLabels[LabelInstance] != "factory" {
 		t.Fatal("planned resource label maps alias one another")
 	}
 }
