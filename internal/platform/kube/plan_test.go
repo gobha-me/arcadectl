@@ -4,6 +4,9 @@
 package kube
 
 import (
+	"encoding/json"
+	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -63,8 +66,20 @@ func TestBuildRunningFactorioPlan(t *testing.T) {
 	if container.Image != "ghcr.io/gobha-me/arcadectl-factorio@"+testDigest {
 		t.Errorf("image = %q, want a digest-pinned Factorio image", container.Image)
 	}
-	if container.ReadinessProbe == nil || container.ReadinessProbe.TCPSocket == nil || container.ReadinessProbe.TCPSocket.Port.StrVal != "rcon" {
-		t.Errorf("readiness probe = %#v, want named TCP rcon probe", container.ReadinessProbe)
+	if container.ReadinessProbe == nil || container.ReadinessProbe.Exec == nil ||
+		!reflect.DeepEqual(container.ReadinessProbe.Exec.Command, []string{privateReadinessPath}) ||
+		container.ReadinessProbe.TCPSocket != nil {
+		t.Errorf("Factorio readiness probe = %#v, want fixed private exec helper", container.ReadinessProbe)
+	}
+	encodedPod, err := json.Marshal(plan.Workload.Spec.Template.Spec)
+	if err != nil {
+		t.Fatalf("marshal Factorio Pod spec: %v", err)
+	}
+	if strings.Contains(string(encodedPod), "rcon") || strings.Contains(string(encodedPod), "27015") {
+		t.Fatalf("Factorio Pod spec exposes private readiness endpoint: %s", encodedPod)
+	}
+	if len(container.Ports) != 1 || container.Ports[0].Name != "game" {
+		t.Fatalf("Factorio container ports = %#v, want player endpoints only", container.Ports)
 	}
 	if plan.Workload.Spec.Template.Spec.AutomountServiceAccountToken == nil || *plan.Workload.Spec.Template.Spec.AutomountServiceAccountToken {
 		t.Error("game pod must not mount a Kubernetes service-account token")
@@ -162,6 +177,10 @@ func TestBuildIsGameNeutral(t *testing.T) {
 	if len(container.VolumeMounts) != 1 || container.VolumeMounts[0].MountPath != "/srv/world" {
 		t.Errorf("game volume mounts = %#v, want synthetic persistent path", container.VolumeMounts)
 	}
+	if container.ReadinessProbe == nil || container.ReadinessProbe.TCPSocket == nil ||
+		container.ReadinessProbe.TCPSocket.Port.String() != "players" || container.ReadinessProbe.Exec != nil {
+		t.Errorf("synthetic readiness probe = %#v, want named player TCP probe", container.ReadinessProbe)
+	}
 	materializer := plan.Workload.Spec.Template.Spec.InitContainers[0]
 	if len(materializer.Args) != 8 || materializer.Args[2] != "/srv/world" || materializer.Args[3] != "/arcadectl/configuration/echo-config" || materializer.Args[4] != "/srv/world/config/echo.conf" || materializer.Args[5] != "/srv/world" || materializer.Args[6] != "/arcadectl/configuration/motd" || materializer.Args[7] != "/srv/world/config/motd.txt" {
 		t.Errorf("configuration materializer args = %#v, want synthetic adapter paths", materializer.Args)
@@ -197,33 +216,34 @@ func TestBuildRejectsInvalidIntent(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name   string
-		mutate func(*arcadev1alpha1.GameServer)
-		want   string
+		name     string
+		mutate   func(*arcadev1alpha1.GameServer)
+		want     string
+		category ValidationCategory
 	}{
-		{"game mismatch", func(server *arcadev1alpha1.GameServer) { server.Spec.Game = "other" }, "does not match"},
-		{"mutable image", func(server *arcadev1alpha1.GameServer) { server.Spec.ImageDigest = "latest" }, "image digest"},
-		{"unknown state", func(server *arcadev1alpha1.GameServer) { server.Spec.DesiredState = "Paused" }, "unsupported desired state"},
-		{"zero CPU", func(server *arcadev1alpha1.GameServer) { server.Spec.Compute.CPURequest = resource.Quantity{} }, "CPU request must be positive"},
-		{"CPU request over limit", func(server *arcadev1alpha1.GameServer) { server.Spec.Compute.CPURequest = resource.MustParse("3") }, "CPU request cannot exceed"},
-		{"memory request over limit", func(server *arcadev1alpha1.GameServer) { server.Spec.Compute.MemoryRequest = resource.MustParse("3Gi") }, "memory request cannot exceed"},
-		{"zero storage", func(server *arcadev1alpha1.GameServer) { server.Spec.Storage.Size = resource.Quantity{} }, "storage size must be positive"},
+		{"game mismatch", func(server *arcadev1alpha1.GameServer) { server.Spec.Game = "other" }, "does not match", ValidationGame},
+		{"mutable image", func(server *arcadev1alpha1.GameServer) { server.Spec.ImageDigest = "latest" }, "image digest", ValidationImage},
+		{"unknown state", func(server *arcadev1alpha1.GameServer) { server.Spec.DesiredState = "Paused" }, "unsupported desired state", ValidationDesiredState},
+		{"zero CPU", func(server *arcadev1alpha1.GameServer) { server.Spec.Compute.CPURequest = resource.Quantity{} }, "CPU request must be positive", ValidationCompute},
+		{"CPU request over limit", func(server *arcadev1alpha1.GameServer) { server.Spec.Compute.CPURequest = resource.MustParse("3") }, "CPU request cannot exceed", ValidationCompute},
+		{"memory request over limit", func(server *arcadev1alpha1.GameServer) { server.Spec.Compute.MemoryRequest = resource.MustParse("3Gi") }, "memory request cannot exceed", ValidationCompute},
+		{"zero storage", func(server *arcadev1alpha1.GameServer) { server.Spec.Storage.Size = resource.Quantity{} }, "storage size must be positive", ValidationStorage},
 		{"invalid storage class", func(server *arcadev1alpha1.GameServer) {
 			className := "Not Valid"
 			server.Spec.Storage.StorageClassName = &className
-		}, "invalid storage class name"},
-		{"invalid settings", func(server *arcadev1alpha1.GameServer) { server.Spec.Settings.Raw = []byte(`{"maxPlayers":0}`) }, "do not satisfy adapter schema"},
+		}, "invalid storage class name", ValidationStorage},
+		{"invalid settings", func(server *arcadev1alpha1.GameServer) { server.Spec.Settings.Raw = []byte(`{"maxPlayers":0}`) }, "do not satisfy adapter schema", ValidationSettings},
 		{"public visibility", func(server *arcadev1alpha1.GameServer) {
 			server.Spec.Settings.Raw = []byte(`{"name":"test","visibility":"public"}`)
-		}, "do not satisfy adapter schema"},
+		}, "do not satisfy adapter schema", ValidationSettings},
 		{"credential setting", func(server *arcadev1alpha1.GameServer) {
 			server.Spec.Settings.Raw = []byte(`{"name":"test","visibility":"private","token":"secret"}`)
-		}, "do not satisfy adapter schema"},
+		}, "do not satisfy adapter schema", ValidationSettings},
 		{"oversized settings", func(server *arcadev1alpha1.GameServer) {
 			server.Spec.Settings.Raw = []byte(strings.Repeat(" ", maxSettingsLen+1))
-		}, "64 KiB"},
-		{"missing UID while running", func(server *arcadev1alpha1.GameServer) { server.UID = "" }, "requires a Kubernetes UID"},
-		{"invalid namespace", func(server *arcadev1alpha1.GameServer) { server.Namespace = "Not Valid" }, "invalid game server namespace"},
+		}, "64 KiB", ValidationSettings},
+		{"missing UID while running", func(server *arcadev1alpha1.GameServer) { server.UID = "" }, "requires a Kubernetes UID", ValidationIdentity},
+		{"invalid namespace", func(server *arcadev1alpha1.GameServer) { server.Namespace = "Not Valid" }, "invalid game server namespace", ValidationIdentity},
 	}
 
 	for _, test := range tests {
@@ -234,6 +254,10 @@ func TestBuildRejectsInvalidIntent(t *testing.T) {
 			_, err := Build(server, factorio.Definition())
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("Build() error = %v, want substring %q", err, test.want)
+			}
+			validationErr := &ValidationError{}
+			if !errors.As(err, &validationErr) || validationErr.Category != test.category {
+				t.Fatalf("Build() validation error = %#v, want category %q", validationErr, test.category)
 			}
 		})
 	}

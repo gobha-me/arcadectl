@@ -37,7 +37,8 @@ A game definition supplies only constrained data:
 - an image repository whose selected version is resolved to a digest;
 - named TCP or UDP endpoints with player, administrator, or internal scope;
 - persistent paths included in cold backup and restore;
-- an optional named TCP readiness endpoint;
+- an optional named TCP readiness endpoint using one of two fixed platform
+  modes: a player-scoped TCP probe or a certified image-local private helper;
 - a bounded JSON settings schema and a renderer that can supply bytes only for
   statically declared configuration targets;
 - a certified non-root UID, GID, and filesystem group for the selected image;
@@ -46,6 +47,9 @@ A game definition supplies only constrained data:
 
 Definitions cannot contain arbitrary containers, shell commands, host paths,
 privileged security contexts, raw Kubernetes objects, or inline secrets.
+They also cannot choose an exec probe command: private readiness always invokes
+the fixed `/arcadectl/readiness` image helper, whose implementation is reviewed
+with the certified image and emits no endpoint details.
 The settings hook is deliberately narrower than a template or pod hook: it
 cannot select paths, expose secrets, or influence containers. Future
 game-specific hooks require a separately reviewed typed contract; they will not
@@ -92,7 +96,9 @@ overwritten from the desired GameServer settings on the next start.
 The certified Factorio runtime is a thin derivative of a digest-pinned
 `factoriotools/factorio` image. Its wrapper suppresses only the upstream Bash
 trace stream, which would otherwise expand the generated RCON password into
-container logs; Factorio's normal stdout and stderr remain available.
+container logs; Factorio's normal stdout and stderr remain available. Its
+silent, fixed readiness helper checks RCON only inside the container, so the
+administrator port and probe diagnostics never enter the Pod spec or Events.
 
 `destroy` is a different operation. It requires the exact server identity,
 explicit confirmation, and a successful backup by default. An override must be

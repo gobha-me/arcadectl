@@ -33,6 +33,46 @@ const (
 	PhaseFailed   GameServerPhase = "Failed"
 )
 
+// Stable GameServer condition types. Every observed status contains this
+// complete set in this order so consumers never have to infer stale state.
+const (
+	ConditionSpecValid          = "SpecValid"
+	ConditionStorageReady       = "StorageReady"
+	ConditionConfigurationReady = "ConfigurationReady"
+	ConditionWorkloadReady      = "WorkloadReady"
+	ConditionNetworkReady       = "NetworkReady"
+	ConditionReady              = "Ready"
+)
+
+// Stable GameServer condition reasons. Messages may become more specific,
+// but automation should depend only on these bounded reason codes.
+const (
+	ReasonValid                        = "Valid"
+	ReasonInvalidSpec                  = "InvalidSpec"
+	ReasonControllerMisconfigured      = "ControllerMisconfigured"
+	ReasonClaimsReady                  = "ClaimsReady"
+	ReasonClaimsProvisioning           = "ClaimsProvisioning"
+	ReasonClaimExpansionPending        = "ClaimExpansionPending"
+	ReasonStorageOperationFailed       = "StorageOperationFailed"
+	ReasonConfigurationReady           = "ConfigurationReady"
+	ReasonConfigurationOperationFailed = "ConfigurationOperationFailed"
+	ReasonWorkloadAvailable            = "WorkloadAvailable"
+	ReasonWorkloadProgressing          = "WorkloadProgressing"
+	ReasonWorkloadUnavailable          = "WorkloadUnavailable"
+	ReasonWorkloadOperationFailed      = "WorkloadOperationFailed"
+	ReasonPlayerEndpointReady          = "PlayerEndpointReady"
+	ReasonPlayerEndpointPending        = "PlayerEndpointPending"
+	ReasonNetworkOperationFailed       = "NetworkOperationFailed"
+	ReasonResourceCollision            = "ResourceCollision"
+	ReasonBlocked                      = "Blocked"
+	ReasonRuntimeStopping              = "RuntimeStopping"
+	ReasonRuntimeStopped               = "RuntimeStopped"
+	ReasonReady                        = "Ready"
+	ReasonStoragePending               = "StoragePending"
+	ReasonWorkloadPending              = "WorkloadPending"
+	ReasonReconcileFailed              = "ReconcileFailed"
+)
+
 // ComputeSpec bounds CPU and memory assigned to the game container.
 type ComputeSpec struct {
 	CPURequest    resource.Quantity `json:"cpuRequest"`
@@ -76,10 +116,17 @@ type GameServerSpec struct {
 // ObservedEndpoint reports a reachable player endpoint without exposing
 // administrator-only or internal ports.
 type ObservedEndpoint struct {
-	Name     string `json:"name"`
+	// +kubebuilder:validation:Pattern=`^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$`
+	Name string `json:"name"`
+	// +kubebuilder:validation:Enum=TCP;UDP
 	Protocol string `json:"protocol"`
-	Address  string `json:"address"`
-	Port     int32  `json:"port"`
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9:][a-z0-9.:-]*$`
+	Address string `json:"address"`
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	Port int32 `json:"port"`
 }
 
 // GameServerStatus is controller-owned observed state.

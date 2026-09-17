@@ -37,6 +37,8 @@ jobs:
         run: go vet ./...
       - name: Test with race detector
         run: go test -race ./...
+      - name: Test API-server lifecycle transitions
+        run: make test-envtest
       - name: Build reproducible controller image
         run: |
           for tag in first second; do

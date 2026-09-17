@@ -11,7 +11,9 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/netip"
 	"slices"
+	"strings"
 	"time"
 
 	arcadev1alpha1 "github.com/gobha-me/arcadectl/api/v1alpha1"
@@ -21,17 +23,15 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
-
-const readyCondition = "Ready"
 
 // DefinitionCatalog resolves only installed, validated game adapters.
 type DefinitionCatalog interface {
@@ -63,87 +63,196 @@ func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !server.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, nil
+		progress := newConditionProgress()
+		progress.set(arcadev1alpha1.ConditionSpecValid, metav1.ConditionUnknown, arcadev1alpha1.ReasonBlocked,
+			"spec validation is not evaluated while the GameServer is terminating")
+		progress.set(arcadev1alpha1.ConditionStorageReady, metav1.ConditionUnknown, arcadev1alpha1.ReasonBlocked,
+			"retained storage is not changed while the GameServer is terminating")
+		progress.set(arcadev1alpha1.ConditionConfigurationReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopping,
+			"the GameServer is terminating and disposable configuration is no longer reported ready")
+		progress.set(arcadev1alpha1.ConditionWorkloadReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopping,
+			"the GameServer is terminating and its workload is no longer reported ready")
+		progress.set(arcadev1alpha1.ConditionNetworkReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopping,
+			"the GameServer is terminating and player networking is no longer reported ready")
+		progress.set(arcadev1alpha1.ConditionReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopping,
+			"the GameServer is terminating; retained claims are not deleted by Arcadectl")
+		return ctrl.Result{}, r.updateStatus(ctx, server, arcadev1alpha1.PhaseStopping, progress, nil)
 	}
 
+	progress := newConditionProgress()
 	if r.Catalog == nil {
-		err := errors.New("game catalog is not configured")
-		return ctrl.Result{}, r.reportFailure(ctx, server, "ReconcileFailed", err, true)
+		failure := newReconcileFailure(
+			arcadev1alpha1.ConditionSpecValid,
+			arcadev1alpha1.ReasonControllerMisconfigured,
+			"the controller game catalog is unavailable; inspect the controller Deployment configuration",
+			errors.New("game catalog is not configured"),
+			true,
+		)
+		return ctrl.Result{}, r.reportFailure(ctx, server, progress, failure)
 	}
 	definition, err := r.Catalog.Get(server.Spec.Game)
 	if err != nil {
-		return ctrl.Result{}, r.reportFailure(ctx, server, "InvalidSpec", err, false)
+		failure := newReconcileFailure(
+			arcadev1alpha1.ConditionSpecValid,
+			arcadev1alpha1.ReasonInvalidSpec,
+			"the GameServer spec selects an unsupported game; choose an installed game adapter",
+			err,
+			false,
+		)
+		return ctrl.Result{}, r.reportFailure(ctx, server, progress, failure)
 	}
 	plan, err := platformkube.Build(server, definition)
 	if err != nil {
-		return ctrl.Result{}, r.reportFailure(ctx, server, "InvalidSpec", err, false)
+		message := validationFailureMessage(err)
+		failure := newReconcileFailure(
+			arcadev1alpha1.ConditionSpecValid,
+			arcadev1alpha1.ReasonInvalidSpec,
+			message,
+			err,
+			false,
+		)
+		return ctrl.Result{}, r.reportFailure(ctx, server, progress, failure)
 	}
-	if err := r.preflight(ctx, server, plan); err != nil {
-		return ctrl.Result{}, r.reportFailure(ctx, server, "ReconcileFailed", err, true)
+	progress.set(arcadev1alpha1.ConditionSpecValid, metav1.ConditionTrue, arcadev1alpha1.ReasonValid,
+		"the current GameServer generation passed adapter and platform validation")
+	if failure := r.preflight(ctx, server, plan); failure != nil {
+		return ctrl.Result{}, r.reportFailure(ctx, server, progress, failure)
 	}
 
 	for _, claim := range plan.DataClaims {
 		if err := r.reconcileDataClaim(ctx, claim); err != nil {
-			return ctrl.Result{}, r.reportFailure(ctx, server, "ReconcileFailed", err, true)
+			key := client.ObjectKeyFromObject(claim)
+			failure := newReconcileFailure(
+				arcadev1alpha1.ConditionStorageReady,
+				arcadev1alpha1.ReasonStorageOperationFailed,
+				fmt.Sprintf("PersistentVolumeClaim %s could not be reconciled; inspect storage events and the storage provisioner", key),
+				err,
+				true,
+			)
+			return ctrl.Result{}, r.reportFailure(ctx, server, progress, failure)
 		}
 	}
+	storage, failure := r.observeStorage(ctx, plan.DataClaims)
+	if failure != nil {
+		return ctrl.Result{}, r.reportFailure(ctx, server, progress, failure)
+	}
+	progress.set(arcadev1alpha1.ConditionStorageReady, storage.status, storage.reason, storage.message)
 	if server.Spec.DesiredState == arcadev1alpha1.DesiredStateStopped {
-		stopping, err := r.deleteControlledRuntime(ctx, server)
-		if err != nil {
-			return ctrl.Result{}, r.reportFailure(ctx, server, "ReconcileFailed", err, true)
+		stopping, failure := r.deleteControlledRuntime(ctx, server)
+		if failure != nil {
+			return ctrl.Result{}, r.reportFailure(ctx, server, progress, failure)
 		}
 		if stopping {
-			if err := r.updateStatus(ctx, server, arcadev1alpha1.PhaseStopping, metav1.Condition{
-				Type:    readyCondition,
-				Status:  metav1.ConditionFalse,
-				Reason:  "RuntimeStopping",
-				Message: "waiting for disposable runtime resources to terminate; persistent data is retained",
-			}, nil); err != nil {
+			progress.set(arcadev1alpha1.ConditionConfigurationReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopping,
+				"the disposable configuration is being removed; retained data is untouched")
+			progress.set(arcadev1alpha1.ConditionWorkloadReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopping,
+				"the singleton game workload is being removed; retained data is untouched")
+			progress.set(arcadev1alpha1.ConditionNetworkReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopping,
+				"player networking is being removed; retained data is untouched")
+			progress.set(arcadev1alpha1.ConditionReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopping,
+				"waiting for disposable runtime resources to terminate; persistent data is retained")
+			if err := r.updateStatus(ctx, server, arcadev1alpha1.PhaseStopping, progress, nil); err != nil {
 				return ctrl.Result{}, err
 			}
 			return ctrl.Result{RequeueAfter: time.Second}, nil
 		}
-		return ctrl.Result{}, r.updateStatus(ctx, server, arcadev1alpha1.PhaseStopped, metav1.Condition{
-			Type:    readyCondition,
-			Status:  metav1.ConditionFalse,
-			Reason:  "Stopped",
-			Message: "game server is stopped; persistent data is retained",
-		}, nil)
+		progress.set(arcadev1alpha1.ConditionConfigurationReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopped,
+			"disposable configuration is absent because the game server is stopped")
+		progress.set(arcadev1alpha1.ConditionWorkloadReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopped,
+			"the game workload is absent because the game server is stopped")
+		progress.set(arcadev1alpha1.ConditionNetworkReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopped,
+			"player networking is absent because the game server is stopped")
+		progress.set(arcadev1alpha1.ConditionReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopped,
+			"the game server is stopped; persistent data is retained")
+		return ctrl.Result{}, r.updateStatus(ctx, server, arcadev1alpha1.PhaseStopped, progress, nil)
 	}
 
 	if err := r.reconcileConfigMap(ctx, plan.Configuration); err != nil {
-		return ctrl.Result{}, r.reportFailure(ctx, server, "ReconcileFailed", err, true)
+		key := client.ObjectKeyFromObject(plan.Configuration)
+		failure := newReconcileFailure(
+			arcadev1alpha1.ConditionConfigurationReady,
+			arcadev1alpha1.ReasonConfigurationOperationFailed,
+			fmt.Sprintf("ConfigMap %s could not be reconciled; inspect its ownership and cluster API events", key),
+			err,
+			true,
+		)
+		return ctrl.Result{}, r.reportFailure(ctx, server, progress, failure)
 	}
+	progress.set(arcadev1alpha1.ConditionConfigurationReady, metav1.ConditionTrue, arcadev1alpha1.ReasonConfigurationReady,
+		"the current rendered game configuration is applied")
 
 	deployment, err := r.reconcileDeployment(ctx, plan.Workload)
 	if err != nil {
-		return ctrl.Result{}, r.reportFailure(ctx, server, "ReconcileFailed", err, true)
+		key := client.ObjectKeyFromObject(plan.Workload)
+		failure := newReconcileFailure(
+			arcadev1alpha1.ConditionWorkloadReady,
+			arcadev1alpha1.ReasonWorkloadOperationFailed,
+			fmt.Sprintf("Deployment %s could not be reconciled; inspect workload events and image availability", key),
+			err,
+			true,
+		)
+		return ctrl.Result{}, r.reportFailure(ctx, server, progress, failure)
+	}
+	available := workloadAvailable(deployment)
+	if failureMessage := terminalWorkloadFailure(deployment); failureMessage != "" {
+		key := client.ObjectKeyFromObject(deployment)
+		failure := newReconcileFailure(
+			arcadev1alpha1.ConditionWorkloadReady,
+			arcadev1alpha1.ReasonWorkloadUnavailable,
+			fmt.Sprintf("Deployment %s %s", key, failureMessage),
+			errors.New("Deployment reported a terminal availability condition"),
+			false,
+		)
+		return ctrl.Result{}, r.reportFailure(ctx, server, progress, failure)
+	} else if available {
+		progress.set(arcadev1alpha1.ConditionWorkloadReady, metav1.ConditionTrue, arcadev1alpha1.ReasonWorkloadAvailable,
+			"the current singleton game workload is observed available")
+	} else {
+		progress.set(arcadev1alpha1.ConditionWorkloadReady, metav1.ConditionFalse, arcadev1alpha1.ReasonWorkloadProgressing,
+			"waiting for the current singleton game workload to become available")
 	}
 	service, err := r.reconcileService(ctx, plan.PlayerService)
 	if err != nil {
-		return ctrl.Result{}, r.reportFailure(ctx, server, "ReconcileFailed", err, true)
+		key := client.ObjectKeyFromObject(plan.PlayerService)
+		failure := newReconcileFailure(
+			arcadev1alpha1.ConditionNetworkReady,
+			arcadev1alpha1.ReasonNetworkOperationFailed,
+			fmt.Sprintf("Service %s could not be reconciled; inspect load-balancer events and provider configuration", key),
+			err,
+			true,
+		)
+		return ctrl.Result{}, r.reportFailure(ctx, server, progress, failure)
 	}
-
-	if workloadAvailable(deployment) {
-		if endpoints := observedEndpoints(service); len(endpoints) > 0 {
-			return ctrl.Result{}, r.updateStatus(ctx, server, arcadev1alpha1.PhaseReady, metav1.Condition{
-				Type:    readyCondition,
-				Status:  metav1.ConditionTrue,
-				Reason:  "RuntimeReady",
-				Message: "game workload and player networking are ready",
-			}, endpoints)
-		}
+	endpoints := observedEndpoints(service, plan.PlayerService)
+	networkReady := len(endpoints) > 0
+	if networkReady {
+		progress.set(arcadev1alpha1.ConditionNetworkReady, metav1.ConditionTrue, arcadev1alpha1.ReasonPlayerEndpointReady,
+			"the player Service published a certified reachable endpoint")
+	} else {
+		progress.set(arcadev1alpha1.ConditionNetworkReady, metav1.ConditionFalse, arcadev1alpha1.ReasonPlayerEndpointPending,
+			"waiting for the player Service to publish a certified reachable endpoint")
 	}
-
-	return ctrl.Result{}, r.updateStatus(ctx, server, arcadev1alpha1.PhaseStarting, metav1.Condition{
-		Type:    readyCondition,
-		Status:  metav1.ConditionFalse,
-		Reason:  "RuntimePending",
-		Message: "waiting for the game workload and player networking",
-	}, nil)
+	if storage.ready && available && networkReady {
+		progress.set(arcadev1alpha1.ConditionReady, metav1.ConditionTrue, arcadev1alpha1.ReasonReady,
+			"the current game workload and certified player endpoint are ready")
+		return ctrl.Result{}, r.updateStatus(ctx, server, arcadev1alpha1.PhaseReady, progress, endpoints)
+	}
+	phase := arcadev1alpha1.PhaseStarting
+	readyReason := arcadev1alpha1.ReasonWorkloadPending
+	readyMessage := "waiting for the current singleton workload and certified player endpoint"
+	if !storage.ready {
+		phase = arcadev1alpha1.PhasePending
+		readyReason = arcadev1alpha1.ReasonStoragePending
+		readyMessage = "waiting for retained storage to become available"
+	} else if available && !networkReady {
+		readyReason = arcadev1alpha1.ReasonPlayerEndpointPending
+		readyMessage = "waiting for the player Service to publish a certified reachable endpoint"
+	}
+	progress.set(arcadev1alpha1.ConditionReady, metav1.ConditionFalse, readyReason, readyMessage)
+	return ctrl.Result{}, r.updateStatus(ctx, server, phase, progress, nil)
 }
 
-func (r *GameServerReconciler) preflight(ctx context.Context, server *arcadev1alpha1.GameServer, plan platformkube.Plan) error {
+func (r *GameServerReconciler) preflight(ctx context.Context, server *arcadev1alpha1.GameServer, plan platformkube.Plan) *reconcileFailure {
 	for _, desired := range plan.DataClaims {
 		existing := &corev1.PersistentVolumeClaim{}
 		key := client.ObjectKeyFromObject(desired)
@@ -151,10 +260,18 @@ func (r *GameServerReconciler) preflight(ctx context.Context, server *arcadev1al
 			if apierrors.IsNotFound(err) {
 				continue
 			}
-			return fmt.Errorf("preflight retained data claim %s: %w", key, err)
+			return newReconcileFailure(
+				arcadev1alpha1.ConditionStorageReady,
+				arcadev1alpha1.ReasonStorageOperationFailed,
+				fmt.Sprintf("PersistentVolumeClaim %s could not be inspected; inspect storage events and API availability", key),
+				fmt.Errorf("preflight retained data claim %s: %w", key, err),
+				true,
+			)
 		}
 		if err := validateExistingDataClaim(existing, desired); err != nil {
-			return fmt.Errorf("preflight retained data claim %s: %w", key, err)
+			return collisionFailure(arcadev1alpha1.ConditionStorageReady, "PersistentVolumeClaim", key,
+				"preserve its data and correct its identity or choose a different GameServer name",
+				fmt.Errorf("preflight retained data claim %s: %w", key, err))
 		}
 	}
 
@@ -164,23 +281,46 @@ func (r *GameServerReconciler) preflight(ctx context.Context, server *arcadev1al
 		Name:       server.Name,
 		UID:        server.UID,
 	}
-	for _, object := range []client.Object{
-		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: server.Name + "-configuration", Namespace: server.Namespace}},
-		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: server.Name, Namespace: server.Namespace}},
-		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: server.Name, Namespace: server.Namespace}},
+	for _, resource := range []struct {
+		object        client.Object
+		kind          string
+		conditionType string
+		failureReason string
+	}{
+		{&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: server.Name + "-configuration", Namespace: server.Namespace}}, "ConfigMap", arcadev1alpha1.ConditionConfigurationReady, arcadev1alpha1.ReasonConfigurationOperationFailed},
+		{&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: server.Name, Namespace: server.Namespace}}, "Deployment", arcadev1alpha1.ConditionWorkloadReady, arcadev1alpha1.ReasonWorkloadOperationFailed},
+		{&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: server.Name, Namespace: server.Namespace}}, "Service", arcadev1alpha1.ConditionNetworkReady, arcadev1alpha1.ReasonNetworkOperationFailed},
 	} {
-		key := client.ObjectKeyFromObject(object)
-		if err := r.Get(ctx, key, object); err != nil {
+		key := client.ObjectKeyFromObject(resource.object)
+		if err := r.Get(ctx, key, resource.object); err != nil {
 			if apierrors.IsNotFound(err) {
 				continue
 			}
-			return fmt.Errorf("preflight runtime resource %s: %w", key, err)
+			return newReconcileFailure(
+				resource.conditionType,
+				resource.failureReason,
+				fmt.Sprintf("%s %s could not be inspected; inspect cluster API availability", resource.kind, key),
+				fmt.Errorf("preflight runtime resource %s: %w", key, err),
+				true,
+			)
 		}
-		if err := requireControlledBy(object, wanted); err != nil {
-			return fmt.Errorf("preflight runtime resource %s: %w", key, err)
+		if err := requireControlledBy(resource.object, wanted); err != nil {
+			return collisionFailure(resource.conditionType, resource.kind, key,
+				"Arcadectl will not adopt or delete it; inspect ownership and rename the GameServer or deliberately resolve the conflict",
+				fmt.Errorf("preflight runtime resource %s: %w", key, err))
 		}
 	}
 	return nil
+}
+
+func collisionFailure(conditionType, kind string, key client.ObjectKey, action string, cause error) *reconcileFailure {
+	return newReconcileFailure(
+		conditionType,
+		arcadev1alpha1.ReasonResourceCollision,
+		fmt.Sprintf("%s %s conflicts with this GameServer; %s", kind, key, action),
+		cause,
+		true,
+	)
 }
 
 func (r *GameServerReconciler) reconcileConfigMap(ctx context.Context, desired *corev1.ConfigMap) error {
@@ -260,6 +400,60 @@ func (r *GameServerReconciler) reconcileDataClaim(ctx context.Context, desired *
 		return fmt.Errorf("expand retained data claim %s: %w", key, err)
 	}
 	return nil
+}
+
+type storageObservation struct {
+	ready   bool
+	status  metav1.ConditionStatus
+	reason  string
+	message string
+}
+
+func (r *GameServerReconciler) observeStorage(ctx context.Context, desiredClaims []*corev1.PersistentVolumeClaim) (storageObservation, *reconcileFailure) {
+	for _, desired := range desiredClaims {
+		actual := &corev1.PersistentVolumeClaim{}
+		key := client.ObjectKeyFromObject(desired)
+		if err := r.Get(ctx, key, actual); err != nil {
+			return storageObservation{}, newReconcileFailure(
+				arcadev1alpha1.ConditionStorageReady,
+				arcadev1alpha1.ReasonStorageOperationFailed,
+				fmt.Sprintf("PersistentVolumeClaim %s could not be observed; inspect storage events and API availability", key),
+				fmt.Errorf("observe retained data claim %s: %w", key, err),
+				true,
+			)
+		}
+		if actual.Status.Phase != corev1.ClaimBound {
+			if actual.Status.Phase == corev1.ClaimLost {
+				return storageObservation{}, newReconcileFailure(
+					arcadev1alpha1.ConditionStorageReady,
+					arcadev1alpha1.ReasonStorageOperationFailed,
+					fmt.Sprintf("PersistentVolumeClaim %s is lost; inspect its PersistentVolume and storage recovery procedure", key),
+					errors.New("retained data claim is lost"),
+					false,
+				)
+			}
+			return storageObservation{
+				status:  metav1.ConditionFalse,
+				reason:  arcadev1alpha1.ReasonClaimsProvisioning,
+				message: fmt.Sprintf("PersistentVolumeClaim %s is waiting to bind; inspect storage class and provisioner events", key),
+			}, nil
+		}
+		requested := desired.Spec.Resources.Requests[corev1.ResourceStorage]
+		observed := actual.Status.Capacity[corev1.ResourceStorage]
+		if observed.Cmp(requested) < 0 {
+			return storageObservation{
+				status:  metav1.ConditionFalse,
+				reason:  arcadev1alpha1.ReasonClaimExpansionPending,
+				message: fmt.Sprintf("PersistentVolumeClaim %s is waiting for requested capacity; inspect storage expansion events", key),
+			}, nil
+		}
+	}
+	return storageObservation{
+		ready:   true,
+		status:  metav1.ConditionTrue,
+		reason:  arcadev1alpha1.ReasonClaimsReady,
+		message: "all retained data claims are bound at their requested capacity",
+	}, nil
 }
 
 func validateExistingDataClaim(existing, desired *corev1.PersistentVolumeClaim) error {
@@ -362,32 +556,51 @@ func requireControlledBy(object metav1.Object, wanted metav1.OwnerReference) err
 	return nil
 }
 
-func (r *GameServerReconciler) deleteControlledRuntime(ctx context.Context, server *arcadev1alpha1.GameServer) (bool, error) {
+func (r *GameServerReconciler) deleteControlledRuntime(ctx context.Context, server *arcadev1alpha1.GameServer) (bool, *reconcileFailure) {
 	wanted := metav1.OwnerReference{
 		APIVersion: arcadev1alpha1.GroupVersion.String(),
 		Kind:       "GameServer",
 		Name:       server.Name,
 		UID:        server.UID,
 	}
-	objects := []client.Object{
-		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: server.Name + "-configuration", Namespace: server.Namespace}},
-		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: server.Name, Namespace: server.Namespace}},
-		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: server.Name, Namespace: server.Namespace}},
+	resources := []struct {
+		object        client.Object
+		kind          string
+		conditionType string
+		failureReason string
+	}{
+		{&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: server.Name + "-configuration", Namespace: server.Namespace}}, "ConfigMap", arcadev1alpha1.ConditionConfigurationReady, arcadev1alpha1.ReasonConfigurationOperationFailed},
+		{&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: server.Name, Namespace: server.Namespace}}, "Deployment", arcadev1alpha1.ConditionWorkloadReady, arcadev1alpha1.ReasonWorkloadOperationFailed},
+		{&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: server.Name, Namespace: server.Namespace}}, "Service", arcadev1alpha1.ConditionNetworkReady, arcadev1alpha1.ReasonNetworkOperationFailed},
 	}
 	stopping := false
-	for _, object := range objects {
-		key := client.ObjectKeyFromObject(object)
-		if err := r.Get(ctx, key, object); err != nil {
+	for _, resource := range resources {
+		key := client.ObjectKeyFromObject(resource.object)
+		if err := r.Get(ctx, key, resource.object); err != nil {
 			if apierrors.IsNotFound(err) {
 				continue
 			}
-			return false, fmt.Errorf("get runtime resource %s: %w", key, err)
+			return false, newReconcileFailure(
+				resource.conditionType,
+				resource.failureReason,
+				fmt.Sprintf("%s %s could not be observed while stopping; inspect cluster API availability", resource.kind, key),
+				fmt.Errorf("get runtime resource %s: %w", key, err),
+				true,
+			)
 		}
-		if err := requireControlledBy(object, wanted); err != nil {
-			return false, fmt.Errorf("refuse deleting runtime resource %s: %w", key, err)
+		if err := requireControlledBy(resource.object, wanted); err != nil {
+			return false, collisionFailure(resource.conditionType, resource.kind, key,
+				"Arcadectl will not adopt or delete it; inspect ownership and deliberately resolve the conflict",
+				fmt.Errorf("refuse deleting runtime resource %s: %w", key, err))
 		}
-		if err := r.Delete(ctx, object); err != nil && !apierrors.IsNotFound(err) {
-			return false, fmt.Errorf("delete runtime resource %s: %w", key, err)
+		if err := r.Delete(ctx, resource.object); err != nil && !apierrors.IsNotFound(err) {
+			return false, newReconcileFailure(
+				resource.conditionType,
+				resource.failureReason,
+				fmt.Sprintf("%s %s could not be removed while stopping; inspect cluster API events", resource.kind, key),
+				fmt.Errorf("delete runtime resource %s: %w", key, err),
+				true,
+			)
 		}
 		stopping = true
 	}
@@ -395,32 +608,87 @@ func (r *GameServerReconciler) deleteControlledRuntime(ctx context.Context, serv
 }
 
 func workloadAvailable(deployment *appsv1.Deployment) bool {
-	desiredReplicas := int32(1)
-	if deployment.Spec.Replicas != nil {
-		desiredReplicas = *deployment.Spec.Replicas
-	}
-	return deployment.Status.AvailableReplicas >= desiredReplicas &&
-		deployment.Status.UpdatedReplicas >= desiredReplicas &&
-		deployment.Status.ObservedGeneration >= deployment.Generation
+	return deployment != nil &&
+		deletionNotRequested(deployment) &&
+		deployment.Spec.Replicas != nil && *deployment.Spec.Replicas == 1 &&
+		deployment.Status.ObservedGeneration >= deployment.Generation &&
+		deployment.Status.Replicas == 1 &&
+		deployment.Status.UpdatedReplicas == 1 &&
+		deployment.Status.ReadyReplicas == 1 &&
+		deployment.Status.AvailableReplicas == 1 &&
+		deployment.Status.UnavailableReplicas == 0
 }
 
-func observedEndpoints(service *corev1.Service) []arcadev1alpha1.ObservedEndpoint {
-	address := ""
-	for _, ingress := range service.Status.LoadBalancer.Ingress {
-		if ingress.IP != "" {
-			address = ingress.IP
-			break
+func terminalWorkloadFailure(deployment *appsv1.Deployment) string {
+	if deployment == nil || deployment.Status.ObservedGeneration < deployment.Generation {
+		return ""
+	}
+	for _, condition := range deployment.Status.Conditions {
+		if condition.Type == appsv1.DeploymentProgressing && condition.Status == corev1.ConditionFalse &&
+			condition.Reason == "ProgressDeadlineExceeded" {
+			return "exceeded its progress deadline; inspect Pod status, workload events, and image availability"
 		}
-		if ingress.Hostname != "" {
-			address = ingress.Hostname
-			break
+		if condition.Type == appsv1.DeploymentReplicaFailure && condition.Status == corev1.ConditionTrue {
+			return "cannot create or run its replica; inspect Pod status, workload events, quotas, and policy"
 		}
 	}
+	return ""
+}
+
+func validationFailureMessage(err error) string {
+	validationErr := &platformkube.ValidationError{}
+	if !errors.As(err, &validationErr) {
+		return "the GameServer plan is invalid; inspect the installed game adapter and controller configuration"
+	}
+	switch validationErr.Category {
+	case platformkube.ValidationIdentity:
+		return "the GameServer identity is invalid; correct its name, namespace, or Kubernetes identity"
+	case platformkube.ValidationGame:
+		return "the selected game adapter is invalid or incompatible; choose a supported installed adapter"
+	case platformkube.ValidationImage:
+		return "imageDigest is invalid; supply an immutable sha256 image digest"
+	case platformkube.ValidationDesiredState:
+		return "desiredState is invalid; choose Running or Stopped"
+	case platformkube.ValidationCompute:
+		return "compute is invalid; use positive requests and limits with each request no greater than its limit"
+	case platformkube.ValidationStorage:
+		return "storage is invalid; use a positive size and a valid storageClassName"
+	case platformkube.ValidationSettings:
+		return "settings are invalid; correct them to match the selected game adapter schema and rendering limits"
+	default:
+		return "the GameServer spec is invalid; inspect its validated fields"
+	}
+}
+
+func deletionNotRequested(object metav1.Object) bool {
+	return object.GetDeletionTimestamp() == nil
+}
+
+func observedEndpoints(actual, desired *corev1.Service) []arcadev1alpha1.ObservedEndpoint {
+	if actual == nil || desired == nil || !deletionNotRequested(actual) {
+		return nil
+	}
+	actualPorts := make(map[string]corev1.ServicePort, len(actual.Spec.Ports))
+	for _, port := range actual.Spec.Ports {
+		actualPorts[port.Name] = port
+	}
+	desiredPorts := append([]corev1.ServicePort(nil), desired.Spec.Ports...)
+	slices.SortFunc(desiredPorts, func(left, right corev1.ServicePort) int {
+		return strings.Compare(left.Name, right.Name)
+	})
+	if len(desiredPorts) == 0 {
+		return nil
+	}
+	address := observedLoadBalancerAddress(actual.Status.LoadBalancer.Ingress, desiredPorts)
 	if address == "" {
 		return nil
 	}
-	endpoints := make([]arcadev1alpha1.ObservedEndpoint, 0, len(service.Spec.Ports))
-	for _, port := range service.Spec.Ports {
+	endpoints := make([]arcadev1alpha1.ObservedEndpoint, 0, len(desiredPorts))
+	for _, port := range desiredPorts {
+		observed, exists := actualPorts[port.Name]
+		if !exists || observed.Protocol != port.Protocol || observed.Port != port.Port || observed.TargetPort != port.TargetPort {
+			return nil
+		}
 		endpoints = append(endpoints, arcadev1alpha1.ObservedEndpoint{
 			Name:     port.Name,
 			Protocol: string(port.Protocol),
@@ -431,38 +699,53 @@ func observedEndpoints(service *corev1.Service) []arcadev1alpha1.ObservedEndpoin
 	return endpoints
 }
 
-func (r *GameServerReconciler) reportFailure(ctx context.Context, server *arcadev1alpha1.GameServer, reason string, reconcileErr error, retry bool) error {
-	statusErr := r.updateStatus(ctx, server, arcadev1alpha1.PhaseFailed, metav1.Condition{
-		Type:    readyCondition,
-		Status:  metav1.ConditionFalse,
-		Reason:  reason,
-		Message: reconcileErr.Error(),
-	}, nil)
-	if !retry {
-		return statusErr
+func observedLoadBalancerAddress(ingresses []corev1.LoadBalancerIngress, desiredPorts []corev1.ServicePort) string {
+	ips := make(map[string]struct{})
+	hostnames := make(map[string]struct{})
+	for _, ingress := range ingresses {
+		if !ingressSupportsPorts(ingress, desiredPorts) {
+			continue
+		}
+		if parsed, err := netip.ParseAddr(strings.TrimSpace(ingress.IP)); err == nil &&
+			strings.TrimSpace(ingress.IP) == ingress.IP && parsed.IsGlobalUnicast() {
+			ips[parsed.Unmap().String()] = struct{}{}
+		}
+		hostname := strings.ToLower(strings.TrimSpace(ingress.Hostname))
+		if hostname != "" && hostname == ingress.Hostname && len(validation.IsDNS1123Subdomain(hostname)) == 0 {
+			hostnames[hostname] = struct{}{}
+		}
 	}
-	return errors.Join(reconcileErr, statusErr)
+	orderedIPs := slices.Sorted(maps.Keys(ips))
+	if len(orderedIPs) > 0 {
+		return orderedIPs[0]
+	}
+	orderedHostnames := slices.Sorted(maps.Keys(hostnames))
+	if len(orderedHostnames) > 0 {
+		return orderedHostnames[0]
+	}
+	return ""
 }
 
-func (r *GameServerReconciler) updateStatus(ctx context.Context, server *arcadev1alpha1.GameServer, phase arcadev1alpha1.GameServerPhase, condition metav1.Condition, endpoints []arcadev1alpha1.ObservedEndpoint) error {
-	updated := server.DeepCopy()
-	updated.Status.ObservedGeneration = server.Generation
-	updated.Status.Phase = phase
-	updated.Status.Endpoints = append([]arcadev1alpha1.ObservedEndpoint(nil), endpoints...)
-	condition.ObservedGeneration = server.Generation
-	if r.Now != nil {
-		condition.LastTransitionTime = r.Now()
-	} else {
-		condition.LastTransitionTime = metav1.Now()
+func ingressSupportsPorts(ingress corev1.LoadBalancerIngress, desiredPorts []corev1.ServicePort) bool {
+	if len(ingress.Ports) == 0 {
+		return true
 	}
-	meta.SetStatusCondition(&updated.Status.Conditions, condition)
-	if apiequality.Semantic.DeepEqual(server.Status, updated.Status) {
-		return nil
+	for _, desired := range desiredPorts {
+		matches := 0
+		for _, observed := range ingress.Ports {
+			if observed.Port != desired.Port || observed.Protocol != desired.Protocol {
+				continue
+			}
+			matches++
+			if observed.Error != nil {
+				return false
+			}
+		}
+		if matches != 1 {
+			return false
+		}
 	}
-	if err := r.Status().Update(ctx, updated); err != nil {
-		return fmt.Errorf("update GameServer status: %w", err)
-	}
-	return nil
+	return true
 }
 
 // SetupWithManager registers GameServer and owned-runtime watches. Retained

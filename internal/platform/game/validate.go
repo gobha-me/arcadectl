@@ -32,7 +32,7 @@ func (d Definition) Validate() error {
 	if err := validateRepository(d.ImageRepository); err != nil {
 		return err
 	}
-	if err := validateEndpoints(d.Endpoints, d.ReadinessEndpoint); err != nil {
+	if err := validateEndpoints(d.Endpoints, d.ReadinessEndpoint, d.ReadinessMode); err != nil {
 		return err
 	}
 	if err := validatePersistentPaths(d.PersistentPaths); err != nil {
@@ -83,7 +83,7 @@ func validateRepository(repository string) error {
 	return nil
 }
 
-func validateEndpoints(endpoints []Endpoint, readiness string) error {
+func validateEndpoints(endpoints []Endpoint, readiness string, readinessMode ReadinessMode) error {
 	if len(endpoints) == 0 {
 		return errors.New("at least one endpoint is required")
 	}
@@ -114,6 +114,12 @@ func validateEndpoints(endpoints []Endpoint, readiness string) error {
 	if !hasPlayerEndpoint {
 		return errors.New("at least one player endpoint is required")
 	}
+	if readiness == "" {
+		if readinessMode != "" {
+			return errors.New("readiness mode requires a readiness endpoint")
+		}
+		return nil
+	}
 	if readiness != "" {
 		endpoint, exists := names[readiness]
 		if !exists {
@@ -121,6 +127,20 @@ func validateEndpoints(endpoints []Endpoint, readiness string) error {
 		}
 		if endpoint.Protocol != ProtocolTCP {
 			return fmt.Errorf("readiness endpoint %q must use TCP", readiness)
+		}
+		switch readinessMode {
+		case ReadinessTCP:
+			if endpoint.Scope != ScopePlayer {
+				return fmt.Errorf("readiness endpoint %q must be player-scoped so administrator and internal ports cannot appear in probe Events", readiness)
+			}
+		case ReadinessPrivateExec:
+			if endpoint.Scope == ScopePlayer {
+				return fmt.Errorf("private-exec readiness endpoint %q must be administrator or internal scoped", readiness)
+			}
+		case "":
+			return fmt.Errorf("readiness endpoint %q requires an explicit readiness mode", readiness)
+		default:
+			return fmt.Errorf("unsupported readiness mode %q", readinessMode)
 		}
 	}
 	return nil

@@ -38,6 +38,7 @@ const (
 	maxSettingsLen              = 64 * 1024
 	configurationVolumeName     = "arcadectl-configuration"
 	configurationSourcePath     = "/arcadectl/configuration"
+	privateReadinessPath        = "/arcadectl/readiness"
 	configurationMaterializer   = "busybox@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0"
 )
 
@@ -52,6 +53,34 @@ type Plan struct {
 	Configuration *corev1.ConfigMap
 	Workload      *appsv1.Deployment
 	PlayerService *corev1.Service
+}
+
+// ValidationCategory identifies the bounded part of desired state that made a
+// plan invalid. The underlying error remains internal so status can be
+// actionable without reflecting user values or adapter diagnostics.
+type ValidationCategory string
+
+const (
+	ValidationIdentity     ValidationCategory = "identity"
+	ValidationGame         ValidationCategory = "game"
+	ValidationImage        ValidationCategory = "image"
+	ValidationDesiredState ValidationCategory = "desiredState"
+	ValidationCompute      ValidationCategory = "compute"
+	ValidationStorage      ValidationCategory = "storage"
+	ValidationSettings     ValidationCategory = "settings"
+)
+
+// ValidationError wraps a detailed planner error with a safe public category.
+type ValidationError struct {
+	Category ValidationCategory
+	cause    error
+}
+
+func (err *ValidationError) Error() string { return err.cause.Error() }
+func (err *ValidationError) Unwrap() error { return err.cause }
+
+func invalid(category ValidationCategory, err error) error {
+	return &ValidationError{Category: category, cause: err}
 }
 
 // Build validates server intent against a curated adapter and creates a plan.
@@ -71,7 +100,7 @@ func Build(server *arcadev1alpha1.GameServer, definition game.Definition) (Plan,
 	}
 	files, err := definition.RenderSettingsFiles(server.Spec.Settings.Raw)
 	if err != nil {
-		return Plan{}, fmt.Errorf("render configuration: %w", err)
+		return Plan{}, invalid(ValidationSettings, fmt.Errorf("render configuration: %w", err))
 	}
 	plan := Plan{DataClaims: claims}
 	if server.Spec.DesiredState == arcadev1alpha1.DesiredStateStopped {
@@ -82,7 +111,7 @@ func Build(server *arcadev1alpha1.GameServer, definition game.Definition) (Plan,
 
 	image, err := game.ResolvedImage(definition.ImageRepository, server.Spec.ImageDigest)
 	if err != nil {
-		return Plan{}, fmt.Errorf("resolve image: %w", err)
+		return Plan{}, invalid(ValidationImage, fmt.Errorf("resolve image: %w", err))
 	}
 	plan.Workload = buildWorkload(server, definition, labels, image, files, configuration.Name)
 	plan.PlayerService = buildPlayerService(server, definition, labels)
@@ -91,51 +120,51 @@ func Build(server *arcadev1alpha1.GameServer, definition game.Definition) (Plan,
 
 func validateIntent(server *arcadev1alpha1.GameServer, definition game.Definition) error {
 	if server == nil {
-		return errors.New("game server is required")
+		return invalid(ValidationIdentity, errors.New("game server is required"))
 	}
 	if problems := validation.IsDNS1123Label(server.Name); len(problems) > 0 {
-		return fmt.Errorf("invalid game server name: %s", strings.Join(problems, "; "))
+		return invalid(ValidationIdentity, fmt.Errorf("invalid game server name: %s", strings.Join(problems, "; ")))
 	}
 	if problems := validation.IsDNS1123Label(server.Namespace); len(problems) > 0 {
-		return fmt.Errorf("invalid game server namespace: %s", strings.Join(problems, "; "))
+		return invalid(ValidationIdentity, fmt.Errorf("invalid game server namespace: %s", strings.Join(problems, "; ")))
 	}
 	if server.UID == "" && server.Spec.DesiredState == arcadev1alpha1.DesiredStateRunning {
-		return errors.New("running game server requires a Kubernetes UID")
+		return invalid(ValidationIdentity, errors.New("running game server requires a Kubernetes UID"))
 	}
 	if err := definition.Validate(); err != nil {
-		return fmt.Errorf("invalid game definition: %w", err)
+		return invalid(ValidationGame, fmt.Errorf("invalid game definition: %w", err))
 	}
 	if server.Spec.Game != definition.ID {
-		return fmt.Errorf("game %q does not match adapter %q", server.Spec.Game, definition.ID)
+		return invalid(ValidationGame, fmt.Errorf("game %q does not match adapter %q", server.Spec.Game, definition.ID))
 	}
 	if _, err := game.ResolvedImage(definition.ImageRepository, server.Spec.ImageDigest); err != nil {
-		return fmt.Errorf("invalid image: %w", err)
+		return invalid(ValidationImage, fmt.Errorf("invalid image: %w", err))
 	}
 	switch server.Spec.DesiredState {
 	case arcadev1alpha1.DesiredStateRunning, arcadev1alpha1.DesiredStateStopped:
 	default:
-		return fmt.Errorf("unsupported desired state %q", server.Spec.DesiredState)
+		return invalid(ValidationDesiredState, fmt.Errorf("unsupported desired state %q", server.Spec.DesiredState))
 	}
 	if err := validateCompute(server.Spec.Compute); err != nil {
-		return err
+		return invalid(ValidationCompute, err)
 	}
 	if server.Spec.Storage.Size.Sign() <= 0 {
-		return errors.New("storage size must be positive")
+		return invalid(ValidationStorage, errors.New("storage size must be positive"))
 	}
 	if className := server.Spec.Storage.StorageClassName; className != nil && *className != "" {
 		if problems := validation.IsDNS1123Subdomain(*className); len(problems) > 0 {
-			return fmt.Errorf("invalid storage class name: %s", strings.Join(problems, "; "))
+			return invalid(ValidationStorage, fmt.Errorf("invalid storage class name: %s", strings.Join(problems, "; ")))
 		}
 	}
 	if err := validateSettings(definition.SettingsSchema, server.Spec.Settings.Raw); err != nil {
-		return err
+		return invalid(ValidationSettings, err)
 	}
 	for _, persistentPath := range definition.PersistentPaths {
 		if persistentPath.Name == configurationVolumeName {
-			return fmt.Errorf("persistent path name %q is reserved by the platform", persistentPath.Name)
+			return invalid(ValidationGame, fmt.Errorf("persistent path name %q is reserved by the platform", persistentPath.Name))
 		}
 		if _, err := dataClaimName(server.Name, definition.ID, persistentPath.Name); err != nil {
-			return err
+			return invalid(ValidationIdentity, err)
 		}
 	}
 	return nil
@@ -276,6 +305,9 @@ func buildConfiguration(server *arcadev1alpha1.GameServer, labels map[string]str
 func buildWorkload(server *arcadev1alpha1.GameServer, definition game.Definition, labels map[string]string, image string, files []game.ConfigurationFile, configurationName string) *appsv1.Deployment {
 	containerPorts := make([]corev1.ContainerPort, 0, len(definition.Endpoints))
 	for _, endpoint := range definition.Endpoints {
+		if endpoint.Scope != game.ScopePlayer {
+			continue
+		}
 		containerPorts = append(containerPorts, corev1.ContainerPort{
 			Name:          endpoint.Name,
 			ContainerPort: int32(endpoint.ContainerPort),
@@ -349,10 +381,17 @@ func buildWorkload(server *arcadev1alpha1.GameServer, definition game.Definition
 		},
 	}
 	if definition.ReadinessEndpoint != "" {
-		container.ReadinessProbe = &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{
-				Port: intstr.FromString(definition.ReadinessEndpoint),
-			}},
+		switch definition.ReadinessMode {
+		case game.ReadinessTCP:
+			container.ReadinessProbe = &corev1.Probe{
+				ProbeHandler: corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{
+					Port: intstr.FromString(definition.ReadinessEndpoint),
+				}},
+			}
+		case game.ReadinessPrivateExec:
+			container.ReadinessProbe = &corev1.Probe{
+				ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{privateReadinessPath}}},
+			}
 		}
 	}
 

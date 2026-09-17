@@ -6,6 +6,8 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -111,15 +113,27 @@ func TestReconcileReportsReadyOnlyAfterObservedRuntime(t *testing.T) {
 	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
 		t.Fatalf("first Reconcile() error = %v", err)
 	}
-	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseStarting, metav1.ConditionFalse, "RuntimePending")
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhasePending, metav1.ConditionFalse, arcadev1alpha1.ReasonStoragePending)
+	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionSpecValid, metav1.ConditionTrue, arcadev1alpha1.ReasonValid)
+	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionStorageReady, metav1.ConditionFalse, arcadev1alpha1.ReasonClaimsProvisioning)
+	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionConfigurationReady, metav1.ConditionTrue, arcadev1alpha1.ReasonConfigurationReady)
+	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionWorkloadReady, metav1.ConditionFalse, arcadev1alpha1.ReasonWorkloadProgressing)
+	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionNetworkReady, metav1.ConditionFalse, arcadev1alpha1.ReasonPlayerEndpointPending)
+	markClaimBound(t, kubeClient, types.NamespacedName{Namespace: "games", Name: "factory-factorio-world"}, resource.MustParse("10Gi"))
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("storage-ready Reconcile() error = %v", err)
+	}
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseStarting, metav1.ConditionFalse, arcadev1alpha1.ReasonWorkloadPending)
 
 	deployment := &appsv1.Deployment{}
 	if err := kubeClient.Get(context.Background(), request.NamespacedName, deployment); err != nil {
 		t.Fatalf("get Deployment: %v", err)
 	}
 	deployment.Status.ObservedGeneration = deployment.Generation
+	deployment.Status.Replicas = 1
 	deployment.Status.AvailableReplicas = 1
 	deployment.Status.UpdatedReplicas = 1
+	deployment.Status.ReadyReplicas = 1
 	if err := kubeClient.Status().Update(context.Background(), deployment); err != nil {
 		t.Fatalf("update Deployment status: %v", err)
 	}
@@ -135,7 +149,11 @@ func TestReconcileReportsReadyOnlyAfterObservedRuntime(t *testing.T) {
 	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
 		t.Fatalf("ready Reconcile() error = %v", err)
 	}
-	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseReady, metav1.ConditionTrue, "RuntimeReady")
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseReady, metav1.ConditionTrue, arcadev1alpha1.ReasonReady)
+	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionStorageReady, metav1.ConditionTrue, arcadev1alpha1.ReasonClaimsReady)
+	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionConfigurationReady, metav1.ConditionTrue, arcadev1alpha1.ReasonConfigurationReady)
+	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionWorkloadReady, metav1.ConditionTrue, arcadev1alpha1.ReasonWorkloadAvailable)
+	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionNetworkReady, metav1.ConditionTrue, arcadev1alpha1.ReasonPlayerEndpointReady)
 	stored := &arcadev1alpha1.GameServer{}
 	if err := kubeClient.Get(context.Background(), request.NamespacedName, stored); err != nil {
 		t.Fatalf("get ready GameServer: %v", err)
@@ -143,6 +161,197 @@ func TestReconcileReportsReadyOnlyAfterObservedRuntime(t *testing.T) {
 	if len(stored.Status.Endpoints) != 1 || stored.Status.Endpoints[0].Address != "192.0.2.10" || stored.Status.Endpoints[0].Name != "game" {
 		t.Fatalf("observed endpoints = %#v", stored.Status.Endpoints)
 	}
+
+	if err := kubeClient.Get(context.Background(), request.NamespacedName, service); err != nil {
+		t.Fatalf("get ready Service: %v", err)
+	}
+	providerFailure := "UnsupportedProtocol"
+	service.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{
+		IP: "192.0.2.10",
+		Ports: []corev1.PortStatus{{
+			Port: 34197, Protocol: corev1.ProtocolUDP, Error: &providerFailure,
+		}},
+	}}
+	if err := kubeClient.Status().Update(context.Background(), service); err != nil {
+		t.Fatalf("report failed player ingress port: %v", err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("failed-ingress-port Reconcile() error = %v", err)
+	}
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseStarting, metav1.ConditionFalse, arcadev1alpha1.ReasonPlayerEndpointPending)
+	if err := kubeClient.Get(context.Background(), request.NamespacedName, stored); err != nil {
+		t.Fatalf("get failed-ingress-port GameServer: %v", err)
+	}
+	if len(stored.Status.Endpoints) != 0 {
+		t.Fatalf("failed ingress port retained endpoints: %#v", stored.Status.Endpoints)
+	}
+
+	if err := kubeClient.Get(context.Background(), request.NamespacedName, service); err != nil {
+		t.Fatalf("get failed-ingress-port Service: %v", err)
+	}
+	service.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{IP: "192.0.2.10"}}
+	if err := kubeClient.Status().Update(context.Background(), service); err != nil {
+		t.Fatalf("recover player ingress port: %v", err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("ingress-port-recovery Reconcile() error = %v", err)
+	}
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseReady, metav1.ConditionTrue, arcadev1alpha1.ReasonReady)
+
+	if err := kubeClient.Get(context.Background(), request.NamespacedName, service); err != nil {
+		t.Fatalf("get recovered Service: %v", err)
+	}
+	service.Status.LoadBalancer.Ingress = nil
+	if err := kubeClient.Status().Update(context.Background(), service); err != nil {
+		t.Fatalf("remove player ingress: %v", err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("lost-endpoint Reconcile() error = %v", err)
+	}
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseStarting, metav1.ConditionFalse, arcadev1alpha1.ReasonPlayerEndpointPending)
+	if err := kubeClient.Get(context.Background(), request.NamespacedName, stored); err != nil {
+		t.Fatalf("get endpoint-pending GameServer: %v", err)
+	}
+	if len(stored.Status.Endpoints) != 0 {
+		t.Fatalf("stale endpoints survived reachability loss: %#v", stored.Status.Endpoints)
+	}
+
+	if err := kubeClient.Get(context.Background(), request.NamespacedName, service); err != nil {
+		t.Fatalf("get endpoint-pending Service: %v", err)
+	}
+	service.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{Hostname: "factory.example.test"}}
+	if err := kubeClient.Status().Update(context.Background(), service); err != nil {
+		t.Fatalf("restore player ingress: %v", err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("endpoint-recovery Reconcile() error = %v", err)
+	}
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseReady, metav1.ConditionTrue, arcadev1alpha1.ReasonReady)
+}
+
+func TestReconcileTerminationClearsReachableEndpoints(t *testing.T) {
+	t.Parallel()
+
+	server := controllerTestServer(arcadev1alpha1.DesiredStateRunning)
+	timestamp := metav1.NewTime(time.Unix(1_700_000_100, 0))
+	server.DeletionTimestamp = &timestamp
+	server.Finalizers = []string{"test.arcade.gobha.me/hold"}
+	server.Status = arcadev1alpha1.GameServerStatus{
+		ObservedGeneration: server.Generation,
+		Phase:              arcadev1alpha1.PhaseReady,
+		Conditions: []metav1.Condition{{
+			Type:               arcadev1alpha1.ConditionReady,
+			Status:             metav1.ConditionTrue,
+			Reason:             arcadev1alpha1.ReasonReady,
+			ObservedGeneration: server.Generation,
+			LastTransitionTime: timestamp,
+		}},
+		Endpoints: []arcadev1alpha1.ObservedEndpoint{{Name: "game", Protocol: "UDP", Address: "192.0.2.10", Port: 34197}},
+	}
+	reconciler, kubeClient := newTestReconciler(t, server)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("terminating Reconcile() error = %v", err)
+	}
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseStopping, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopping)
+	stored := &arcadev1alpha1.GameServer{}
+	if err := kubeClient.Get(context.Background(), request.NamespacedName, stored); err != nil {
+		t.Fatalf("get terminating GameServer: %v", err)
+	}
+	if len(stored.Status.Endpoints) != 0 {
+		t.Fatalf("terminating status retained endpoints: %#v", stored.Status.Endpoints)
+	}
+}
+
+func TestReconcileReportsAndRecoversFromLostStorage(t *testing.T) {
+	t.Parallel()
+
+	server := controllerTestServer(arcadev1alpha1.DesiredStateRunning)
+	reconciler, kubeClient := newTestReconciler(t, server)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("initial Reconcile() error = %v", err)
+	}
+	claimKey := types.NamespacedName{Namespace: "games", Name: "factory-factorio-world"}
+	claim := &corev1.PersistentVolumeClaim{}
+	if err := kubeClient.Get(context.Background(), claimKey, claim); err != nil {
+		t.Fatalf("get retained claim: %v", err)
+	}
+	claim.Status.Phase = corev1.ClaimLost
+	if err := kubeClient.Status().Update(context.Background(), claim); err != nil {
+		t.Fatalf("mark retained claim lost: %v", err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("lost-storage Reconcile() error = %v, want observed status failure", err)
+	}
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseFailed, metav1.ConditionFalse, arcadev1alpha1.ReasonReconcileFailed)
+	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionStorageReady, metav1.ConditionFalse, arcadev1alpha1.ReasonStorageOperationFailed)
+
+	if err := kubeClient.Get(context.Background(), claimKey, claim); err != nil {
+		t.Fatalf("get lost retained claim: %v", err)
+	}
+	claim.Status.Phase = corev1.ClaimPending
+	if err := kubeClient.Status().Update(context.Background(), claim); err != nil {
+		t.Fatalf("recover retained claim: %v", err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("storage-recovery Reconcile() error = %v", err)
+	}
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhasePending, metav1.ConditionFalse, arcadev1alpha1.ReasonStoragePending)
+}
+
+func TestReconcileReportsAndRecoversFromTerminalWorkloadFailure(t *testing.T) {
+	t.Parallel()
+
+	server := controllerTestServer(arcadev1alpha1.DesiredStateRunning)
+	reconciler, kubeClient := newTestReconciler(t, server)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("initial Reconcile() error = %v", err)
+	}
+	markClaimBound(t, kubeClient, types.NamespacedName{Namespace: "games", Name: "factory-factorio-world"}, resource.MustParse("10Gi"))
+	deployment := &appsv1.Deployment{}
+	if err := kubeClient.Get(context.Background(), request.NamespacedName, deployment); err != nil {
+		t.Fatalf("get Deployment: %v", err)
+	}
+	deployment.Status.ObservedGeneration = deployment.Generation
+	deployment.Status.Conditions = []appsv1.DeploymentCondition{{
+		Type:    appsv1.DeploymentProgressing,
+		Status:  corev1.ConditionFalse,
+		Reason:  "ProgressDeadlineExceeded",
+		Message: "TOPSECRET-provider-diagnostic",
+	}}
+	if err := kubeClient.Status().Update(context.Background(), deployment); err != nil {
+		t.Fatalf("mark Deployment failed: %v", err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("failed-workload Reconcile() error = %v, want observed status failure", err)
+	}
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseFailed, metav1.ConditionFalse, arcadev1alpha1.ReasonReconcileFailed)
+	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionWorkloadReady, metav1.ConditionFalse, arcadev1alpha1.ReasonWorkloadUnavailable)
+	stored := &arcadev1alpha1.GameServer{}
+	if err := kubeClient.Get(context.Background(), request.NamespacedName, stored); err != nil {
+		t.Fatalf("get failed GameServer: %v", err)
+	}
+	encoded, err := json.Marshal(stored.Status)
+	if err != nil {
+		t.Fatalf("encode failed status: %v", err)
+	}
+	if strings.Contains(string(encoded), "TOPSECRET") {
+		t.Fatalf("status reflected native Deployment diagnostic: %s", encoded)
+	}
+
+	if err := kubeClient.Get(context.Background(), request.NamespacedName, deployment); err != nil {
+		t.Fatalf("get failed Deployment: %v", err)
+	}
+	deployment.Status.Conditions = nil
+	if err := kubeClient.Status().Update(context.Background(), deployment); err != nil {
+		t.Fatalf("recover Deployment: %v", err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("workload-recovery Reconcile() error = %v", err)
+	}
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseStarting, metav1.ConditionFalse, arcadev1alpha1.ReasonWorkloadPending)
 }
 
 func TestReconcileRejectsInvalidSpecBeforeMutation(t *testing.T) {
@@ -160,6 +369,14 @@ func TestReconcileRejectsInvalidSpecBeforeMutation(t *testing.T) {
 	assertListLength(t, kubeClient, &appsv1.DeploymentList{}, 0)
 	assertListLength(t, kubeClient, &corev1.ServiceList{}, 0)
 	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseFailed, metav1.ConditionFalse, "InvalidSpec")
+	stored := &arcadev1alpha1.GameServer{}
+	if err := kubeClient.Get(context.Background(), request.NamespacedName, stored); err != nil {
+		t.Fatalf("get invalid GameServer: %v", err)
+	}
+	condition := meta.FindStatusCondition(stored.Status.Conditions, arcadev1alpha1.ConditionSpecValid)
+	if condition == nil || !strings.Contains(condition.Message, "settings are invalid") || strings.Contains(condition.Message, "imageDigest") {
+		t.Fatalf("invalid-settings condition = %#v, want bounded settings action", condition)
+	}
 }
 
 func TestReconcileRejectsInvalidRenderedOutputBeforeMutation(t *testing.T) {
@@ -183,6 +400,42 @@ func TestReconcileRejectsInvalidRenderedOutputBeforeMutation(t *testing.T) {
 	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseFailed, metav1.ConditionFalse, "InvalidSpec")
 }
 
+func TestReconcileFailureDoesNotReflectSensitiveCause(t *testing.T) {
+	t.Parallel()
+
+	const sensitive = "TOPSECRET-setting-or-admission-text"
+	server := controllerTestServer(arcadev1alpha1.DesiredStateRunning)
+	reconciler, kubeClient := newTestReconciler(t, server)
+	reconciler.Client = &persistentClaimCreateFailingClient{Client: reconciler.Client, failure: errors.New(sensitive)}
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)}
+	_, err := reconciler.Reconcile(context.Background(), request)
+	if err == nil {
+		t.Fatal("Reconcile() succeeded despite injected storage failure")
+	}
+	if strings.Contains(err.Error(), sensitive) {
+		t.Fatalf("reconcile error reflected sensitive cause: %v", err)
+	}
+	stored := &arcadev1alpha1.GameServer{}
+	if err := kubeClient.Get(context.Background(), request.NamespacedName, stored); err != nil {
+		t.Fatalf("get failed GameServer: %v", err)
+	}
+	encoded, err := json.Marshal(stored.Status)
+	if err != nil {
+		t.Fatalf("encode failed status: %v", err)
+	}
+	if strings.Contains(string(encoded), sensitive) {
+		t.Fatalf("status reflected sensitive cause: %s", encoded)
+	}
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseFailed, metav1.ConditionFalse, arcadev1alpha1.ReasonReconcileFailed)
+	events := &corev1.EventList{}
+	if err := kubeClient.List(context.Background(), events, client.InNamespace(server.Namespace)); err != nil {
+		t.Fatalf("list Events: %v", err)
+	}
+	if len(events.Items) != 0 {
+		t.Fatalf("reconciler emitted Events for raw error: %#v", events.Items)
+	}
+}
+
 func TestReconcilePreflightRejectsForeignConfigurationBeforeMutation(t *testing.T) {
 	t.Parallel()
 
@@ -194,7 +447,7 @@ func TestReconcilePreflightRejectsForeignConfigurationBeforeMutation(t *testing.
 	reconciler, kubeClient := newTestReconciler(t, server, foreign)
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)}
 	_, err := reconciler.Reconcile(context.Background(), request)
-	if err == nil || !strings.Contains(err.Error(), "existing resource has no controller owner") {
+	if err == nil || !strings.Contains(err.Error(), "ConfigMap games/factory-configuration conflicts") {
 		t.Fatalf("Reconcile() error = %v, want foreign-configuration refusal", err)
 	}
 	assertListLength(t, kubeClient, &corev1.PersistentVolumeClaimList{}, 0)
@@ -205,6 +458,15 @@ func TestReconcilePreflightRejectsForeignConfigurationBeforeMutation(t *testing.
 	if string(stored.BinaryData["server-settings"]) != "foreign" {
 		t.Fatal("reconciler mutated foreign configuration")
 	}
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseFailed, metav1.ConditionFalse, arcadev1alpha1.ReasonResourceCollision)
+	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionConfigurationReady, metav1.ConditionFalse, arcadev1alpha1.ReasonResourceCollision)
+	if err := kubeClient.Delete(context.Background(), stored); err != nil {
+		t.Fatalf("resolve foreign ConfigMap collision: %v", err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("collision-recovery Reconcile() error = %v", err)
+	}
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhasePending, metav1.ConditionFalse, arcadev1alpha1.ReasonStoragePending)
 }
 
 func TestReconcileSettingsUpdateChangesConfigurationAndRolloutHash(t *testing.T) {
@@ -276,6 +538,38 @@ func TestReconcileUnchangedConfigurationDoesNotWrite(t *testing.T) {
 	}
 }
 
+func TestReconcileUnchangedStatusDoesNotWriteOrChurnTransitions(t *testing.T) {
+	t.Parallel()
+
+	server := controllerTestServer(arcadev1alpha1.DesiredStateStopped)
+	reconciler, kubeClient := newTestReconciler(t, server)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("initial Reconcile() error = %v", err)
+	}
+	before := &arcadev1alpha1.GameServer{}
+	if err := kubeClient.Get(context.Background(), request.NamespacedName, before); err != nil {
+		t.Fatalf("get initial status: %v", err)
+	}
+
+	countingClient := &statusUpdateCountingClient{Client: reconciler.Client}
+	reconciler.Client = countingClient
+	reconciler.Now = func() metav1.Time { return metav1.NewTime(time.Unix(1_800_000_000, 0)) }
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("unchanged Reconcile() error = %v", err)
+	}
+	if countingClient.gameServerStatusUpdates != 0 {
+		t.Fatalf("unchanged reconcile issued %d status updates, want zero", countingClient.gameServerStatusUpdates)
+	}
+	after := &arcadev1alpha1.GameServer{}
+	if err := kubeClient.Get(context.Background(), request.NamespacedName, after); err != nil {
+		t.Fatalf("get unchanged status: %v", err)
+	}
+	if before.ResourceVersion != after.ResourceVersion || !reflect.DeepEqual(before.Status, after.Status) {
+		t.Fatalf("unchanged reconcile mutated status: before=%#v after=%#v", before.Status, after.Status)
+	}
+}
+
 func TestReconcilePreflightRejectsForeignRuntimeBeforeMutation(t *testing.T) {
 	t.Parallel()
 
@@ -284,13 +578,21 @@ func TestReconcilePreflightRejectsForeignRuntimeBeforeMutation(t *testing.T) {
 	reconciler, kubeClient := newTestReconciler(t, server, foreign)
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)}
 	_, err := reconciler.Reconcile(context.Background(), request)
-	if err == nil || !strings.Contains(err.Error(), "existing resource has no controller owner") {
+	if err == nil || !strings.Contains(err.Error(), "Deployment games/factory conflicts") {
 		t.Fatalf("Reconcile() error = %v, want foreign-resource refusal", err)
 	}
 	assertListLength(t, kubeClient, &corev1.PersistentVolumeClaimList{}, 0)
 	assertObjectExists(t, kubeClient, request.NamespacedName, &appsv1.Deployment{})
 	assertListLength(t, kubeClient, &corev1.ServiceList{}, 0)
-	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseFailed, metav1.ConditionFalse, "ReconcileFailed")
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseFailed, metav1.ConditionFalse, arcadev1alpha1.ReasonResourceCollision)
+	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionWorkloadReady, metav1.ConditionFalse, arcadev1alpha1.ReasonResourceCollision)
+	if err := kubeClient.Delete(context.Background(), foreign); err != nil {
+		t.Fatalf("resolve foreign Deployment collision: %v", err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("collision-recovery Reconcile() error = %v", err)
+	}
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhasePending, metav1.ConditionFalse, arcadev1alpha1.ReasonStoragePending)
 }
 
 func TestReconcileRejectsOwnedDataClaim(t *testing.T) {
@@ -321,7 +623,7 @@ func TestReconcileRejectsOwnedDataClaim(t *testing.T) {
 	reconciler, kubeClient := newTestReconciler(t, server, claim)
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)}
 	_, err := reconciler.Reconcile(context.Background(), request)
-	if err == nil || !strings.Contains(err.Error(), "must not have owner references") {
+	if err == nil || !strings.Contains(err.Error(), "PersistentVolumeClaim games/factory-factorio-world conflicts") {
 		t.Fatalf("Reconcile() error = %v, want unsafe claim refusal", err)
 	}
 	assertListLength(t, kubeClient, &appsv1.DeploymentList{}, 0)
@@ -331,6 +633,41 @@ func TestReconcileRejectsOwnedDataClaim(t *testing.T) {
 	if len(stored.OwnerReferences) != 1 {
 		t.Fatal("reconciler mutated foreign claim ownership")
 	}
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseFailed, metav1.ConditionFalse, arcadev1alpha1.ReasonResourceCollision)
+	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionStorageReady, metav1.ConditionFalse, arcadev1alpha1.ReasonResourceCollision)
+	stored.OwnerReferences = nil
+	if err := kubeClient.Update(context.Background(), stored); err != nil {
+		t.Fatalf("resolve retained-claim collision: %v", err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("collision-recovery Reconcile() error = %v", err)
+	}
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhasePending, metav1.ConditionFalse, arcadev1alpha1.ReasonStoragePending)
+}
+
+func TestReconcilePreflightRejectsForeignServiceAndRecovers(t *testing.T) {
+	t.Parallel()
+
+	server := controllerTestServer(arcadev1alpha1.DesiredStateRunning)
+	foreign := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: server.Name, Namespace: server.Namespace}}
+	reconciler, kubeClient := newTestReconciler(t, server, foreign)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)}
+	_, err := reconciler.Reconcile(context.Background(), request)
+	if err == nil || !strings.Contains(err.Error(), "Service games/factory conflicts") {
+		t.Fatalf("Reconcile() error = %v, want foreign-Service refusal", err)
+	}
+	assertListLength(t, kubeClient, &corev1.PersistentVolumeClaimList{}, 0)
+	assertListLength(t, kubeClient, &corev1.ConfigMapList{}, 0)
+	assertListLength(t, kubeClient, &appsv1.DeploymentList{}, 0)
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseFailed, metav1.ConditionFalse, arcadev1alpha1.ReasonResourceCollision)
+	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionNetworkReady, metav1.ConditionFalse, arcadev1alpha1.ReasonResourceCollision)
+	if err := kubeClient.Delete(context.Background(), foreign); err != nil {
+		t.Fatalf("resolve foreign Service collision: %v", err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("collision-recovery Reconcile() error = %v", err)
+	}
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhasePending, metav1.ConditionFalse, arcadev1alpha1.ReasonStoragePending)
 }
 
 func TestReconcileExpandsButNeverShrinksRetainedData(t *testing.T) {
@@ -399,7 +736,7 @@ func newTestReconciler(t *testing.T, objects ...client.Object) (*GameServerRecon
 	}
 	kubeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithStatusSubresource(&arcadev1alpha1.GameServer{}, &appsv1.Deployment{}, &corev1.Service{}).
+		WithStatusSubresource(&arcadev1alpha1.GameServer{}, &appsv1.Deployment{}, &corev1.Service{}, &corev1.PersistentVolumeClaim{}).
 		WithInterceptorFuncs(interceptor.Funcs{Patch: applyPatchAsUpdate}).
 		WithObjects(objects...).
 		Build()
@@ -421,6 +758,51 @@ type fixedCatalog struct {
 type configMapUpdateCountingClient struct {
 	client.Client
 	configMapUpdates int
+}
+
+type statusUpdateCountingClient struct {
+	client.Client
+	gameServerStatusUpdates int
+}
+
+type persistentClaimCreateFailingClient struct {
+	client.Client
+	failure error
+}
+
+func (c *persistentClaimCreateFailingClient) Create(ctx context.Context, object client.Object, options ...client.CreateOption) error {
+	if _, ok := object.(*corev1.PersistentVolumeClaim); ok {
+		return c.failure
+	}
+	return c.Client.Create(ctx, object, options...)
+}
+
+func (c *statusUpdateCountingClient) Status() client.SubResourceWriter {
+	return &statusUpdateCountingWriter{delegate: c.Client.Status(), parent: c}
+}
+
+type statusUpdateCountingWriter struct {
+	delegate client.SubResourceWriter
+	parent   *statusUpdateCountingClient
+}
+
+func (writer *statusUpdateCountingWriter) Create(ctx context.Context, object client.Object, subResource client.Object, options ...client.SubResourceCreateOption) error {
+	return writer.delegate.Create(ctx, object, subResource, options...)
+}
+
+func (writer *statusUpdateCountingWriter) Update(ctx context.Context, object client.Object, options ...client.SubResourceUpdateOption) error {
+	if _, ok := object.(*arcadev1alpha1.GameServer); ok {
+		writer.parent.gameServerStatusUpdates++
+	}
+	return writer.delegate.Update(ctx, object, options...)
+}
+
+func (writer *statusUpdateCountingWriter) Patch(ctx context.Context, object client.Object, patch client.Patch, options ...client.SubResourcePatchOption) error {
+	return writer.delegate.Patch(ctx, object, patch, options...)
+}
+
+func (writer *statusUpdateCountingWriter) Apply(ctx context.Context, object runtime.ApplyConfiguration, options ...client.SubResourceApplyOption) error {
+	return writer.delegate.Apply(ctx, object, options...)
 }
 
 func (c *configMapUpdateCountingClient) Update(ctx context.Context, object client.Object, options ...client.UpdateOption) error {
@@ -488,6 +870,19 @@ func assertNotFound(t *testing.T, kubeClient client.Client, key types.Namespaced
 	}
 }
 
+func markClaimBound(t *testing.T, kubeClient client.Client, key types.NamespacedName, capacity resource.Quantity) {
+	t.Helper()
+	claim := &corev1.PersistentVolumeClaim{}
+	if err := kubeClient.Get(context.Background(), key, claim); err != nil {
+		t.Fatalf("get PersistentVolumeClaim %s: %v", key, err)
+	}
+	claim.Status.Phase = corev1.ClaimBound
+	claim.Status.Capacity = corev1.ResourceList{corev1.ResourceStorage: capacity}
+	if err := kubeClient.Status().Update(context.Background(), claim); err != nil {
+		t.Fatalf("mark PersistentVolumeClaim %s bound: %v", key, err)
+	}
+}
+
 func assertListLength(t *testing.T, kubeClient client.Client, list client.ObjectList, want int) {
 	t.Helper()
 	if err := kubeClient.List(context.Background(), list, client.InNamespace("games")); err != nil {
@@ -528,8 +923,29 @@ func assertPhase(t *testing.T, kubeClient client.Client, key types.NamespacedNam
 	if server.Status.Phase != phase {
 		t.Fatalf("phase = %q, want %q", server.Status.Phase, phase)
 	}
-	condition := meta.FindStatusCondition(server.Status.Conditions, readyCondition)
+	if len(server.Status.Conditions) != len(conditionOrder) {
+		t.Fatalf("condition count = %d, want %d: %#v", len(server.Status.Conditions), len(conditionOrder), server.Status.Conditions)
+	}
+	for index, conditionType := range conditionOrder {
+		condition := server.Status.Conditions[index]
+		if condition.Type != conditionType || condition.ObservedGeneration != server.Generation {
+			t.Fatalf("condition[%d] = %#v, want type %q generation %d", index, condition, conditionType, server.Generation)
+		}
+	}
+	condition := meta.FindStatusCondition(server.Status.Conditions, arcadev1alpha1.ConditionReady)
 	if condition == nil || condition.Status != status || condition.Reason != reason {
 		t.Fatalf("Ready condition = %#v, want status %q reason %q", condition, status, reason)
+	}
+}
+
+func assertCondition(t *testing.T, kubeClient client.Client, key types.NamespacedName, conditionType string, status metav1.ConditionStatus, reason string) {
+	t.Helper()
+	server := &arcadev1alpha1.GameServer{}
+	if err := kubeClient.Get(context.Background(), key, server); err != nil {
+		t.Fatalf("get GameServer status: %v", err)
+	}
+	condition := meta.FindStatusCondition(server.Status.Conditions, conditionType)
+	if condition == nil || condition.Status != status || condition.Reason != reason || condition.ObservedGeneration != server.Generation {
+		t.Fatalf("%s condition = %#v, want status %q reason %q generation %d", conditionType, condition, status, reason, server.Generation)
 	}
 }

@@ -42,6 +42,52 @@ use deterministic reconciliation. Deployments and Services use server-side
 apply so API-server defaults do not cause update loops; the disposable
 ConfigMap uses exact replacement so stale rendered keys cannot survive.
 
+## Observed lifecycle
+
+Every status write is one snapshot for `metadata.generation`. The top-level
+`observedGeneration` and all six conditions carry that generation. The
+controller replaces the complete condition set in this canonical order, so a
+condition from an older generation cannot remain accidentally true:
+
+| Condition | True reason | Progress or stopped reasons | Failure reasons |
+| --- | --- | --- | --- |
+| `SpecValid` | `Valid` | — | `InvalidSpec`, `ControllerMisconfigured` |
+| `StorageReady` | `ClaimsReady` | `ClaimsProvisioning`, `ClaimExpansionPending` | `ResourceCollision`, `StorageOperationFailed` |
+| `ConfigurationReady` | `ConfigurationReady` | `RuntimeStopping`, `RuntimeStopped` | `ResourceCollision`, `ConfigurationOperationFailed` |
+| `WorkloadReady` | `WorkloadAvailable` | `WorkloadProgressing`, `RuntimeStopping`, `RuntimeStopped` | `ResourceCollision`, `WorkloadUnavailable`, `WorkloadOperationFailed` |
+| `NetworkReady` | `PlayerEndpointReady` | `PlayerEndpointPending`, `RuntimeStopping`, `RuntimeStopped` | `ResourceCollision`, `NetworkOperationFailed` |
+| `Ready` | `Ready` | `StoragePending`, `WorkloadPending`, `PlayerEndpointPending`, `RuntimeStopping`, `RuntimeStopped` | `InvalidSpec`, `ControllerMisconfigured`, `ResourceCollision`, `ReconcileFailed` |
+
+A downstream stage that could not be observed is `Unknown` with reason
+`Blocked`; previously observed truth is never retained. `Pending` means storage
+is still binding or expanding. `Starting` means prerequisites are reconciled
+but the exact current singleton workload or player endpoint is not yet ready.
+`Ready` requires bound storage, exactly one current updated/ready/available
+replica, and a current LoadBalancer address. `Stopping` is based on disposable
+resources still observed during removal; `Stopped` means they are absent.
+`Failed` identifies a validation, collision, or bounded operation failure.
+
+Status endpoints exist only while the aggregate `Ready` condition is true for
+the current generation. Their names, protocols, and ports come from the
+certified player-only adapter plan, intersected with the observed Service by an
+exact tuple. The controller ignores NodePorts, target ports, extra live Service
+ports, administrator and internal endpoints, malformed ingress values, and
+terminating Services. An ingress with per-port status is eligible only when
+every certified player port has a matching protocol and no provider error;
+addresses must be globally unicast IPs or valid DNS names. The controller
+selects a canonical IP (then hostname) and sorts endpoints by name. Losing
+workload availability or ingress immediately clears the endpoint list.
+
+Condition messages are finite controller-authored templates. They may name a
+Kubernetes kind and `namespace/name` plus a safe operator action, but never copy
+settings, admission responses, child Event text, or raw reconciliation errors.
+Arcadectl currently emits no Kubernetes Events; any future GameServer Events
+must reuse the same bounded reasons and safe messages. Readiness uses either a
+named player-scoped TCP endpoint or the fixed `/arcadectl/readiness` helper in a
+certified image. Adapters cannot provide commands. Factorio's silent helper
+checks RCON only inside the container; its administrator port and probe details
+do not appear in the Pod spec or kubelet probe Events.
+
 ## Operations
 
 - **Start:** reconcile retained claims, render configuration, atomically
