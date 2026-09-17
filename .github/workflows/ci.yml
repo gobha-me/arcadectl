@@ -37,3 +37,15 @@ jobs:
         run: go vet ./...
       - name: Test with race detector
         run: go test -race ./...
+      - name: Build reproducible controller image
+        run: |
+          for tag in first second; do
+            docker build --no-cache \
+              --build-arg VCS_REF="$(git rev-parse HEAD)" \
+              --build-arg SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" \
+              --tag "arcadectl-controller:ci-$tag" \
+              .
+          done
+          first_id=$(docker image inspect --format '{{.Id}}' arcadectl-controller:ci-first)
+          second_id=$(docker image inspect --format '{{.Id}}' arcadectl-controller:ci-second)
+          test "$first_id" = "$second_id"

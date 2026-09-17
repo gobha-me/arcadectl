@@ -1,0 +1,172 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: arcadectl-controller
+  namespace: arcadectl-system
+  labels:
+    app.kubernetes.io/name: arcadectl-controller
+    app.kubernetes.io/part-of: arcadectl
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: arcadectl-controller
+  namespace: arcadectl-system
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - persistentvolumeclaims
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - arcade.gobha.me
+  resources:
+  - gameservers
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - arcade.gobha.me
+  resources:
+  - gameservers/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: arcadectl-controller
+  namespace: arcadectl-system
+  labels:
+    app.kubernetes.io/name: arcadectl-controller
+    app.kubernetes.io/part-of: arcadectl
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: arcadectl-controller
+subjects:
+  - kind: ServiceAccount
+    name: arcadectl-controller
+    namespace: arcadectl-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: arcadectl-controller
+  namespace: arcadectl-system
+  labels:
+    app.kubernetes.io/name: arcadectl-controller
+    app.kubernetes.io/part-of: arcadectl
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: arcadectl-controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: arcadectl-controller
+        app.kubernetes.io/part-of: arcadectl
+    spec:
+      serviceAccountName: arcadectl-controller
+      automountServiceAccountToken: true
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: controller
+          image: ghcr.io/gobha-me/arcadectl-controller@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          imagePullPolicy: IfNotPresent
+          args:
+            - --watch-namespace=$(POD_NAMESPACE)
+            - --leader-elect=true
+            - --metrics-bind-address=0
+            - --health-probe-bind-address=:8081
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 2
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 2
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL

@@ -1,0 +1,24 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: arcadectl-controller
+  namespace: arcadectl-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: arcadectl-controller
+  namespace: arcadectl-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: arcadectl-controller
+  namespace: arcadectl-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: arcadectl-controller
+  namespace: arcadectl-system
