@@ -52,6 +52,12 @@ kubectl auth can-i delete persistentvolumeclaims \
 The authorization check must print `no`. `GameServer` resources and every
 resource they control must be created in `arcadectl-system`.
 
+Ordinary Arcadectl users must also be denied create, update, patch, delete, and
+deletecollection on managed PVCs. Exact UID checks cannot close Kubernetes'
+PVC-name mount race against a principal that can replace a claim. Cluster
+administrators and the storage control plane are trusted; use admission
+enforcement if that assumption does not hold.
+
 ## Safe controller uninstall
 
 First set every `GameServer` to desired state `Stopped` and wait until every
@@ -76,5 +82,16 @@ retained PVCs regardless of owner references. CRD deletion erases durable
 server and data-operation intent. A destructive full purge is not implemented by this
 milestone.
 
+Deleting a namespace deletes its PVC objects regardless of owner references.
+That invokes each PV's reclaim policy: `Delete` can destroy the backing volume;
+`Retain` preserves the PV but requires manual recovery. Deleting a StorageClass
+does not itself delete a bound PVC or PV, but can prevent later expansion or
+replacement provisioning. Follow the discovery and exact reattachment process
+in [the lifecycle contract](LIFECYCLE.md); never recreate labels as a substitute
+for the original PVC UID.
+
 Reinstall by running `hack/install.sh` with a certified digest. The retained
 namespace, API objects, and claims remain available to the new controller.
+This statement applies to releases that already write durable data identities.
+Pre-release claims without `arcade.gobha.me/data-identity` must not be upgraded
+in place; Arcadectl deliberately refuses to infer or repair their authority.

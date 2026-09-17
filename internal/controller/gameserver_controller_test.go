@@ -15,6 +15,7 @@ import (
 	arcadev1alpha1 "github.com/gobha-me/arcadectl/api/v1alpha1"
 	"github.com/gobha-me/arcadectl/internal/catalog"
 	"github.com/gobha-me/arcadectl/internal/games/factorio"
+	"github.com/gobha-me/arcadectl/internal/games/synthetic"
 	"github.com/gobha-me/arcadectl/internal/platform/game"
 	platformkube "github.com/gobha-me/arcadectl/internal/platform/kube"
 	appsv1 "k8s.io/api/apps/v1"
@@ -599,17 +600,22 @@ func TestReconcileRejectsOwnedDataClaim(t *testing.T) {
 	t.Parallel()
 
 	server := controllerTestServer(arcadev1alpha1.DesiredStateRunning)
+	dataIdentity, err := platformkube.DataIdentity(server.UID)
+	if err != nil {
+		t.Fatalf("DataIdentity() error = %v", err)
+	}
 	claim := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "factory-factorio-world",
 			Namespace: "games",
 			Labels: map[string]string{
-				platformkube.LabelManagedBy:  platformkube.ManagerName,
-				platformkube.LabelName:       "game-data",
-				platformkube.LabelInstance:   "factory",
-				platformkube.LabelGame:       "factorio",
-				platformkube.LabelDataPolicy: "retain",
-				platformkube.LabelDataPath:   "world",
+				platformkube.LabelManagedBy:    platformkube.ManagerName,
+				platformkube.LabelName:         "game-data",
+				platformkube.LabelInstance:     "factory",
+				platformkube.LabelGame:         "factorio",
+				platformkube.LabelDataPolicy:   "retain",
+				platformkube.LabelDataPath:     "world",
+				platformkube.LabelDataIdentity: dataIdentity,
 			},
 			OwnerReferences: []metav1.OwnerReference{{Name: "unsafe-owner", UID: "unsafe"}},
 		},
@@ -622,8 +628,8 @@ func TestReconcileRejectsOwnedDataClaim(t *testing.T) {
 	}
 	reconciler, kubeClient := newTestReconciler(t, server, claim)
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)}
-	_, err := reconciler.Reconcile(context.Background(), request)
-	if err == nil || !strings.Contains(err.Error(), "PersistentVolumeClaim games/factory-factorio-world conflicts") {
+	_, err = reconciler.Reconcile(context.Background(), request)
+	if err == nil || !strings.Contains(err.Error(), "retained data claim conflicts") {
 		t.Fatalf("Reconcile() error = %v, want unsafe claim refusal", err)
 	}
 	assertListLength(t, kubeClient, &appsv1.DeploymentList{}, 0)
@@ -633,8 +639,8 @@ func TestReconcileRejectsOwnedDataClaim(t *testing.T) {
 	if len(stored.OwnerReferences) != 1 {
 		t.Fatal("reconciler mutated foreign claim ownership")
 	}
-	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseFailed, metav1.ConditionFalse, arcadev1alpha1.ReasonResourceCollision)
-	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionStorageReady, metav1.ConditionFalse, arcadev1alpha1.ReasonResourceCollision)
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseFailed, metav1.ConditionFalse, arcadev1alpha1.ReasonRetainedDataConflict)
+	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionStorageReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRetainedDataConflict)
 	stored.OwnerReferences = nil
 	if err := kubeClient.Update(context.Background(), stored); err != nil {
 		t.Fatalf("resolve retained-claim collision: %v", err)
@@ -643,6 +649,299 @@ func TestReconcileRejectsOwnedDataClaim(t *testing.T) {
 		t.Fatalf("collision-recovery Reconcile() error = %v", err)
 	}
 	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhasePending, metav1.ConditionFalse, arcadev1alpha1.ReasonStoragePending)
+}
+
+func TestReconcileRequiresExplicitRetainedDataReference(t *testing.T) {
+	t.Parallel()
+
+	oldServer := controllerTestServer(arcadev1alpha1.DesiredStateRunning)
+	oldServer.UID = "old-server-uid"
+	claim := plannedBoundClaim(t, oldServer, "retained-pvc-uid")
+	before := claim.DeepCopy()
+	server := controllerTestServer(arcadev1alpha1.DesiredStateRunning)
+	server.UID = "replacement-server-uid"
+	reconciler, kubeClient := newTestReconciler(t, server, claim)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)}
+
+	_, err := reconciler.Reconcile(context.Background(), request)
+	if err == nil || !strings.Contains(err.Error(), "provide an exact reattach reference") {
+		t.Fatalf("Reconcile() error = %v, want explicit reattach requirement", err)
+	}
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseFailed, metav1.ConditionFalse, arcadev1alpha1.ReasonRetainedDataReferenceRequired)
+	assertNoRuntime(t, kubeClient, request.NamespacedName)
+	after := &corev1.PersistentVolumeClaim{}
+	assertObjectExists(t, kubeClient, client.ObjectKeyFromObject(claim), after)
+	if !reflect.DeepEqual(before.Spec, after.Spec) || !reflect.DeepEqual(before.Labels, after.Labels) || before.UID != after.UID {
+		t.Fatalf("blocked implicit reattach mutated claim: before=%#v after=%#v", before, after)
+	}
+}
+
+func TestReconcileStopsRuntimeBeforeReportingRetainedDataConflict(t *testing.T) {
+	t.Parallel()
+
+	server := controllerTestServer(arcadev1alpha1.DesiredStateRunning)
+	runningPlan, err := platformkube.Build(server, factorio.Definition())
+	if err != nil {
+		t.Fatalf("build running fixture: %v", err)
+	}
+	oldServer := controllerTestServer(arcadev1alpha1.DesiredStateRunning)
+	oldServer.UID = "old-server-uid"
+	claim := plannedBoundClaim(t, oldServer, "retained-pvc-uid")
+	server.Spec.DesiredState = arcadev1alpha1.DesiredStateStopped
+	reconciler, kubeClient := newTestReconciler(t, server, claim, runningPlan.Configuration, runningPlan.Workload, runningPlan.PlayerService)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)}
+
+	result, err := reconciler.Reconcile(context.Background(), request)
+	if err != nil || result.RequeueAfter <= 0 {
+		t.Fatalf("stop Reconcile() = result %#v error %v, want bounded stopping requeue", result, err)
+	}
+	assertNoRuntime(t, kubeClient, request.NamespacedName)
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseStopping, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopping)
+
+	if _, err := reconciler.Reconcile(context.Background(), request); err == nil {
+		t.Fatal("post-stop Reconcile() error = nil, want retained-data reference requirement")
+	}
+	assertNoRuntime(t, kubeClient, request.NamespacedName)
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseFailed, metav1.ConditionFalse, arcadev1alpha1.ReasonRetainedDataReferenceRequired)
+	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionWorkloadReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopped)
+}
+
+func TestReconcileRefusesLegacyClaimWithoutInventingIdentity(t *testing.T) {
+	t.Parallel()
+
+	server := controllerTestServer(arcadev1alpha1.DesiredStateRunning)
+	claim := plannedBoundClaim(t, server, "legacy-pvc-uid")
+	delete(claim.Labels, platformkube.LabelDataIdentity)
+	before := claim.DeepCopy()
+	reconciler, kubeClient := newTestReconciler(t, server, claim)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)}
+
+	if _, err := reconciler.Reconcile(context.Background(), request); err == nil {
+		t.Fatal("Reconcile() error = nil, want explicit legacy migration refusal")
+	}
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseFailed, metav1.ConditionFalse, arcadev1alpha1.ReasonRetainedDataConflict)
+	assertNoRuntime(t, kubeClient, request.NamespacedName)
+	after := &corev1.PersistentVolumeClaim{}
+	assertObjectExists(t, kubeClient, client.ObjectKeyFromObject(claim), after)
+	if !reflect.DeepEqual(before.Spec, after.Spec) || !reflect.DeepEqual(before.Labels, after.Labels) || before.UID != after.UID {
+		t.Fatalf("legacy refusal mutated claim: before=%#v after=%#v", before, after)
+	}
+}
+
+func TestReconcileExactRetainedDataReference(t *testing.T) {
+	t.Parallel()
+
+	oldServer := controllerTestServer(arcadev1alpha1.DesiredStateRunning)
+	oldServer.UID = "old-server-uid"
+	claim := plannedBoundClaim(t, oldServer, "retained-pvc-uid")
+	server := controllerTestServer(arcadev1alpha1.DesiredStateRunning)
+	server.UID = "replacement-server-uid"
+	server.Spec.Storage.Reattach = exactReattach(claim)
+	reconciler, kubeClient := newTestReconciler(t, server, claim)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)}
+
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	deployment := &appsv1.Deployment{}
+	assertObjectExists(t, kubeClient, request.NamespacedName, deployment)
+	if got := deployment.Spec.Template.Spec.Volumes[0].PersistentVolumeClaim.ClaimName; got != claim.Name {
+		t.Fatalf("workload claim = %q, want exact retained claim %q", got, claim.Name)
+	}
+	stored := &corev1.PersistentVolumeClaim{}
+	assertObjectExists(t, kubeClient, client.ObjectKeyFromObject(claim), stored)
+	if stored.UID != claim.UID {
+		t.Fatalf("retained claim UID = %q, want %q", stored.UID, claim.UID)
+	}
+}
+
+func TestStoppedMissingReattachKeepsRuntimeStoppedFence(t *testing.T) {
+	t.Parallel()
+
+	server := controllerTestServer(arcadev1alpha1.DesiredStateStopped)
+	server.Spec.Storage.Reattach = &arcadev1alpha1.RetainedDataReference{
+		Identity: "data-missing",
+		Claims: []arcadev1alpha1.RetainedDataClaimReference{{
+			Path:     "world",
+			ClaimRef: arcadev1alpha1.ExactLocalReference{Name: "missing-world", UID: "missing-uid"},
+		}},
+	}
+	reconciler, kubeClient := newTestReconciler(t, server)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)}
+
+	if _, err := reconciler.Reconcile(context.Background(), request); err == nil {
+		t.Fatal("Reconcile() error = nil, want missing retained-data refusal")
+	}
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseFailed, metav1.ConditionFalse, arcadev1alpha1.ReasonRetainedDataMissing)
+	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionWorkloadReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopped)
+	assertNoRuntime(t, kubeClient, request.NamespacedName)
+}
+
+func TestReconcileRejectsMissingOrConflictingRetainedData(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		seedClaim  bool
+		mutateRef  func(*arcadev1alpha1.RetainedDataReference)
+		mutatePVC  func(*corev1.PersistentVolumeClaim)
+		wantReason string
+	}{
+		{name: "missing", wantReason: arcadev1alpha1.ReasonRetainedDataMissing},
+		{name: "wrong UID", seedClaim: true, mutateRef: func(ref *arcadev1alpha1.RetainedDataReference) { ref.Claims[0].ClaimRef.UID = "wrong-pvc-uid" }, wantReason: arcadev1alpha1.ReasonRetainedDataConflict},
+		{name: "wrong identity", seedClaim: true, mutatePVC: func(claim *corev1.PersistentVolumeClaim) { claim.Labels[platformkube.LabelDataIdentity] = "data-other" }, wantReason: arcadev1alpha1.ReasonRetainedDataConflict},
+		{name: "wrong game", seedClaim: true, mutatePVC: func(claim *corev1.PersistentVolumeClaim) { claim.Labels[platformkube.LabelGame] = "other" }, wantReason: arcadev1alpha1.ReasonRetainedDataConflict},
+		{name: "wrong path", seedClaim: true, mutatePVC: func(claim *corev1.PersistentVolumeClaim) { claim.Labels[platformkube.LabelDataPath] = "other" }, wantReason: arcadev1alpha1.ReasonRetainedDataConflict},
+		{name: "wrong storage class", seedClaim: true, mutatePVC: func(claim *corev1.PersistentVolumeClaim) {
+			className := "other"
+			claim.Spec.StorageClassName = &className
+		}, wantReason: arcadev1alpha1.ReasonRetainedDataConflict},
+		{name: "wrong access modes", seedClaim: true, mutatePVC: func(claim *corev1.PersistentVolumeClaim) {
+			claim.Spec.AccessModes = []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany}
+		}, wantReason: arcadev1alpha1.ReasonRetainedDataConflict},
+		{name: "foreign owner", seedClaim: true, mutatePVC: func(claim *corev1.PersistentVolumeClaim) {
+			claim.OwnerReferences = []metav1.OwnerReference{{Name: "unsafe", UID: "unsafe"}}
+		}, wantReason: arcadev1alpha1.ReasonRetainedDataConflict},
+		{name: "terminating", seedClaim: true, mutatePVC: func(claim *corev1.PersistentVolumeClaim) {
+			now := metav1.Now()
+			claim.DeletionTimestamp = &now
+			claim.Finalizers = []string{"test.example/finalizer"}
+		}, wantReason: arcadev1alpha1.ReasonRetainedDataConflict},
+		{name: "too small", seedClaim: true, mutatePVC: func(claim *corev1.PersistentVolumeClaim) {
+			claim.Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("5Gi")
+			claim.Status.Capacity[corev1.ResourceStorage] = resource.MustParse("5Gi")
+		}, wantReason: arcadev1alpha1.ReasonRetainedDataConflict},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			oldServer := controllerTestServer(arcadev1alpha1.DesiredStateRunning)
+			oldServer.UID = "old-server-uid"
+			claim := plannedBoundClaim(t, oldServer, "retained-pvc-uid")
+			server := controllerTestServer(arcadev1alpha1.DesiredStateRunning)
+			server.UID = "replacement-server-uid"
+			server.Spec.Storage.Reattach = exactReattach(claim)
+			if test.mutateRef != nil {
+				test.mutateRef(server.Spec.Storage.Reattach)
+			}
+			if test.mutatePVC != nil {
+				test.mutatePVC(claim)
+			}
+			objects := []client.Object{server}
+			if test.seedClaim {
+				objects = append(objects, claim)
+			}
+			reconciler, kubeClient := newTestReconciler(t, objects...)
+			request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)}
+			var before *corev1.PersistentVolumeClaim
+			if test.seedClaim {
+				before = &corev1.PersistentVolumeClaim{}
+				assertObjectExists(t, kubeClient, client.ObjectKeyFromObject(claim), before)
+			}
+			if _, err := reconciler.Reconcile(context.Background(), request); err == nil {
+				t.Fatal("Reconcile() error = nil, want retained-data refusal")
+			}
+			assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseFailed, metav1.ConditionFalse, test.wantReason)
+			assertNoRuntime(t, kubeClient, request.NamespacedName)
+			if !test.seedClaim {
+				assertListLength(t, kubeClient, &corev1.PersistentVolumeClaimList{}, 0)
+			} else {
+				after := &corev1.PersistentVolumeClaim{}
+				assertObjectExists(t, kubeClient, client.ObjectKeyFromObject(claim), after)
+				if !reflect.DeepEqual(before, after) {
+					t.Fatalf("retained-data refusal mutated claim: before=%#v after=%#v", before, after)
+				}
+			}
+		})
+	}
+}
+
+func TestReconcileRejectsAmbiguousRetainedDataSet(t *testing.T) {
+	t.Parallel()
+
+	oldServer := controllerTestServer(arcadev1alpha1.DesiredStateRunning)
+	oldServer.UID = "old-server-uid"
+	claim := plannedBoundClaim(t, oldServer, "retained-pvc-uid")
+	extra := claim.DeepCopy()
+	extra.Name = "unexpected-retained-claim"
+	extra.UID = "extra-pvc-uid"
+	server := controllerTestServer(arcadev1alpha1.DesiredStateRunning)
+	server.UID = "replacement-server-uid"
+	server.Spec.Storage.Reattach = exactReattach(claim)
+	reconciler, kubeClient := newTestReconciler(t, server, claim, extra)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)}
+	beforeClaim := &corev1.PersistentVolumeClaim{}
+	beforeExtra := &corev1.PersistentVolumeClaim{}
+	assertObjectExists(t, kubeClient, client.ObjectKeyFromObject(claim), beforeClaim)
+	assertObjectExists(t, kubeClient, client.ObjectKeyFromObject(extra), beforeExtra)
+
+	if _, err := reconciler.Reconcile(context.Background(), request); err == nil {
+		t.Fatal("Reconcile() error = nil, want ambiguous retained-data refusal")
+	}
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseFailed, metav1.ConditionFalse, arcadev1alpha1.ReasonRetainedDataConflict)
+	assertNoRuntime(t, kubeClient, request.NamespacedName)
+	assertListLength(t, kubeClient, &corev1.PersistentVolumeClaimList{}, 2)
+	afterClaim := &corev1.PersistentVolumeClaim{}
+	afterExtra := &corev1.PersistentVolumeClaim{}
+	assertObjectExists(t, kubeClient, client.ObjectKeyFromObject(claim), afterClaim)
+	assertObjectExists(t, kubeClient, client.ObjectKeyFromObject(extra), afterExtra)
+	if !reflect.DeepEqual(beforeClaim, afterClaim) || !reflect.DeepEqual(beforeExtra, afterExtra) {
+		t.Fatalf("ambiguous retained-data refusal mutated claims: selected=%#v extra=%#v", afterClaim, afterExtra)
+	}
+}
+
+func TestReconcilePreflightsAllFreshClaimsBeforeCreatingAny(t *testing.T) {
+	t.Parallel()
+
+	server := controllerTestServer(arcadev1alpha1.DesiredStateRunning)
+	server.Spec.Game = "conformance-echo"
+	server.Spec.Settings = runtime.RawExtension{Raw: []byte(`{}`)}
+	definition := synthetic.Definition()
+	definition.PersistentPaths = append(definition.PersistentPaths, game.PersistentPath{Name: "logs", MountPath: "/srv/logs"})
+	conflict := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
+		Name: "factory-conformance-echo-logs", Namespace: server.Namespace,
+		Labels: map[string]string{platformkube.LabelDataIdentity: "data-from-another-server"},
+	}}
+	reconciler, kubeClient := newTestReconciler(t, server, conflict)
+	reconciler.Catalog = fixedCatalog{definition: definition}
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)}
+
+	if _, err := reconciler.Reconcile(context.Background(), request); err == nil {
+		t.Fatal("Reconcile() error = nil, want second-path collision")
+	}
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseFailed, metav1.ConditionFalse, arcadev1alpha1.ReasonResourceCollision)
+	assertListLength(t, kubeClient, &corev1.PersistentVolumeClaimList{}, 1)
+	assertNoRuntime(t, kubeClient, request.NamespacedName)
+}
+
+func TestStorageClassCompatibility(t *testing.T) {
+	t.Parallel()
+
+	empty := ""
+	standard := "standard"
+	fast := "fast"
+	tests := []struct {
+		name     string
+		existing *string
+		desired  *string
+		exact    bool
+		want     bool
+	}{
+		{name: "fresh defaulted class", existing: &standard, desired: nil, want: true},
+		{name: "exact requires observed class", existing: &standard, desired: nil, exact: true, want: false},
+		{name: "explicit empty", existing: &empty, desired: &empty, exact: true, want: true},
+		{name: "explicit empty rejects default", existing: &standard, desired: &empty, exact: true, want: false},
+		{name: "named exact", existing: &fast, desired: &fast, exact: true, want: true},
+		{name: "named mismatch", existing: &standard, desired: &fast, exact: true, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := storageClassCompatible(test.existing, test.desired, test.exact); got != test.want {
+				t.Fatalf("storageClassCompatible() = %t, want %t", got, test.want)
+			}
+		})
+	}
 }
 
 func TestReconcilePreflightRejectsForeignServiceAndRecovers(t *testing.T) {
@@ -854,6 +1153,41 @@ func controllerTestServer(state arcadev1alpha1.DesiredState) *arcadev1alpha1.Gam
 			Settings: runtime.RawExtension{Raw: []byte(`{"name":"test","maxPlayers":16,"visibility":"private"}`)},
 		},
 	}
+}
+
+func plannedBoundClaim(t *testing.T, server *arcadev1alpha1.GameServer, uid types.UID) *corev1.PersistentVolumeClaim {
+	t.Helper()
+	plan, err := platformkube.Build(server, factorio.Definition())
+	if err != nil {
+		t.Fatalf("build retained claim fixture: %v", err)
+	}
+	claim := plan.DataClaims[0].Desired.DeepCopy()
+	claim.UID = uid
+	claim.Status.Phase = corev1.ClaimBound
+	claim.Status.Capacity = corev1.ResourceList{
+		corev1.ResourceStorage: claim.Spec.Resources.Requests[corev1.ResourceStorage].DeepCopy(),
+	}
+	return claim
+}
+
+func exactReattach(claim *corev1.PersistentVolumeClaim) *arcadev1alpha1.RetainedDataReference {
+	return &arcadev1alpha1.RetainedDataReference{
+		Identity: claim.Labels[platformkube.LabelDataIdentity],
+		Claims: []arcadev1alpha1.RetainedDataClaimReference{{
+			Path: claim.Labels[platformkube.LabelDataPath],
+			ClaimRef: arcadev1alpha1.ExactLocalReference{
+				Name: claim.Name,
+				UID:  string(claim.UID),
+			},
+		}},
+	}
+}
+
+func assertNoRuntime(t *testing.T, kubeClient client.Client, serverKey types.NamespacedName) {
+	t.Helper()
+	assertNotFound(t, kubeClient, serverKey, &appsv1.Deployment{})
+	assertNotFound(t, kubeClient, serverKey, &corev1.Service{})
+	assertNotFound(t, kubeClient, types.NamespacedName{Namespace: serverKey.Namespace, Name: serverKey.Name + "-configuration"}, &corev1.ConfigMap{})
 }
 
 func assertObjectExists(t *testing.T, kubeClient client.Client, key types.NamespacedName, object client.Object) {

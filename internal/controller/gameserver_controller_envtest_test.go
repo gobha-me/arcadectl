@@ -66,6 +66,7 @@ func TestEnvtestLifecycleStatusCollisionAndRecovery(t *testing.T) {
 		t.Fatalf("create test namespace: %v", err)
 	}
 	testOperationAPI(t, ctx, configuration, kubeClient)
+	testRetainedDataAdmission(t, ctx, kubeClient)
 	server := controllerTestServer(arcadev1alpha1.DesiredStateRunning)
 	server.UID = ""
 	server.Generation = 0
@@ -234,6 +235,84 @@ func TestEnvtestLifecycleStatusCollisionAndRecovery(t *testing.T) {
 	}
 	if stopped.Generation != stopGeneration || stopped.Status.ObservedGeneration != stopGeneration || len(stopped.Status.Endpoints) != 0 {
 		t.Fatalf("stopped status = generation %d %#v", stopped.Generation, stopped.Status)
+	}
+}
+
+func testRetainedDataAdmission(t *testing.T, ctx context.Context, kubeClient client.Client) {
+	t.Helper()
+	newServer := func(name string) *arcadev1alpha1.GameServer {
+		server := controllerTestServer(arcadev1alpha1.DesiredStateStopped)
+		server.Name = name
+		server.UID = ""
+		server.Generation = 0
+		server.Spec.Storage.Reattach = &arcadev1alpha1.RetainedDataReference{
+			Identity: "data-retained-api",
+			Claims: []arcadev1alpha1.RetainedDataClaimReference{{
+				Path: "world",
+				ClaimRef: arcadev1alpha1.ExactLocalReference{
+					Name: "retained-api-factorio-world",
+					UID:  "retained-api-pvc-uid",
+				},
+			}},
+		}
+		return server
+	}
+
+	server := newServer("retained-api")
+	if err := kubeClient.Create(ctx, server); err != nil {
+		t.Fatalf("create valid stopped reattach GameServer: %v", err)
+	}
+
+	crossNamespace := newServer("retained-cross-namespace")
+	foreignNamespace := "foreign"
+	crossNamespace.Spec.Storage.Reattach.Claims[0].ClaimRef.Namespace = &foreignNamespace
+	if err := kubeClient.Create(ctx, crossNamespace); err == nil {
+		t.Fatal("cross-namespace retained claim reference passed API admission")
+	}
+
+	duplicatePath := newServer("retained-duplicate-path")
+	duplicatePath.Spec.Storage.Reattach.Claims = append(duplicatePath.Spec.Storage.Reattach.Claims,
+		arcadev1alpha1.RetainedDataClaimReference{
+			Path:     "world",
+			ClaimRef: arcadev1alpha1.ExactLocalReference{Name: "another-world", UID: "another-world-uid"},
+		})
+	if err := kubeClient.Create(ctx, duplicatePath); err == nil {
+		t.Fatal("duplicate retained path passed API admission")
+	}
+
+	current := &arcadev1alpha1.GameServer{}
+	key := client.ObjectKeyFromObject(server)
+	if err := kubeClient.Get(ctx, key, current); err != nil {
+		t.Fatalf("get retained admission GameServer: %v", err)
+	}
+	current.Spec.DesiredState = arcadev1alpha1.DesiredStateRunning
+	current.Spec.Storage.Reattach.Claims[0].ClaimRef.UID = "changed-while-running"
+	if err := kubeClient.Update(ctx, current); err == nil {
+		t.Fatal("reattach authority changed while requesting Running state")
+	}
+
+	if err := kubeClient.Get(ctx, key, current); err != nil {
+		t.Fatalf("refresh retained admission GameServer: %v", err)
+	}
+	current.Spec.Storage.Reattach.Claims[0].ClaimRef.UID = "changed-before-observed-stop"
+	if err := kubeClient.Update(ctx, current); err == nil {
+		t.Fatal("reattach authority changed before observed Stopped state")
+	}
+
+	if err := kubeClient.Get(ctx, key, current); err != nil {
+		t.Fatalf("refresh retained admission GameServer for status: %v", err)
+	}
+	current.Status.Phase = arcadev1alpha1.PhaseStopped
+	current.Status.ObservedGeneration = current.Generation
+	if err := kubeClient.Status().Update(ctx, current); err != nil {
+		t.Fatalf("mark retained admission GameServer stopped: %v", err)
+	}
+	if err := kubeClient.Get(ctx, key, current); err != nil {
+		t.Fatalf("refresh observed stopped GameServer: %v", err)
+	}
+	current.Spec.Storage.Reattach.Claims[0].ClaimRef.UID = "changed-after-observed-stop"
+	if err := kubeClient.Update(ctx, current); err == nil {
+		t.Fatal("reattach authority changed in place after observed Stopped state")
 	}
 }
 

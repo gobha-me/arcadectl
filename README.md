@@ -22,6 +22,9 @@ while retaining storage, refuses to adopt conflicting resources, and cannot
 delete persistent claims under its generated RBAC policy. A digest-rendered,
 namespace-scoped controller install is available for isolated evaluation;
 the certified Factorio lifecycle is exercised in a disposable-cluster proof.
+Retained worlds carry a durable data identity, and a replacement server must
+explicitly reattach every adapter path by exact local PVC name and UID; a
+same-name resource is never authority to adopt an old world.
 Backup and restore requests now have immutable, retry-safe API contracts, but
 their workers are not implemented. Explicit destruction and production
 deployment also remain unimplemented.

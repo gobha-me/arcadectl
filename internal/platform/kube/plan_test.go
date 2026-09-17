@@ -13,6 +13,7 @@ import (
 	arcadev1alpha1 "github.com/gobha-me/arcadectl/api/v1alpha1"
 	"github.com/gobha-me/arcadectl/internal/games/factorio"
 	"github.com/gobha-me/arcadectl/internal/games/synthetic"
+	"github.com/gobha-me/arcadectl/internal/platform/game"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,7 +34,7 @@ func TestBuildRunningFactorioPlan(t *testing.T) {
 	if len(plan.DataClaims) != 1 {
 		t.Fatalf("data claims = %d, want 1", len(plan.DataClaims))
 	}
-	claim := plan.DataClaims[0]
+	claim := plan.DataClaims[0].Desired
 	if claim.Name != "factory-factorio-world" {
 		t.Errorf("claim name = %q, want factory-factorio-world", claim.Name)
 	}
@@ -45,6 +46,13 @@ func TestBuildRunningFactorioPlan(t *testing.T) {
 	}
 	if claim.Labels[LabelDataPath] != "world" {
 		t.Errorf("data path label = %q, want world", claim.Labels[LabelDataPath])
+	}
+	wantIdentity, err := DataIdentity(server.UID)
+	if err != nil {
+		t.Fatalf("DataIdentity() error = %v", err)
+	}
+	if got := claim.Labels[LabelDataIdentity]; got != wantIdentity || plan.DataIdentity != wantIdentity {
+		t.Errorf("data identity = claim %q plan %q, want %q", got, plan.DataIdentity, wantIdentity)
 	}
 	if plan.Workload == nil || plan.PlayerService == nil {
 		t.Fatalf("running plan = %#v, want workload and service", plan)
@@ -139,7 +147,7 @@ func TestBuildCopiesStorageClass(t *testing.T) {
 		t.Fatalf("Build() error = %v", err)
 	}
 	*server.Spec.Storage.StorageClassName = "changed"
-	if got := *plan.DataClaims[0].Spec.StorageClassName; got != "fast-storage" {
+	if got := *plan.DataClaims[0].Desired.Spec.StorageClassName; got != "fast-storage" {
 		t.Fatalf("planned storage class changed through input alias: %q", got)
 	}
 }
@@ -148,17 +156,126 @@ func TestBuildStoppedPlanRetainsOnlyData(t *testing.T) {
 	t.Parallel()
 
 	server := testServer("factory", "factorio", arcadev1alpha1.DesiredStateStopped)
-	server.UID = ""
 	plan, err := Build(server, factorio.Definition())
 	if err != nil {
 		t.Fatalf("Build() error = %v", err)
 	}
-	if len(plan.DataClaims) != 1 || len(plan.DataClaims[0].OwnerReferences) != 0 {
+	if len(plan.DataClaims) != 1 || len(plan.DataClaims[0].Desired.OwnerReferences) != 0 {
 		t.Fatalf("stopped data claims = %#v, want one independently retained claim", plan.DataClaims)
 	}
 	if plan.Configuration != nil || plan.Workload != nil || plan.PlayerService != nil {
 		t.Fatalf("stopped plan has active resources: %#v", plan)
 	}
+}
+
+func TestBuildExactRetainedDataPlan(t *testing.T) {
+	t.Parallel()
+
+	server := testServer("factory", "factorio", arcadev1alpha1.DesiredStateRunning)
+	server.Spec.Storage.Reattach = &arcadev1alpha1.RetainedDataReference{
+		Identity: "data-retained-factory",
+		Claims: []arcadev1alpha1.RetainedDataClaimReference{{
+			Path: "world",
+			ClaimRef: arcadev1alpha1.ExactLocalReference{
+				Name: "factory-factorio-world-retained",
+				UID:  "pvc-uid-retained",
+			},
+		}},
+	}
+	plan, err := Build(server, factorio.Definition())
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	if !plan.Reattach || plan.DataIdentity != "data-retained-factory" || len(plan.DataClaims) != 1 {
+		t.Fatalf("retained plan = %#v", plan)
+	}
+	claim := plan.DataClaims[0]
+	if claim.Desired.Name != "factory-factorio-world-retained" || claim.RequiredUID != "pvc-uid-retained" {
+		t.Fatalf("retained claim plan = %#v", claim)
+	}
+	if got := claim.Desired.Labels[LabelDataIdentity]; got != plan.DataIdentity {
+		t.Fatalf("retained claim identity = %q, want %q", got, plan.DataIdentity)
+	}
+	volumes := plan.Workload.Spec.Template.Spec.Volumes
+	if len(volumes) != 2 || volumes[0].PersistentVolumeClaim == nil || volumes[0].PersistentVolumeClaim.ClaimName != claim.Desired.Name {
+		t.Fatalf("workload volumes = %#v, want exact retained claim name", volumes)
+	}
+}
+
+func TestDataIdentity(t *testing.T) {
+	t.Parallel()
+
+	first, err := DataIdentity("server-one")
+	if err != nil {
+		t.Fatalf("DataIdentity() error = %v", err)
+	}
+	again, err := DataIdentity("server-one")
+	if err != nil || again != first {
+		t.Fatalf("DataIdentity() repeat = %q, %v; want %q", again, err, first)
+	}
+	second, err := DataIdentity("server-two")
+	if err != nil || second == first {
+		t.Fatalf("DataIdentity() second = %q, %v; want distinct identity", second, err)
+	}
+	if len(first) != 53 || !strings.HasPrefix(first, "data-") {
+		t.Fatalf("DataIdentity() = %q, want 53-character label-safe identity", first)
+	}
+	if _, err := DataIdentity(""); err == nil {
+		t.Fatal("DataIdentity() accepted empty UID")
+	}
+}
+
+func TestBuildRejectsInvalidRetainedDataSelection(t *testing.T) {
+	t.Parallel()
+
+	localNamespace := "games"
+	tests := []struct {
+		name   string
+		claims []arcadev1alpha1.RetainedDataClaimReference
+		mutate func(*arcadev1alpha1.RetainedDataReference)
+		want   string
+	}{
+		{name: "missing identity", claims: exactClaims(), mutate: func(ref *arcadev1alpha1.RetainedDataReference) { ref.Identity = "" }, want: "identity is required"},
+		{name: "incomplete", claims: exactClaims()[:1], want: "cover every persistent path"},
+		{name: "unknown path", claims: exactClaims(), mutate: func(ref *arcadev1alpha1.RetainedDataReference) { ref.Claims[1].Path = "unknown" }, want: "not declared"},
+		{name: "duplicate path", claims: exactClaims(), mutate: func(ref *arcadev1alpha1.RetainedDataReference) { ref.Claims[1].Path = "state" }, want: "duplicated"},
+		{name: "cross namespace", claims: exactClaims(), mutate: func(ref *arcadev1alpha1.RetainedDataReference) { ref.Claims[0].ClaimRef.Namespace = &localNamespace }, want: "exact local"},
+		{name: "empty UID", claims: exactClaims(), mutate: func(ref *arcadev1alpha1.RetainedDataReference) { ref.Claims[0].ClaimRef.UID = "" }, want: "exact local"},
+		{name: "duplicate name", claims: exactClaims(), mutate: func(ref *arcadev1alpha1.RetainedDataReference) {
+			ref.Claims[1].ClaimRef.Name = ref.Claims[0].ClaimRef.Name
+		}, want: "reuse one claim name"},
+		{name: "duplicate UID", claims: exactClaims(), mutate: func(ref *arcadev1alpha1.RetainedDataReference) {
+			ref.Claims[1].ClaimRef.UID = ref.Claims[0].ClaimRef.UID
+		}, want: "reuse one claim UID"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			server := testServer("echo", "conformance-echo", arcadev1alpha1.DesiredStateStopped)
+			server.Spec.Settings = structJSON(`{}`)
+			server.Spec.Storage.Reattach = &arcadev1alpha1.RetainedDataReference{Identity: "data-retained", Claims: test.claims}
+			if test.mutate != nil {
+				test.mutate(server.Spec.Storage.Reattach)
+			}
+			_, err := Build(server, twoPathSyntheticDefinition())
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Build() error = %v, want substring %q", err, test.want)
+			}
+		})
+	}
+}
+
+func exactClaims() []arcadev1alpha1.RetainedDataClaimReference {
+	return []arcadev1alpha1.RetainedDataClaimReference{
+		{Path: "state", ClaimRef: arcadev1alpha1.ExactLocalReference{Name: "echo-state", UID: "state-uid"}},
+		{Path: "logs", ClaimRef: arcadev1alpha1.ExactLocalReference{Name: "echo-logs", UID: "logs-uid"}},
+	}
+}
+
+func twoPathSyntheticDefinition() game.Definition {
+	definition := synthetic.Definition()
+	definition.PersistentPaths = append(definition.PersistentPaths, game.PersistentPath{Name: "logs", MountPath: "/srv/logs"})
+	return definition
 }
 
 func TestBuildIsGameNeutral(t *testing.T) {
@@ -170,7 +287,7 @@ func TestBuildIsGameNeutral(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build() error = %v", err)
 	}
-	if got := plan.DataClaims[0].Name; got != "echo-conformance-echo-state" {
+	if got := plan.DataClaims[0].Desired.Name; got != "echo-conformance-echo-state" {
 		t.Errorf("claim name = %q, want echo-conformance-echo-state", got)
 	}
 	container := plan.Workload.Spec.Template.Spec.Containers[0]
