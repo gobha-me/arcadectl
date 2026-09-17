@@ -182,7 +182,7 @@ func TestBuildIsGameNeutral(t *testing.T) {
 		t.Errorf("synthetic readiness probe = %#v, want named player TCP probe", container.ReadinessProbe)
 	}
 	materializer := plan.Workload.Spec.Template.Spec.InitContainers[0]
-	if len(materializer.Args) != 8 || materializer.Args[2] != "/srv/world" || materializer.Args[3] != "/arcadectl/configuration/echo-config" || materializer.Args[4] != "/srv/world/config/echo.conf" || materializer.Args[5] != "/srv/world" || materializer.Args[6] != "/arcadectl/configuration/motd" || materializer.Args[7] != "/srv/world/config/motd.txt" {
+	if len(materializer.Args) != 11 || materializer.Args[2] != "/srv/world" || materializer.Args[3] != "/arcadectl/configuration/echo-config" || materializer.Args[4] != "/srv/world/config/echo.conf" || materializer.Args[5] != "/srv/world" || materializer.Args[6] != "/arcadectl/configuration/motd" || materializer.Args[7] != "/srv/world/config/motd.txt" || materializer.Args[8] != "/srv/world" || materializer.Args[9] != "/arcadectl/configuration/seed" || materializer.Args[10] != "/srv/world/config/seed.txt" {
 		t.Errorf("configuration materializer args = %#v, want synthetic adapter paths", materializer.Args)
 	}
 	if len(plan.PlayerService.Spec.Ports) != 1 || plan.PlayerService.Spec.Ports[0].Protocol != corev1.ProtocolTCP {
