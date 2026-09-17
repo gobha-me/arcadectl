@@ -29,6 +29,7 @@ func Definition() game.Definition {
 		}},
 		PersistentPaths:   []game.PersistentPath{{Name: "state", MountPath: "/srv/world"}},
 		ReadinessEndpoint: "players",
+		ReadinessMode:     game.ReadinessTCP,
 		SettingsSchema:    []byte(`{"type":"object","additionalProperties":false}`),
 		ConfigurationTargets: []game.ConfigurationTarget{
 			{Name: "echo-config", MountPath: "/srv/world/config/echo.conf"},

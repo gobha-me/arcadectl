@@ -43,8 +43,12 @@ func Definition() game.Definition {
 			{Name: "game", Protocol: game.ProtocolUDP, ContainerPort: 34197, Scope: game.ScopePlayer},
 			{Name: "rcon", Protocol: game.ProtocolTCP, ContainerPort: 27015, Scope: game.ScopeAdmin},
 		},
-		PersistentPaths:   []game.PersistentPath{{Name: "world", MountPath: "/factorio"}},
+		PersistentPaths: []game.PersistentPath{{Name: "world", MountPath: "/factorio"}},
+		// Factorio's only TCP endpoint is administrator-only RCON. The fixed
+		// image helper checks it silently so the port cannot appear in probe
+		// Events or the generic platform contract.
 		ReadinessEndpoint: "rcon",
+		ReadinessMode:     game.ReadinessPrivateExec,
 		SettingsSchema: []byte(`{
   "type": "object",
   "additionalProperties": false,

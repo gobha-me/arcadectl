@@ -22,6 +22,7 @@ func validDefinition() Definition {
 		}},
 		PersistentPaths:   []PersistentPath{{Name: "world", MountPath: "/srv/world"}},
 		ReadinessEndpoint: "players",
+		ReadinessMode:     ReadinessTCP,
 		SettingsSchema:    []byte(`{"type":"object","additionalProperties":false}`),
 		ConfigurationTargets: []ConfigurationTarget{{
 			Name:      "server-config",
@@ -58,6 +59,12 @@ func TestDefinitionValidate(t *testing.T) {
 		{"duplicate endpoint", func(d *Definition) { d.Endpoints = append(d.Endpoints, d.Endpoints[0]) }, "duplicated"},
 		{"no player endpoint", func(d *Definition) { d.Endpoints[0].Scope = ScopeAdmin }, "player endpoint"},
 		{"udp readiness", func(d *Definition) { d.Endpoints[0].Protocol = ProtocolUDP }, "must use TCP"},
+		{"admin readiness", func(d *Definition) {
+			d.Endpoints = append(d.Endpoints, Endpoint{Name: "admin", Protocol: ProtocolTCP, ContainerPort: 8081, Scope: ScopeAdmin})
+			d.ReadinessEndpoint = "admin"
+		}, "must be player-scoped"},
+		{"private readiness on player endpoint", func(d *Definition) { d.ReadinessMode = ReadinessPrivateExec }, "administrator or internal"},
+		{"unknown readiness mode", func(d *Definition) { d.ReadinessMode = "Shell" }, "unsupported readiness mode"},
 		{"root persistence", func(d *Definition) { d.PersistentPaths[0].MountPath = "/" }, "non-root"},
 		{"reserved persistence", func(d *Definition) { d.PersistentPaths[0].MountPath = "/arcadectl/data" }, "reserved platform mount"},
 		{"overlapping persistence", func(d *Definition) {

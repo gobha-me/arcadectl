@@ -32,6 +32,19 @@ type Endpoint struct {
 	Scope         EndpointScope
 }
 
+// ReadinessMode selects one of the platform's fixed, non-extensible probe
+// shapes. Adapters cannot provide arbitrary probe commands.
+type ReadinessMode string
+
+const (
+	// ReadinessTCP probes a player-scoped TCP endpoint directly.
+	ReadinessTCP ReadinessMode = "TCP"
+	// ReadinessPrivateExec invokes the fixed /arcadectl/readiness helper
+	// certified inside an adapter image without exposing its private endpoint in
+	// Pod Events.
+	ReadinessPrivateExec ReadinessMode = "PrivateExec"
+)
+
 // PersistentPath identifies game data included in backup and restore.
 type PersistentPath struct {
 	Name      string
@@ -83,6 +96,7 @@ type Definition struct {
 	Endpoints            []Endpoint
 	PersistentPaths      []PersistentPath
 	ReadinessEndpoint    string
+	ReadinessMode        ReadinessMode
 	SettingsSchema       json.RawMessage
 	ConfigurationTargets []ConfigurationTarget
 	RenderSettings       SettingsRenderer

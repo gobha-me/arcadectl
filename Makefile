@@ -1,4 +1,4 @@
-.PHONY: generate render-controller verify-generated verify-runtime-assets
+.PHONY: generate render-controller test-envtest verify-generated verify-runtime-assets
 
 CANONICAL_CONTROLLER_IMAGE := ghcr.io/gobha-me/arcadectl-controller@sha256:0000000000000000000000000000000000000000000000000000000000000000
 
@@ -10,6 +10,9 @@ generate:
 render-controller:
 	@test -n "$(CONTROLLER_IMAGE)" || (echo "CONTROLLER_IMAGE=<repository@sha256:digest> is required" >&2; exit 2)
 	@./hack/render-controller.sh "$(CONTROLLER_IMAGE)"
+
+test-envtest:
+	go test -tags=envtest -timeout=5m ./internal/controller
 
 verify-generated:
 	./hack/verify-generated.sh
