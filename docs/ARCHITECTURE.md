@@ -27,7 +27,10 @@ The implemented Kubernetes boundary is the `GameServer` API, a pure resource
 planner, and the controller process. It creates independent claims for
 adapter-declared persistent paths and never gives those claims a `GameServer`
 owner reference. The generated controller role deliberately omits PVC deletion.
-The authenticated API and CLI remain planned rather than implemented.
+Durable `GameBackup` and `GameRestore` APIs pin exact namespaced identities and
+define retry-safe operation state, while deliberately granting no Secret or
+worker authority until those implementations are reviewed. The authenticated
+API and CLI remain planned rather than implemented.
 
 ## Game adapter contract
 
@@ -106,6 +109,8 @@ equally explicit and is recorded as an unsafe administrative decision.
 
 Restore targets a newly provisioned volume before it changes the active server
 reference. A failed restore cannot partially replace the active world.
+The complete identity, idempotency, cancellation, retention, and state-machine
+contract is documented in [BACKUP_RESTORE.md](BACKUP_RESTORE.md).
 
 ## Extension test
 

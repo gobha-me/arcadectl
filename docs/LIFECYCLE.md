@@ -99,6 +99,12 @@ do not appear in the Pod spec or kubelet probe Events.
   workload without overlapping game processes.
 - **Decommission:** delete the `GameServer`; owned runtime resources are
   collected and unowned claims remain.
+- **Backup:** represented by an immutable `GameBackup`; execution is not yet
+  implemented. The request pins the GameServer generation and repository
+  Secret identity, and success will require verification of every adapter path.
+- **Restore:** represented by an immutable `GameRestore`; execution is not yet
+  implemented. Candidate and previous data identities support verified atomic
+  activation and rollback without overwriting the active world.
 - **Destroy:** not implemented. It will be a separate authorized operation with
   exact identity confirmation and a successful backup by default.
 
@@ -109,5 +115,7 @@ while compute is stopped, updates between distinct immutable image digests,
 checks that the recreate strategy never exposes overlapping running game
 containers, redeploys the controller without replacing the game Pod, and
 recreates the `GameServer` around the same retained world identity. This is
-isolated lifecycle evidence, not production readiness: backup, restore,
-explicit destruction, and production deployment remain unimplemented.
+isolated lifecycle evidence, not production readiness: backup and restore have
+durable API contracts but no workers; explicit destruction and production
+deployment remain unimplemented. See
+[the backup and restore contract](BACKUP_RESTORE.md) for the exact boundary.

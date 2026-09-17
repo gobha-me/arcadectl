@@ -59,6 +59,8 @@ func TestClusterAnchorsAreRetainedAndRestricted(t *testing.T) {
 	expected := []string{
 		"/v1, Kind=Namespace /arcadectl-system",
 		"apiextensions.k8s.io/v1, Kind=CustomResourceDefinition /gameservers.arcade.gobha.me",
+		"apiextensions.k8s.io/v1, Kind=CustomResourceDefinition /gamebackups.arcade.gobha.me",
+		"apiextensions.k8s.io/v1, Kind=CustomResourceDefinition /gamerestores.arcade.gobha.me",
 	}
 	if got := objectIdentities(objects); !slices.Equal(got, expected) {
 		t.Fatalf("anchor objects = %#v, want %#v", got, expected)
@@ -135,6 +137,8 @@ func TestInstallScriptAppliesAnchorsThenController(t *testing.T) {
 	for _, commandFragment := range []string{
 		"apply -f " + filepath.Join(repositoryRoot(t), "config", "install", "anchors.yaml"),
 		"wait --for=condition=Established customresourcedefinition/gameservers.arcade.gobha.me --timeout=60s",
+		"wait --for=condition=Established customresourcedefinition/gamebackups.arcade.gobha.me --timeout=60s",
+		"wait --for=condition=Established customresourcedefinition/gamerestores.arcade.gobha.me --timeout=60s",
 		"apply -f /tmp/",
 		"rollout status deployment/arcadectl-controller --namespace arcadectl-system --timeout=120s",
 	} {
@@ -292,8 +296,8 @@ func assertRole(t *testing.T, object *unstructured.Unstructured) {
 		{APIGroups: []string{""}, Resources: []string{"configmaps", "services"}, Verbs: []string{"create", "delete", "get", "list", "patch", "update", "watch"}},
 		{APIGroups: []string{""}, Resources: []string{"persistentvolumeclaims"}, Verbs: []string{"create", "get", "list", "patch", "update", "watch"}},
 		{APIGroups: []string{"apps"}, Resources: []string{"deployments"}, Verbs: []string{"create", "delete", "get", "list", "patch", "update", "watch"}},
-		{APIGroups: []string{"arcade.gobha.me"}, Resources: []string{"gameservers"}, Verbs: []string{"get", "list", "watch"}},
-		{APIGroups: []string{"arcade.gobha.me"}, Resources: []string{"gameservers/status"}, Verbs: []string{"get", "patch", "update"}},
+		{APIGroups: []string{"arcade.gobha.me"}, Resources: []string{"gamebackups", "gamerestores", "gameservers"}, Verbs: []string{"get", "list", "watch"}},
+		{APIGroups: []string{"arcade.gobha.me"}, Resources: []string{"gamebackups/status", "gamerestores/status", "gameservers/status"}, Verbs: []string{"get", "patch", "update"}},
 		{APIGroups: []string{"coordination.k8s.io"}, Resources: []string{"leases"}, Verbs: []string{"create", "get", "list", "patch", "update", "watch"}},
 	}
 	got := normalizedRules(role.Rules)

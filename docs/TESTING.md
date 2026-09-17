@@ -35,7 +35,8 @@ CRD, RBAC, and controller manifests and proves:
   GameServer deletion, and same-name recreation;
 - fail-closed behavior when a foreign Service occupies a deterministic name,
   with no partial sibling resources; and
-- safe uninstall that leaves the namespace, CRD, GameServer, and retained PVC.
+- safe uninstall that leaves the namespace, all Arcadectl CRDs, GameServer,
+  operation records, and retained PVC.
 
 This is controller lifecycle evidence, not Factorio client automation or proof
 of a cloud LoadBalancer implementation.

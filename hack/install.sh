@@ -18,6 +18,12 @@ trap 'rm -f -- "$controller_manifest"' EXIT
 "$repository_root/hack/render-controller.sh" "$1" >"$controller_manifest"
 
 "$kubectl_command" apply -f "$repository_root/config/install/anchors.yaml"
-"$kubectl_command" wait --for=condition=Established customresourcedefinition/gameservers.arcade.gobha.me --timeout=60s
+for custom_resource_definition in \
+  gameservers.arcade.gobha.me \
+  gamebackups.arcade.gobha.me \
+  gamerestores.arcade.gobha.me; do
+  "$kubectl_command" wait --for=condition=Established \
+    "customresourcedefinition/$custom_resource_definition" --timeout=60s
+done
 "$kubectl_command" apply -f "$controller_manifest"
 "$kubectl_command" rollout status deployment/arcadectl-controller --namespace arcadectl-system --timeout=120s

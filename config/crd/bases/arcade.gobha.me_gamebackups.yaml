@@ -1,0 +1,765 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.18.0
+  name: gamebackups.arcade.gobha.me
+spec:
+  group: arcade.gobha.me
+  names:
+    kind: GameBackup
+    listKind: GameBackupList
+    plural: gamebackups
+    shortNames:
+    - gb
+    singular: gamebackup
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.source.name
+      name: Server
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: GameBackup requests one durable cold backup.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: GameBackupSpec is an immutable cold-backup request.
+            properties:
+              cancelRequested:
+                default: false
+                description: |-
+                  CancelRequested is monotonic. An implementation reaches Cancelled only
+                  after active work has stopped without exposing partial output.
+                type: boolean
+                x-kubernetes-validations:
+                - message: cancelRequested cannot be cleared
+                  rule: '!oldSelf || self'
+              inlineCredentials:
+                description: |-
+                  InlineCredentials exists only so ordinary admission rejects this unsafe
+                  shape instead of pruning it as an unknown field.
+                type: object
+              repositorySecretRef:
+                description: |-
+                  RepositorySecretRef identifies the Secret holding both repository
+                  connection configuration and credentials. Secret contents are never
+                  copied into this API.
+                properties:
+                  name:
+                    maxLength: 253
+                    minLength: 1
+                    pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace is a rejection sentinel, not a selector. Its presence is
+                      forbidden so ordinary API requests cannot silently prune cross-namespace
+                      intent; the operation namespace is always authoritative.
+                    type: string
+                  resourceVersion:
+                    maxLength: 256
+                    minLength: 1
+                    type: string
+                  uid:
+                    maxLength: 128
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                - resourceVersion
+                - uid
+                type: object
+                x-kubernetes-validations:
+                - message: repositorySecretRef is immutable
+                  rule: self == oldSelf
+                - message: namespace must be omitted because references are local
+                    to the operation
+                  rule: '!has(self.namespace)'
+              restartPolicy:
+                default: LeaveStopped
+                description: |-
+                  RestartPolicy controls what happens after an operation safely stops a
+                  running GameServer. LeaveStopped is the fail-closed default.
+                enum:
+                - LeaveStopped
+                - RestorePreviousState
+                type: string
+                x-kubernetes-validations:
+                - message: restartPolicy is immutable
+                  rule: self == oldSelf
+              retentionPolicy:
+                default: Retain
+                description: |-
+                  ArtifactRetentionPolicy describes ownership of a successful artifact.
+                  Retain is the only v1alpha1 policy: deleting the operation never deletes the
+                  artifact. Automated retention is deliberately deferred.
+                enum:
+                - Retain
+                type: string
+                x-kubernetes-validations:
+                - message: retentionPolicy is immutable
+                  rule: self == oldSelf
+              source:
+                description: |-
+                  ExactGameServerReference pins both object identity and the spec generation
+                  from which a data operation was requested.
+                properties:
+                  desiredState:
+                    description: |-
+                      DesiredState is the durable pre-operation intent at Generation. It lets a
+                      retry distinguish an originally running server from one already stopped.
+                    enum:
+                    - Running
+                    - Stopped
+                    type: string
+                  generation:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  name:
+                    maxLength: 253
+                    minLength: 1
+                    pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace is a rejection sentinel, not a selector. Its presence is
+                      forbidden so ordinary API requests cannot silently prune cross-namespace
+                      intent; the operation namespace is always authoritative.
+                    type: string
+                  uid:
+                    maxLength: 128
+                    minLength: 1
+                    type: string
+                required:
+                - desiredState
+                - generation
+                - name
+                - uid
+                type: object
+                x-kubernetes-validations:
+                - message: source is immutable
+                  rule: self == oldSelf
+                - message: namespace must be omitted because references are local
+                    to the operation
+                  rule: '!has(self.namespace)'
+            required:
+            - cancelRequested
+            - repositorySecretRef
+            - restartPolicy
+            - retentionPolicy
+            - source
+            type: object
+            x-kubernetes-validations:
+            - message: inline credentials are forbidden; use repositorySecretRef
+              rule: '!has(self.inlineCredentials)'
+          status:
+            description: GameBackupStatus is the observable cold-backup state.
+            properties:
+              artifact:
+                description: |-
+                  BackupArtifact identifies a complete repository object. ID is derived from
+                  the GameBackup UID, making same-object retries converge on one artifact.
+                properties:
+                  createdAt:
+                    format: date-time
+                    type: string
+                    x-kubernetes-validations:
+                    - message: artifact creation time is immutable
+                      rule: self == oldSelf
+                  formatVersion:
+                    maxLength: 32
+                    minLength: 1
+                    type: string
+                    x-kubernetes-validations:
+                    - message: artifact format is immutable
+                      rule: self == oldSelf
+                  id:
+                    maxLength: 128
+                    minLength: 1
+                    pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                    type: string
+                    x-kubernetes-validations:
+                    - message: artifact ID is immutable
+                      rule: self == oldSelf
+                  manifestDigest:
+                    pattern: ^sha256:[0-9a-f]{64}$
+                    type: string
+                    x-kubernetes-validations:
+                    - message: artifact manifest digest is immutable
+                      rule: self == oldSelf
+                  pathCount:
+                    format: int32
+                    minimum: 1
+                    type: integer
+                    x-kubernetes-validations:
+                    - message: artifact path count is immutable
+                      rule: self == oldSelf
+                  provenance:
+                    description: |-
+                      ArtifactProvenance binds repository metadata to the exact backup operation
+                      and immutable repository Secret revision that created it.
+                    properties:
+                      backupRef:
+                        description: |-
+                          ExactLocalReference prevents name reuse from silently changing an
+                          operation's subject. The containing operation namespace is implicit, so a
+                          cross-namespace subject cannot be represented.
+                        properties:
+                          name:
+                            maxLength: 253
+                            minLength: 1
+                            pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                            type: string
+                          namespace:
+                            description: |-
+                              Namespace is a rejection sentinel, not a selector. Its presence is
+                              forbidden so ordinary API requests cannot silently prune cross-namespace
+                              intent; the operation namespace is always authoritative.
+                            type: string
+                          uid:
+                            maxLength: 128
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        - uid
+                        type: object
+                        x-kubernetes-validations:
+                        - message: artifact backup provenance is immutable
+                          rule: self == oldSelf
+                        - message: namespace must be omitted because references are
+                            local to the operation
+                          rule: '!has(self.namespace)'
+                      repositorySecretRef:
+                        description: |-
+                          ExactSecretReference pins an immutable Secret revision. Implementations must
+                          also verify the live Secret has immutable=true before external work begins.
+                        properties:
+                          name:
+                            maxLength: 253
+                            minLength: 1
+                            pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                            type: string
+                          namespace:
+                            description: |-
+                              Namespace is a rejection sentinel, not a selector. Its presence is
+                              forbidden so ordinary API requests cannot silently prune cross-namespace
+                              intent; the operation namespace is always authoritative.
+                            type: string
+                          resourceVersion:
+                            maxLength: 256
+                            minLength: 1
+                            type: string
+                          uid:
+                            maxLength: 128
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        - resourceVersion
+                        - uid
+                        type: object
+                        x-kubernetes-validations:
+                        - message: artifact repository provenance is immutable
+                          rule: self == oldSelf
+                        - message: namespace must be omitted because references are
+                            local to the operation
+                          rule: '!has(self.namespace)'
+                    required:
+                    - backupRef
+                    - repositorySecretRef
+                    type: object
+                  sizeBytes:
+                    format: int64
+                    minimum: 0
+                    type: integer
+                    x-kubernetes-validations:
+                    - message: artifact size is immutable
+                      rule: self == oldSelf
+                  verification:
+                    description: ArtifactVerification records a bounded result without
+                      raw worker output.
+                    properties:
+                      result:
+                        description: VerificationResult is repository-side verification
+                          state for an artifact.
+                        enum:
+                        - Pending
+                        - Verified
+                        - Failed
+                        type: string
+                      verifiedAt:
+                        format: date-time
+                        type: string
+                    required:
+                    - result
+                    type: object
+                    x-kubernetes-validations:
+                    - message: artifact verification is immutable
+                      rule: self == oldSelf
+                required:
+                - createdAt
+                - formatVersion
+                - id
+                - manifestDigest
+                - pathCount
+                - provenance
+                - sizeBytes
+                - verification
+                type: object
+              attempts:
+                format: int32
+                minimum: 0
+                type: integer
+              completedAt:
+                format: date-time
+                type: string
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                maxItems: 16
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              fence:
+                description: |-
+                  ColdDataFence records the exact stopped generation under which volumes may
+                  be read or populated. It is set once after stop and detachment checks pass.
+                properties:
+                  establishedAt:
+                    format: date-time
+                    type: string
+                    x-kubernetes-validations:
+                    - message: fence timestamp is immutable
+                      rule: self == oldSelf
+                  gameServer:
+                    description: |-
+                      ExactGameServerReference pins both object identity and the spec generation
+                      from which a data operation was requested.
+                    properties:
+                      desiredState:
+                        description: |-
+                          DesiredState is the durable pre-operation intent at Generation. It lets a
+                          retry distinguish an originally running server from one already stopped.
+                        enum:
+                        - Running
+                        - Stopped
+                        type: string
+                      generation:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                        type: string
+                      namespace:
+                        description: |-
+                          Namespace is a rejection sentinel, not a selector. Its presence is
+                          forbidden so ordinary API requests cannot silently prune cross-namespace
+                          intent; the operation namespace is always authoritative.
+                        type: string
+                      uid:
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                    required:
+                    - desiredState
+                    - generation
+                    - name
+                    - uid
+                    type: object
+                    x-kubernetes-validations:
+                    - message: fenced GameServer identity is immutable
+                      rule: self == oldSelf
+                    - message: namespace must be omitted because references are local
+                        to the operation
+                      rule: '!has(self.namespace)'
+                required:
+                - establishedAt
+                - gameServer
+                type: object
+                x-kubernetes-validations:
+                - message: cold data fence must identify stopped intent
+                  rule: self.gameServer.desiredState == 'Stopped'
+              observedGeneration:
+                format: int64
+                type: integer
+              phase:
+                description: |-
+                  DataOperationPhase is the bounded state shared by backup and restore
+                  operations. Detailed progress and safe operator actions belong in conditions.
+                enum:
+                - Pending
+                - Blocked
+                - Preparing
+                - Running
+                - Verifying
+                - Activating
+                - RollingBack
+                - Cancelling
+                - Cancelled
+                - Succeeded
+                - Failed
+                type: string
+              runtime:
+                description: |-
+                  RuntimeDisposition records the exact post-operation runtime state. A
+                  terminal operation that established a fence records this only after the
+                  requested restart policy has been durably observed.
+                properties:
+                  completedAt:
+                    format: date-time
+                    type: string
+                    x-kubernetes-validations:
+                    - message: runtime completion time is immutable
+                      rule: self == oldSelf
+                  gameServer:
+                    description: |-
+                      ExactGameServerReference pins both object identity and the spec generation
+                      from which a data operation was requested.
+                    properties:
+                      desiredState:
+                        description: |-
+                          DesiredState is the durable pre-operation intent at Generation. It lets a
+                          retry distinguish an originally running server from one already stopped.
+                        enum:
+                        - Running
+                        - Stopped
+                        type: string
+                      generation:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                        type: string
+                      namespace:
+                        description: |-
+                          Namespace is a rejection sentinel, not a selector. Its presence is
+                          forbidden so ordinary API requests cannot silently prune cross-namespace
+                          intent; the operation namespace is always authoritative.
+                        type: string
+                      uid:
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                    required:
+                    - desiredState
+                    - generation
+                    - name
+                    - uid
+                    type: object
+                    x-kubernetes-validations:
+                    - message: runtime GameServer identity is immutable
+                      rule: self == oldSelf
+                    - message: namespace must be omitted because references are local
+                        to the operation
+                      rule: '!has(self.namespace)'
+                  phase:
+                    allOf:
+                    - enum:
+                      - Pending
+                      - Starting
+                      - Ready
+                      - Stopping
+                      - Stopped
+                      - Failed
+                    - enum:
+                      - Ready
+                      - Stopped
+                    description: GameServerPhase summarizes observed lifecycle state.
+                    type: string
+                    x-kubernetes-validations:
+                    - message: runtime phase is immutable
+                      rule: self == oldSelf
+                required:
+                - completedAt
+                - gameServer
+                - phase
+                type: object
+                x-kubernetes-validations:
+                - message: runtime disposition must match observed desired state
+                  rule: (self.gameServer.desiredState == 'Running' && self.phase ==
+                    'Ready') || (self.gameServer.desiredState == 'Stopped' && self.phase
+                    == 'Stopped')
+              source:
+                description: |-
+                  DataSourceSnapshot is the immutable source manifest resolved before work
+                  begins. SettingsDigest covers canonical validated settings, never settings
+                  bytes or credentials.
+                properties:
+                  game:
+                    maxLength: 63
+                    minLength: 1
+                    pattern: ^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$
+                    type: string
+                    x-kubernetes-validations:
+                    - message: source game is immutable
+                      rule: self == oldSelf
+                  gameServer:
+                    description: |-
+                      ExactGameServerReference pins both object identity and the spec generation
+                      from which a data operation was requested.
+                    properties:
+                      desiredState:
+                        description: |-
+                          DesiredState is the durable pre-operation intent at Generation. It lets a
+                          retry distinguish an originally running server from one already stopped.
+                        enum:
+                        - Running
+                        - Stopped
+                        type: string
+                      generation:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                        type: string
+                      namespace:
+                        description: |-
+                          Namespace is a rejection sentinel, not a selector. Its presence is
+                          forbidden so ordinary API requests cannot silently prune cross-namespace
+                          intent; the operation namespace is always authoritative.
+                        type: string
+                      uid:
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                    required:
+                    - desiredState
+                    - generation
+                    - name
+                    - uid
+                    type: object
+                    x-kubernetes-validations:
+                    - message: source GameServer identity is immutable
+                      rule: self == oldSelf
+                    - message: namespace must be omitted because references are local
+                        to the operation
+                      rule: '!has(self.namespace)'
+                  imageDigest:
+                    pattern: ^sha256:[0-9a-f]{64}$
+                    type: string
+                    x-kubernetes-validations:
+                    - message: source image digest is immutable
+                      rule: self == oldSelf
+                  paths:
+                    items:
+                      description: |-
+                        DataPathIdentity records one adapter-declared persistent path and the exact
+                        claim that supplied or will receive its data.
+                      properties:
+                        claimRef:
+                          description: |-
+                            ExactLocalReference prevents name reuse from silently changing an
+                            operation's subject. The containing operation namespace is implicit, so a
+                            cross-namespace subject cannot be represented.
+                          properties:
+                            name:
+                              maxLength: 253
+                              minLength: 1
+                              pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                              type: string
+                            namespace:
+                              description: |-
+                                Namespace is a rejection sentinel, not a selector. Its presence is
+                                forbidden so ordinary API requests cannot silently prune cross-namespace
+                                intent; the operation namespace is always authoritative.
+                              type: string
+                            uid:
+                              maxLength: 128
+                              minLength: 1
+                              type: string
+                          required:
+                          - name
+                          - uid
+                          type: object
+                          x-kubernetes-validations:
+                          - message: namespace must be omitted because references
+                              are local to the operation
+                            rule: '!has(self.namespace)'
+                        mountPath:
+                          maxLength: 256
+                          minLength: 1
+                          pattern: ^/
+                          type: string
+                        name:
+                          maxLength: 63
+                          minLength: 1
+                          pattern: ^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$
+                          type: string
+                      required:
+                      - claimRef
+                      - mountPath
+                      - name
+                      type: object
+                    maxItems: 16
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                    x-kubernetes-validations:
+                    - message: source data paths are immutable
+                      rule: self == oldSelf
+                  settingsDigest:
+                    pattern: ^sha256:[0-9a-f]{64}$
+                    type: string
+                    x-kubernetes-validations:
+                    - message: source settings digest is immutable
+                      rule: self == oldSelf
+                required:
+                - game
+                - gameServer
+                - imageDigest
+                - paths
+                - settingsDigest
+                type: object
+              startedAt:
+                format: date-time
+                type: string
+            type: object
+            x-kubernetes-validations:
+            - message: blocked and failed phases require an actionable false or unknown
+                condition
+              rule: '!has(self.phase) || !(self.phase in [''Blocked'', ''Failed''])
+                || (has(self.conditions) && self.conditions.exists(condition, condition.status
+                != ''True'' && condition.message.size() > 0))'
+            - message: data work requires an immutable cold data fence
+              rule: '!has(self.phase) || !(self.phase in [''Running'', ''Verifying'',
+                ''Activating'', ''RollingBack'', ''Succeeded'']) || has(self.fence)'
+            - message: succeeded phase requires a verified complete artifact and source
+                manifest
+              rule: '!has(self.phase) || self.phase != ''Succeeded'' || (has(self.source)
+                && has(self.artifact) && self.artifact.verification.result == ''Verified''
+                && has(self.artifact.verification.verifiedAt) && self.artifact.pathCount
+                == self.source.paths.size())'
+            - message: resolved source status cannot be removed
+              rule: '!has(oldSelf.source) || has(self.source)'
+            - message: cold data fence cannot be removed
+              rule: '!has(oldSelf.fence) || has(self.fence)'
+            - message: artifact status cannot be removed
+              rule: '!has(oldSelf.artifact) || has(self.artifact)'
+            - message: runtime disposition cannot be removed
+              rule: '!has(oldSelf.runtime) || has(self.runtime)'
+            - message: terminal operation phase cannot change
+              rule: '!has(oldSelf.phase) || !(oldSelf.phase in [''Cancelled'', ''Succeeded'',
+                ''Failed'']) || (has(self.phase) && self.phase == oldSelf.phase)'
+            - message: terminal operation with a data fence requires runtime disposition
+              rule: '!has(self.phase) || !(self.phase in [''Cancelled'', ''Succeeded'',
+                ''Failed'']) || !has(self.fence) || has(self.runtime)'
+        required:
+        - spec
+        type: object
+        x-kubernetes-validations:
+        - message: cold data fence must match the exact operation-owned stopped generation
+          rule: '!has(self.status) || !has(self.status.fence) || (self.status.fence.gameServer.name
+            == self.spec.source.name && self.status.fence.gameServer.uid == self.spec.source.uid
+            && self.status.fence.gameServer.desiredState == ''Stopped'' && ((self.spec.source.desiredState
+            == ''Running'' && self.status.fence.gameServer.generation == self.spec.source.generation
+            + 1) || (self.spec.source.desiredState == ''Stopped'' && self.status.fence.gameServer.generation
+            == self.spec.source.generation)))'
+        - message: runtime disposition must match the exact operation-owned final
+            generation
+          rule: '!has(self.status) || !has(self.status.runtime) || (has(self.status.fence)
+            && self.status.runtime.gameServer.name == self.spec.source.name && self.status.runtime.gameServer.uid
+            == self.spec.source.uid && ((self.spec.restartPolicy == ''RestorePreviousState''
+            && self.spec.source.desiredState == ''Running'' && self.status.runtime.gameServer.desiredState
+            == ''Running'' && self.status.runtime.gameServer.generation == self.status.fence.gameServer.generation
+            + 1) || ((self.spec.restartPolicy != ''RestorePreviousState'' || self.spec.source.desiredState
+            == ''Stopped'') && self.status.runtime.gameServer.desiredState == ''Stopped''
+            && self.status.runtime.gameServer.generation == self.status.fence.gameServer.generation)))'
+        - message: artifact provenance must match the backup operation and repository
+          rule: '!has(self.status) || !has(self.status.artifact) || (self.status.artifact.provenance.backupRef.name
+            == self.metadata.name && self.status.artifact.provenance.repositorySecretRef.name
+            == self.spec.repositorySecretRef.name && self.status.artifact.provenance.repositorySecretRef.uid
+            == self.spec.repositorySecretRef.uid && self.status.artifact.provenance.repositorySecretRef.resourceVersion
+            == self.spec.repositorySecretRef.resourceVersion)'
+    served: true
+    storage: true
+    subresources:
+      status: {}

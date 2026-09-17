@@ -18,7 +18,12 @@ var schemeBuilder = runtime.NewSchemeBuilder(addKnownTypes)
 var AddToScheme = schemeBuilder.AddToScheme
 
 func addKnownTypes(scheme *runtime.Scheme) error {
-	scheme.AddKnownTypes(GroupVersion, &GameServer{}, &GameServerList{})
+	scheme.AddKnownTypes(
+		GroupVersion,
+		&GameServer{}, &GameServerList{},
+		&GameBackup{}, &GameBackupList{},
+		&GameRestore{}, &GameRestoreList{},
+	)
 	metav1.AddToGroupVersion(scheme, GroupVersion)
 	return nil
 }
