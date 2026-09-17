@@ -55,7 +55,7 @@ jobs:
   kind-lifecycle:
     name: Kind lifecycle
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -66,11 +66,21 @@ jobs:
           cache: true
       - name: Prove isolated-cluster lifecycle
         run: make test-kind-lifecycle
+      - name: Prove certified Factorio lifecycle
+        run: make test-kind-factorio
       - name: Upload sanitized failure diagnostics
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: kind-lifecycle-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/kind-lifecycle/
+          if-no-files-found: ignore
+          retention-days: 3
+      - name: Upload sanitized Factorio lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: factorio-lifecycle-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/factorio-lifecycle/
           if-no-files-found: ignore
           retention-days: 3

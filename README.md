@@ -11,8 +11,8 @@ not the platform's domain model.
 
 Arcadectl v2 is under active development and is not deployable yet. The first
 milestone proves one complete Factorio lifecycle: create, configure, start,
-stop, restart, update, back up, restore, decommission without data loss, and
-deliberately destroy.
+stop, restart, update, and decommission without data loss. Backup, restore, and
+deliberate destruction are separately gated follow-on milestones.
 
 The current foundation includes a generated `GameServer` CRD, a pure,
 game-neutral Kubernetes resource planner, typed adapter settings rendering, and
@@ -20,7 +20,9 @@ an idempotent controller. The controller starts and stops runtime resources
 while retaining storage, refuses to adopt conflicting resources, and cannot
 delete persistent claims under its generated RBAC policy. A digest-rendered,
 namespace-scoped controller install is available for isolated evaluation;
-complete lifecycle validation remains before the project is deployable.
+the certified Factorio lifecycle is exercised in a disposable-cluster proof.
+Backup, restore, explicit destruction, and production deployment remain
+unimplemented.
 
 A structurally different synthetic adapter participates in conformance tests
 from the beginning. Adding another game must not require changes to the core

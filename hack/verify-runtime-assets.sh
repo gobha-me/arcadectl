@@ -12,6 +12,7 @@ readonly factorio_entrypoint="$repository_root/images/factorio/secure-entrypoint
 readonly factorio_readiness="$repository_root/images/factorio/readiness-probe.sh"
 readonly materializer="$repository_root/internal/platform/kube/materialize.sh"
 readonly lifecycle_harness="$repository_root/hack/test-kind-lifecycle.sh"
+readonly factorio_harness="$repository_root/hack/test-kind-factorio.sh"
 readonly diagnostic_redaction="$repository_root/hack/redact-diagnostics.sed"
 
 bash -n "$factorio_entrypoint"
@@ -22,6 +23,7 @@ bash -n "$repository_root/hack/render-controller.sh"
 bash -n "$repository_root/hack/install.sh"
 bash -n "$repository_root/hack/uninstall.sh"
 bash -n "$lifecycle_harness"
+bash -n "$factorio_harness"
 grep -Fq 'golang:1.26.0-alpine3.23@sha256:d4c4845f5d60c6a974c6000ce58ae079328d03ab7f721a0734277e69905473e5' "$controller_dockerfile"
 grep -Fq 'ENV GOTOOLCHAIN=local GOFLAGS=-mod=readonly' "$controller_dockerfile"
 grep -Fq 'FROM scratch' "$controller_dockerfile"
@@ -48,8 +50,13 @@ grep -Fq "kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3
 grep -Fq "registry.k8s.io/kubectl@sha256:5ed410ebac5dc976cc717098994dcdb29bbbd38f6bd65f582311f5be4ba719cf" "$lifecycle_harness"
 grep -Fq "registry:3.0.0@sha256:6c5666b861f3505b116bb9aa9b25175e71210414bd010d92035ff64018f9457e" "$lifecycle_harness"
 grep -Fq 'arcade.gobha.me/e2e-run' "$lifecycle_harness"
+grep -Fq 'ARCADECTL_LIFECYCLE_SUITE=factorio' "$factorio_harness"
 if grep -Eq 'kind delete cluster --all|docker (system|network|volume) prune|docker network rm' "$lifecycle_harness"; then
   echo "Lifecycle harness contains a broad destructive operation" >&2
+  exit 1
+fi
+if grep -Eq 'kind delete cluster --all|docker (system|network|volume) prune|docker network rm' "$factorio_harness"; then
+  echo "Factorio lifecycle harness contains a broad destructive operation" >&2
   exit 1
 fi
 redaction_fixture=$(printf '%s\n' \
