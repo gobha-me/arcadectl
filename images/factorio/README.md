@@ -20,4 +20,6 @@ isolated lifecycle evidence required by the Factorio adapter.
 The public image is not published by this slice. Publication remains gated on
 the release supply-chain work, including provenance, SBOM, vulnerability and
 license review. Local isolated-cluster validation may build this Dockerfile
-without pushing it.
+without pushing it publicly. `make test-kind-factorio` builds two local
+label-only variants, resolves both through a task-owned registry, and proves
+the real server lifecycle by immutable digest in a disposable kind cluster.

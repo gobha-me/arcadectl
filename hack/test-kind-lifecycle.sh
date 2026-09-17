@@ -9,9 +9,18 @@ readonly kind_version=v0.33.0
 readonly kind_node_image='kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5'
 readonly kubectl_image='registry.k8s.io/kubectl@sha256:5ed410ebac5dc976cc717098994dcdb29bbbd38f6bd65f582311f5be4ba719cf'
 readonly registry_image='registry:3.0.0@sha256:6c5666b861f3505b116bb9aa9b25175e71210414bd010d92035ff64018f9457e'
+readonly lifecycle_suite="${ARCADECTL_LIFECYCLE_SUITE:-synthetic}"
+case "$lifecycle_suite" in
+  synthetic|factorio) ;;
+  *) printf 'error: unsupported lifecycle suite: %s\n' "$lifecycle_suite" >&2; exit 2 ;;
+esac
 readonly namespace=arcadectl-system
 readonly server_name=lifecycle
-readonly claim_name=lifecycle-conformance-echo-state
+if [[ "$lifecycle_suite" == factorio ]]; then
+  readonly claim_name=lifecycle-factorio-world
+else
+  readonly claim_name=lifecycle-conformance-echo-state
+fi
 readonly collision_name=collision
 
 readonly repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -19,13 +28,17 @@ workspace=$(mktemp -d "${TMPDIR:-/tmp}/arcadectl-kind-lifecycle.XXXXXX")
 readonly workspace
 run_suffix=$(basename "$workspace" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9' | tail -c 12)
 readonly run_suffix
-readonly run_id="lifecycle-$run_suffix"
-readonly cluster_name="arcadectl-e2e-$run_suffix"
+readonly run_id="$lifecycle_suite-lifecycle-$run_suffix"
+readonly cluster_name="arcadectl-$lifecycle_suite-$run_suffix"
 readonly registry_name="$cluster_name-registry"
 readonly kubeconfig="$workspace/kubeconfig"
 readonly ownership_file="$workspace/ownership"
 readonly kubectl_wrapper="$workspace/kubectl"
-readonly artifact_root="${ARCADECTL_E2E_ARTIFACT_ROOT:-$repository_root/artifacts/kind-lifecycle}"
+if [[ "$lifecycle_suite" == factorio ]]; then
+  readonly artifact_root="${ARCADECTL_E2E_ARTIFACT_ROOT:-$repository_root/artifacts/factorio-lifecycle}"
+else
+  readonly artifact_root="${ARCADECTL_E2E_ARTIFACT_ROOT:-$repository_root/artifacts/kind-lifecycle}"
+fi
 readonly artifact_directory="$artifact_root/$run_id"
 readonly docker_config="$workspace/docker-config"
 readonly redaction_rules="$repository_root/hack/redact-diagnostics.sed"
@@ -46,6 +59,9 @@ node_names=
 node_ids=
 controller_tag=
 synthetic_tag=
+factorio_a_tag=
+factorio_b_tag=
+overlap_monitor_pid=
 
 say() {
   printf '==> %s\n' "$*"
@@ -79,11 +95,19 @@ redact_stream() {
 collect_diagnostics() {
   mkdir -p "$artifact_root" || return 1
   if [[ -e "$artifact_directory" || -L "$artifact_directory" ]]; then
-    printf 'refusing to overwrite existing diagnostics path: %s\n' "$artifact_directory" >&2
-    return 1
+    [[ ! -L "$artifact_directory" && -d "$artifact_directory" ]] || {
+      printf 'refusing unsafe existing diagnostics path: %s\n' "$artifact_directory" >&2
+      return 1
+    }
+    grep -Fxq "$run_id" "$artifact_directory/.run-id" 2>/dev/null || {
+      printf 'refusing unowned existing diagnostics path: %s\n' "$artifact_directory" >&2
+      return 1
+    }
+  else
+    mkdir "$artifact_directory" || return 1
+    chmod 0700 "$artifact_directory"
+    printf '%s\n' "$run_id" >"$artifact_directory/.run-id"
   fi
-  mkdir "$artifact_directory" || return 1
-  chmod 0700 "$artifact_directory"
   {
     printf 'run_id=%s\ncluster=%s\nregistry=%s\n' "$run_id" "$cluster_name" "$registry_name"
     printf 'kind_node_image=%s\nkubectl_image=%s\nregistry_image=%s\n' "$kind_node_image" "$kubectl_image" "$registry_image"
@@ -120,9 +144,12 @@ collect_diagnostics() {
     run_bounded 10 docker logs "$registry_name" 2>&1 | redact_stream >"$artifact_directory/registry.log" || true
   fi
   {
-    printf 'controller_tag=%s\nsynthetic_tag=%s\n' "$controller_tag" "$synthetic_tag"
+    printf 'controller_tag=%s\nsynthetic_tag=%s\nfactorio_a_tag=%s\nfactorio_b_tag=%s\n' \
+      "$controller_tag" "$synthetic_tag" "$factorio_a_tag" "$factorio_b_tag"
     [[ -z "$controller_tag" ]] || docker image inspect "$controller_tag" --format 'controller_id={{.Id}} controller_digests={{json .RepoDigests}}' 2>/dev/null || true
     [[ -z "$synthetic_tag" ]] || docker image inspect "$synthetic_tag" --format 'synthetic_id={{.Id}} synthetic_digests={{json .RepoDigests}}' 2>/dev/null || true
+    [[ -z "$factorio_a_tag" ]] || docker image inspect "$factorio_a_tag" --format 'factorio_a_id={{.Id}} factorio_a_digests={{json .RepoDigests}}' 2>/dev/null || true
+    [[ -z "$factorio_b_tag" ]] || docker image inspect "$factorio_b_tag" --format 'factorio_b_id={{.Id}} factorio_b_digests={{json .RepoDigests}}' 2>/dev/null || true
   } >"$artifact_directory/docker-images.txt"
   find "$artifact_directory" -type f -exec chmod 0600 {} +
   printf 'sanitized failure diagnostics: %s\n' "$artifact_directory" >&2
@@ -155,7 +182,7 @@ verify_cluster_ownership() {
   done <<<"$current_ids"
   if [[ "$cluster_marker_created" == true && -x "$kubectl_wrapper" && -s "$kubeconfig" ]]; then
     marker=$(run_bounded 10 "$kubectl_wrapper" get configmap arcadectl-e2e-owner --namespace kube-system --output=jsonpath='{.data.run-id}' 2>/dev/null) || marker_status=$?
-    if [[ "$marker_status" -eq 0 && "$marker" != "$run_id" ]]; then
+    if [[ "$marker_status" -ne 0 || "$marker" != "$run_id" ]]; then
       return 1
     fi
   fi
@@ -165,6 +192,11 @@ verify_cluster_ownership() {
 cleanup() {
   local cleanup_status=0 clusters current_nodes registry_names image_references
   set +e
+  if [[ -n "$overlap_monitor_pid" ]]; then
+    kill "$overlap_monitor_pid" >/dev/null 2>&1 || true
+    wait "$overlap_monitor_pid" >/dev/null 2>&1 || true
+    overlap_monitor_pid=
+  fi
   local cluster_present=false
   if ! clusters=$(go tool kind get clusters 2>/dev/null); then
     printf 'could not enumerate kind clusters during cleanup\n' >&2
@@ -225,6 +257,16 @@ cleanup() {
       docker image rm "$synthetic_tag" >/dev/null 2>&1 || cleanup_status=1
     fi
   fi
+  if [[ -n "$factorio_a_tag" ]]; then
+    if grep -Fxq "$factorio_a_tag" <<<"$image_references"; then
+      docker image rm "$factorio_a_tag" >/dev/null 2>&1 || cleanup_status=1
+    fi
+  fi
+  if [[ -n "$factorio_b_tag" ]]; then
+    if grep -Fxq "$factorio_b_tag" <<<"$image_references"; then
+      docker image rm "$factorio_b_tag" >/dev/null 2>&1 || cleanup_status=1
+    fi
+  fi
   if ! clusters=$(go tool kind get clusters 2>/dev/null); then
     printf 'could not verify kind cluster absence after cleanup\n' >&2
     cleanup_status=1
@@ -265,6 +307,14 @@ cleanup() {
     printf 'task synthetic image tag still exists after cleanup: %s\n' "$synthetic_tag" >&2
     cleanup_status=1
   fi
+  if [[ -n "$factorio_a_tag" ]] && grep -Fxq "$factorio_a_tag" <<<"$image_references"; then
+    printf 'task Factorio A image tag still exists after cleanup: %s\n' "$factorio_a_tag" >&2
+    cleanup_status=1
+  fi
+  if [[ -n "$factorio_b_tag" ]] && grep -Fxq "$factorio_b_tag" <<<"$image_references"; then
+    printf 'task Factorio B image tag still exists after cleanup: %s\n' "$factorio_b_tag" >&2
+    cleanup_status=1
+  fi
   if [[ "$cleanup_status" -eq 0 ]]; then
     rm -rf -- "$workspace" || cleanup_status=1
     if [[ -e "$workspace" || -L "$workspace" ]]; then
@@ -296,7 +346,7 @@ finish() {
 }
 trap finish EXIT
 
-for command in awk basename chmod curl docker find git go grep head mktemp sed seq sleep tail timeout tr; do
+for command in awk basename chmod cp curl date docker find git go grep head mktemp sed seq sleep tail timeout touch tr; do
   command -v "$command" >/dev/null 2>&1 || die "required command is unavailable: $command"
 done
 docker info >/dev/null 2>&1 || die "Docker daemon is unavailable"
@@ -363,26 +413,53 @@ curl --fail --silent --show-error "http://127.0.0.1:$registry_port/v2/" >/dev/nu
 
 readonly registry_host="127.0.0.1:$registry_port"
 controller_tag="$registry_host/arcadectl-controller:$run_id"
-synthetic_tag="$registry_host/gobha-me/arcadectl-conformance-server:$run_id"
+if [[ "$lifecycle_suite" == factorio ]]; then
+  factorio_a_tag="$registry_host/gobha-me/arcadectl-factorio:$run_id-a"
+  factorio_b_tag="$registry_host/gobha-me/arcadectl-factorio:$run_id-b"
+else
+  synthetic_tag="$registry_host/gobha-me/arcadectl-conformance-server:$run_id"
+fi
 
-say "building lifecycle-only controller image"
-run_bounded 360 docker build \
-  --build-arg "VCS_REF=$candidate_sha" \
-  --build-arg "SOURCE_DATE_EPOCH=$source_date_epoch" \
-  --build-arg LIFECYCLE_TEST=true \
-  --build-arg "SOURCE_DIRTY=$source_dirty" \
-  --tag "$controller_tag" \
-  "$repository_root"
-say "building synthetic lifecycle server image"
-run_bounded 360 docker build \
-  --file "$repository_root/images/conformance/Dockerfile" \
-  --build-arg "VCS_REF=$candidate_sha" \
-  --build-arg "SOURCE_DATE_EPOCH=$source_date_epoch" \
-  --build-arg "SOURCE_DIRTY=$source_dirty" \
-  --tag "$synthetic_tag" \
-  "$repository_root"
+controller_build_args=(
+  --build-arg "VCS_REF=$candidate_sha"
+  --build-arg "SOURCE_DATE_EPOCH=$source_date_epoch"
+  --build-arg "SOURCE_DIRTY=$source_dirty"
+)
+if [[ "$lifecycle_suite" == synthetic ]]; then
+  controller_build_args+=(--build-arg LIFECYCLE_TEST=true)
+fi
+say "building $lifecycle_suite controller image"
+run_bounded 360 docker build "${controller_build_args[@]}" --tag "$controller_tag" "$repository_root"
+
+if [[ "$lifecycle_suite" == factorio ]]; then
+  say "building two immutable Factorio lifecycle variants"
+  run_bounded 600 docker build \
+    --file "$repository_root/images/factorio/Dockerfile" \
+    --label arcade.gobha.me/lifecycle-variant=a \
+    --tag "$factorio_a_tag" \
+    "$repository_root/images/factorio"
+  run_bounded 600 docker build \
+    --file "$repository_root/images/factorio/Dockerfile" \
+    --label arcade.gobha.me/lifecycle-variant=b \
+    --tag "$factorio_b_tag" \
+    "$repository_root/images/factorio"
+else
+  say "building synthetic lifecycle server image"
+  run_bounded 360 docker build \
+    --file "$repository_root/images/conformance/Dockerfile" \
+    --build-arg "VCS_REF=$candidate_sha" \
+    --build-arg "SOURCE_DATE_EPOCH=$source_date_epoch" \
+    --build-arg "SOURCE_DIRTY=$source_dirty" \
+    --tag "$synthetic_tag" \
+    "$repository_root"
+fi
 run_bounded 120 docker push "$controller_tag" >/dev/null
-run_bounded 120 docker push "$synthetic_tag" >/dev/null
+if [[ "$lifecycle_suite" == factorio ]]; then
+  run_bounded 240 docker push "$factorio_a_tag" >/dev/null
+  run_bounded 240 docker push "$factorio_b_tag" >/dev/null
+else
+  run_bounded 120 docker push "$synthetic_tag" >/dev/null
+fi
 
 resolve_digest() {
   local tag=$1 repository=${1%:*} reference
@@ -392,10 +469,20 @@ resolve_digest() {
 }
 
 controller_digest=$(resolve_digest "$controller_tag") || die "controller registry digest is unavailable"
-synthetic_digest=$(resolve_digest "$synthetic_tag") || die "synthetic registry digest is unavailable"
-readonly controller_digest synthetic_digest
 readonly controller_image="$registry_host/arcadectl-controller@$controller_digest"
-readonly synthetic_image="ghcr.io/gobha-me/arcadectl-conformance-server@$synthetic_digest"
+if [[ "$lifecycle_suite" == factorio ]]; then
+  factorio_a_digest=$(resolve_digest "$factorio_a_tag") || die "Factorio A registry digest is unavailable"
+  factorio_b_digest=$(resolve_digest "$factorio_b_tag") || die "Factorio B registry digest is unavailable"
+  [[ "$factorio_a_digest" != "$factorio_b_digest" ]] || die "Factorio lifecycle variants resolved to the same digest"
+  readonly factorio_a_digest factorio_b_digest
+  readonly factorio_a_image="ghcr.io/gobha-me/arcadectl-factorio@$factorio_a_digest"
+  readonly factorio_b_image="ghcr.io/gobha-me/arcadectl-factorio@$factorio_b_digest"
+else
+  synthetic_digest=$(resolve_digest "$synthetic_tag") || die "synthetic registry digest is unavailable"
+  readonly synthetic_digest
+  readonly synthetic_image="ghcr.io/gobha-me/arcadectl-conformance-server@$synthetic_digest"
+fi
+readonly controller_digest
 
 say "creating task-owned kind cluster $cluster_name"
 cat >"$workspace/kind.yaml" <<'EOF'
@@ -439,8 +526,15 @@ while IFS= read -r node; do
     | run_bounded 10 docker exec --interactive "$node" tee /etc/containerd/certs.d/ghcr.io/hosts.toml >/dev/null
   run_bounded 120 docker exec "$node" ctr --namespace k8s.io images pull \
     --hosts-dir /etc/containerd/certs.d "$controller_image" >/dev/null
-  run_bounded 120 docker exec "$node" ctr --namespace k8s.io images pull \
-    --hosts-dir /etc/containerd/certs.d "$synthetic_image" >/dev/null
+  if [[ "$lifecycle_suite" == factorio ]]; then
+    run_bounded 240 docker exec "$node" ctr --namespace k8s.io images pull \
+      --hosts-dir /etc/containerd/certs.d "$factorio_a_image" >/dev/null
+    run_bounded 240 docker exec "$node" ctr --namespace k8s.io images pull \
+      --hosts-dir /etc/containerd/certs.d "$factorio_b_image" >/dev/null
+  else
+    run_bounded 120 docker exec "$node" ctr --namespace k8s.io images pull \
+      --hosts-dir /etc/containerd/certs.d "$synthetic_image" >/dev/null
+  fi
 done <<<"$node_names"
 
 kube create configmap arcadectl-e2e-owner --namespace kube-system \
@@ -671,6 +765,381 @@ EOF
   [[ "$marker" == first-seed ]] || die "retained marker changed while stopped: $marker"
   kube_bounded 70 delete pod lifecycle-storage-verifier --namespace "$namespace" --wait=true --timeout=60s >/dev/null
 }
+
+run_factorio_lifecycle() {
+  local verifier_image='busybox@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0'
+  local invalid_name=invalid-factorio
+  local transition_name transition_started transition_finished
+  local transitions_file="$workspace/transitions.tsv"
+  printf 'transition\tstarted_epoch\tfinished_epoch\tduration_seconds\tresult\n' >"$transitions_file"
+
+  begin_transition() {
+    transition_name=$1
+    transition_started=$(date +%s)
+  }
+
+  end_transition() {
+    transition_finished=$(date +%s)
+    printf '%s\t%s\t%s\t%s\tpassed\n' "$transition_name" "$transition_started" "$transition_finished" "$((transition_finished - transition_started))" >>"$transitions_file"
+  }
+
+  patch_factorio_service() {
+    local cluster_ip=
+    for _ in $(seq 1 60); do
+      cluster_ip=$(kube get service "$server_name" --namespace "$namespace" --output=jsonpath='{.spec.clusterIP}' 2>/dev/null || true)
+      [[ "$cluster_ip" =~ ^[0-9a-fA-F:.]+$ ]] && break
+      sleep 1
+    done
+    [[ "$cluster_ip" =~ ^[0-9a-fA-F:.]+$ ]] || die "Factorio Service did not receive a ClusterIP"
+    kube patch service "$server_name" --namespace "$namespace" --subresource=status --type=merge \
+      --patch "{\"status\":{\"loadBalancer\":{\"ingress\":[{\"ip\":\"$cluster_ip\",\"ports\":[{\"port\":34197,\"protocol\":\"UDP\"}]}]}}}" >/dev/null
+    printf '%s\n' "$cluster_ip"
+  }
+
+  assert_factorio_image() {
+    local wanted_image=$1 wanted_digest=$2 output count image image_id
+    output=$(kube get pods --namespace "$namespace" \
+      --selector="app.kubernetes.io/name=game-server,app.kubernetes.io/instance=$server_name" \
+      --output=jsonpath='{range .items[*]}{.spec.containers[?(@.name=="game")].image}|{.status.containerStatuses[?(@.name=="game")].imageID}{"\n"}{end}')
+    count=$(awk 'NF { count++ } END { print count + 0 }' <<<"$output")
+    [[ "$count" -eq 1 ]] || die "expected exactly one Factorio Pod, observed $count"
+    IFS='|' read -r image image_id <<<"$output"
+    [[ "$image" == "$wanted_image" ]] || die "Factorio Pod image is not the intended digest: $image"
+    [[ "$image_id" == *"$wanted_digest"* ]] || die "Factorio Pod imageID does not prove the intended digest: $image_id"
+  }
+
+  assert_factorio_workload_contract() {
+    local expected
+    expected=$(kube get deployment "$server_name" --namespace "$namespace" \
+      --output=jsonpath='{.spec.strategy.type}|{.spec.template.spec.securityContext.runAsUser}|{.spec.template.spec.securityContext.runAsGroup}|{.spec.template.spec.securityContext.fsGroup}|{.spec.template.spec.containers[?(@.name=="game")].ports[0].name}|{.spec.template.spec.containers[?(@.name=="game")].ports[0].protocol}|{.spec.template.spec.containers[?(@.name=="game")].ports[0].containerPort}')
+    [[ "$expected" == 'Recreate|845|845|845|game|UDP|34197' ]] || die "unexpected Factorio workload contract: $expected"
+    expected=$(kube get service "$server_name" --namespace "$namespace" \
+      --output=jsonpath='{range .spec.ports[*]}{.name}|{.protocol}|{.port}{"\n"}{end}')
+    [[ "$expected" == 'game|UDP|34197' ]] || die "Factorio Service exposed an unexpected endpoint: $expected"
+    ! grep -Fqi rcon <<<"$expected" || die "Factorio Service exposed administrator RCON"
+  }
+
+  verify_factorio_storage() {
+    kube_bounded 40 delete pod factorio-storage-verifier --namespace "$namespace" --ignore-not-found --wait=true --timeout=30s >/dev/null
+    cat >"$workspace/factorio-verifier.yaml" <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: factorio-storage-verifier
+  namespace: $namespace
+  labels:
+    arcade.gobha.me/e2e-run: $run_id
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 845
+    runAsGroup: 845
+    fsGroup: 845
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: verifier
+      image: $verifier_image
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/sh", "-ec"]
+      args:
+        - |
+          test "\$(cat /factorio/.arcadectl-world-id)" = "$run_id"
+          set -- /factorio/saves/*.zip
+          test -s "\$1"
+          test "\$(stat -c '%u:%g' "\$1")" = "845:845"
+          test "\$(stat -c '%u:%g' /factorio/config/server-settings.json)" = "845:845"
+          grep -Fq '"name": "Arcadectl lifecycle proof"' /factorio/config/server-settings.json
+          printf 'world-identity=preserved\nsave=present\nownership=845:845\n'
+      resources:
+        requests: {cpu: 5m, memory: 8Mi}
+        limits: {cpu: 50m, memory: 32Mi}
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: {drop: ["ALL"]}
+      volumeMounts:
+        - name: world
+          mountPath: /factorio
+          readOnly: true
+  volumes:
+    - name: world
+      persistentVolumeClaim:
+        claimName: $claim_name
+EOF
+    kube apply --filename "$workspace/factorio-verifier.yaml" >/dev/null
+    wait_pod_phase factorio-storage-verifier Succeeded 90
+    [[ $(kube logs factorio-storage-verifier --namespace "$namespace") == $'world-identity=preserved\nsave=present\nownership=845:845' ]] \
+      || die "Factorio storage verifier returned unexpected evidence"
+    kube_bounded 70 delete pod factorio-storage-verifier --namespace "$namespace" --wait=true --timeout=60s >/dev/null
+  }
+
+  create_factorio_server_manifest() {
+    local digest=$1 desired=$2 destination=$3
+    cat >"$destination" <<EOF
+apiVersion: arcade.gobha.me/v1alpha1
+kind: GameServer
+metadata:
+  name: $server_name
+  namespace: $namespace
+spec:
+  game: factorio
+  imageDigest: $digest
+  desiredState: $desired
+  compute:
+    cpuRequest: 100m
+    cpuLimit: "2"
+    memoryRequest: 256Mi
+    memoryLimit: 2Gi
+  storage:
+    size: 512Mi
+    storageClassName: ""
+  settings:
+    name: Arcadectl lifecycle proof
+    description: Isolated non-public lifecycle evidence
+    maxPlayers: 4
+    visibility: private
+EOF
+  }
+
+  cat >"$workspace/invalid-factorio.yaml" <<EOF
+apiVersion: arcade.gobha.me/v1alpha1
+kind: GameServer
+metadata:
+  name: $invalid_name
+  namespace: $namespace
+spec:
+  game: factorio
+  imageDigest: $factorio_a_digest
+  desiredState: Running
+  compute: {cpuRequest: 100m, cpuLimit: "1", memoryRequest: 128Mi, memoryLimit: 1Gi}
+  storage: {size: 512Mi, storageClassName: ""}
+  settings: {name: Invalid proof, visibility: public}
+EOF
+  say "proving bounded Factorio validation failure before child mutation"
+  begin_transition invalid-spec
+  kube apply --filename "$workspace/invalid-factorio.yaml" >/dev/null
+  wait_server "$invalid_name" Failed InvalidSpec 90
+  invalid_message=$(kube get gameserver "$invalid_name" --namespace "$namespace" --output=jsonpath='{.status.conditions[?(@.type=="SpecValid")].message}')
+  [[ "$invalid_message" == 'settings are invalid; correct them to match the selected game adapter schema and rendering limits' ]] \
+    || die "invalid settings status was not bounded and actionable: $invalid_message"
+  for identity in \
+    "persistentvolumeclaim/$invalid_name-factorio-world" \
+    "configmap/$invalid_name-configuration" \
+    "deployment/$invalid_name" \
+    "service/$invalid_name"; do
+    assert_absent "$identity"
+  done
+  kube_bounded 70 delete gameserver "$invalid_name" --namespace "$namespace" --wait=true --timeout=60s >/dev/null
+  end_transition
+
+  cat >"$workspace/factorio-pv.yaml" <<EOF
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: arcadectl-factorio-world-$run_suffix
+  labels:
+    arcade.gobha.me/e2e-run: $run_id
+spec:
+  capacity: {storage: 512Mi}
+  accessModes: ["ReadWriteOnce"]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  claimRef:
+    namespace: $namespace
+    name: $claim_name
+  hostPath:
+    path: /var/arcadectl-e2e/$run_id
+    type: DirectoryOrCreate
+EOF
+  while IFS= read -r node; do
+    [[ -n "$node" ]] || continue
+    run_bounded 10 docker exec "$node" install -d -o 845 -g 845 -m 0770 "/var/arcadectl-e2e/$run_id"
+    printf '%s\n' "$run_id" | run_bounded 10 docker exec --interactive "$node" sh -c \
+      "umask 077; cat > '/var/arcadectl-e2e/$run_id/.arcadectl-world-id'; chown 845:845 '/var/arcadectl-e2e/$run_id/.arcadectl-world-id'"
+  done <<<"$node_names"
+  kube apply --filename "$workspace/factorio-pv.yaml" >/dev/null
+  create_factorio_server_manifest "$factorio_a_digest" Stopped "$workspace/factorio-server.yaml"
+
+  say "creating stopped Factorio server and binding retained world"
+  begin_transition create-stopped
+  kube apply --filename "$workspace/factorio-server.yaml" >/dev/null
+  kube_bounded 130 wait persistentvolumeclaim/"$claim_name" --namespace "$namespace" --for=jsonpath='{.status.phase}'=Bound --timeout=120s >/dev/null
+  wait_server "$server_name" Stopped RuntimeStopped 120
+  assert_runtime_absent "$server_name"
+  pvc_uid=$(kube get persistentvolumeclaim "$claim_name" --namespace "$namespace" --output=jsonpath='{.metadata.uid}')
+  pv_name=$(kube get persistentvolumeclaim "$claim_name" --namespace "$namespace" --output=jsonpath='{.spec.volumeName}')
+  server_uid=$(kube get gameserver "$server_name" --namespace "$namespace" --output=jsonpath='{.metadata.uid}')
+  [[ -n "$pvc_uid" && "$pv_name" == "arcadectl-factorio-world-$run_suffix" ]] || die "Factorio PVC identity is incomplete"
+  assert_pvc_identity "$pvc_uid" "$pv_name"
+  assert_controller_image
+  end_transition
+
+  say "starting the certified Factorio runtime"
+  begin_transition start
+  kube patch gameserver "$server_name" --namespace "$namespace" --type=merge --patch '{"spec":{"desiredState":"Running"}}' >/dev/null
+  wait_present deployment "$server_name" 90
+  kube_bounded 250 rollout status deployment/"$server_name" --namespace "$namespace" --timeout=240s >/dev/null
+  factorio_address=$(patch_factorio_service)
+  wait_server "$server_name" Ready Ready 120
+  factorio_endpoint=$(kube get gameserver "$server_name" --namespace "$namespace" --output=jsonpath='{.status.endpoints[0].name}|{.status.endpoints[0].protocol}|{.status.endpoints[0].address}|{.status.endpoints[0].port}')
+  [[ "$factorio_endpoint" == "game|UDP|$factorio_address|34197" ]] || die "unexpected Factorio endpoint: $factorio_endpoint"
+  assert_factorio_workload_contract
+  assert_factorio_image "$factorio_a_image" "$factorio_a_digest"
+  initial_game_pod_uid=$(kube get pods --namespace "$namespace" --selector="app.kubernetes.io/instance=$server_name" --output=jsonpath='{.items[0].metadata.uid}')
+  end_transition
+
+  say "stopping Factorio and verifying its real save from a separate read-only Pod"
+  begin_transition stop
+  kube patch gameserver "$server_name" --namespace "$namespace" --type=merge --patch '{"spec":{"desiredState":"Stopped"}}' >/dev/null
+  wait_server "$server_name" Stopped RuntimeStopped 120
+  assert_runtime_absent "$server_name"
+  assert_pvc_identity "$pvc_uid" "$pv_name"
+  verify_factorio_storage
+  end_transition
+
+  say "starting Factorio again from retained data"
+  begin_transition restart
+  kube patch gameserver "$server_name" --namespace "$namespace" --type=merge --patch '{"spec":{"desiredState":"Running"}}' >/dev/null
+  wait_present deployment "$server_name" 90
+  kube_bounded 250 rollout status deployment/"$server_name" --namespace "$namespace" --timeout=240s >/dev/null
+  patch_factorio_service >/dev/null
+  wait_server "$server_name" Ready Ready 120
+  restarted_game_pod_uid=$(kube get pods --namespace "$namespace" --selector="app.kubernetes.io/instance=$server_name" --output=jsonpath='{.items[0].metadata.uid}')
+  [[ "$restarted_game_pod_uid" != "$initial_game_pod_uid" ]] || die "Factorio restart did not replace the Pod"
+  assert_factorio_image "$factorio_a_image" "$factorio_a_digest"
+  end_transition
+
+  say "updating Factorio by immutable digest with overlap monitoring"
+  begin_transition image-update
+  overlap_file="$workspace/max-running-factorio-containers"
+  overlap_stop="$workspace/stop-overlap-monitor"
+  overlap_ready="$workspace/overlap-monitor-ready"
+  (
+    maximum=0
+    while [[ ! -e "$overlap_stop" ]]; do
+      running=$(kube get pods --namespace "$namespace" --selector="app.kubernetes.io/instance=$server_name" \
+        --output=jsonpath='{range .items[*]}{.status.containerStatuses[?(@.name=="game")].state.running.startedAt}{"\n"}{end}' 2>/dev/null \
+        | awk 'NF { count++ } END { print count + 0 }')
+      if (( running > maximum )); then
+        maximum=$running
+      fi
+      touch "$overlap_ready"
+      sleep 1
+    done
+    printf '%s\n' "$maximum" >"$overlap_file"
+  ) &
+  overlap_monitor_pid=$!
+  for _ in $(seq 1 10); do
+    [[ -e "$overlap_ready" ]] && break
+    sleep 1
+  done
+  [[ -e "$overlap_ready" ]] || die "Factorio overlap monitor did not start"
+  kube patch gameserver "$server_name" --namespace "$namespace" --type=merge \
+    --patch "{\"spec\":{\"imageDigest\":\"$factorio_b_digest\"}}" >/dev/null
+  kube_bounded 310 rollout status deployment/"$server_name" --namespace "$namespace" --timeout=300s >/dev/null
+  patch_factorio_service >/dev/null
+  wait_server "$server_name" Ready Ready 120
+  touch "$overlap_stop"
+  wait "$overlap_monitor_pid"
+  overlap_monitor_pid=
+  max_running_factorio=$(cat "$overlap_file")
+  [[ "$max_running_factorio" == 1 ]] || die "Factorio image update observed $max_running_factorio running game containers; expected exactly one maximum"
+  updated_game_pod_uid=$(kube get pods --namespace "$namespace" --selector="app.kubernetes.io/instance=$server_name" --output=jsonpath='{.items[0].metadata.uid}')
+  [[ "$updated_game_pod_uid" != "$restarted_game_pod_uid" ]] || die "Factorio image update did not replace the Pod"
+  assert_factorio_workload_contract
+  assert_factorio_image "$factorio_b_image" "$factorio_b_digest"
+  assert_pvc_identity "$pvc_uid" "$pv_name"
+  end_transition
+
+  say "redeploying the controller without replacing Factorio"
+  begin_transition controller-redeploy
+  old_controller_name=$(kube get pods --namespace "$namespace" --selector=app.kubernetes.io/name=arcadectl-controller --output=jsonpath='{.items[0].metadata.name}')
+  old_controller_uid=$(kube get pod "$old_controller_name" --namespace "$namespace" --output=jsonpath='{.metadata.uid}')
+  stable_game_pod_uid=$(kube get pods --namespace "$namespace" --selector="app.kubernetes.io/instance=$server_name" --output=jsonpath='{.items[0].metadata.uid}')
+  kube rollout restart deployment/arcadectl-controller --namespace "$namespace" >/dev/null
+  kube_bounded 130 wait pod/"$old_controller_name" --namespace "$namespace" --for=delete --timeout=120s >/dev/null
+  kube_bounded 190 rollout status deployment/arcadectl-controller --namespace "$namespace" --timeout=180s >/dev/null
+  new_controller_uid=$(kube get pods --namespace "$namespace" --selector=app.kubernetes.io/name=arcadectl-controller --output=jsonpath='{.items[0].metadata.uid}')
+  [[ "$new_controller_uid" != "$old_controller_uid" ]] || die "controller redeploy did not replace its Pod"
+  [[ $(kube get pods --namespace "$namespace" --selector="app.kubernetes.io/instance=$server_name" --output=jsonpath='{.items[0].metadata.uid}') == "$stable_game_pod_uid" ]] \
+    || die "controller redeploy unnecessarily replaced Factorio"
+  wait_server "$server_name" Ready Ready 120
+  assert_controller_image
+  end_transition
+
+  say "deleting and recreating Factorio around the retained world"
+  begin_transition gameserver-recreation
+  kube_bounded 100 delete gameserver "$server_name" --namespace "$namespace" --wait=true --timeout=90s >/dev/null
+  assert_runtime_absent "$server_name"
+  assert_pvc_identity "$pvc_uid" "$pv_name"
+  verify_factorio_storage
+  create_factorio_server_manifest "$factorio_b_digest" Running "$workspace/recreated-factorio-server.yaml"
+  kube apply --filename "$workspace/recreated-factorio-server.yaml" >/dev/null
+  new_server_uid=$(kube get gameserver "$server_name" --namespace "$namespace" --output=jsonpath='{.metadata.uid}')
+  [[ "$new_server_uid" != "$server_uid" ]] || die "recreated Factorio GameServer did not receive a new UID"
+  wait_present deployment "$server_name" 90
+  kube_bounded 250 rollout status deployment/"$server_name" --namespace "$namespace" --timeout=240s >/dev/null
+  patch_factorio_service >/dev/null
+  wait_server "$server_name" Ready Ready 120
+  assert_factorio_image "$factorio_b_image" "$factorio_b_digest"
+  assert_pvc_identity "$pvc_uid" "$pv_name"
+  factorio_runtime_image_id=$(kube get pods --namespace "$namespace" --selector="app.kubernetes.io/instance=$server_name" \
+    --output=jsonpath='{.items[0].status.containerStatuses[?(@.name=="game")].imageID}')
+  controller_runtime_image_id=$(kube get pods --namespace "$namespace" --selector=app.kubernetes.io/name=arcadectl-controller \
+    --output=jsonpath='{.items[0].status.containerStatuses[?(@.name=="controller")].imageID}')
+  end_transition
+
+  say "stopping Factorio, recording evidence, and safely uninstalling"
+  begin_transition final-stop-and-uninstall
+  kube patch gameserver "$server_name" --namespace "$namespace" --type=merge --patch '{"spec":{"desiredState":"Stopped"}}' >/dev/null
+  wait_server "$server_name" Stopped RuntimeStopped 120
+  assert_runtime_absent "$server_name"
+  assert_pvc_identity "$pvc_uid" "$pv_name"
+  verify_factorio_storage
+  run_bounded 120 env KUBECTL="$kubectl_wrapper" "$repository_root/hack/uninstall.sh"
+  wait_absent deployment arcadectl-controller 60
+  wait_selector_absent replicasets app.kubernetes.io/name=arcadectl-controller 60
+  wait_selector_absent pods app.kubernetes.io/name=arcadectl-controller 60
+  kube get namespace "$namespace" >/dev/null
+  kube get customresourcedefinition gameservers.arcade.gobha.me >/dev/null
+  kube get gameserver "$server_name" --namespace "$namespace" >/dev/null
+  assert_pvc_identity "$pvc_uid" "$pv_name"
+  end_transition
+
+  mkdir -p "$artifact_root"
+  [[ ! -e "$artifact_directory" && ! -L "$artifact_directory" ]] || die "refusing to overwrite Factorio evidence path: $artifact_directory"
+  mkdir "$artifact_directory"
+  chmod 0700 "$artifact_directory"
+  printf '%s\n' "$run_id" >"$artifact_directory/.run-id"
+  cp "$transitions_file" "$artifact_directory/transitions.tsv"
+  {
+    printf 'run_id=%s\ncluster=%s\ncandidate_sha=%s\nsource_dirty=%s\n' "$run_id" "$cluster_name" "$candidate_sha" "$source_dirty"
+    printf 'kind_node_image=%s\nkubectl_image=%s\nregistry_image=%s\n' "$kind_node_image" "$kubectl_image" "$registry_image"
+    printf 'controller_image=%s\nfactorio_image_a=%s\nfactorio_image_b=%s\n' "$controller_image" "$factorio_a_image" "$factorio_b_image"
+    printf 'controller_runtime_image_id=%s\nfactorio_runtime_image_id=%s\n' "$controller_runtime_image_id" "$factorio_runtime_image_id"
+    printf 'pvc_uid=%s\npv_name=%s\ninitial_gameserver_uid=%s\nrecreated_gameserver_uid=%s\n' "$pvc_uid" "$pv_name" "$server_uid" "$new_server_uid"
+    printf 'initial_game_pod_uid=%s\nrestarted_game_pod_uid=%s\nupdated_game_pod_uid=%s\nmax_running_factorio_containers=%s\n' \
+      "$initial_game_pod_uid" "$restarted_game_pod_uid" "$updated_game_pod_uid" "$max_running_factorio"
+  } >"$artifact_directory/evidence.txt"
+  kube get gameserver "$server_name" --namespace "$namespace" \
+    --output='custom-columns=NAME:.metadata.name,GEN:.metadata.generation,OBSERVED:.status.observedGeneration,DESIRED:.spec.desiredState,PHASE:.status.phase,READY:.status.conditions[?(@.type=="Ready")].reason' \
+    >"$artifact_directory/gameserver.txt"
+  {
+    go tool kind version
+    docker version --format 'docker_client={{.Client.Version}} docker_server={{.Server.Version}}'
+    kube version --output=json
+  } >"$artifact_directory/tools-and-cluster.txt"
+  find "$artifact_directory" -type f -exec chmod 0600 {} +
+  say "certified Factorio lifecycle proof passed (source_head=$candidate_sha source_dirty=$source_dirty evidence=$artifact_directory)"
+}
+
+if [[ "$lifecycle_suite" == factorio ]]; then
+  run_factorio_lifecycle
+  exit 0
+fi
 
 cat >"$workspace/persistent-volume.yaml" <<EOF
 apiVersion: v1

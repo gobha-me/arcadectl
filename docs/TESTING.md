@@ -40,13 +40,43 @@ CRD, RBAC, and controller manifests and proves:
 This is controller lifecycle evidence, not Factorio client automation or proof
 of a cloud LoadBalancer implementation.
 
+## Certified Factorio lifecycle
+
+Run the production-catalog proof serially after the synthetic proof:
+
+```sh
+make test-kind-factorio
+```
+
+This mode builds the repository's pinned Factorio image twice with distinct
+test-only OCI labels, pushes both variants to its private local registry, and
+addresses them only by their resolved immutable digests. Both variants contain
+the same certified Factorio binary; the second digest proves the update path
+without expanding this test into certification of another Factorio release.
+
+The proof creates a stopped server, binds retained storage owned by UID/GID
+845, starts a real Factorio server, publishes only UDP/34197, and observes
+Ready without container intervention. It then proves stop/start, digest update,
+controller redeploy, and `GameServer` deletion/recreation while preserving the
+same PVC, PV, world marker, and non-empty Factorio save. A separate read-only
+verifier Pod checks the save only while game compute is stopped. The synthetic
+LoadBalancer status used by kind is endpoint-status evidence, not a cloud load
+balancer test or Factorio client session.
+
+Every wait is bounded. Sanitized success evidence is written below
+`artifacts/factorio-lifecycle/` with the exact candidate SHA, dirty-state flag,
+pinned cluster inputs, immutable image references, object identities,
+transition timings, and maximum observed running game-container count during
+the image update. It excludes Secrets, kubeconfig, configuration contents,
+RCON credentials, and unredacted logs. CI uploads this evidence for three days.
+
 ## Isolation and cleanup
 
-Every run creates unique names for its kind cluster, local registry, kubeconfig,
-images, and Kubernetes ownership marker. The harness refuses to adopt existing
-objects. Teardown validates the recorded container IDs, Docker labels, kind
-node names, and in-cluster marker before deleting the exact cluster or registry;
-it never deletes an ambient cluster or shared Docker network.
+Every run and suite creates unique names for its kind cluster, local registry,
+kubeconfig, images, and Kubernetes ownership marker. The harness refuses to
+adopt existing objects. Teardown validates the recorded container IDs, Docker
+labels, kind node names, and in-cluster marker before deleting the exact cluster
+or registry; it never deletes an ambient cluster or shared Docker network.
 
 The harness extracts kubectl from a digest-pinned image into its private
 workspace, so it does not use an ambient kubectl binary or kubeconfig. The
@@ -54,6 +84,7 @@ synthetic image and kind, node, registry, kubectl, materializer, and builder
 inputs are pinned in source.
 
 On failure, allowlisted object summaries and redacted fixed-fixture logs are
-written below `artifacts/kind-lifecycle/` before cleanup. ConfigMap data,
+written below the suite's `artifacts/kind-lifecycle/` or
+`artifacts/factorio-lifecycle/` directory before cleanup. ConfigMap data,
 Secrets, raw node logs, and the kubeconfig are never copied into diagnostics.
-CI uploads only that directory for three days.
+CI uploads only those directories for three days.

@@ -102,8 +102,12 @@ do not appear in the Pod spec or kubelet probe Events.
 - **Destroy:** not implemented. It will be a separate authorized operation with
   exact identity confirmation and a successful backup by default.
 
-The current repository contains the API, generated CRD, validation, typed
-adapter settings rendering, pure resource planner, controller image build, and
-generated least-privilege namespaced installation. Complete isolated-cluster
-game lifecycle validation is not implemented yet, so it is not deployable for
-production use.
+The disposable-cluster test suite proves this contract first with a synthetic
+conformance adapter and then with the certified Factorio runtime. The Factorio
+proof starts a real server, verifies a real save from a separate read-only Pod
+while compute is stopped, updates between distinct immutable image digests,
+checks that the recreate strategy never exposes overlapping running game
+containers, redeploys the controller without replacing the game Pod, and
+recreates the `GameServer` around the same retained world identity. This is
+isolated lifecycle evidence, not production readiness: backup, restore,
+explicit destruction, and production deployment remain unimplemented.
