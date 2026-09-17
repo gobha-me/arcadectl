@@ -1,4 +1,4 @@
-.PHONY: generate render-controller test-envtest verify-generated verify-runtime-assets
+.PHONY: generate render-controller test-envtest test-kind-lifecycle verify-generated verify-runtime-assets
 
 CANONICAL_CONTROLLER_IMAGE := ghcr.io/gobha-me/arcadectl-controller@sha256:0000000000000000000000000000000000000000000000000000000000000000
 
@@ -13,6 +13,10 @@ render-controller:
 
 test-envtest:
 	go test -tags=envtest -timeout=5m ./internal/controller
+
+test-kind-lifecycle:
+	go test -tags=lifecycletest -timeout=2m ./cmd/arcadectl-controller
+	timeout --foreground 15m ./hack/test-kind-lifecycle.sh
 
 verify-generated:
 	./hack/verify-generated.sh

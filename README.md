@@ -37,8 +37,8 @@ lifecycle controller.
   status, logs, examples, or backups.
 
 See [the architecture](docs/ARCHITECTURE.md), [the lifecycle contract](docs/LIFECYCLE.md),
-[install and uninstall](docs/INSTALL.md), [the salvage ledger](docs/SALVAGE_LEDGER.md),
-and [the security policy](SECURITY.md).
+[isolated lifecycle testing](docs/TESTING.md), [install and uninstall](docs/INSTALL.md),
+[the salvage ledger](docs/SALVAGE_LEDGER.md), and [the security policy](SECURITY.md).
 
 ## Development
 
@@ -52,6 +52,9 @@ make verify-runtime-assets
 go vet ./...
 go test -race ./...
 ```
+
+The disposable-cluster lifecycle proof has additional Linux and Docker
+requirements documented in [docs/TESTING.md](docs/TESTING.md).
 
 ## License
 

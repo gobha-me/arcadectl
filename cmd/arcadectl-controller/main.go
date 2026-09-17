@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	arcadev1alpha1 "github.com/gobha-me/arcadectl/api/v1alpha1"
-	"github.com/gobha-me/arcadectl/internal/catalog"
 	"github.com/gobha-me/arcadectl/internal/controller"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -45,7 +44,7 @@ func main() {
 	utilruntime.Must(corev1.AddToScheme(scheme))
 	utilruntime.Must(appsv1.AddToScheme(scheme))
 	utilruntime.Must(arcadev1alpha1.AddToScheme(scheme))
-	gameCatalog, err := catalog.Builtins()
+	gameCatalog, err := controllerCatalog()
 	if err != nil {
 		setupLog.Error(err, "build game catalog")
 		os.Exit(1)
