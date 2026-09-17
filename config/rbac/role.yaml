@@ -44,6 +44,8 @@ rules:
 - apiGroups:
   - arcade.gobha.me
   resources:
+  - gamebackups
+  - gamerestores
   - gameservers
   verbs:
   - get
@@ -52,6 +54,8 @@ rules:
 - apiGroups:
   - arcade.gobha.me
   resources:
+  - gamebackups/status
+  - gamerestores/status
   - gameservers/status
   verbs:
   - get

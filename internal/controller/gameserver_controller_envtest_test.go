@@ -65,6 +65,7 @@ func TestEnvtestLifecycleStatusCollisionAndRecovery(t *testing.T) {
 	if err := kubeClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "games"}}); err != nil {
 		t.Fatalf("create test namespace: %v", err)
 	}
+	testOperationAPI(t, ctx, configuration, kubeClient)
 	server := controllerTestServer(arcadev1alpha1.DesiredStateRunning)
 	server.UID = ""
 	server.Generation = 0

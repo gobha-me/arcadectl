@@ -54,6 +54,41 @@ func TestControllerRoleCanManageDisposableConfiguration(t *testing.T) {
 	t.Fatal("generated role has no ConfigMap rule")
 }
 
+func TestControllerRoleDataOperationsAreStatusOnly(t *testing.T) {
+	t.Parallel()
+
+	role := loadControllerRole(t)
+	for _, resource := range []string{"gamebackups", "gamerestores"} {
+		assertExactResourceVerbs(t, role, "arcade.gobha.me", resource, []string{"get", "list", "watch"})
+		assertExactResourceVerbs(t, role, "arcade.gobha.me", resource+"/status", []string{"get", "patch", "update"})
+	}
+	for _, rule := range role.Rules {
+		if slices.Contains(rule.Resources, "secrets") {
+			t.Fatalf("issue #18 controller role grants premature Secret authority: %#v", rule)
+		}
+		if slices.Contains(rule.Resources, "jobs") || slices.Contains(rule.Resources, "pods") {
+			t.Fatalf("issue #18 controller role grants premature worker authority: %#v", rule)
+		}
+	}
+}
+
+func assertExactResourceVerbs(t *testing.T, role *rbacv1.Role, group, resource string, want []string) {
+	t.Helper()
+	for _, rule := range role.Rules {
+		if slices.Contains(rule.APIGroups, group) && slices.Contains(rule.Resources, resource) {
+			got := slices.Clone(rule.Verbs)
+			slices.Sort(got)
+			want = slices.Clone(want)
+			slices.Sort(want)
+			if !slices.Equal(got, want) {
+				t.Fatalf("%s verbs = %v, want %v", resource, got, want)
+			}
+			return
+		}
+	}
+	t.Fatalf("generated role has no %s rule", resource)
+}
+
 func loadControllerRole(t *testing.T) *rbacv1.Role {
 	t.Helper()
 	contents, err := os.ReadFile("../../config/rbac/role.yaml")
