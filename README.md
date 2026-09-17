@@ -18,8 +18,9 @@ The current foundation includes a generated `GameServer` CRD, a pure,
 game-neutral Kubernetes resource planner, typed adapter settings rendering, and
 an idempotent controller. The controller starts and stops runtime resources
 while retaining storage, refuses to adopt conflicting resources, and cannot
-delete persistent claims under its generated RBAC policy. Packaging and
-isolated-cluster validation remain before the project is deployable.
+delete persistent claims under its generated RBAC policy. A digest-rendered,
+namespace-scoped controller install is available for isolated evaluation;
+complete lifecycle validation remains before the project is deployable.
 
 A structurally different synthetic adapter participates in conformance tests
 from the beginning. Adding another game must not require changes to the core
@@ -36,7 +37,8 @@ lifecycle controller.
   status, logs, examples, or backups.
 
 See [the architecture](docs/ARCHITECTURE.md), [the lifecycle contract](docs/LIFECYCLE.md),
-[the salvage ledger](docs/SALVAGE_LEDGER.md), and [the security policy](SECURITY.md).
+[install and uninstall](docs/INSTALL.md), [the salvage ledger](docs/SALVAGE_LEDGER.md),
+and [the security policy](SECURITY.md).
 
 ## Development
 

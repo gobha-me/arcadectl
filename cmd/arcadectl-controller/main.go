@@ -4,8 +4,11 @@
 package main
 
 import (
+	"errors"
 	"flag"
+	"fmt"
 	"os"
+	"strings"
 
 	arcadev1alpha1 "github.com/gobha-me/arcadectl/api/v1alpha1"
 	"github.com/gobha-me/arcadectl/internal/catalog"
@@ -14,7 +17,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -23,9 +28,11 @@ import (
 func main() {
 	var metricsAddress string
 	var healthAddress string
+	var watchNamespace string
 	var leaderElection bool
 	flag.StringVar(&metricsAddress, "metrics-bind-address", ":8080", "address for the metrics endpoint")
 	flag.StringVar(&healthAddress, "health-probe-bind-address", ":8081", "address for health probes")
+	flag.StringVar(&watchNamespace, "watch-namespace", os.Getenv("POD_NAMESPACE"), "single namespace containing GameServers and their resources")
 	flag.BoolVar(&leaderElection, "leader-elect", false, "enable leader election")
 	loggerOptions := zap.Options{Development: false}
 	loggerOptions.BindFlags(flag.CommandLine)
@@ -44,13 +51,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	manager, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                 scheme,
-		Metrics:                metricsserver.Options{BindAddress: metricsAddress},
-		HealthProbeBindAddress: healthAddress,
-		LeaderElection:         leaderElection,
-		LeaderElectionID:       "controller.arcade.gobha.me",
-	})
+	options, err := managerOptions(scheme, watchNamespace, metricsAddress, healthAddress, leaderElection)
+	if err != nil {
+		setupLog.Error(err, "validate manager options")
+		os.Exit(1)
+	}
+	manager, err := ctrl.NewManager(ctrl.GetConfigOrDie(), options)
 	if err != nil {
 		setupLog.Error(err, "create manager")
 		os.Exit(1)
@@ -79,4 +85,25 @@ func main() {
 		setupLog.Error(err, "manager stopped")
 		os.Exit(1)
 	}
+}
+
+func managerOptions(scheme *runtime.Scheme, watchNamespace, metricsAddress, healthAddress string, leaderElection bool) (ctrl.Options, error) {
+	watchNamespace = strings.TrimSpace(watchNamespace)
+	if watchNamespace == "" {
+		return ctrl.Options{}, errors.New("watch namespace is required")
+	}
+	if problems := validation.IsDNS1123Label(watchNamespace); len(problems) > 0 {
+		return ctrl.Options{}, fmt.Errorf("invalid watch namespace: %s", strings.Join(problems, "; "))
+	}
+	return ctrl.Options{
+		Scheme: scheme,
+		Cache: cache.Options{DefaultNamespaces: map[string]cache.Config{
+			watchNamespace: {},
+		}},
+		Metrics:                 metricsserver.Options{BindAddress: metricsAddress},
+		HealthProbeBindAddress:  healthAddress,
+		LeaderElection:          leaderElection,
+		LeaderElectionID:        "controller.arcade.gobha.me",
+		LeaderElectionNamespace: watchNamespace,
+	}, nil
 }

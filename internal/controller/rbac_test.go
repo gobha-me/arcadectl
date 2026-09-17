@@ -15,14 +15,7 @@ import (
 func TestControllerRoleCannotDeletePersistentClaims(t *testing.T) {
 	t.Parallel()
 
-	contents, err := os.ReadFile("../../config/rbac/role.yaml")
-	if err != nil {
-		t.Fatalf("read generated controller role: %v", err)
-	}
-	role := &rbacv1.ClusterRole{}
-	if err := yaml.Unmarshal(contents, role); err != nil {
-		t.Fatalf("decode generated controller role: %v", err)
-	}
+	role := loadControllerRole(t)
 	foundClaims := false
 	for _, rule := range role.Rules {
 		if !slices.Contains(rule.APIGroups, "") || !slices.Contains(rule.Resources, "persistentvolumeclaims") {
@@ -46,14 +39,7 @@ func TestControllerRoleCannotDeletePersistentClaims(t *testing.T) {
 func TestControllerRoleCanManageDisposableConfiguration(t *testing.T) {
 	t.Parallel()
 
-	contents, err := os.ReadFile("../../config/rbac/role.yaml")
-	if err != nil {
-		t.Fatalf("read generated controller role: %v", err)
-	}
-	role := &rbacv1.ClusterRole{}
-	if err := yaml.Unmarshal(contents, role); err != nil {
-		t.Fatalf("decode generated controller role: %v", err)
-	}
+	role := loadControllerRole(t)
 	for _, rule := range role.Rules {
 		if !slices.Contains(rule.APIGroups, "") || !slices.Contains(rule.Resources, "configmaps") {
 			continue
@@ -66,4 +52,20 @@ func TestControllerRoleCanManageDisposableConfiguration(t *testing.T) {
 		return
 	}
 	t.Fatal("generated role has no ConfigMap rule")
+}
+
+func loadControllerRole(t *testing.T) *rbacv1.Role {
+	t.Helper()
+	contents, err := os.ReadFile("../../config/rbac/role.yaml")
+	if err != nil {
+		t.Fatalf("read generated controller role: %v", err)
+	}
+	role := &rbacv1.Role{}
+	if err := yaml.Unmarshal(contents, role); err != nil {
+		t.Fatalf("decode generated controller role: %v", err)
+	}
+	if role.Kind != "Role" || role.APIVersion != rbacv1.SchemeGroupVersion.String() || role.Namespace != "arcadectl-system" {
+		t.Fatalf("generated RBAC identity = %s %s %q/%q, want namespaced Role", role.APIVersion, role.Kind, role.Namespace, role.Name)
+	}
+	return role
 }

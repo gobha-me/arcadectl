@@ -10,11 +10,14 @@ go tool controller-gen \
   rbac:roleName=arcadectl-controller \
   paths=./internal/controller/... \
   output:rbac:artifacts:config=config/rbac
+./hack/generate-install.sh ghcr.io/gobha-me/arcadectl-controller@sha256:0000000000000000000000000000000000000000000000000000000000000000
 
 generated_paths=(
   api/v1alpha1/zz_generated.deepcopy.go
   config/crd/bases
   config/rbac
+  config/install/anchors.yaml
+  config/install/controller.yaml
 )
 
 if ! git diff --quiet -- "${generated_paths[@]}" ||

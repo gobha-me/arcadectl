@@ -57,6 +57,7 @@ ConfigMap uses exact replacement so stale rendered keys cannot survive.
   exact identity confirmation and a successful backup by default.
 
 The current repository contains the API, generated CRD, validation, typed
-adapter settings rendering, pure resource planner, controller binary, and
-generated least-privilege role. Deployment packaging and isolated-cluster
-validation are not implemented yet, so it is not deployable.
+adapter settings rendering, pure resource planner, controller image build, and
+generated least-privilege namespaced installation. Complete isolated-cluster
+game lifecycle validation is not implemented yet, so it is not deployable for
+production use.
