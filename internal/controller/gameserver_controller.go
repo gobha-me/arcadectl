@@ -55,8 +55,8 @@ type GameServerReconciler struct {
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch,namespace=arcadectl-system
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch,namespace=arcadectl-system
 
-// Reconcile validates all desired state before mutation, then converges
-// storage before compute and networking.
+// Reconcile removes controlled runtime first for stop intent, then validates
+// and converges storage before creating compute and networking.
 func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.Result, error) {
 	server := &arcadev1alpha1.GameServer{}
 	if err := r.Get(ctx, request.NamespacedName, server); err != nil {
@@ -80,6 +80,27 @@ func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 	}
 
 	progress := newConditionProgress()
+	if server.Spec.DesiredState == arcadev1alpha1.DesiredStateStopped {
+		if failure := r.preflightRuntime(ctx, server); failure != nil {
+			return ctrl.Result{}, r.reportFailure(ctx, server, progress, failure)
+		}
+		stopping, failure := r.deleteControlledRuntime(ctx, server)
+		if failure != nil {
+			return ctrl.Result{}, r.reportFailure(ctx, server, progress, failure)
+		}
+		if stopping {
+			progress.set(arcadev1alpha1.ConditionSpecValid, metav1.ConditionUnknown, arcadev1alpha1.ReasonBlocked,
+				"spec validation is deferred until disposable runtime resources are absent")
+			progress.set(arcadev1alpha1.ConditionStorageReady, metav1.ConditionUnknown, arcadev1alpha1.ReasonBlocked,
+				"retained storage is not changed while disposable runtime resources are stopping")
+			setRuntimeStopping(progress)
+			if err := r.updateStatus(ctx, server, arcadev1alpha1.PhaseStopping, progress, nil); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{RequeueAfter: time.Second}, nil
+		}
+		setRuntimeStopped(progress)
+	}
 	if r.Catalog == nil {
 		failure := newReconcileFailure(
 			arcadev1alpha1.ConditionSpecValid,
@@ -115,17 +136,37 @@ func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 	}
 	progress.set(arcadev1alpha1.ConditionSpecValid, metav1.ConditionTrue, arcadev1alpha1.ReasonValid,
 		"the current GameServer generation passed adapter and platform validation")
-	if failure := r.preflight(ctx, server, plan); failure != nil {
+	if failure := r.preflightStorage(ctx, server, plan); failure != nil {
 		return ctrl.Result{}, r.reportFailure(ctx, server, progress, failure)
+	}
+	if server.Spec.DesiredState == arcadev1alpha1.DesiredStateRunning {
+		if failure := r.preflightRuntime(ctx, server); failure != nil {
+			return ctrl.Result{}, r.reportFailure(ctx, server, progress, failure)
+		}
 	}
 
 	for _, claim := range plan.DataClaims {
 		if err := r.reconcileDataClaim(ctx, claim); err != nil {
-			key := client.ObjectKeyFromObject(claim)
+			key := client.ObjectKeyFromObject(claim.Desired)
+			reason := arcadev1alpha1.ReasonStorageOperationFailed
+			message := fmt.Sprintf("PersistentVolumeClaim %s could not be reconciled; inspect storage events and the storage provisioner", key)
+			if errors.Is(err, errRetainedDataMissing) {
+				reason = arcadev1alpha1.ReasonRetainedDataMissing
+				message = "a referenced retained data claim disappeared; restore the exact claim before retrying"
+			} else if errors.Is(err, errRetainedDataConflict) {
+				reason = arcadev1alpha1.ReasonRetainedDataConflict
+				message = "retained data changed after preflight; no workload will mount it until its exact identity is restored"
+			} else if errors.Is(err, errRetainedDataReferenceRequired) {
+				reason = arcadev1alpha1.ReasonRetainedDataReferenceRequired
+				message = "retained data appeared under the generated claim name; inspect it and provide an exact reattach reference"
+			} else if errors.Is(err, errDataClaimCollision) {
+				reason = arcadev1alpha1.ReasonResourceCollision
+				message = fmt.Sprintf("PersistentVolumeClaim %s is not a valid Arcadectl retained claim; Arcadectl will not adopt or modify it", key)
+			}
 			failure := newReconcileFailure(
 				arcadev1alpha1.ConditionStorageReady,
-				arcadev1alpha1.ReasonStorageOperationFailed,
-				fmt.Sprintf("PersistentVolumeClaim %s could not be reconciled; inspect storage events and the storage provisioner", key),
+				reason,
+				message,
 				err,
 				true,
 			)
@@ -138,30 +179,6 @@ func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 	}
 	progress.set(arcadev1alpha1.ConditionStorageReady, storage.status, storage.reason, storage.message)
 	if server.Spec.DesiredState == arcadev1alpha1.DesiredStateStopped {
-		stopping, failure := r.deleteControlledRuntime(ctx, server)
-		if failure != nil {
-			return ctrl.Result{}, r.reportFailure(ctx, server, progress, failure)
-		}
-		if stopping {
-			progress.set(arcadev1alpha1.ConditionConfigurationReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopping,
-				"the disposable configuration is being removed; retained data is untouched")
-			progress.set(arcadev1alpha1.ConditionWorkloadReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopping,
-				"the singleton game workload is being removed; retained data is untouched")
-			progress.set(arcadev1alpha1.ConditionNetworkReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopping,
-				"player networking is being removed; retained data is untouched")
-			progress.set(arcadev1alpha1.ConditionReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopping,
-				"waiting for disposable runtime resources to terminate; persistent data is retained")
-			if err := r.updateStatus(ctx, server, arcadev1alpha1.PhaseStopping, progress, nil); err != nil {
-				return ctrl.Result{}, err
-			}
-			return ctrl.Result{RequeueAfter: time.Second}, nil
-		}
-		progress.set(arcadev1alpha1.ConditionConfigurationReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopped,
-			"disposable configuration is absent because the game server is stopped")
-		progress.set(arcadev1alpha1.ConditionWorkloadReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopped,
-			"the game workload is absent because the game server is stopped")
-		progress.set(arcadev1alpha1.ConditionNetworkReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopped,
-			"player networking is absent because the game server is stopped")
 		progress.set(arcadev1alpha1.ConditionReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopped,
 			"the game server is stopped; persistent data is retained")
 		return ctrl.Result{}, r.updateStatus(ctx, server, arcadev1alpha1.PhaseStopped, progress, nil)
@@ -252,12 +269,20 @@ func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 	return ctrl.Result{}, r.updateStatus(ctx, server, phase, progress, nil)
 }
 
-func (r *GameServerReconciler) preflight(ctx context.Context, server *arcadev1alpha1.GameServer, plan platformkube.Plan) *reconcileFailure {
-	for _, desired := range plan.DataClaims {
+func (r *GameServerReconciler) preflightStorage(ctx context.Context, server *arcadev1alpha1.GameServer, plan platformkube.Plan) *reconcileFailure {
+	plannedClaims := make(map[string]platformkube.DataClaimPlan, len(plan.DataClaims))
+	for _, claim := range plan.DataClaims {
+		desired := claim.Desired
+		plannedClaims[desired.Name] = claim
 		existing := &corev1.PersistentVolumeClaim{}
 		key := client.ObjectKeyFromObject(desired)
 		if err := r.Get(ctx, key, existing); err != nil {
 			if apierrors.IsNotFound(err) {
+				if claim.RequiredUID != "" {
+					return retainedDataFailure(arcadev1alpha1.ReasonRetainedDataMissing,
+						"a referenced retained data claim is absent; restore it or select an existing exact claim before retrying",
+						fmt.Errorf("preflight referenced retained data claim %s is absent", key))
+				}
 				continue
 			}
 			return newReconcileFailure(
@@ -268,13 +293,58 @@ func (r *GameServerReconciler) preflight(ctx context.Context, server *arcadev1al
 				true,
 			)
 		}
-		if err := validateExistingDataClaim(existing, desired); err != nil {
-			return collisionFailure(arcadev1alpha1.ConditionStorageReady, "PersistentVolumeClaim", key,
-				"preserve its data and correct its identity or choose a different GameServer name",
+		if claim.RequiredUID == "" && existing.Labels[platformkube.LabelDataIdentity] != desired.Labels[platformkube.LabelDataIdentity] {
+			if err := validateExistingDataClaimBase(existing, claim); err != nil {
+				return collisionFailure(arcadev1alpha1.ConditionStorageReady, "PersistentVolumeClaim", key,
+					"Arcadectl will not adopt or modify it; inspect ownership and identity before retrying",
+					fmt.Errorf("preflight foreign retained data claim %s: %w", key, err))
+			}
+			if existing.Labels[platformkube.LabelDataIdentity] == "" {
+				return retainedDataFailure(arcadev1alpha1.ReasonRetainedDataConflict,
+					"a development-era claim has no durable data identity; do not upgrade in place or relabel it automatically",
+					fmt.Errorf("preflight retained data claim %s has no durable identity", key))
+			}
+			return retainedDataFailure(arcadev1alpha1.ReasonRetainedDataReferenceRequired,
+				"retained data already uses the generated claim name; inspect it and provide an exact reattach reference",
+				fmt.Errorf("preflight retained data claim %s belongs to another data identity", key))
+		}
+		if err := validateExistingDataClaim(existing, claim); err != nil {
+			return retainedDataFailure(arcadev1alpha1.ReasonRetainedDataConflict,
+				"a retained data claim conflicts with the complete selected data set; inspect identity, UID, path, class, access mode, and ownership",
 				fmt.Errorf("preflight retained data claim %s: %w", key, err))
 		}
 	}
+	identityClaims := &corev1.PersistentVolumeClaimList{}
+	if err := r.List(ctx, identityClaims, client.InNamespace(server.Namespace), client.MatchingLabels{
+		platformkube.LabelDataIdentity: plan.DataIdentity,
+	}); err != nil {
+		return newReconcileFailure(
+			arcadev1alpha1.ConditionStorageReady,
+			arcadev1alpha1.ReasonStorageOperationFailed,
+			"retained data identity could not be inspected; inspect cluster API availability",
+			fmt.Errorf("list retained data identity: %w", err),
+			true,
+		)
+	}
+	for i := range identityClaims.Items {
+		actual := &identityClaims.Items[i]
+		planned, exists := plannedClaims[actual.Name]
+		if !exists || (planned.RequiredUID != "" && actual.UID != planned.RequiredUID) {
+			return retainedDataFailure(arcadev1alpha1.ReasonRetainedDataConflict,
+				"the selected retained data identity is ambiguous; resolve extra or duplicate claims before retrying",
+				fmt.Errorf("unplanned claim %s/%s advertises the selected data identity", actual.Namespace, actual.Name))
+		}
+	}
+	if plan.Reattach && len(identityClaims.Items) != len(plan.DataClaims) {
+		return retainedDataFailure(arcadev1alpha1.ReasonRetainedDataConflict,
+			"the selected retained data identity is incomplete or ambiguous; verify every adapter path and exact claim reference",
+			fmt.Errorf("selected data identity resolved to %d claims, want %d", len(identityClaims.Items), len(plan.DataClaims)))
+	}
 
+	return nil
+}
+
+func (r *GameServerReconciler) preflightRuntime(ctx context.Context, server *arcadev1alpha1.GameServer) *reconcileFailure {
 	wanted := metav1.OwnerReference{
 		APIVersion: arcadev1alpha1.GroupVersion.String(),
 		Kind:       "GameServer",
@@ -311,6 +381,30 @@ func (r *GameServerReconciler) preflight(ctx context.Context, server *arcadev1al
 		}
 	}
 	return nil
+}
+
+func setRuntimeStopping(progress conditionProgress) {
+	progress.set(arcadev1alpha1.ConditionConfigurationReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopping,
+		"the disposable configuration is being removed; retained data is untouched")
+	progress.set(arcadev1alpha1.ConditionWorkloadReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopping,
+		"the singleton game workload is being removed; retained data is untouched")
+	progress.set(arcadev1alpha1.ConditionNetworkReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopping,
+		"player networking is being removed; retained data is untouched")
+	progress.set(arcadev1alpha1.ConditionReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopping,
+		"waiting for disposable runtime resources to terminate; persistent data is retained")
+}
+
+func setRuntimeStopped(progress conditionProgress) {
+	progress.set(arcadev1alpha1.ConditionConfigurationReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopped,
+		"disposable configuration is absent because the game server is stopped")
+	progress.set(arcadev1alpha1.ConditionWorkloadReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopped,
+		"the game workload is absent because the game server is stopped")
+	progress.set(arcadev1alpha1.ConditionNetworkReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopped,
+		"player networking is absent because the game server is stopped")
+}
+
+func retainedDataFailure(reason, message string, cause error) *reconcileFailure {
+	return newReconcileFailure(arcadev1alpha1.ConditionStorageReady, reason, message, cause, true)
 }
 
 func collisionFailure(conditionType, kind string, key client.ObjectKey, action string, cause error) *reconcileFailure {
@@ -369,11 +463,22 @@ func configurationMatches(existing, desired *corev1.ConfigMap) bool {
 		apiequality.Semantic.DeepEqual(existing.Immutable, desired.Immutable)
 }
 
-func (r *GameServerReconciler) reconcileDataClaim(ctx context.Context, desired *corev1.PersistentVolumeClaim) error {
+var (
+	errRetainedDataReferenceRequired = errors.New("retained data reference required")
+	errRetainedDataMissing           = errors.New("retained data missing")
+	errRetainedDataConflict          = errors.New("retained data conflict")
+	errDataClaimCollision            = errors.New("data claim collision")
+)
+
+func (r *GameServerReconciler) reconcileDataClaim(ctx context.Context, claim platformkube.DataClaimPlan) error {
+	desired := claim.Desired
 	existing := &corev1.PersistentVolumeClaim{}
 	key := client.ObjectKeyFromObject(desired)
 	if err := r.Get(ctx, key, existing); err != nil {
 		if apierrors.IsNotFound(err) {
+			if claim.RequiredUID != "" {
+				return fmt.Errorf("%w: referenced claim disappeared before reconciliation", errRetainedDataMissing)
+			}
 			if err := r.Create(ctx, desired.DeepCopy()); err != nil {
 				return fmt.Errorf("create retained data claim %s: %w", key, err)
 			}
@@ -382,14 +487,26 @@ func (r *GameServerReconciler) reconcileDataClaim(ctx context.Context, desired *
 		return fmt.Errorf("get retained data claim %s: %w", key, err)
 	}
 
-	if err := validateExistingDataClaim(existing, desired); err != nil {
-		return fmt.Errorf("refuse data claim %s: %w", key, err)
+	if claim.RequiredUID == "" && existing.Labels[platformkube.LabelDataIdentity] != desired.Labels[platformkube.LabelDataIdentity] {
+		if err := validateExistingDataClaimBase(existing, claim); err != nil {
+			return fmt.Errorf("%w: claim %s is not a valid Arcadectl retained claim: %v", errDataClaimCollision, key, err)
+		}
+		if existing.Labels[platformkube.LabelDataIdentity] == "" {
+			return fmt.Errorf("%w: claim %s has no durable data identity", errRetainedDataConflict, key)
+		}
+		return fmt.Errorf("%w: claim %s belongs to another data identity", errRetainedDataReferenceRequired, key)
+	}
+	if err := validateExistingDataClaim(existing, claim); err != nil {
+		return fmt.Errorf("%w: refuse data claim %s: %v", errRetainedDataConflict, key, err)
 	}
 
 	existingSize := existing.Spec.Resources.Requests[corev1.ResourceStorage]
 	desiredSize := desired.Spec.Resources.Requests[corev1.ResourceStorage]
 	if existingSize.Cmp(desiredSize) >= 0 {
 		return nil
+	}
+	if claim.RequiredUID != "" {
+		return fmt.Errorf("%w: referenced claim %s is smaller than requested and reattach never expands claims", errRetainedDataConflict, key)
 	}
 	updated := existing.DeepCopy()
 	if updated.Spec.Resources.Requests == nil {
@@ -409,8 +526,9 @@ type storageObservation struct {
 	message string
 }
 
-func (r *GameServerReconciler) observeStorage(ctx context.Context, desiredClaims []*corev1.PersistentVolumeClaim) (storageObservation, *reconcileFailure) {
-	for _, desired := range desiredClaims {
+func (r *GameServerReconciler) observeStorage(ctx context.Context, desiredClaims []platformkube.DataClaimPlan) (storageObservation, *reconcileFailure) {
+	for _, claim := range desiredClaims {
+		desired := claim.Desired
 		actual := &corev1.PersistentVolumeClaim{}
 		key := client.ObjectKeyFromObject(desired)
 		if err := r.Get(ctx, key, actual); err != nil {
@@ -420,6 +538,13 @@ func (r *GameServerReconciler) observeStorage(ctx context.Context, desiredClaims
 				fmt.Sprintf("PersistentVolumeClaim %s could not be observed; inspect storage events and API availability", key),
 				fmt.Errorf("observe retained data claim %s: %w", key, err),
 				true,
+			)
+		}
+		if err := validateExistingDataClaim(actual, claim); err != nil {
+			return storageObservation{}, retainedDataFailure(
+				arcadev1alpha1.ReasonRetainedDataConflict,
+				"retained data changed after preflight; no workload will mount it until its exact identity is restored",
+				fmt.Errorf("observe retained data claim %s: %w", key, err),
 			)
 		}
 		if actual.Status.Phase != corev1.ClaimBound {
@@ -456,7 +581,24 @@ func (r *GameServerReconciler) observeStorage(ctx context.Context, desiredClaims
 	}, nil
 }
 
-func validateExistingDataClaim(existing, desired *corev1.PersistentVolumeClaim) error {
+func validateExistingDataClaim(existing *corev1.PersistentVolumeClaim, claim platformkube.DataClaimPlan) error {
+	if claim.RequiredUID != "" && existing.UID != claim.RequiredUID {
+		return errors.New("claim UID does not match exact reference")
+	}
+	if err := validateExistingDataClaimBase(existing, claim); err != nil {
+		return err
+	}
+	if existing.Labels[platformkube.LabelDataIdentity] != claim.Desired.Labels[platformkube.LabelDataIdentity] {
+		return fmt.Errorf("identity label %q does not match", platformkube.LabelDataIdentity)
+	}
+	return nil
+}
+
+func validateExistingDataClaimBase(existing *corev1.PersistentVolumeClaim, claim platformkube.DataClaimPlan) error {
+	desired := claim.Desired
+	if !existing.DeletionTimestamp.IsZero() {
+		return errors.New("retained claim is terminating")
+	}
 	if len(existing.OwnerReferences) != 0 {
 		return errors.New("retained claims must not have owner references")
 	}
@@ -472,18 +614,25 @@ func validateExistingDataClaim(existing, desired *corev1.PersistentVolumeClaim) 
 			return fmt.Errorf("identity label %q does not match", label)
 		}
 	}
-	if !storageClassCompatible(existing.Spec.StorageClassName, desired.Spec.StorageClassName) {
+	if !storageClassCompatible(existing.Spec.StorageClassName, desired.Spec.StorageClassName, claim.RequiredUID != "") {
 		return errors.New("storage class does not match")
 	}
 	if !slices.Equal(existing.Spec.AccessModes, desired.Spec.AccessModes) {
 		return errors.New("access modes do not match")
 	}
+	if claim.RequiredUID != "" {
+		existingSize := existing.Spec.Resources.Requests[corev1.ResourceStorage]
+		desiredSize := desired.Spec.Resources.Requests[corev1.ResourceStorage]
+		if existingSize.Cmp(desiredSize) < 0 {
+			return errors.New("referenced claim is smaller than requested")
+		}
+	}
 	return nil
 }
 
-func storageClassCompatible(existing, desired *string) bool {
+func storageClassCompatible(existing, desired *string, exact bool) bool {
 	if desired == nil {
-		return true
+		return !exact || existing == nil
 	}
 	return existing != nil && *existing == *desired
 }

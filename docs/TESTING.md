@@ -31,8 +31,9 @@ CRD, RBAC, and controller manifests and proves:
   LoadBalancer status provider;
 - service reachability from a separate restricted probe pod;
 - exact controller and game image digests at runtime;
-- unchanged PVC UID, PV binding, and on-volume marker through stop, redeploy,
-  GameServer deletion, and same-name recreation;
+- unchanged PVC UID, PV binding, data identity, and on-volume marker through
+  stop and redeploy; blocked implicit same-name adoption after GameServer
+  deletion; and successful explicit exact-UID reattachment;
 - fail-closed behavior when a foreign Service occupies a deterministic name,
   with no partial sibling resources; and
 - safe uninstall that leaves the namespace, all Arcadectl CRDs, GameServer,
@@ -58,8 +59,9 @@ without expanding this test into certification of another Factorio release.
 The proof creates a stopped server, binds retained storage owned by UID/GID
 845, starts a real Factorio server, publishes only UDP/34197, and observes
 Ready without container intervention. It then proves stop/start, digest update,
-controller redeploy, and `GameServer` deletion/recreation while preserving the
-same PVC, PV, world marker, and non-empty Factorio save. A separate read-only
+controller redeploy, rejected implicit adoption after `GameServer` deletion,
+and explicit exact-UID recreation while preserving the same PVC, PV, durable
+data identity, world marker, and non-empty Factorio save. A separate read-only
 verifier Pod checks the save only while game compute is stopped. The synthetic
 LoadBalancer status used by kind is endpoint-status evidence, not a cloud load
 balancer test or Factorio client session.

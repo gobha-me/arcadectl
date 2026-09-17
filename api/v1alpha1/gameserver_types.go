@@ -47,31 +47,59 @@ const (
 // Stable GameServer condition reasons. Messages may become more specific,
 // but automation should depend only on these bounded reason codes.
 const (
-	ReasonValid                        = "Valid"
-	ReasonInvalidSpec                  = "InvalidSpec"
-	ReasonControllerMisconfigured      = "ControllerMisconfigured"
-	ReasonClaimsReady                  = "ClaimsReady"
-	ReasonClaimsProvisioning           = "ClaimsProvisioning"
-	ReasonClaimExpansionPending        = "ClaimExpansionPending"
-	ReasonStorageOperationFailed       = "StorageOperationFailed"
-	ReasonConfigurationReady           = "ConfigurationReady"
-	ReasonConfigurationOperationFailed = "ConfigurationOperationFailed"
-	ReasonWorkloadAvailable            = "WorkloadAvailable"
-	ReasonWorkloadProgressing          = "WorkloadProgressing"
-	ReasonWorkloadUnavailable          = "WorkloadUnavailable"
-	ReasonWorkloadOperationFailed      = "WorkloadOperationFailed"
-	ReasonPlayerEndpointReady          = "PlayerEndpointReady"
-	ReasonPlayerEndpointPending        = "PlayerEndpointPending"
-	ReasonNetworkOperationFailed       = "NetworkOperationFailed"
-	ReasonResourceCollision            = "ResourceCollision"
-	ReasonBlocked                      = "Blocked"
-	ReasonRuntimeStopping              = "RuntimeStopping"
-	ReasonRuntimeStopped               = "RuntimeStopped"
-	ReasonReady                        = "Ready"
-	ReasonStoragePending               = "StoragePending"
-	ReasonWorkloadPending              = "WorkloadPending"
-	ReasonReconcileFailed              = "ReconcileFailed"
+	ReasonValid                         = "Valid"
+	ReasonInvalidSpec                   = "InvalidSpec"
+	ReasonControllerMisconfigured       = "ControllerMisconfigured"
+	ReasonClaimsReady                   = "ClaimsReady"
+	ReasonClaimsProvisioning            = "ClaimsProvisioning"
+	ReasonClaimExpansionPending         = "ClaimExpansionPending"
+	ReasonStorageOperationFailed        = "StorageOperationFailed"
+	ReasonRetainedDataReferenceRequired = "RetainedDataReferenceRequired"
+	ReasonRetainedDataMissing           = "RetainedDataMissing"
+	ReasonRetainedDataConflict          = "RetainedDataConflict"
+	ReasonConfigurationReady            = "ConfigurationReady"
+	ReasonConfigurationOperationFailed  = "ConfigurationOperationFailed"
+	ReasonWorkloadAvailable             = "WorkloadAvailable"
+	ReasonWorkloadProgressing           = "WorkloadProgressing"
+	ReasonWorkloadUnavailable           = "WorkloadUnavailable"
+	ReasonWorkloadOperationFailed       = "WorkloadOperationFailed"
+	ReasonPlayerEndpointReady           = "PlayerEndpointReady"
+	ReasonPlayerEndpointPending         = "PlayerEndpointPending"
+	ReasonNetworkOperationFailed        = "NetworkOperationFailed"
+	ReasonResourceCollision             = "ResourceCollision"
+	ReasonBlocked                       = "Blocked"
+	ReasonRuntimeStopping               = "RuntimeStopping"
+	ReasonRuntimeStopped                = "RuntimeStopped"
+	ReasonReady                         = "Ready"
+	ReasonStoragePending                = "StoragePending"
+	ReasonWorkloadPending               = "WorkloadPending"
+	ReasonReconcileFailed               = "ReconcileFailed"
 )
+
+// RetainedDataClaimReference pins one adapter path to one exact local PVC.
+// The namespace is always the containing GameServer namespace.
+type RetainedDataClaimReference struct {
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$`
+	Path     string              `json:"path"`
+	ClaimRef ExactLocalReference `json:"claimRef"`
+}
+
+// RetainedDataReference is explicit authority to reattach one complete
+// retained data set. Identity must match every referenced claim's durable
+// data-identity label; Claims must cover every adapter-declared path exactly.
+type RetainedDataReference struct {
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$`
+	Identity string `json:"identity"`
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=16
+	// +listType=map
+	// +listMapKey=path
+	Claims []RetainedDataClaimReference `json:"claims"`
+}
 
 // ComputeSpec bounds CPU and memory assigned to the game container.
 type ComputeSpec struct {
@@ -87,6 +115,11 @@ type StorageSpec struct {
 	Size resource.Quantity `json:"size"`
 	// +optional
 	StorageClassName *string `json:"storageClassName,omitempty"`
+	// Reattach explicitly selects a complete retained data set. When omitted,
+	// the controller creates data for this GameServer identity and refuses to
+	// adopt claims retained by an earlier same-name GameServer.
+	// +optional
+	Reattach *RetainedDataReference `json:"reattach,omitempty"`
 }
 
 // GameServerSpec is the validated desired state accepted by the controller.
@@ -152,6 +185,7 @@ type GameServerStatus struct {
 // +kubebuilder:printcolumn:name="Game",type=string,JSONPath=`.spec.game`
 // +kubebuilder:printcolumn:name="Desired",type=string,JSONPath=`.spec.desiredState`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:validation:XValidation:rule="(!has(self.spec.storage.reattach) && !has(oldSelf.spec.storage.reattach)) || (has(self.spec.storage.reattach) && has(oldSelf.spec.storage.reattach) && self.spec.storage.reattach == oldSelf.spec.storage.reattach)",message="reattach authority is immutable for a GameServer identity; delete the stopped GameServer and recreate it to select retained data"
 type GameServer struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

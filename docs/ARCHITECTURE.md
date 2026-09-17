@@ -27,6 +27,12 @@ The implemented Kubernetes boundary is the `GameServer` API, a pure resource
 planner, and the controller process. It creates independent claims for
 adapter-declared persistent paths and never gives those claims a `GameServer`
 owner reference. The generated controller role deliberately omits PVC deletion.
+Each world has a durable data identity. Reattachment requires a complete set of
+exact local PVC name-and-UID references; labels are discovery evidence, not
+authority. The controller rechecks those identities before creating runtime
+resources. Because Pods ultimately select PVCs by name, principals allowed to
+replace managed PVCs are outside the ordinary-user trust boundary and require
+separate admission enforcement.
 Durable `GameBackup` and `GameRestore` APIs pin exact namespaced identities and
 define retry-safe operation state, while deliberately granting no Secret or
 worker authority until those implementations are reviewed. The authenticated
@@ -82,8 +88,16 @@ assumptions, image names, or save semantics.
 ## Lifecycle and data semantics
 
 `stop`, `restart`, `update`, controller redeployment, and API unavailability do
-not delete persistent data. Decommissioning removes compute and networking but
-retains the server record and its data.
+not delete persistent data. Decommissioning deletes the server record and
+removes its owned compute and networking while independently retaining data.
+A replacement must deliberately select that retained world by its complete
+data identity and exact claim UIDs; automatic same-name adoption is forbidden.
+Stopped intent removes controlled runtime before validating retained storage,
+so data corruption or disappearance cannot prevent deactivation. Runtime
+absence remains explicit even when storage then fails, allowing an
+administrator to correct a bad exact reference by deleting and recreating the
+stopped `GameServer`, without briefly restarting compute. A future restore
+worker gets a separately reviewed typed activation contract.
 
 Validated non-secret settings are rendered into an owned ConfigMap. A pinned,
 non-root init container mounts that ConfigMap read-only and atomically

@@ -77,8 +77,11 @@ func (r *GameServerReconciler) reportFailure(ctx context.Context, server *arcade
 	if failure.reason == arcadev1alpha1.ReasonInvalidSpec || failure.reason == arcadev1alpha1.ReasonControllerMisconfigured {
 		readyReason = failure.reason
 	}
-	if failure.reason == arcadev1alpha1.ReasonResourceCollision {
-		readyReason = arcadev1alpha1.ReasonResourceCollision
+	if failure.reason == arcadev1alpha1.ReasonResourceCollision ||
+		failure.reason == arcadev1alpha1.ReasonRetainedDataReferenceRequired ||
+		failure.reason == arcadev1alpha1.ReasonRetainedDataMissing ||
+		failure.reason == arcadev1alpha1.ReasonRetainedDataConflict {
+		readyReason = failure.reason
 	}
 	progress.set(arcadev1alpha1.ConditionReady, metav1.ConditionFalse, readyReason,
 		"the game server is not ready; follow the failed condition's safe operator action")

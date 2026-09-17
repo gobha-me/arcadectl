@@ -21,6 +21,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
@@ -33,6 +34,7 @@ const (
 	LabelGame                   = "arcade.gobha.me/game"
 	LabelDataPolicy             = "arcade.gobha.me/data-policy"
 	LabelDataPath               = "arcade.gobha.me/data-path"
+	LabelDataIdentity           = "arcade.gobha.me/data-identity"
 	AnnotationConfigurationHash = "arcade.gobha.me/configuration-sha256"
 	ManagerName                 = "arcadectl"
 	maxSettingsLen              = 64 * 1024
@@ -49,10 +51,19 @@ var materializeConfigurationScript string
 // DataClaims always remain present. Configuration, Workload, and PlayerService
 // are nil while stopped, so stop removes runtime state without touching data.
 type Plan struct {
-	DataClaims    []*corev1.PersistentVolumeClaim
+	DataClaims    []DataClaimPlan
+	DataIdentity  string
+	Reattach      bool
 	Configuration *corev1.ConfigMap
 	Workload      *appsv1.Deployment
 	PlayerService *corev1.Service
+}
+
+// DataClaimPlan separates the desired PVC shape from exact reattach authority.
+// RequiredUID is empty only when this GameServer is creating its own data.
+type DataClaimPlan struct {
+	Desired     *corev1.PersistentVolumeClaim
+	RequiredUID types.UID
 }
 
 // ValidationCategory identifies the bounded part of desired state that made a
@@ -89,20 +100,36 @@ func Build(server *arcadev1alpha1.GameServer, definition game.Definition) (Plan,
 		return Plan{}, err
 	}
 
+	dataIdentity, claimReferences, err := retainedDataSelection(server, definition)
+	if err != nil {
+		return Plan{}, err
+	}
 	labels := workloadLabels(server)
-	claims := make([]*corev1.PersistentVolumeClaim, 0, len(definition.PersistentPaths))
+	claims := make([]DataClaimPlan, 0, len(definition.PersistentPaths))
+	claimNames := make(map[string]string, len(definition.PersistentPaths))
 	for _, persistentPath := range definition.PersistentPaths {
-		claimName, err := dataClaimName(server.Name, definition.ID, persistentPath.Name)
-		if err != nil {
-			return Plan{}, err
+		claimName := ""
+		claimUID := types.UID("")
+		if reference, exists := claimReferences[persistentPath.Name]; exists {
+			claimName = reference.Name
+			claimUID = types.UID(reference.UID)
+		} else {
+			claimName, err = dataClaimName(server.Name, definition.ID, persistentPath.Name)
+			if err != nil {
+				return Plan{}, err
+			}
 		}
-		claims = append(claims, buildDataClaim(server, definition, persistentPath.Name, claimName))
+		claimNames[persistentPath.Name] = claimName
+		claims = append(claims, DataClaimPlan{
+			Desired:     buildDataClaim(server, definition, persistentPath.Name, claimName, dataIdentity),
+			RequiredUID: claimUID,
+		})
 	}
 	files, err := definition.RenderSettingsFiles(server.Spec.Settings.Raw)
 	if err != nil {
 		return Plan{}, invalid(ValidationSettings, fmt.Errorf("render configuration: %w", err))
 	}
-	plan := Plan{DataClaims: claims}
+	plan := Plan{DataClaims: claims, DataIdentity: dataIdentity, Reattach: server.Spec.Storage.Reattach != nil}
 	if server.Spec.DesiredState == arcadev1alpha1.DesiredStateStopped {
 		return plan, nil
 	}
@@ -113,7 +140,7 @@ func Build(server *arcadev1alpha1.GameServer, definition game.Definition) (Plan,
 	if err != nil {
 		return Plan{}, invalid(ValidationImage, fmt.Errorf("resolve image: %w", err))
 	}
-	plan.Workload = buildWorkload(server, definition, labels, image, files, configuration.Name)
+	plan.Workload = buildWorkload(server, definition, labels, image, files, configuration.Name, claimNames)
 	plan.PlayerService = buildPlayerService(server, definition, labels)
 	return plan, nil
 }
@@ -128,8 +155,8 @@ func validateIntent(server *arcadev1alpha1.GameServer, definition game.Definitio
 	if problems := validation.IsDNS1123Label(server.Namespace); len(problems) > 0 {
 		return invalid(ValidationIdentity, fmt.Errorf("invalid game server namespace: %s", strings.Join(problems, "; ")))
 	}
-	if server.UID == "" && server.Spec.DesiredState == arcadev1alpha1.DesiredStateRunning {
-		return invalid(ValidationIdentity, errors.New("running game server requires a Kubernetes UID"))
+	if server.UID == "" {
+		return invalid(ValidationIdentity, errors.New("game server requires a Kubernetes UID"))
 	}
 	if err := definition.Validate(); err != nil {
 		return invalid(ValidationGame, fmt.Errorf("invalid game definition: %w", err))
@@ -168,6 +195,58 @@ func validateIntent(server *arcadev1alpha1.GameServer, definition game.Definitio
 		}
 	}
 	return nil
+}
+
+// DataIdentity returns the stable, label-safe identity for data first created
+// by one GameServer UID. It is deliberately independent of the server name.
+func DataIdentity(serverUID types.UID) (string, error) {
+	if serverUID == "" {
+		return "", errors.New("game server UID is required for data identity")
+	}
+	digest := sha256.Sum256([]byte("arcadectl/data/" + string(serverUID)))
+	return "data-" + hex.EncodeToString(digest[:24]), nil
+}
+
+func retainedDataSelection(server *arcadev1alpha1.GameServer, definition game.Definition) (string, map[string]arcadev1alpha1.ExactLocalReference, error) {
+	if server.Spec.Storage.Reattach == nil {
+		identity, err := DataIdentity(server.UID)
+		return identity, nil, err
+	}
+	selection := server.Spec.Storage.Reattach
+	if selection.Identity == "" {
+		return "", nil, invalid(ValidationStorage, errors.New("reattach data identity is required"))
+	}
+	if len(selection.Claims) != len(definition.PersistentPaths) {
+		return "", nil, invalid(ValidationStorage, errors.New("reattach claims must cover every persistent path exactly"))
+	}
+	wantedPaths := make(map[string]struct{}, len(definition.PersistentPaths))
+	for _, path := range definition.PersistentPaths {
+		wantedPaths[path.Name] = struct{}{}
+	}
+	claims := make(map[string]arcadev1alpha1.ExactLocalReference, len(selection.Claims))
+	claimNames := make(map[string]string, len(selection.Claims))
+	claimUIDs := make(map[string]string, len(selection.Claims))
+	for _, claim := range selection.Claims {
+		if _, exists := wantedPaths[claim.Path]; !exists {
+			return "", nil, invalid(ValidationStorage, fmt.Errorf("reattach path %q is not declared by the adapter", claim.Path))
+		}
+		if _, duplicate := claims[claim.Path]; duplicate {
+			return "", nil, invalid(ValidationStorage, fmt.Errorf("reattach path %q is duplicated", claim.Path))
+		}
+		if claim.ClaimRef.Namespace != nil || claim.ClaimRef.Name == "" || claim.ClaimRef.UID == "" {
+			return "", nil, invalid(ValidationStorage, fmt.Errorf("reattach path %q requires an exact local claim name and UID", claim.Path))
+		}
+		if otherPath, duplicate := claimNames[claim.ClaimRef.Name]; duplicate {
+			return "", nil, invalid(ValidationStorage, fmt.Errorf("reattach paths %q and %q reuse one claim name", otherPath, claim.Path))
+		}
+		if otherPath, duplicate := claimUIDs[claim.ClaimRef.UID]; duplicate {
+			return "", nil, invalid(ValidationStorage, fmt.Errorf("reattach paths %q and %q reuse one claim UID", otherPath, claim.Path))
+		}
+		claims[claim.Path] = claim.ClaimRef
+		claimNames[claim.ClaimRef.Name] = claim.Path
+		claimUIDs[claim.ClaimRef.UID] = claim.Path
+	}
+	return selection.Identity, claims, nil
 }
 
 func validateCompute(compute arcadev1alpha1.ComputeSpec) error {
@@ -240,14 +319,15 @@ func dataClaimName(serverName, gameID, pathName string) (string, error) {
 	return name, nil
 }
 
-func buildDataClaim(server *arcadev1alpha1.GameServer, definition game.Definition, pathName, name string) *corev1.PersistentVolumeClaim {
+func buildDataClaim(server *arcadev1alpha1.GameServer, definition game.Definition, pathName, name, dataIdentity string) *corev1.PersistentVolumeClaim {
 	labels := map[string]string{
-		LabelManagedBy:  ManagerName,
-		LabelName:       "game-data",
-		LabelInstance:   server.Name,
-		LabelGame:       definition.ID,
-		LabelDataPolicy: "retain",
-		LabelDataPath:   pathName,
+		LabelManagedBy:    ManagerName,
+		LabelName:         "game-data",
+		LabelInstance:     server.Name,
+		LabelGame:         definition.ID,
+		LabelDataPolicy:   "retain",
+		LabelDataPath:     pathName,
+		LabelDataIdentity: dataIdentity,
 	}
 	var storageClassName *string
 	if server.Spec.Storage.StorageClassName != nil {
@@ -302,7 +382,7 @@ func buildConfiguration(server *arcadev1alpha1.GameServer, labels map[string]str
 	}
 }
 
-func buildWorkload(server *arcadev1alpha1.GameServer, definition game.Definition, labels map[string]string, image string, files []game.ConfigurationFile, configurationName string) *appsv1.Deployment {
+func buildWorkload(server *arcadev1alpha1.GameServer, definition game.Definition, labels map[string]string, image string, files []game.ConfigurationFile, configurationName string, claimNames map[string]string) *appsv1.Deployment {
 	containerPorts := make([]corev1.ContainerPort, 0, len(definition.Endpoints))
 	for _, endpoint := range definition.Endpoints {
 		if endpoint.Scope != game.ScopePlayer {
@@ -319,7 +399,7 @@ func buildWorkload(server *arcadev1alpha1.GameServer, definition game.Definition
 	materializerMounts := make([]corev1.VolumeMount, 0, len(definition.PersistentPaths)+1)
 	volumes := make([]corev1.Volume, 0, len(definition.PersistentPaths)+1)
 	for _, persistentPath := range definition.PersistentPaths {
-		claimName, _ := dataClaimName(server.Name, definition.ID, persistentPath.Name)
+		claimName := claimNames[persistentPath.Name]
 		mount := corev1.VolumeMount{Name: persistentPath.Name, MountPath: persistentPath.MountPath}
 		volumeMounts = append(volumeMounts, mount)
 		materializerMounts = append(materializerMounts, mount)

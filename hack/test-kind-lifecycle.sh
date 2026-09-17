@@ -642,8 +642,8 @@ patch_player_service() {
 assert_pvc_identity() {
   local wanted_uid=$1 wanted_pv=$2 observed
   observed=$(kube get persistentvolumeclaim "$claim_name" --namespace "$namespace" \
-    --output=jsonpath='{.metadata.uid}|{.spec.volumeName}|{.metadata.ownerReferences}')
-  [[ "$observed" == "$wanted_uid|$wanted_pv|" ]] || die "retained PVC identity changed: $observed"
+    --output=jsonpath='{.metadata.uid}|{.spec.volumeName}|{.metadata.ownerReferences}|{.metadata.labels.arcade\.gobha\.me/data-identity}')
+  [[ "$observed" == "$wanted_uid|$wanted_pv||$data_identity" ]] || die "retained PVC identity changed: $observed"
 }
 
 assert_runtime_absent() {
@@ -676,6 +676,66 @@ assert_controller_image() {
   IFS='|' read -r image image_id <<<"$output"
   [[ "$image" == "$controller_image" ]] || die "controller Pod image is not the intended digest: $image"
   [[ "$image_id" == *"$controller_digest"* ]] || die "controller Pod imageID does not prove the intended digest: $image_id"
+}
+
+prove_storage_boundary() {
+  local boundary_namespace="arcadectl-storage-boundary-$run_suffix"
+  local boundary_class="arcadectl-storage-boundary-$run_suffix"
+  local boundary_pv="arcadectl-storage-boundary-$run_suffix"
+  cat >"$workspace/storage-boundary.yaml" <<EOF
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: $boundary_namespace
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: $boundary_class
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: Immediate
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: $boundary_pv
+spec:
+  capacity: {storage: 8Mi}
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: $boundary_class
+  hostPath:
+    path: /var/arcadectl-storage-boundary/$run_id
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: retained
+  namespace: $boundary_namespace
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: $boundary_class
+  volumeName: $boundary_pv
+  resources:
+    requests: {storage: 8Mi}
+EOF
+  say "proving StorageClass deletion, namespace deletion, and Retain reclaim boundaries"
+  kube apply --filename "$workspace/storage-boundary.yaml" >/dev/null
+  kube_bounded 70 wait persistentvolumeclaim/retained --namespace "$boundary_namespace" --for=jsonpath='{.status.phase}'=Bound --timeout=60s >/dev/null
+  kube delete storageclass "$boundary_class" --wait=true >/dev/null
+  [[ $(kube get persistentvolumeclaim retained --namespace "$boundary_namespace" --output=jsonpath='{.status.phase}|{.spec.volumeName}') == "Bound|$boundary_pv" ]] \
+    || die "deleting a StorageClass changed its already-bound PVC"
+  [[ $(kube get persistentvolume "$boundary_pv" --output=jsonpath='{.status.phase}|{.spec.persistentVolumeReclaimPolicy}') == 'Bound|Retain' ]] \
+    || die "storage-boundary PV lost its Retain contract before namespace deletion"
+  kube_bounded 70 delete namespace "$boundary_namespace" --wait=true --timeout=60s >/dev/null
+  kube_bounded 70 wait persistentvolume/"$boundary_pv" --for=jsonpath='{.status.phase}'=Released --timeout=60s >/dev/null
+  [[ $(kube get persistentvolume "$boundary_pv" --output=jsonpath='{.spec.persistentVolumeReclaimPolicy}') == Retain ]] \
+    || die "namespace deletion did not preserve the Retain-policy PV"
+  kube delete persistentvolume "$boundary_pv" --wait=true >/dev/null
+  [[ -z $(kube get namespace "$boundary_namespace" --ignore-not-found --output=name) ]] || die "storage-boundary namespace remained"
+  [[ -z $(kube get storageclass "$boundary_class" --ignore-not-found --output=name) ]] || die "storage-boundary StorageClass remained"
+  [[ -z $(kube get persistentvolume "$boundary_pv" --ignore-not-found --output=name) ]] || die "storage-boundary PV remained"
 }
 
 probe_state() {
@@ -877,7 +937,11 @@ EOF
   }
 
   create_factorio_server_manifest() {
-    local digest=$1 desired=$2 destination=$3
+    local digest=$1 desired=$2 destination=$3 retained_identity=${4:-} retained_uid=${5:-} reattach_block=
+    if [[ -n "$retained_identity" ]]; then
+      printf -v reattach_block '    reattach:\n      identity: %s\n      claims:\n        - path: world\n          claimRef:\n            name: %s\n            uid: %s\n' \
+        "$retained_identity" "$claim_name" "$retained_uid"
+    fi
     cat >"$destination" <<EOF
 apiVersion: arcade.gobha.me/v1alpha1
 kind: GameServer
@@ -896,7 +960,7 @@ spec:
   storage:
     size: 512Mi
     storageClassName: ""
-  settings:
+$reattach_block  settings:
     name: Arcadectl lifecycle proof
     description: Isolated non-public lifecycle evidence
     maxPlayers: 4
@@ -971,8 +1035,9 @@ EOF
   assert_runtime_absent "$server_name"
   pvc_uid=$(kube get persistentvolumeclaim "$claim_name" --namespace "$namespace" --output=jsonpath='{.metadata.uid}')
   pv_name=$(kube get persistentvolumeclaim "$claim_name" --namespace "$namespace" --output=jsonpath='{.spec.volumeName}')
+  data_identity=$(kube get persistentvolumeclaim "$claim_name" --namespace "$namespace" --output=jsonpath='{.metadata.labels.arcade\.gobha\.me/data-identity}')
   server_uid=$(kube get gameserver "$server_name" --namespace "$namespace" --output=jsonpath='{.metadata.uid}')
-  [[ -n "$pvc_uid" && "$pv_name" == "arcadectl-factorio-world-$run_suffix" ]] || die "Factorio PVC identity is incomplete"
+  [[ -n "$pvc_uid" && -n "$data_identity" && "$pv_name" == "arcadectl-factorio-world-$run_suffix" ]] || die "Factorio PVC identity is incomplete"
   assert_pvc_identity "$pvc_uid" "$pv_name"
   assert_controller_image
   end_transition
@@ -1078,8 +1143,17 @@ EOF
   verify_factorio_storage
   create_factorio_server_manifest "$factorio_b_digest" Running "$workspace/recreated-factorio-server.yaml"
   kube apply --filename "$workspace/recreated-factorio-server.yaml" >/dev/null
+  naive_server_uid=$(kube get gameserver "$server_name" --namespace "$namespace" --output=jsonpath='{.metadata.uid}')
+  [[ "$naive_server_uid" != "$server_uid" ]] || die "naive Factorio recreation did not receive a new UID"
+  wait_server "$server_name" Failed RetainedDataReferenceRequired 90
+  assert_runtime_absent "$server_name"
+  assert_pvc_identity "$pvc_uid" "$pv_name"
+  verify_factorio_storage
+  kube_bounded 70 delete gameserver "$server_name" --namespace "$namespace" --wait=true --timeout=60s >/dev/null
+  create_factorio_server_manifest "$factorio_b_digest" Running "$workspace/recreated-factorio-server.yaml" "$data_identity" "$pvc_uid"
+  kube apply --filename "$workspace/recreated-factorio-server.yaml" >/dev/null
   new_server_uid=$(kube get gameserver "$server_name" --namespace "$namespace" --output=jsonpath='{.metadata.uid}')
-  [[ "$new_server_uid" != "$server_uid" ]] || die "recreated Factorio GameServer did not receive a new UID"
+  [[ "$new_server_uid" != "$server_uid" && "$new_server_uid" != "$naive_server_uid" ]] || die "exact Factorio recreation did not receive a new UID"
   wait_present deployment "$server_name" 90
   kube_bounded 250 rollout status deployment/"$server_name" --namespace "$namespace" --timeout=240s >/dev/null
   patch_factorio_service >/dev/null
@@ -1120,7 +1194,7 @@ EOF
     printf 'kind_node_image=%s\nkubectl_image=%s\nregistry_image=%s\n' "$kind_node_image" "$kubectl_image" "$registry_image"
     printf 'controller_image=%s\nfactorio_image_a=%s\nfactorio_image_b=%s\n' "$controller_image" "$factorio_a_image" "$factorio_b_image"
     printf 'controller_runtime_image_id=%s\nfactorio_runtime_image_id=%s\n' "$controller_runtime_image_id" "$factorio_runtime_image_id"
-    printf 'pvc_uid=%s\npv_name=%s\ninitial_gameserver_uid=%s\nrecreated_gameserver_uid=%s\n' "$pvc_uid" "$pv_name" "$server_uid" "$new_server_uid"
+    printf 'pvc_uid=%s\npv_name=%s\ndata_identity=%s\ninitial_gameserver_uid=%s\nrecreated_gameserver_uid=%s\n' "$pvc_uid" "$pv_name" "$data_identity" "$server_uid" "$new_server_uid"
     printf 'initial_game_pod_uid=%s\nrestarted_game_pod_uid=%s\nupdated_game_pod_uid=%s\nmax_running_factorio_containers=%s\n' \
       "$initial_game_pod_uid" "$restarted_game_pod_uid" "$updated_game_pod_uid" "$max_running_factorio"
   } >"$artifact_directory/evidence.txt"
@@ -1135,6 +1209,8 @@ EOF
   find "$artifact_directory" -type f -exec chmod 0600 {} +
   say "certified Factorio lifecycle proof passed (source_head=$candidate_sha source_dirty=$source_dirty evidence=$artifact_directory)"
 }
+
+prove_storage_boundary
 
 if [[ "$lifecycle_suite" == factorio ]]; then
   run_factorio_lifecycle
@@ -1197,9 +1273,10 @@ wait_server "$server_name" Stopped RuntimeStopped 90
 assert_runtime_absent "$server_name"
 pvc_uid=$(kube get persistentvolumeclaim "$claim_name" --namespace "$namespace" --output=jsonpath='{.metadata.uid}')
 pv_name=$(kube get persistentvolumeclaim "$claim_name" --namespace "$namespace" --output=jsonpath='{.spec.volumeName}')
+data_identity=$(kube get persistentvolumeclaim "$claim_name" --namespace "$namespace" --output=jsonpath='{.metadata.labels.arcade\.gobha\.me/data-identity}')
 server_uid=$(kube get gameserver "$server_name" --namespace "$namespace" --output=jsonpath='{.metadata.uid}')
-readonly pvc_uid pv_name server_uid
-[[ -n "$pvc_uid" && "$pv_name" == "arcadectl-e2e-world-$run_suffix" ]] || die "retained PVC identity is incomplete"
+readonly pvc_uid pv_name data_identity server_uid
+[[ -n "$pvc_uid" && -n "$data_identity" && "$pv_name" == "arcadectl-e2e-world-$run_suffix" ]] || die "retained PVC identity is incomplete"
 assert_pvc_identity "$pvc_uid" "$pv_name"
 assert_controller_image
 
@@ -1287,8 +1364,28 @@ sed -e 's/desiredState: Stopped/desiredState: Running/' \
   -e 's/motd: first-message/motd: recreated-message/' \
   "$workspace/server.yaml" >"$workspace/recreated-server.yaml"
 kube apply --filename "$workspace/recreated-server.yaml" >/dev/null
+naive_server_uid=$(kube get gameserver "$server_name" --namespace "$namespace" --output=jsonpath='{.metadata.uid}')
+[[ "$naive_server_uid" != "$server_uid" ]] || die "naive recreation did not receive a new UID"
+wait_server "$server_name" Failed RetainedDataReferenceRequired 60
+assert_runtime_absent "$server_name"
+assert_pvc_identity "$pvc_uid" "$pv_name"
+verify_marker_while_stopped
+kube_bounded 70 delete gameserver "$server_name" --namespace "$namespace" --wait=true --timeout=60s >/dev/null
+awk -v identity="$data_identity" -v claim="$claim_name" -v uid="$pvc_uid" '
+  { print }
+  /^    storageClassName:/ {
+    print "    reattach:"
+    print "      identity: " identity
+    print "      claims:"
+    print "        - path: state"
+    print "          claimRef:"
+    print "            name: " claim
+    print "            uid: " uid
+  }
+' "$workspace/recreated-server.yaml" >"$workspace/exact-recreated-server.yaml"
+kube apply --filename "$workspace/exact-recreated-server.yaml" >/dev/null
 new_server_uid=$(kube get gameserver "$server_name" --namespace "$namespace" --output=jsonpath='{.metadata.uid}')
-[[ "$new_server_uid" != "$server_uid" ]] || die "recreated GameServer did not receive a new UID"
+[[ "$new_server_uid" != "$server_uid" && "$new_server_uid" != "$naive_server_uid" ]] || die "exact recreation did not receive a new UID"
 wait_present deployment "$server_name" 60
 kube_bounded 100 rollout status deployment/"$server_name" --namespace "$namespace" --timeout=90s >/dev/null
 patch_player_service "$server_name" >/dev/null
