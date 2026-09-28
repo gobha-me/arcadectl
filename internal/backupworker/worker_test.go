@@ -4,10 +4,12 @@
 package backupworker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,6 +43,20 @@ func TestRunCreatesOneSnapshotAndVerifiesEveryFile(t *testing.T) {
 			t.Fatalf("credential appeared in command argument %q", argument)
 		}
 	}
+	public, err := SuccessMessage(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, canary := range []string{"repository-password-canary", "secret-key-canary", "access-key"} {
+		if bytes.Contains(public, []byte(canary)) {
+			t.Fatal("credential appeared in worker result")
+		}
+		for _, contents := range runner.repository {
+			if bytes.Contains(contents, []byte(canary)) {
+				t.Fatal("credential appeared in repository contents")
+			}
+		}
+	}
 }
 
 func TestRunReusesMatchingSnapshotWithoutDuplicate(t *testing.T) {
@@ -58,12 +74,101 @@ func TestRunReusesMatchingSnapshotWithoutDuplicate(t *testing.T) {
 	runner := &fakeRunner{
 		existing: true, createdAt: time.Unix(1_700_000_000, 0).UTC(),
 		manifestTag: "arcadectl-manifest=" + strings.TrimPrefix(platformdata.ManifestDigest(manifest), "sha256:"),
+		repository: map[string][]byte{
+			filepath.ToSlash(filepath.Join(workPath, manifestName)):       bytes.Clone(manifest),
+			filepath.ToSlash(filepath.Join(sourceRoot, "world/save.zip")): []byte("world"),
+			filepath.ToSlash(filepath.Join(sourceRoot, "mods/mod.json")):  []byte("mods"),
+		},
 	}
 	if _, err := Run(context.Background(), Config{InputPath: inputPath, CredentialsPath: credentialsPath, SourceRoot: sourceRoot, WorkPath: workPath, Runner: runner}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 	if runner.backups != 0 {
 		t.Fatalf("backup calls = %d, want reuse without another snapshot", runner.backups)
+	}
+}
+
+func TestRunRejectsCorruptedRepositoryWithoutChangingSource(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		mutate func(*fakeRunner, string, string)
+	}{
+		{"manifest corruption", func(r *fakeRunner, _, work string) {
+			r.repository[filepath.ToSlash(filepath.Join(work, manifestName))][0] ^= 1
+		}},
+		{"same size file corruption", func(r *fakeRunner, source, _ string) {
+			r.repository[filepath.ToSlash(filepath.Join(source, "world/save.zip"))][0] ^= 1
+		}},
+		{"truncated file", func(r *fakeRunner, source, _ string) {
+			name := filepath.ToSlash(filepath.Join(source, "mods/mod.json"))
+			r.repository[name] = r.repository[name][:1]
+		}},
+		{"extra file bytes", func(r *fakeRunner, source, _ string) {
+			name := filepath.ToSlash(filepath.Join(source, "world/save.zip"))
+			r.repository[name] = append(r.repository[name], 'x')
+		}},
+		{"missing stored file", func(r *fakeRunner, source, _ string) {
+			delete(r.repository, filepath.ToSlash(filepath.Join(source, "world/save.zip")))
+		}},
+		{"repository read error", func(r *fakeRunner, _, _ string) {
+			r.streamError = errors.New("repository-password-canary secret-key-canary")
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			input, credentials, source, work := workerFixture(t, t.TempDir())
+			runner := &fakeRunner{createdAt: time.Unix(1_700_000_000, 0).UTC()}
+			runner.afterCommit = func(r *fakeRunner) { test.mutate(r, source, work) }
+			config := Config{InputPath: input, CredentialsPath: credentials, SourceRoot: source, WorkPath: work, Runner: runner}
+			for attempt := 0; attempt < 2; attempt++ {
+				result, err := Run(context.Background(), config)
+				if err == nil || ExitCode(err) != 30 || result.ArtifactID != "" || !result.VerifiedAt.IsZero() {
+					t.Fatalf("Run() = (%#v, %v), want verification refusal without usable artifact", result, err)
+				}
+				public := err.Error() + string(FailureMessage(err))
+				for _, canary := range []string{"repository-password-canary", "secret-key-canary"} {
+					if strings.Contains(public, canary) {
+						t.Fatal("repository failure exposed credential material")
+					}
+				}
+			}
+			if runner.backups != 1 {
+				t.Fatalf("retry allocated another snapshot: backups=%d", runner.backups)
+			}
+			for relative, expected := range map[string]string{"world/save.zip": "world", "mods/mod.json": "mods"} {
+				contents, err := os.ReadFile(filepath.Join(source, relative))
+				if err != nil || string(contents) != expected {
+					t.Fatalf("source %s changed after failed verification", relative)
+				}
+			}
+		})
+	}
+}
+
+func TestCommandRunnerSuppressesCredentialBearingOutput(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	program := filepath.Join(root, "restic-fixture")
+	if err := os.WriteFile(program, []byte("#!/bin/sh\nprintf '%s' \"$RESTIC_PASSWORD\"\nprintf '%s' \"$AWS_SECRET_ACCESS_KEY\" >&2\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runner := &commandRunner{path: program}
+	environment := map[string]string{"RESTIC_PASSWORD": "password-canary", "AWS_SECRET_ACCESS_KEY": "secret-canary"}
+	output, err := runner.Control(context.Background(), environment, "check")
+	if err == nil || len(output) != 0 || strings.Contains(err.Error(), "canary") {
+		t.Fatalf("Control() did not suppress credential-bearing failure output")
+	}
+	var destination bytes.Buffer
+	err = runner.Stream(context.Background(), environment, &destination, "dump")
+	if err == nil || strings.Contains(err.Error(), "canary") || strings.Contains(destination.String(), "secret-canary") {
+		t.Fatal("Stream() exposed stderr or credential-bearing error")
+	}
+	// Stream's stdout is repository data delivered only to the supplied private
+	// verifier, never to process logs. Its stderr and errors remain bounded.
+	if destination.String() != "password-canary" {
+		t.Fatal("repository data did not reach the private verifier")
 	}
 }
 
@@ -223,6 +328,9 @@ type fakeRunner struct {
 	backupFailuresBeforeCommit int
 	backupFailuresAfterCommit  int
 	checkFailures              int
+	repository                 map[string][]byte
+	afterCommit                func(*fakeRunner)
+	streamError                error
 }
 
 func (runner *fakeRunner) Control(_ context.Context, _ map[string]string, arguments ...string) ([]byte, error) {
@@ -250,6 +358,27 @@ func (runner *fakeRunner) Control(_ context.Context, _ map[string]string, argume
 			runner.backupFailuresBeforeCommit--
 			return nil, errors.New("simulated interruption before commit")
 		}
+		runner.repository = make(map[string][]byte)
+		for _, argument := range arguments {
+			if !filepath.IsAbs(argument) {
+				continue
+			}
+			if err := filepath.WalkDir(argument, func(name string, entry fs.DirEntry, err error) error {
+				if err != nil || entry.IsDir() {
+					return err
+				}
+				contents, err := os.ReadFile(name)
+				if err == nil {
+					runner.repository[filepath.ToSlash(name)] = bytes.Clone(contents)
+				}
+				return err
+			}); err != nil {
+				return nil, err
+			}
+		}
+		if runner.afterCommit != nil {
+			runner.afterCommit(runner)
+		}
 		runner.existing = true
 		if runner.backupFailuresAfterCommit > 0 {
 			runner.backupFailuresAfterCommit--
@@ -274,10 +403,13 @@ func (runner *fakeRunner) Stream(_ context.Context, _ map[string]string, destina
 	runner.arguments = append(runner.arguments, arguments...)
 	runner.dumps++
 	name := arguments[len(arguments)-1]
-	contents, err := os.ReadFile(filepath.FromSlash(name))
-	if err != nil {
-		return err
+	if runner.streamError != nil {
+		return runner.streamError
 	}
-	_, err = destination.Write(contents)
+	contents, exists := runner.repository[name]
+	if !exists {
+		return errors.New("stored file is unavailable")
+	}
+	_, err := destination.Write(contents)
 	return err
 }

@@ -9,7 +9,11 @@ make test-kind-lifecycle
 
 The host must provide a working Docker daemon plus the ordinary Go toolchain
 and POSIX command-line tools checked by the harness. The Make target enforces a
-15-minute outer deadline. Remote container inputs are digest-pinned. A cold Go
+15-minute outer deadline. Remote container inputs are digest-pinned. The MinIO
+fixture is built from checksum-pinned official source rather than unavailable
+upstream container images; its separate source, license, and build recipe are
+included in the fixture image. See [fixture provenance](../images/minio-fixture/README.md).
+A cold Go
 cache or Docker build cache may also retrieve modules whose content is locked
 by `go.sum`; no unversioned module or ambient Kubernetes tool is accepted.
 
@@ -53,17 +57,25 @@ CRD, RBAC, and controller manifests and proves:
   removal, even when all backup workers have already been cleaned up;
 - exact Secret/PVC authorization inside the worker Pod, read-only source
   mounts, terminal worker cleanup, and credential canaries absent from CR
-  status, Events, and controller logs;
+  status, Events, controller logs, and captured real authorized/refused worker
+  logs and termination status before cleanup; an independent repository-only
+  inspector also scans every stored file and manifest for credential canaries;
 - fail-closed behavior when a foreign Service occupies a deterministic name,
   with no partial sibling resources; and
 - safe uninstall that leaves the namespace, all Arcadectl CRDs, GameServer,
   operation records, and retained PVC.
 
 The MinIO service uses an ephemeral volume and exists only inside the owned Kind
-cluster. Restic initializes and verifies the actual S3-compatible repository;
+cluster. It runs the locally built fixture by digest and waits for S3 write
+quorum. Restic initializes and verifies the actual S3-compatible repository;
 no fake S3 client or fake worker participates in this path. This is controller
 lifecycle evidence, not Factorio client automation or proof of a cloud
 LoadBalancer implementation.
+
+Worker unit tests capture independent upload-time repository bytes instead of
+dumping the live source. Manifest corruption, same-size corruption, truncation,
+extra bytes, missing files, and repository read errors must all refuse a usable
+result, preserve source contents, and refuse duplicate snapshots on retry.
 
 ## Certified Factorio lifecycle
 

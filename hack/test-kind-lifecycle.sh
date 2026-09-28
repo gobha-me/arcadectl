@@ -9,7 +9,7 @@ readonly kind_version=v0.33.0
 readonly kind_node_image='kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5'
 readonly kubectl_image='registry.k8s.io/kubectl@sha256:5ed410ebac5dc976cc717098994dcdb29bbbd38f6bd65f582311f5be4ba719cf'
 readonly registry_image='registry:3.0.0@sha256:6c5666b861f3505b116bb9aa9b25175e71210414bd010d92035ff64018f9457e'
-readonly minio_image='quay.io/minio/minio@sha256:a1a8bd4ac40ad7881a245bab97323e18f971e4d4cba2c2007ec1bedd21cbaba2'
+readonly restic_inspector_image='restic/restic@sha256:39d9072fb5651c80d75c7a811612eb60b4c06b32ffe87c2e9f3c7222e1797e76'
 readonly lifecycle_suite="${ARCADECTL_LIFECYCLE_SUITE:-synthetic}"
 case "$lifecycle_suite" in
   synthetic|factorio) ;;
@@ -60,6 +60,7 @@ node_names=
 node_ids=
 controller_tag=
 synthetic_tag=
+minio_tag=
 factorio_a_tag=
 factorio_b_tag=
 overlap_monitor_pid=
@@ -258,6 +259,9 @@ cleanup() {
       docker image rm "$synthetic_tag" >/dev/null 2>&1 || cleanup_status=1
     fi
   fi
+  if [[ -n "$minio_tag" ]] && grep -Fxq "$minio_tag" <<<"$image_references"; then
+    docker image rm "$minio_tag" >/dev/null 2>&1 || cleanup_status=1
+  fi
   if [[ -n "$factorio_a_tag" ]]; then
     if grep -Fxq "$factorio_a_tag" <<<"$image_references"; then
       docker image rm "$factorio_a_tag" >/dev/null 2>&1 || cleanup_status=1
@@ -306,6 +310,10 @@ cleanup() {
   fi
   if [[ -n "$synthetic_tag" ]] && grep -Fxq "$synthetic_tag" <<<"$image_references"; then
     printf 'task synthetic image tag still exists after cleanup: %s\n' "$synthetic_tag" >&2
+    cleanup_status=1
+  fi
+  if [[ -n "$minio_tag" ]] && grep -Fxq "$minio_tag" <<<"$image_references"; then
+    printf 'task MinIO image tag still exists after cleanup: %s\n' "$minio_tag" >&2
     cleanup_status=1
   fi
   if [[ -n "$factorio_a_tag" ]] && grep -Fxq "$factorio_a_tag" <<<"$image_references"; then
@@ -419,6 +427,7 @@ if [[ "$lifecycle_suite" == factorio ]]; then
   factorio_b_tag="$registry_host/gobha-me/arcadectl-factorio:$run_id-b"
 else
   synthetic_tag="$registry_host/gobha-me/arcadectl-conformance-server:$run_id"
+  minio_tag="$registry_host/arcadectl-minio-fixture:$run_id"
 fi
 
 controller_build_args=(
@@ -453,6 +462,10 @@ else
     --build-arg "SOURCE_DIRTY=$source_dirty" \
     --tag "$synthetic_tag" \
     "$repository_root"
+  say "building MinIO fixture from checksum-pinned official source"
+  run_bounded 600 docker build \
+    --file "$repository_root/images/minio-fixture/Dockerfile" \
+    --tag "$minio_tag" "$repository_root/images/minio-fixture"
 fi
 run_bounded 120 docker push "$controller_tag" >/dev/null
 if [[ "$lifecycle_suite" == factorio ]]; then
@@ -460,6 +473,7 @@ if [[ "$lifecycle_suite" == factorio ]]; then
   run_bounded 240 docker push "$factorio_b_tag" >/dev/null
 else
   run_bounded 120 docker push "$synthetic_tag" >/dev/null
+  run_bounded 120 docker push "$minio_tag" >/dev/null
 fi
 
 resolve_digest() {
@@ -482,6 +496,8 @@ else
   synthetic_digest=$(resolve_digest "$synthetic_tag") || die "synthetic registry digest is unavailable"
   readonly synthetic_digest
   readonly synthetic_image="ghcr.io/gobha-me/arcadectl-conformance-server@$synthetic_digest"
+  minio_digest=$(resolve_digest "$minio_tag") || die "MinIO fixture registry digest is unavailable"
+  readonly minio_image="$registry_host/arcadectl-minio-fixture@$minio_digest"
 fi
 readonly controller_digest
 
@@ -1513,6 +1529,24 @@ assert_backup_artifact() {
   [[ "$artifact_runtime" == "$expected_runtime" ]] || die "$name did not settle the requested runtime disposition"
 }
 
+assert_no_repository_credentials() {
+  local canary
+  for canary in "$repository_access_key" "$repository_secret_key" "$repository_password"; do
+    if grep -Fq "$canary" "$@"; then
+      die "repository credential canary escaped into public worker evidence or stored artifact"
+    fi
+  done
+}
+
+assert_worker_evidence_private() {
+  local pod=$1 container=$2
+  kube logs "$pod" --namespace "$namespace" --container="$container" \
+    >"$workspace/worker-log" 2>"$workspace/worker-log-error" \
+    || die "could not capture worker logs before cleanup"
+  kube get pod "$pod" --namespace "$namespace" --output=json >"$workspace/worker-pod"
+  assert_no_repository_credentials "$workspace/worker-log" "$workspace/worker-log-error" "$workspace/worker-pod"
+}
+
 say "starting isolated pinned MinIO for real cold-backup proof"
 repository_secret_name=backup-repository
 repository_access_key="access-$run_suffix"
@@ -1596,7 +1630,7 @@ spec:
               containerPort: 9000
           readinessProbe:
             httpGet:
-              path: /minio/health/ready
+              path: /minio/health/cluster
               port: s3
           resources:
             requests:
@@ -2080,9 +2114,12 @@ done
 [[ $(kube get lease "$worker_lease" --namespace "$namespace" \
   --output=go-template='{{index .metadata.annotations "arcade.gobha.me/worker-pod-uid"}}') == "$first_worker_uid" ]] \
   || die "overlapping worker replaced the live execution holder"
+assert_worker_evidence_private "$overlap_pod" backup-authorizer
 kube_bounded 70 delete pod "$overlap_pod" --namespace "$namespace" --wait=true --timeout=60s >/dev/null
 docker exec "$cluster_name-control-plane" kill -KILL "$worker_pid"
 kube_bounded 70 wait job/"$running_backup_job" --namespace "$namespace" --for=condition=failed --timeout=60s >/dev/null
+assert_worker_evidence_private "$first_worker_pod" backup-authorizer
+assert_worker_evidence_private "$first_worker_pod" backup-worker
 [[ -z $(kube get gamebackup running-backup --namespace "$namespace" --output=jsonpath='{.status.artifact.id}') ]] \
   || die "force-stopped authorized worker published a usable artifact"
 
@@ -2114,6 +2151,91 @@ assert_backup_artifact stopped-backup Stopped
 assert_runtime_absent "$server_name"
 assert_pvc_identity "$pvc_uid" "$pv_name"
 verify_marker_while_stopped
+
+say "independently inspecting repository artifacts without mounting source worlds"
+cat >"$workspace/artifact-inspector.yaml" <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: artifact-inspector
+  namespace: $namespace
+  labels:
+    arcade.gobha.me/e2e-run: $run_id
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  activeDeadlineSeconds: 180
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    fsGroup: 65532
+    seccompProfile: {type: RuntimeDefault}
+  containers:
+    - name: inspector
+      image: $restic_inspector_image
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/sh", "-ec", "sleep 170"]
+      env:
+        - {name: RESTIC_REPOSITORY, value: "s3:http://minio:9000/arcadectl"}
+        - {name: RESTIC_PASSWORD_FILE, value: /credentials/password}
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef: {name: $repository_secret_name, key: awsAccessKeyID}
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef: {name: $repository_secret_name, key: awsSecretAccessKey}
+      resources:
+        requests: {cpu: 5m, memory: 32Mi}
+        limits: {cpu: 250m, memory: 128Mi}
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: {drop: ["ALL"]}
+      volumeMounts:
+        - {name: credentials, mountPath: /credentials, readOnly: true}
+  volumes:
+    - name: credentials
+      secret: {secretName: $repository_secret_name, defaultMode: 0444}
+EOF
+kube apply --filename "$workspace/artifact-inspector.yaml" >/dev/null
+kube_bounded 100 wait pod/artifact-inspector --namespace "$namespace" --for=condition=Ready --timeout=90s >/dev/null
+for backup in running-backup stopped-backup; do
+  artifact_id=$(kube get gamebackup "$backup" --namespace "$namespace" --output=jsonpath='{.status.artifact.id}')
+  artifact_digest=$(kube get gamebackup "$backup" --namespace "$namespace" --output=jsonpath='{.status.artifact.manifestDigest}')
+  kube exec artifact-inspector --namespace "$namespace" -- /usr/bin/restic --no-cache \
+    snapshots --json --tag "arcadectl-artifact=$artifact_id" \
+    >"$workspace/repository-snapshots" 2>"$workspace/repository-error" \
+    || die "could not inspect exact repository snapshot"
+  snapshot_id=$(jq -er --arg digest "arcadectl-manifest=${artifact_digest#sha256:}" \
+    'if length == 1 and (.[0].tags | index($digest)) != null then .[0].id else error("snapshot identity mismatch") end' \
+    "$workspace/repository-snapshots")
+  [[ "$snapshot_id" =~ ^[0-9a-f]{64}$ ]] || die "repository snapshot identity is invalid"
+  kube exec artifact-inspector --namespace "$namespace" -- /usr/bin/restic --no-cache \
+    dump "$snapshot_id" /arcadectl/work/manifest.json \
+    >"$workspace/repository-manifest" 2>"$workspace/repository-error" \
+    || die "could not retrieve repository manifest"
+  stored_digest=$(sha256sum "$workspace/repository-manifest" | awk '{print "sha256:" $1}')
+  [[ "$stored_digest" == "$artifact_digest" ]] || die "independent repository manifest digest mismatch"
+  jq -e --arg uid "$new_server_uid" --arg claim "$pvc_uid" --arg id "$artifact_id" \
+    '.artifactID == $id and .serverUID == $uid and (.paths | length) == 1 and .paths[0].name == "state" and .paths[0].claimUID == $claim' \
+    "$workspace/repository-manifest" >/dev/null || die "independent repository manifest identity mismatch"
+  kube exec artifact-inspector --namespace "$namespace" -- /usr/bin/restic --no-cache ls --json "$snapshot_id" \
+    >"$workspace/repository-inventory" 2>"$workspace/repository-error" \
+    || die "could not inspect complete repository file inventory"
+  jq -r 'select(.type == "file") | .path' "$workspace/repository-inventory" >"$workspace/repository-paths"
+  [[ -s "$workspace/repository-paths" ]] || die "repository file inventory is empty"
+  while IFS= read -r repository_path; do
+    [[ "$repository_path" == /arcadectl/work/manifest.json || "$repository_path" == /arcadectl/source/state/* ]] \
+      || die "repository contains a file outside the declared world and manifest"
+    kube exec artifact-inspector --namespace "$namespace" -- /usr/bin/restic --no-cache dump "$snapshot_id" "$repository_path" \
+      >"$workspace/repository-file" 2>"$workspace/repository-error" \
+      || die "could not independently read repository file"
+    assert_no_repository_credentials "$workspace/repository-file" "$workspace/repository-error"
+  done <"$workspace/repository-paths"
+  assert_no_repository_credentials "$workspace/repository-manifest" "$workspace/repository-inventory" "$workspace/repository-snapshots"
+done
+kube_bounded 70 delete pod/artifact-inspector --namespace "$namespace" --wait=true --timeout=60s >/dev/null
 
 backup_public_evidence=$(kube get gamebackups --namespace "$namespace" --output=yaml)
 backup_events=$(kube get events --namespace "$namespace" --output=yaml)
