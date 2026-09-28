@@ -30,8 +30,13 @@ grep -Fq 'restic/restic@sha256:39d9072fb5651c80d75c7a811612eb60b4c06b32ffe87c2e9
 grep -Fq 'ENV GOTOOLCHAIN=local GOMAXPROCS=2 GOFLAGS="-mod=readonly -p=2"' "$controller_dockerfile"
 grep -Fq 'go build -trimpath -ldflags="-s -w -buildid=" -o /out/arcadectl-backup-worker ./cmd/arcadectl-backup-worker' "$controller_dockerfile"
 grep -Fq 'go build -trimpath -ldflags="-s -w -buildid=" -o /out/arcadectl-backup-authorizer ./cmd/arcadectl-backup-authorizer' "$controller_dockerfile"
-grep -Fq 'COPY --from=restic /usr/bin/restic /restic' "$controller_dockerfile"
-grep -Fq 'COPY --from=restic /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt' "$controller_dockerfile"
+grep -Fq 'COPY --from=restic /usr/bin/restic /rootfs/restic' "$controller_dockerfile"
+grep -Fq 'COPY --from=restic /etc/ssl/certs/ca-certificates.crt /rootfs/etc/ssl/certs/ca-certificates.crt' "$controller_dockerfile"
+runtime_copies=$(awk '/^FROM scratch/ { runtime=1; next } runtime && /^COPY / { count++ } END { print count+0 }' "$controller_dockerfile")
+if [[ "$runtime_copies" != 1 ]]; then
+  echo "Controller runtime must copy only its fully timestamp-normalized root filesystem" >&2
+  exit 1
+fi
 grep -Fq 'cp licenses/restic-LICENSE /rootfs/licenses/restic-LICENSE' "$controller_dockerfile"
 grep -Fq 'BSD 2-Clause License' "$repository_root/licenses/restic-LICENSE"
 grep -Fq 'FROM scratch' "$controller_dockerfile"
@@ -64,6 +69,13 @@ grep -Fq 'GOTOOLCHAIN=local GOMAXPROCS=2 GOMEMLIMIT=1GiB GOFLAGS="-mod=readonly 
 grep -Fq 'COPY Dockerfile /out/licenses/build-recipe.Dockerfile' "$minio_dockerfile"
 grep -Fq 'cp LICENSE CREDITS /out/licenses/' "$minio_dockerfile"
 grep -Fq 'cp /tmp/minio-source.tar.gz /out/licenses/' "$minio_dockerfile"
+grep -Fq 'cp /etc/ssl/certs/ca-certificates.crt /out/etc/ssl/certs/ca-certificates.crt' "$minio_dockerfile"
+grep -Fq "find /out -exec touch -d '@1760549395' {} +" "$minio_dockerfile"
+minio_runtime_copies=$(awk '/^FROM scratch/ { runtime=1; next } runtime && /^COPY / { count++ } END { print count+0 }' "$minio_dockerfile")
+if [[ "$minio_runtime_copies" != 1 ]]; then
+  echo "MinIO fixture runtime must copy only its fully timestamp-normalized root filesystem" >&2
+  exit 1
+fi
 grep -Fq 'FROM scratch' "$minio_dockerfile"
 grep -Fq 'USER 65532:65532' "$minio_dockerfile"
 grep -Fq '/minio/health/cluster' "$lifecycle_harness"

@@ -22,6 +22,8 @@ COPY cmd ./cmd
 COPY internal ./internal
 COPY LICENSE NOTICE ./
 COPY licenses ./licenses
+COPY --from=restic /usr/bin/restic /rootfs/restic
+COPY --from=restic /etc/ssl/certs/ca-certificates.crt /rootfs/etc/ssl/certs/ca-certificates.crt
 RUN case "$VCS_REF" in ""|*[!0-9a-f]*) echo "VCS_REF must be a full lowercase Git SHA" >&2; exit 1 ;; esac \
     && test "${#VCS_REF}" -eq 40 \
     && case "$SOURCE_DATE_EPOCH" in ""|*[!0-9]*) echo "SOURCE_DATE_EPOCH must be a Unix timestamp" >&2; exit 1 ;; esac \
@@ -39,8 +41,8 @@ RUN case "$VCS_REF" in ""|*[!0-9a-f]*) echo "VCS_REF must be a full lowercase Gi
     && cp /out/arcadectl-backup-authorizer /rootfs/arcadectl-backup-authorizer \
     && cp LICENSE NOTICE /rootfs/licenses/ \
     && cp licenses/restic-LICENSE /rootfs/licenses/restic-LICENSE \
-    && chmod 0755 /rootfs/arcadectl-controller /rootfs/arcadectl-backup-worker /rootfs/arcadectl-backup-authorizer \
-    && chmod 0644 /rootfs/licenses/LICENSE /rootfs/licenses/NOTICE /rootfs/licenses/restic-LICENSE \
+    && chmod 0755 /rootfs/arcadectl-controller /rootfs/arcadectl-backup-worker /rootfs/arcadectl-backup-authorizer /rootfs/restic \
+    && chmod 0644 /rootfs/licenses/LICENSE /rootfs/licenses/NOTICE /rootfs/licenses/restic-LICENSE /rootfs/etc/ssl/certs/ca-certificates.crt \
     && chown 65532:65532 /rootfs/arcadectl-controller /rootfs/arcadectl-backup-worker /rootfs/arcadectl-backup-authorizer \
     && find /rootfs -exec touch -d "@$SOURCE_DATE_EPOCH" {} +
 
@@ -54,8 +56,6 @@ LABEL org.opencontainers.image.source="https://github.com/gobha-me/arcadectl" \
       arcade.gobha.me/source-dirty="$SOURCE_DIRTY"
 
 COPY --from=build /rootfs /
-COPY --from=restic /usr/bin/restic /restic
-COPY --from=restic /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
 USER 65532:65532
 ENTRYPOINT ["/arcadectl-controller"]

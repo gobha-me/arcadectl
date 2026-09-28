@@ -50,7 +50,12 @@ jobs:
           done
           first_id=$(docker image inspect --format '{{.Id}}' arcadectl-controller:ci-first)
           second_id=$(docker image inspect --format '{{.Id}}' arcadectl-controller:ci-second)
-          test "$first_id" = "$second_id"
+          if [ "$first_id" != "$second_id" ]; then
+            docker image inspect arcadectl-controller:ci-first arcadectl-controller:ci-second \
+              --format 'id={{.Id}} created={{.Created}} layers={{json .RootFS.Layers}}'
+            echo "Independent clean builds produced different controller images" >&2
+            exit 1
+          fi
 
   kind-lifecycle:
     name: Kind lifecycle

@@ -20,7 +20,10 @@ RUN tar -xzf /tmp/minio-source.tar.gz --strip-components=1 \
     && chmod 0755 /out/minio \
     && chmod 0644 /out/licenses/*
 COPY Dockerfile /out/licenses/build-recipe.Dockerfile
-RUN find /out -exec touch -d '@1760549395' {} +
+RUN mkdir -p /out/etc/ssl/certs \
+    && cp /etc/ssl/certs/ca-certificates.crt /out/etc/ssl/certs/ca-certificates.crt \
+    && chmod 0644 /out/etc/ssl/certs/ca-certificates.crt \
+    && find /out -exec touch -d '@1760549395' {} +
 
 FROM scratch
 LABEL org.opencontainers.image.source="https://github.com/minio/minio" \
@@ -28,7 +31,6 @@ LABEL org.opencontainers.image.source="https://github.com/minio/minio" \
       org.opencontainers.image.licenses="AGPL-3.0" \
       arcade.gobha.me/purpose="isolated-lifecycle-test-fixture"
 COPY --from=build /out/ /
-COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 ENV HOME=/tmp MINIO_BROWSER=off MINIO_UPDATE=off
 USER 65532:65532
 ENTRYPOINT ["/minio"]
