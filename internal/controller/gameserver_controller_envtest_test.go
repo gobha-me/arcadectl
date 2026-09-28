@@ -14,6 +14,7 @@ import (
 	arcadev1alpha1 "github.com/gobha-me/arcadectl/api/v1alpha1"
 	"github.com/gobha-me/arcadectl/internal/catalog"
 	appsv1 "k8s.io/api/apps/v1"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -49,9 +50,10 @@ func TestEnvtestLifecycleStatusCollisionAndRecovery(t *testing.T) {
 
 	scheme := runtime.NewScheme()
 	for name, add := range map[string]func(*runtime.Scheme) error{
-		"Arcadectl": arcadev1alpha1.AddToScheme,
-		"apps":      appsv1.AddToScheme,
-		"core":      corev1.AddToScheme,
+		"Arcadectl":    arcadev1alpha1.AddToScheme,
+		"apps":         appsv1.AddToScheme,
+		"core":         corev1.AddToScheme,
+		"coordination": coordinationv1.AddToScheme,
 	} {
 		if err := add(scheme); err != nil {
 			t.Fatalf("add %s scheme: %v", name, err)

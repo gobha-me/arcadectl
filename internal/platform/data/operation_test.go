@@ -76,7 +76,7 @@ func TestOperationPhaseSafety(t *testing.T) {
 		{name: "restore rollback can finish failure verified", kind: RestoreOperation, from: arcadev1alpha1.DataPhaseRollingBack, to: arcadev1alpha1.DataPhaseFailed, verified: true},
 		{name: "terminal does not regress", kind: BackupOperation, from: arcadev1alpha1.DataPhaseSucceeded, to: arcadev1alpha1.DataPhaseRunning, verified: true, wantErr: true},
 		{name: "cancel finishes", kind: BackupOperation, from: arcadev1alpha1.DataPhaseCancelling, to: arcadev1alpha1.DataPhaseCancelled},
-		{name: "cannot skip work", kind: BackupOperation, from: arcadev1alpha1.DataPhasePreparing, to: arcadev1alpha1.DataPhaseVerifying, wantErr: true},
+		{name: "backup failure can enter verification cleanup", kind: BackupOperation, from: arcadev1alpha1.DataPhasePreparing, to: arcadev1alpha1.DataPhaseVerifying},
 		{name: "unknown phase", kind: BackupOperation, from: "Surprised", to: arcadev1alpha1.DataPhaseFailed, wantErr: true},
 		{name: "succeeded self transition still verified", kind: BackupOperation, from: arcadev1alpha1.DataPhaseSucceeded, to: arcadev1alpha1.DataPhaseSucceeded, wantErr: true},
 		{name: "backup cannot activate", kind: BackupOperation, from: arcadev1alpha1.DataPhaseVerifying, to: arcadev1alpha1.DataPhaseActivating, verified: true, wantErr: true},

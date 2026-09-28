@@ -6,6 +6,7 @@ package controller
 import (
 	"os"
 	"slices"
+	"strings"
 	"testing"
 
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -54,20 +55,40 @@ func TestControllerRoleCanManageDisposableConfiguration(t *testing.T) {
 	t.Fatal("generated role has no ConfigMap rule")
 }
 
-func TestControllerRoleDataOperationsAreStatusOnly(t *testing.T) {
+func TestControllerRoleBackupWorkerAuthorityIsNarrow(t *testing.T) {
 	t.Parallel()
 
 	role := loadControllerRole(t)
-	for _, resource := range []string{"gamebackups", "gamerestores"} {
-		assertExactResourceVerbs(t, role, "arcade.gobha.me", resource, []string{"get", "list", "watch"})
-		assertExactResourceVerbs(t, role, "arcade.gobha.me", resource+"/status", []string{"get", "patch", "update"})
-	}
+	assertExactResourceVerbs(t, role, "arcade.gobha.me", "gamebackups", []string{"get", "list", "patch", "update", "watch"})
+	assertExactResourceVerbs(t, role, "arcade.gobha.me", "gamebackups/status", []string{"get", "patch", "update"})
+	assertExactResourceVerbs(t, role, "arcade.gobha.me", "gamerestores", []string{"get", "list", "watch"})
+	assertExactResourceVerbs(t, role, "arcade.gobha.me", "gamerestores/status", []string{"get", "patch", "update"})
+	assertExactResourceVerbs(t, role, "", "secrets", []string{"get"})
+	assertExactResourceVerbs(t, role, "", "pods", []string{"get", "list", "update", "watch"})
+	assertExactResourceVerbs(t, role, "", "serviceaccounts", []string{"create", "get", "list", "watch"})
+	assertExactResourceVerbs(t, role, "batch", "jobs", []string{"create", "delete", "get", "list", "update", "watch"})
+	assertExactResourceVerbs(t, role, "coordination.k8s.io", "leases", []string{"create", "delete", "get", "list", "patch", "update", "watch"})
+	assertExactResourceVerbs(t, role, "rbac.authorization.k8s.io", "roles", []string{"create", "get", "list", "watch"})
+	assertExactResourceVerbs(t, role, "rbac.authorization.k8s.io", "rolebindings", []string{"create", "get", "list", "watch"})
+}
+
+func TestControllerRoleHasNoWildcardOrRBACEscalationAuthority(t *testing.T) {
+	t.Parallel()
+
+	role := loadControllerRole(t)
 	for _, rule := range role.Rules {
-		if slices.Contains(rule.Resources, "secrets") {
-			t.Fatalf("issue #18 controller role grants premature Secret authority: %#v", rule)
+		if len(rule.NonResourceURLs) != 0 {
+			t.Fatalf("controller Role contains non-resource authority: %v", rule.NonResourceURLs)
 		}
-		if slices.Contains(rule.Resources, "jobs") || slices.Contains(rule.Resources, "pods") {
-			t.Fatalf("issue #18 controller role grants premature worker authority: %#v", rule)
+		for _, value := range append(append(slices.Clone(rule.APIGroups), rule.Resources...), rule.Verbs...) {
+			if value == "*" {
+				t.Fatalf("controller Role contains wildcard authority: %#v", rule)
+			}
+		}
+		for _, verb := range rule.Verbs {
+			if slices.Contains([]string{"bind", "escalate", "impersonate"}, strings.ToLower(verb)) {
+				t.Fatalf("controller Role contains escalation verb %q: %#v", verb, rule)
+			}
 		}
 	}
 }

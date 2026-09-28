@@ -19,15 +19,19 @@ readonly repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly install_directory="$repository_root/config/install"
 readonly template="$install_directory/deployment.yaml.tmpl"
 
-if [[ $(grep -Fo '@@CONTROLLER_IMAGE@@' "$template" | wc -l) -ne 1 ]]; then
-  echo "controller Deployment template must contain exactly one image placeholder" >&2
+if [[ $(grep -Fo '@@CONTROLLER_IMAGE@@' "$template" | wc -l) -ne 2 ]]; then
+  echo "controller Deployment template must contain exactly two image placeholders" >&2
   exit 1
 fi
 
 for manifest in \
   "$install_directory/service-account.yaml" \
   "$repository_root/config/rbac/role.yaml" \
-  "$install_directory/role-binding.yaml"; do
+  "$install_directory/role-binding.yaml" \
+  "$install_directory/volumeattachment-cluster-role.yaml" \
+  "$install_directory/volumeattachment-cluster-role-binding.yaml" \
+  "$install_directory/backup-worker-admission-policy.yaml" \
+  "$install_directory/backup-worker-admission-policy-binding.yaml"; do
   printf '%s\n' "$(<"$manifest")"
 done
 

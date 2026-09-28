@@ -25,9 +25,11 @@ the certified Factorio lifecycle is exercised in a disposable-cluster proof.
 Retained worlds carry a durable data identity, and a replacement server must
 explicitly reattach every adapter path by exact local PVC name and UID; a
 same-name resource is never authority to adopt an old world.
-Backup and restore requests now have immutable, retry-safe API contracts, but
-their workers are not implemented. Explicit destruction and production
-deployment also remain unimplemented.
+Cold backup now stops the exact source when necessary, backs up every declared
+path through a bounded Restic worker, verifies the repository artifact, and
+optionally restores prior runtime intent. Its isolated proof uses real MinIO.
+Restore remains contract-only. Explicit destruction and production deployment
+also remain unimplemented.
 
 A structurally different synthetic adapter participates in conformance tests
 from the beginning. Adding another game must not require changes to the core

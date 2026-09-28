@@ -8,12 +8,17 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	arcadev1alpha1 "github.com/gobha-me/arcadectl/api/v1alpha1"
 	"github.com/gobha-me/arcadectl/internal/controller"
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -28,10 +33,12 @@ func main() {
 	var metricsAddress string
 	var healthAddress string
 	var watchNamespace string
+	var backupWorkerImage string
 	var leaderElection bool
 	flag.StringVar(&metricsAddress, "metrics-bind-address", ":8080", "address for the metrics endpoint")
 	flag.StringVar(&healthAddress, "health-probe-bind-address", ":8081", "address for health probes")
 	flag.StringVar(&watchNamespace, "watch-namespace", os.Getenv("POD_NAMESPACE"), "single namespace containing GameServers and their resources")
+	flag.StringVar(&backupWorkerImage, "backup-worker-image", os.Getenv("BACKUP_WORKER_IMAGE"), "backup worker image pinned by sha256 digest")
 	flag.BoolVar(&leaderElection, "leader-elect", false, "enable leader election")
 	loggerOptions := zap.Options{Development: false}
 	loggerOptions.BindFlags(flag.CommandLine)
@@ -43,7 +50,11 @@ func main() {
 	scheme := runtime.NewScheme()
 	utilruntime.Must(corev1.AddToScheme(scheme))
 	utilruntime.Must(appsv1.AddToScheme(scheme))
+	utilruntime.Must(batchv1.AddToScheme(scheme))
 	utilruntime.Must(arcadev1alpha1.AddToScheme(scheme))
+	utilruntime.Must(coordinationv1.AddToScheme(scheme))
+	utilruntime.Must(rbacv1.AddToScheme(scheme))
+	utilruntime.Must(storagev1.AddToScheme(scheme))
 	gameCatalog, err := controllerCatalog()
 	if err != nil {
 		setupLog.Error(err, "build game catalog")
@@ -62,12 +73,24 @@ func main() {
 	}
 
 	reconciler := &controller.GameServerReconciler{
-		Client:  manager.GetClient(),
-		Scheme:  manager.GetScheme(),
-		Catalog: gameCatalog,
+		Client:    manager.GetClient(),
+		APIReader: manager.GetAPIReader(),
+		Scheme:    manager.GetScheme(),
+		Catalog:   gameCatalog,
 	}
 	if err := reconciler.SetupWithManager(manager); err != nil {
 		setupLog.Error(err, "register GameServer controller")
+		os.Exit(1)
+	}
+	if !regexp.MustCompile(`^[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}$`).MatchString(backupWorkerImage) {
+		setupLog.Error(errors.New("backup worker image must be a lowercase repository pinned by sha256 digest"), "validate backup worker image")
+		os.Exit(1)
+	}
+	backupReconciler := &controller.GameBackupReconciler{
+		Client: manager.GetClient(), APIReader: manager.GetAPIReader(), Scheme: manager.GetScheme(), Catalog: gameCatalog, WorkerImage: backupWorkerImage,
+	}
+	if err := backupReconciler.SetupWithManager(manager); err != nil {
+		setupLog.Error(err, "register GameBackup controller")
 		os.Exit(1)
 	}
 	if err := manager.AddHealthzCheck("healthz", healthz.Ping); err != nil {

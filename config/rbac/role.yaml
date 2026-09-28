@@ -30,6 +30,30 @@ rules:
   - update
   - watch
 - apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - serviceaccounts
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+- apiGroups:
   - apps
   resources:
   - deployments
@@ -45,11 +69,12 @@ rules:
   - arcade.gobha.me
   resources:
   - gamebackups
-  - gamerestores
   - gameservers
   verbs:
   - get
   - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - arcade.gobha.me
@@ -62,13 +87,43 @@ rules:
   - patch
   - update
 - apiGroups:
+  - arcade.gobha.me
+  resources:
+  - gamerestores
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
   - coordination.k8s.io
   resources:
   - leases
   verbs:
   - create
+  - delete
   - get
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - rolebindings
+  - roles
+  verbs:
+  - create
+  - get
+  - list
   - watch

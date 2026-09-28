@@ -34,9 +34,16 @@ resources. Because Pods ultimately select PVCs by name, principals allowed to
 replace managed PVCs are outside the ordinary-user trust boundary and require
 separate admission enforcement.
 Durable `GameBackup` and `GameRestore` APIs pin exact namespaced identities and
-define retry-safe operation state, while deliberately granting no Secret or
-worker authority until those implementations are reviewed. The authenticated
-API and CLI remain planned rather than implemented.
+define retry-safe operation state. Cold backup uses a bounded Job, exact
+per-operation RBAC, a suspended-Job plus admitted-Pod scheduling gate, and a
+data-identity Lease whose atomic Pod-UID execution claim prevents transiently
+overlapping Job Pods from sharing credentials. The controller removes the Pod
+gate only after the final admitted executable shape exactly matches the stored
+Job template. A namespace-bound, fail-closed `ValidatingAdmissionPolicy`
+prevents admission-time gate stripping and executable mutation during that
+transition;
+restore execution remains deferred. The authenticated API and CLI remain
+planned rather than implemented.
 
 ## Game adapter contract
 
@@ -78,7 +85,7 @@ assumptions, image names, or save semantics.
 - Backups are cold backups: stop cleanly, copy every declared persistent path
   with a Restic-compatible worker, verify, and then optionally restart.
 - The first automated backup target is S3-compatible object storage; isolated
-  tests use MinIO.
+  tests use a digest-pinned MinIO and the real Restic binary.
 - Images are launched by digest. Mutable tags may be user-facing version
   selectors but are resolved before mutation.
 - The initial API uses a generated administrator bearer token stored in a

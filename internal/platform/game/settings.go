@@ -5,6 +5,8 @@ package game
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +19,23 @@ import (
 )
 
 const MaxRenderedSettingsBytes = 64 * 1024
+
+// SettingsDigest returns a stable fingerprint of the adapter's validated,
+// rendered configuration. It hashes names, destinations, lengths, and bytes so
+// semantically identical renderer output has one operation identity without
+// placing settings contents in backup status or manifests.
+func (d Definition) SettingsDigest(settings json.RawMessage) (string, error) {
+	files, err := d.RenderSettingsFiles(settings)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.New()
+	for _, file := range files {
+		_, _ = fmt.Fprintf(hash, "%d:%s:%d:%s:%d:", len(file.Name), file.Name, len(file.MountPath), file.MountPath, len(file.Contents))
+		_, _ = hash.Write(file.Contents)
+	}
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
+}
 
 // RenderSettingsFiles invokes the certified renderer with an isolated copy of
 // settings, validates its constrained output, and returns files in stable name

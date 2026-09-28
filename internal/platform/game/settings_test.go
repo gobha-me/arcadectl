@@ -39,6 +39,40 @@ func TestRenderSettingsFilesReturnsStableIsolatedOutput(t *testing.T) {
 	}
 }
 
+func TestSettingsDigestTracksCanonicalRenderedOutput(t *testing.T) {
+	t.Parallel()
+	definition := testSettingsDefinition()
+	first, err := definition.SettingsDigest(json.RawMessage(`{"message":"same"}`))
+	if err != nil {
+		t.Fatalf("SettingsDigest() error = %v", err)
+	}
+	reordered, err := definition.SettingsDigest(json.RawMessage(`{ "message" : "same" }`))
+	if err != nil {
+		t.Fatalf("SettingsDigest() reordered error = %v", err)
+	}
+	changed, err := definition.SettingsDigest(json.RawMessage(`{"message":"changed"}`))
+	if err != nil {
+		t.Fatalf("SettingsDigest() changed error = %v", err)
+	}
+	if first != reordered || first == changed || !strings.HasPrefix(first, "sha256:") {
+		t.Fatalf("settings digests first=%q reordered=%q changed=%q", first, reordered, changed)
+	}
+}
+
+func testSettingsDefinition() Definition {
+	definition := validDefinition()
+	definition.RenderSettings = func(raw json.RawMessage) (map[string][]byte, error) {
+		var settings struct {
+			Message string `json:"message"`
+		}
+		if err := json.Unmarshal(raw, &settings); err != nil {
+			return nil, err
+		}
+		return map[string][]byte{"server-config": []byte(settings.Message + "\n")}, nil
+	}
+	return definition
+}
+
 func TestRenderSettingsFilesRejectsUnsafeOutput(t *testing.T) {
 	t.Parallel()
 

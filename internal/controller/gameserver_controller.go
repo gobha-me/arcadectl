@@ -13,6 +13,7 @@ import (
 	"maps"
 	"net/netip"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/gobha-me/arcadectl/internal/platform/game"
 	platformkube "github.com/gobha-me/arcadectl/internal/platform/kube"
 	appsv1 "k8s.io/api/apps/v1"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -42,9 +44,10 @@ type DefinitionCatalog interface {
 // disposable runtime resources.
 type GameServerReconciler struct {
 	client.Client
-	Scheme  *runtime.Scheme
-	Catalog DefinitionCatalog
-	Now     func() metav1.Time
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
+	Catalog   DefinitionCatalog
+	Now       func() metav1.Time
 }
 
 // +kubebuilder:rbac:groups=arcade.gobha.me,resources=gameservers,verbs=get;list;watch,namespace=arcadectl-system
@@ -136,6 +139,44 @@ func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 	}
 	progress.set(arcadev1alpha1.ConditionSpecValid, metav1.ConditionTrue, arcadev1alpha1.ReasonValid,
 		"the current GameServer generation passed adapter and platform validation")
+	locked, lockFailure := r.dataOperationLocked(ctx, server, plan.DataIdentity)
+	if lockFailure != nil {
+		return ctrl.Result{}, r.reportFailure(ctx, server, progress, lockFailure)
+	}
+	if locked {
+		stopping := false
+		if server.Spec.DesiredState == arcadev1alpha1.DesiredStateRunning {
+			if failure := r.preflightRuntime(ctx, server); failure != nil {
+				return ctrl.Result{}, r.reportFailure(ctx, server, progress, failure)
+			}
+			var failure *reconcileFailure
+			stopping, failure = r.deleteControlledRuntime(ctx, server)
+			if failure != nil {
+				return ctrl.Result{}, r.reportFailure(ctx, server, progress, failure)
+			}
+			setRuntimeStopping(progress)
+		} else {
+			setRuntimeStopped(progress)
+		}
+		progress.set(arcadev1alpha1.ConditionStorageReady, metav1.ConditionUnknown, arcadev1alpha1.ReasonDataOperationActive,
+			"retained data is frozen while an active backup or restore operation owns it")
+		progress.set(arcadev1alpha1.ConditionWorkloadReady, metav1.ConditionFalse, arcadev1alpha1.ReasonDataOperationActive,
+			"the singleton workload is absent while a data operation owns the retained world")
+		progress.set(arcadev1alpha1.ConditionReady, metav1.ConditionFalse, arcadev1alpha1.ReasonDataOperationActive,
+			"the game server remains offline while a data operation owns the retained world")
+		phase := arcadev1alpha1.PhaseStopping
+		if server.Spec.DesiredState == arcadev1alpha1.DesiredStateStopped && !stopping {
+			phase = arcadev1alpha1.PhaseStopped
+		}
+		if err := r.updateStatus(ctx, server, phase, progress, nil); err != nil {
+			return ctrl.Result{}, err
+		}
+		requeue := backupRequeue
+		if stopping {
+			requeue = time.Second
+		}
+		return ctrl.Result{RequeueAfter: requeue}, nil
+	}
 	if failure := r.preflightStorage(ctx, server, plan); failure != nil {
 		return ctrl.Result{}, r.reportFailure(ctx, server, progress, failure)
 	}
@@ -267,6 +308,46 @@ func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 	}
 	progress.set(arcadev1alpha1.ConditionReady, metav1.ConditionFalse, readyReason, readyMessage)
 	return ctrl.Result{}, r.updateStatus(ctx, server, phase, progress, nil)
+}
+
+func (r *GameServerReconciler) dataOperationLocked(ctx context.Context, server *arcadev1alpha1.GameServer, dataIdentity string) (bool, *reconcileFailure) {
+	lease := &coordinationv1.Lease{}
+	key := types.NamespacedName{Namespace: server.Namespace, Name: platformkube.DataOperationLeaseName(dataIdentity)}
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
+	if err := reader.Get(ctx, key, lease); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, newReconcileFailure(
+			arcadev1alpha1.ConditionWorkloadReady,
+			arcadev1alpha1.ReasonWorkloadOperationFailed,
+			"the retained-data operation fence could not be inspected; inspect Kubernetes API availability",
+			err,
+			true,
+		)
+	}
+	if lease.Labels[platformkube.LabelManagedBy] != platformkube.ManagerName ||
+		lease.Labels[platformkube.LabelDataIdentity] != dataIdentity || lease.Spec.HolderIdentity == nil || *lease.Spec.HolderIdentity == "" {
+		return true, nil
+	}
+	operation := arcadev1alpha1.ExactLocalReference{
+		Name: lease.Annotations[platformkube.AnnotationBackupName],
+		UID:  *lease.Spec.HolderIdentity,
+	}
+	runtimeOwner := platformkube.BackupOperationLeaseMatches(lease, operation, server.Name)
+	wantGeneration := strconv.FormatInt(server.Generation, 10)
+	if server.Spec.DesiredState == arcadev1alpha1.DesiredStateRunning &&
+		runtimeOwner &&
+		lease.Labels[platformkube.LabelInstance] == server.Name &&
+		lease.Labels[platformkube.LabelBackupUID] == *lease.Spec.HolderIdentity &&
+		lease.Annotations[platformkube.AnnotationRuntimeSettlementState] == string(arcadev1alpha1.DesiredStateRunning) &&
+		lease.Annotations[platformkube.AnnotationRuntimeSettlementGeneration] == wantGeneration {
+		return false, nil
+	}
+	return true, nil
 }
 
 func (r *GameServerReconciler) preflightStorage(ctx context.Context, server *arcadev1alpha1.GameServer, plan platformkube.Plan) *reconcileFailure {
@@ -909,6 +990,16 @@ func (r *GameServerReconciler) SetupWithManager(manager ctrl.Manager) error {
 		Owns(&corev1.ConfigMap{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		Watches(&coordinationv1.Lease{}, handler.EnqueueRequestsFromMapFunc(func(_ context.Context, object client.Object) []reconcile.Request {
+			if object.GetLabels()[platformkube.LabelManagedBy] != platformkube.ManagerName || object.GetLabels()[platformkube.LabelDataIdentity] == "" {
+				return nil
+			}
+			name := object.GetLabels()[platformkube.LabelInstance]
+			if name == "" {
+				return nil
+			}
+			return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: object.GetNamespace(), Name: name}}}
+		})).
 		Watches(&corev1.PersistentVolumeClaim{}, handler.EnqueueRequestsFromMapFunc(func(_ context.Context, object client.Object) []reconcile.Request {
 			if object.GetLabels()[platformkube.LabelManagedBy] != platformkube.ManagerName ||
 				object.GetLabels()[platformkube.LabelDataPolicy] != "retain" {
