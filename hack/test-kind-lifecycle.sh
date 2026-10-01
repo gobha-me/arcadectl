@@ -12,12 +12,15 @@ readonly registry_image='registry:3.0.0@sha256:6c5666b861f3505b116bb9aa9b25175e7
 readonly restic_inspector_image='restic/restic@sha256:39d9072fb5651c80d75c7a811612eb60b4c06b32ffe87c2e9f3c7222e1797e76'
 readonly lifecycle_suite="${ARCADECTL_LIFECYCLE_SUITE:-synthetic}"
 case "$lifecycle_suite" in
-  synthetic|factorio) ;;
+  synthetic|factorio|recovery) ;;
   *) printf 'error: unsupported lifecycle suite: %s\n' "$lifecycle_suite" >&2; exit 2 ;;
 esac
 readonly namespace=arcadectl-system
 readonly server_name=lifecycle
-if [[ "$lifecycle_suite" == factorio ]]; then
+uses_factorio=false
+[[ "$lifecycle_suite" == synthetic ]] || uses_factorio=true
+readonly uses_factorio
+if [[ "$uses_factorio" == true ]]; then
   readonly claim_name=lifecycle-factorio-world
 else
   readonly claim_name=lifecycle-conformance-echo-state
@@ -37,6 +40,8 @@ readonly ownership_file="$workspace/ownership"
 readonly kubectl_wrapper="$workspace/kubectl"
 if [[ "$lifecycle_suite" == factorio ]]; then
   readonly artifact_root="${ARCADECTL_E2E_ARTIFACT_ROOT:-$repository_root/artifacts/factorio-lifecycle}"
+elif [[ "$lifecycle_suite" == recovery ]]; then
+  readonly artifact_root="${ARCADECTL_E2E_ARTIFACT_ROOT:-$repository_root/artifacts/kind-recovery}"
 else
   readonly artifact_root="${ARCADECTL_E2E_ARTIFACT_ROOT:-$repository_root/artifacts/kind-lifecycle}"
 fi
@@ -91,7 +96,19 @@ kube_bounded() {
 }
 
 redact_stream() {
-  sed -E -f "$redaction_rules"
+  if [[ "$lifecycle_suite" == recovery && -n "${repository_password:-}" ]]; then
+    # All fixture canaries are generated alphanumeric/hyphen literals. Never
+    # interpolate arbitrary credential contents into a redaction expression.
+    local rules="$workspace/recovery-redaction.sed" canary
+    cp "$redaction_rules" "$rules"
+    for canary in "$repository_password" "$repository_access_key" "$repository_secret_key" "${recovery_extra_canaries[@]}"; do
+      [[ "$canary" =~ ^[a-zA-Z0-9-]+$ ]] || return 1
+      printf 's/%s/<private>/g\n' "$canary" >>"$rules"
+    done
+    sed -E -f "$rules"
+  else
+    sed -E -f "$redaction_rules"
+  fi
 }
 
 collect_diagnostics() {
@@ -153,8 +170,20 @@ collect_diagnostics() {
     [[ -z "$factorio_a_tag" ]] || docker image inspect "$factorio_a_tag" --format 'factorio_a_id={{.Id}} factorio_a_digests={{json .RepoDigests}}' 2>/dev/null || true
     [[ -z "$factorio_b_tag" ]] || docker image inspect "$factorio_b_tag" --format 'factorio_b_id={{.Id}} factorio_b_digests={{json .RepoDigests}}' 2>/dev/null || true
   } >"$artifact_directory/docker-images.txt"
+  if [[ "$lifecycle_suite" == recovery ]]; then
+    if [[ -x "$kubectl_wrapper" && -s "$kubeconfig" ]]; then
+      run_bounded 20 "$kubectl_wrapper" get gamebackups,gamerestores,gamedestroys --namespace "$namespace" --output=json 2>&1 \
+        | redact_stream >"$artifact_directory/recovery-operations.json" || true
+    fi
+    local proof
+    for proof in recovery-transitions.tsv recovery-marker-evidence.txt recovery-filesystem-full-evidence.txt recovery-filesystem-full-jobs.tsv recovery-operations.json recovery-cleanup.tsv; do
+      if [[ -f "$workspace/$proof" && ! -L "$workspace/$proof" ]]; then
+        redact_stream <"$workspace/$proof" >"$artifact_directory/$proof" || return 1
+      fi
+    done
+  fi
   find "$artifact_directory" -type f -exec chmod 0600 {} +
-  printf 'sanitized failure diagnostics: %s\n' "$artifact_directory" >&2
+  printf 'sanitized lifecycle diagnostics: %s\n' "$artifact_directory" >&2
 }
 
 verify_registry_ownership() {
@@ -422,13 +451,13 @@ curl --fail --silent --show-error "http://127.0.0.1:$registry_port/v2/" >/dev/nu
 
 readonly registry_host="127.0.0.1:$registry_port"
 controller_tag="$registry_host/arcadectl-controller:$run_id"
-if [[ "$lifecycle_suite" == factorio ]]; then
+if [[ "$uses_factorio" == true ]]; then
   factorio_a_tag="$registry_host/gobha-me/arcadectl-factorio:$run_id-a"
   factorio_b_tag="$registry_host/gobha-me/arcadectl-factorio:$run_id-b"
 else
   synthetic_tag="$registry_host/gobha-me/arcadectl-conformance-server:$run_id"
-  minio_tag="$registry_host/arcadectl-minio-fixture:$run_id"
 fi
+[[ "$lifecycle_suite" == factorio ]] || minio_tag="$registry_host/arcadectl-minio-fixture:$run_id"
 
 controller_build_args=(
   --build-arg "VCS_REF=$candidate_sha"
@@ -441,7 +470,7 @@ fi
 say "building $lifecycle_suite controller image"
 run_bounded 360 docker build "${controller_build_args[@]}" --tag "$controller_tag" "$repository_root"
 
-if [[ "$lifecycle_suite" == factorio ]]; then
+if [[ "$uses_factorio" == true ]]; then
   say "building two immutable Factorio lifecycle variants"
   run_bounded 600 docker build \
     --file "$repository_root/images/factorio/Dockerfile" \
@@ -462,19 +491,21 @@ else
     --build-arg "SOURCE_DIRTY=$source_dirty" \
     --tag "$synthetic_tag" \
     "$repository_root"
+fi
+if [[ "$lifecycle_suite" != factorio ]]; then
   say "building MinIO fixture from checksum-pinned official source"
   run_bounded 600 docker build \
     --file "$repository_root/images/minio-fixture/Dockerfile" \
     --tag "$minio_tag" "$repository_root/images/minio-fixture"
 fi
 run_bounded 120 docker push "$controller_tag" >/dev/null
-if [[ "$lifecycle_suite" == factorio ]]; then
+if [[ "$uses_factorio" == true ]]; then
   run_bounded 240 docker push "$factorio_a_tag" >/dev/null
   run_bounded 240 docker push "$factorio_b_tag" >/dev/null
 else
   run_bounded 120 docker push "$synthetic_tag" >/dev/null
-  run_bounded 120 docker push "$minio_tag" >/dev/null
 fi
+[[ "$lifecycle_suite" == factorio ]] || run_bounded 120 docker push "$minio_tag" >/dev/null
 
 resolve_digest() {
   local tag=$1 repository=${1%:*} reference
@@ -485,7 +516,7 @@ resolve_digest() {
 
 controller_digest=$(resolve_digest "$controller_tag") || die "controller registry digest is unavailable"
 readonly controller_image="$registry_host/arcadectl-controller@$controller_digest"
-if [[ "$lifecycle_suite" == factorio ]]; then
+if [[ "$uses_factorio" == true ]]; then
   factorio_a_digest=$(resolve_digest "$factorio_a_tag") || die "Factorio A registry digest is unavailable"
   factorio_b_digest=$(resolve_digest "$factorio_b_tag") || die "Factorio B registry digest is unavailable"
   [[ "$factorio_a_digest" != "$factorio_b_digest" ]] || die "Factorio lifecycle variants resolved to the same digest"
@@ -496,6 +527,8 @@ else
   synthetic_digest=$(resolve_digest "$synthetic_tag") || die "synthetic registry digest is unavailable"
   readonly synthetic_digest
   readonly synthetic_image="ghcr.io/gobha-me/arcadectl-conformance-server@$synthetic_digest"
+fi
+if [[ "$lifecycle_suite" != factorio ]]; then
   minio_digest=$(resolve_digest "$minio_tag") || die "MinIO fixture registry digest is unavailable"
   readonly minio_image="$registry_host/arcadectl-minio-fixture@$minio_digest"
 fi
@@ -543,7 +576,7 @@ while IFS= read -r node; do
     | run_bounded 10 docker exec --interactive "$node" tee /etc/containerd/certs.d/ghcr.io/hosts.toml >/dev/null
   run_bounded 120 docker exec "$node" ctr --namespace k8s.io images pull \
     --hosts-dir /etc/containerd/certs.d "$controller_image" >/dev/null
-  if [[ "$lifecycle_suite" == factorio ]]; then
+  if [[ "$uses_factorio" == true ]]; then
     run_bounded 240 docker exec "$node" ctr --namespace k8s.io images pull \
       --hosts-dir /etc/containerd/certs.d "$factorio_a_image" >/dev/null
     run_bounded 240 docker exec "$node" ctr --namespace k8s.io images pull \
@@ -1015,6 +1048,7 @@ spec:
           test "\$(stat -c '%u:%g' "\$1")" = "845:845"
           test "\$(stat -c '%u:%g' /factorio/config/server-settings.json)" = "845:845"
           grep -Fq '"name": "Arcadectl lifecycle proof"' /factorio/config/server-settings.json
+          grep -Fq '"description": ""' /factorio/config/server-settings.json
           printf 'world-identity=preserved\nsave=present\nownership=845:845\n'
       resources:
         requests: {cpu: 5m, memory: 8Mi}
@@ -1065,7 +1099,6 @@ spec:
     storageClassName: ""
 $reattach_block  settings:
     name: Arcadectl lifecycle proof
-    description: Isolated non-public lifecycle evidence
     maxPlayers: 4
     visibility: private
 EOF
@@ -1324,6 +1357,13 @@ prove_storage_boundary
 
 if [[ "$lifecycle_suite" == factorio ]]; then
   run_factorio_lifecycle
+  exit 0
+fi
+if [[ "$lifecycle_suite" == recovery ]]; then
+  # Recovery shares only the owned-cluster setup and bounded helpers above.
+  # Its CSI/fault journey is kept separate from the existing lifecycle proof.
+  source "$repository_root/hack/kind-recovery-scenarios.sh"
+  run_recovery_scenarios
   exit 0
 fi
 

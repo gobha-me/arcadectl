@@ -25,6 +25,7 @@ import (
 
 	arcadev1alpha1 "github.com/gobha-me/arcadectl/api/v1alpha1"
 	platformdata "github.com/gobha-me/arcadectl/internal/platform/data"
+	"github.com/gobha-me/arcadectl/internal/workerio"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
@@ -565,9 +566,10 @@ func (runner *commandRunner) run(ctx context.Context, environment map[string]str
 	for _, key := range keys {
 		command.Env = append(command.Env, key+"="+environment[key])
 	}
-	command.Stdout = destination
+	output := workerio.NewDrainingWriter(destination)
+	command.Stdout = output
 	command.Stderr = io.Discard
-	if err := command.Run(); err != nil {
+	if err := command.Run(); err != nil || output.Failed() {
 		return errors.New("repository command failed")
 	}
 	return nil

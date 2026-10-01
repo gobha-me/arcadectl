@@ -44,6 +44,7 @@ const (
 	ReasonIdentityMismatch   = "IdentityMismatch"
 	ReasonSecretUnavailable  = "SecretUnavailable"
 	ReasonColdStopPending    = "ColdStopPending"
+	ReasonStorageUnavailable = "StorageUnavailable"
 	ReasonOperationConflict  = "OperationConflict"
 	ReasonWorkerRetrying     = "WorkerRetrying"
 	ReasonWorkerFailed       = "WorkerFailed"

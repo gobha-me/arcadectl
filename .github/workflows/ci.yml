@@ -13,6 +13,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  kind-recovery:
+    name: Kind recovery failure safety
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Prove real Factorio recovery and isolated failure safety
+        env:
+          GOMAXPROCS: "2"
+          GOMEMLIMIT: 1GiB
+        run: make test-kind-recovery
+      - name: Upload sanitized recovery evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kind-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/kind-recovery/
+          if-no-files-found: ignore
+          retention-days: 3
+
   go-and-policy:
     name: Go and policy
     runs-on: ubuntu-24.04

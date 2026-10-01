@@ -1,8 +1,9 @@
 # Isolated lifecycle testing
 
-The existing lifecycle harness proves server lifecycle and cold backup in a
-disposable local Kubernetes cluster. It does **not yet** prove the new restore
-controller end to end. Run the established harness from the repository root on
+The synthetic lifecycle harness proves server lifecycle and cold backup in a
+disposable local Kubernetes cluster. A separate production-catalog recovery
+suite exercises the complete Factorio backup/restore/destroy journey and
+failure injection. Run the synthetic harness from the repository root on
 Linux with:
 
 ```sh
@@ -86,7 +87,7 @@ dumping the live source. Manifest corruption, same-size corruption, truncation,
 extra bytes, missing files, and repository read errors must all refuse a usable
 result, preserve source contents, and refuse duplicate snapshots on retry.
 
-## Restore validation status
+## Restore validation
 
 Issue #20 adds hermetic tests for v2 manifest directory topology, Restic
 inventory drift, candidate file verification and unsafe-entry rejection,
@@ -109,11 +110,79 @@ resources were removed afterward. Network-plugin annotations discovered in
 this run are covered by focused tests without weakening controller-owned Pod
 identity fields.
 
-This proves the positive path on one CSI environment, not all failure paths or
-a release image. Cluster-level interrupted populate, cancellation, rollback,
-and CSI alias rejection remain unproven; unit and envtest coverage is not a
-substitute for those experiments. Do not treat an older v1 backup as
+This external test proves the positive path on one CSI environment, not a
+release image. The separate recovery suite below adds reproducible disposable
+Kind evidence for selected failures. Cluster-level cancellation, activation
+rollback and CSI alias rejection remain separate unproven experiments; unit
+and envtest coverage is not a substitute. Do not treat an older v1 backup as
 restorable.
+
+## Factorio recovery and failure safety
+
+Run this independently and serially with the other cluster/build suites:
+
+```sh
+GOMAXPROCS=2 GOMEMLIMIT=1GiB make test-kind-recovery
+```
+
+The 90-minute outer deadline accommodates the pinned Restic backend's real
+15-minute retry window for some repository errors. This suite uses the
+production controller catalog, the certified Factorio image, real Restic and
+CSI-backed persistent MinIO. Its digest-pinned CSI hostpath driver is a
+privileged, **disposable-Kind-only test fixture**, not a production storage
+recommendation. See its [provenance](../hack/csi-hostpath/PROVENANCE.md).
+Finite world, repository and unrelated-sentinel capacity pools are independent.
+The fixture's logical world-capacity allocation does not fill the host disk.
+
+The journey includes:
+
+- a real Ready Factorio server and nonempty save, with an 8 MiB durable marker
+  before backup and a second marker after backup;
+- backup-independent decommission and explicit creation-time exact-UID
+  reattachment; implicit same-name adoption remains refused;
+- bad object-store credentials, actual pack-object metadata corruption in a
+  separate repository prefix, and actual Secret UID/resourceVersion races,
+  each refused during repository-only preflight without candidates or a fence;
+- finite CSI capacity exhaustion and the actual five-minute cold-fence
+  provisioning deadline, with a retained Pending candidate whose later binding
+  cannot revive the recorded failure;
+- three real authorized populate-worker process crashes, exact process/Pod/Job
+  identities and exit 137, and unchanged candidates across bounded retries;
+- real populate-time filesystem exhaustion using a **2 MiB tmpfs over only one
+  fresh candidate CSI UUID directory**. Mount propagation into the CSI driver
+  is checked before authorization; three retries, zero available bytes and
+  exact ordinary unmount are observed. This is not physical host-disk filling;
+- original-world identity and A+B readback after each preactivation failure;
+- a real controller Pod restart during an active repository-only worker, then
+  successful verified restore into distinct claims and CSI handles. Marker A
+  is read from the restored running Factorio Pod; B is absent, and the original
+  world still contains both;
+- a fresh LeaveStopped backup of the restored candidate, retained-world
+  decommission, missing/stale backup and confirmation refusals, unauthorized
+  unsafe-request denial, and confirmed repository-reverified exact destruction;
+- UID-preconditioned fixture cleanup while unrelated PVC/ConfigMap sentinels
+  remain unchanged. Test cleanup is separate from the product destroy proof;
+  removing a Retain PV API object does not claim physical erasure.
+
+Controller image labels, source SHA and dirty flag, runtime image IDs,
+operation records, transition times, exact storage identities, marker hashes
+and cleanup evidence are retained under `artifacts/kind-recovery/`. Secrets,
+kubeconfig, credential values and raw CRI inspection are excluded. CI uploads
+sanitized evidence on success or failure for three days. Only a clean exact-SHA
+CI run is delivery evidence; partial smoke runs and dirty local runs are not.
+
+For bounded diagnosis, `ARCADECTL_RECOVERY_POSTFAULTS_ONLY=true` runs setup,
+Secret-identity races, controller-restart restore, confirmed destroy and scoped
+cleanup without the preceding fault injections. It reports a partial diagnostic
+result explicitly; it cannot satisfy this issue's full failure-matrix gate.
+`ARCADECTL_RECOVERY_SMOKE_ONLY=true` proves only CSI setup and sentinel I/O.
+`ARCADECTL_RECOVERY_DIAGNOSTIC_FAULT=filesystem-full` selects one bounded fault
+followed by the same identity, positive recovery, destroy, and cleanup journey.
+The other accepted selections are `bad-credentials`, `capacity`, `worker-crash`,
+and `corruption`; unknown selections or combining this selection with another
+partial mode are refused.
+Single-fault results are also explicitly partial, never full-matrix evidence.
+None of these switches is enabled in CI.
 
 ## Destroy validation boundary
 
@@ -177,7 +246,7 @@ synthetic image and kind, node, registry, kubectl, materializer, and builder
 inputs are pinned in source.
 
 On failure, allowlisted object summaries and redacted fixed-fixture logs are
-written below the suite's `artifacts/kind-lifecycle/` or
-`artifacts/factorio-lifecycle/` directory before cleanup. ConfigMap data,
+written below the suite's `artifacts/kind-lifecycle/`,
+`artifacts/factorio-lifecycle/` or `artifacts/kind-recovery/` directory before cleanup. ConfigMap data,
 Secrets, raw node logs, and the kubeconfig are never copied into diagnostics.
 CI uploads only those directories for three days.

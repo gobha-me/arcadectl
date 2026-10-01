@@ -25,6 +25,14 @@ bash -n "$repository_root/hack/install.sh"
 bash -n "$repository_root/hack/uninstall.sh"
 bash -n "$lifecycle_harness"
 bash -n "$factorio_harness"
+for recovery_script in test-kind-recovery.sh kind-recovery-scenarios.sh kind-recovery-faults.sh kind-recovery-storage-fault.sh kind-recovery-corruption.sh kind-recovery-identity.sh kind-recovery-success.sh kind-recovery-cleanup.sh kind-recovery-cleanup-proof.sh; do
+  bash -n "$repository_root/hack/$recovery_script"
+  if grep -Eq 'kind delete cluster --all|docker (system|network|volume) prune|docker network rm|umount (-l|-f)' "$repository_root/hack/$recovery_script"; then
+    echo "Recovery harness contains a broad destructive operation" >&2
+    exit 1
+  fi
+done
+grep -Fq 'ARCADECTL_LIFECYCLE_SUITE=recovery' "$repository_root/hack/test-kind-recovery.sh"
 grep -Fq 'golang:1.26.0-alpine3.23@sha256:d4c4845f5d60c6a974c6000ce58ae079328d03ab7f721a0734277e69905473e5' "$controller_dockerfile"
 grep -Fq 'restic/restic@sha256:39d9072fb5651c80d75c7a811612eb60b4c06b32ffe87c2e9f3c7222e1797e76' "$controller_dockerfile"
 grep -Fq 'ENV GOTOOLCHAIN=local GOMAXPROCS=2 GOFLAGS="-mod=readonly -p=2"' "$controller_dockerfile"

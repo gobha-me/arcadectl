@@ -136,6 +136,14 @@ observed `Ready` or `Stopped` phase required by the restart policy. Thus a
 retry after a crash knows whether recovery is still due. Uncertain data or
 activation always remains stopped.
 
+When a candidate filesystem or bounded verifier rejects repository output, the
+worker drains the remaining subprocess stdout without buffering it or retrying
+destination writes. This lets Restic finish normal lock cleanup rather than
+breaking its stdout pipe. The operation still fails; context cancellation and
+the Job deadline remain authoritative bounds. No live lock is force-unlocked.
+Backup verification failures may identify a fixed checkpoint, but never expose
+repository output, file paths, credential material, or underlying error text.
+
 Success means repository-side verification covered every declared path. Status
 then records a deterministic artifact ID derived from the `GameBackup` UID,
 format version, manifest digest, byte size, path count, timestamps, `Verified`
@@ -197,6 +205,14 @@ complete Restic inventory, repository data, and each stored file before the
 controller acquires the previous-world lease or requests a cold stop. The
 controller then waits for the exact stopped generation and full Pod/CSI
 VolumeAttachment detachment before provisioning candidate PVCs.
+
+Candidate provisioning has a five-minute deadline measured from that durable
+cold fence, including controller downtime. If a required candidate is still
+missing or unbound at the deadline, preparation fails with `StorageUnavailable`;
+the original selection is retained and its requested runtime is settled before
+terminal failure. Pending candidates remain retained. Later binding cannot
+revive a recorded failure. Already-bound candidates observed after controller
+downtime can proceed if no failure was recorded.
 
 The populate worker mounts only those candidates. A separate, namespace-bound
 fail-closed admission policy requires its Pod to remain scheduling-gated until

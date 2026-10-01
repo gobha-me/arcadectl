@@ -1,0 +1,393 @@
+# SPDX-License-Identifier: Apache-2.0
+# Derived from kubernetes-csi/csi-driver-host-path v1.18.0 and sidecar RBAC.
+# MODIFIED for Arcadectl's disposable, single-node Kind recovery tests only.
+# See PROVENANCE.md for immutable upstream sources and all material changes.
+# Do not install this privileged host-path fixture on a real cluster.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: arcadectl-recovery-csi
+  labels:
+    arcade.gobha.me/test-run: __RUN_ID__
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: arcadectl-csi-hostpath
+  namespace: arcadectl-recovery-csi
+  labels:
+    arcade.gobha.me/test-run: __RUN_ID__
+---
+# One replica with leader election and capacity publication disabled. No Secret,
+# snapshot, expansion, endpoint, or lease permissions are required.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: arcadectl-recovery-csi
+  labels:
+    arcade.gobha.me/test-run: __RUN_ID__
+rules:
+  - apiGroups: [""]
+    resources: [persistentvolumes]
+    verbs: [get, list, watch, create, patch, delete]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, list, watch, update]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [list, watch, create, update, patch]
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list, watch]
+  - apiGroups: [storage.k8s.io]
+    resources: [storageclasses, csinodes]
+    verbs: [get, list, watch]
+  - apiGroups: [storage.k8s.io]
+    resources: [volumeattachments]
+    verbs: [get, list, watch, patch]
+  - apiGroups: [storage.k8s.io]
+    resources: [volumeattachments/status]
+    verbs: [patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: arcadectl-recovery-csi
+  labels:
+    arcade.gobha.me/test-run: __RUN_ID__
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: arcadectl-recovery-csi
+subjects:
+  - kind: ServiceAccount
+    name: arcadectl-csi-hostpath
+    namespace: arcadectl-recovery-csi
+---
+apiVersion: storage.k8s.io/v1
+kind: CSIDriver
+metadata:
+  name: hostpath.csi.k8s.io
+  labels:
+    arcade.gobha.me/test-run: __RUN_ID__
+spec:
+  attachRequired: true
+  podInfoOnMount: true
+  fsGroupPolicy: File
+  volumeLifecycleModes: [Persistent]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: arcadectl-csi-hostpath
+  namespace: arcadectl-recovery-csi
+  labels:
+    arcade.gobha.me/test-run: __RUN_ID__
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: arcadectl-csi-hostpath
+    arcade.gobha.me/test-run: __RUN_ID__
+  ports:
+    - name: healthz
+      port: 9898
+      targetPort: 9898
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: arcadectl-csi-hostpath
+  namespace: arcadectl-recovery-csi
+  labels:
+    arcade.gobha.me/test-run: __RUN_ID__
+spec:
+  serviceName: arcadectl-csi-hostpath
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: arcadectl-csi-hostpath
+      arcade.gobha.me/test-run: __RUN_ID__
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: arcadectl-csi-hostpath
+        arcade.gobha.me/test-run: __RUN_ID__
+    spec:
+      serviceAccountName: arcadectl-csi-hostpath
+      terminationGracePeriodSeconds: 15
+      containers:
+        - name: hostpath
+          # Release v1.18.0, deliberately not the stale v1.17.1 upstream YAML tag.
+          image: registry.k8s.io/sig-storage/hostpathplugin@sha256:44e2cb773c42f31ea2b6c1d736b53e96805ab03aec743d2ceea445b17b75b85c
+          imagePullPolicy: IfNotPresent
+          args:
+            - --drivername=hostpath.csi.k8s.io
+            - --v=2
+            - --endpoint=unix:///csi/csi.sock
+            - --nodeid=$(KUBE_NODE_NAME)
+            - --statedir=/csi-data-dir
+            - --enable-attach=true
+            - --capacity=world=4Gi
+            - --capacity=repository=2Gi
+            - --capacity=sentinel=64Mi
+            - --enable-volume-expansion=false
+            - --enable-list-snapshots=false
+          env:
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: GOMAXPROCS
+              value: "1"
+            - name: GOMEMLIMIT
+              value: 192MiB
+          securityContext:
+            privileged: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          ports:
+            - containerPort: 9898
+              name: healthz
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+            initialDelaySeconds: 2
+            periodSeconds: 2
+            timeoutSeconds: 3
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+            - name: mountpoint-dir
+              mountPath: /var/lib/kubelet/pods
+              mountPropagation: Bidirectional
+            - name: plugins-dir
+              mountPath: /var/lib/kubelet/plugins
+              mountPropagation: Bidirectional
+            # A test-created child tmpfs must propagate from the Kind node into
+            # the driver, so ENOSPC can be injected without filling node disk.
+            - name: csi-data-dir
+              mountPath: /csi-data-dir
+              mountPropagation: HostToContainer
+            - name: dev-dir
+              mountPath: /dev
+        - name: node-driver-registrar
+          # v2.17.0
+          image: registry.k8s.io/sig-storage/csi-node-driver-registrar@sha256:f9de845b170155199f2a2a3f9531cf13d78e31235e9db6b6582a8b0db0a50dad
+          imagePullPolicy: IfNotPresent
+          args:
+            - --v=2
+            - --csi-address=/csi/csi.sock
+            - --kubelet-registration-path=/var/lib/kubelet/plugins/csi-hostpath/csi.sock
+            - --http-endpoint=:9809
+          env:
+            - name: GOMAXPROCS
+              value: "1"
+            - name: GOMEMLIMIT
+              value: 32MiB
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 48Mi
+          ports:
+            - containerPort: 9809
+              name: registration
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: registration
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+            - name: registration-dir
+              mountPath: /registration
+        - name: liveness-probe
+          # v2.19.0
+          image: registry.k8s.io/sig-storage/livenessprobe@sha256:06da0d5b8908072f2e4522692aee8dc119fba7247a9658497e1153992cd777e9
+          imagePullPolicy: IfNotPresent
+          args:
+            - --csi-address=/csi/csi.sock
+            - --health-port=9898
+          env:
+            - name: GOMAXPROCS
+              value: "1"
+            - name: GOMEMLIMIT
+              value: 24MiB
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 32Mi
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        - name: csi-attacher
+          # v4.12.0
+          image: registry.k8s.io/sig-storage/csi-attacher@sha256:b9dc9a714a484ccdeeb6f86d88d4db9b7a5ecfc5a55da6db3a60bb3fa33c278a
+          imagePullPolicy: IfNotPresent
+          args:
+            - --v=2
+            - --csi-address=/csi/csi.sock
+            - --leader-election=false
+            - --worker-threads=1
+            - --timeout=10s
+          env:
+            - name: GOMAXPROCS
+              value: "1"
+            - name: GOMEMLIMIT
+              value: 48MiB
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 24Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        - name: csi-provisioner
+          # v6.3.0
+          image: registry.k8s.io/sig-storage/csi-provisioner@sha256:a4b0b1a37605b7b04a293e136edf7006ec1786a8eb3f4e5a945f81d667dcc371
+          imagePullPolicy: IfNotPresent
+          args:
+            - --v=2
+            - --csi-address=/csi/csi.sock
+            - --feature-gates=Topology=true,VolumeAttributesClass=false
+            - --leader-election=false
+            - --worker-threads=1
+            - --timeout=10s
+            - --retry-interval-start=1s
+            - --retry-interval-max=10s
+          env:
+            - name: GOMAXPROCS
+              value: "1"
+            - name: GOMEMLIMIT
+              value: 80MiB
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 20m
+              memory: 40Mi
+            limits:
+              cpu: 200m
+              memory: 112Mi
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+      volumes:
+        - name: socket-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins/csi-hostpath
+            type: DirectoryOrCreate
+        - name: mountpoint-dir
+          hostPath:
+            path: /var/lib/kubelet/pods
+            type: DirectoryOrCreate
+        - name: registration-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins_registry
+            type: Directory
+        - name: plugins-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins
+            type: Directory
+        - name: csi-data-dir
+          hostPath:
+            path: /var/lib/csi-hostpath-data
+            type: DirectoryOrCreate
+        - name: dev-dir
+          hostPath:
+            path: /dev
+            type: Directory
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: arcadectl-world-retain
+  labels:
+    arcade.gobha.me/test-run: __RUN_ID__
+provisioner: hostpath.csi.k8s.io
+parameters:
+  kind: world
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+allowVolumeExpansion: false
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: arcadectl-world-filler
+  labels:
+    arcade.gobha.me/test-run: __RUN_ID__
+provisioner: hostpath.csi.k8s.io
+parameters:
+  kind: world
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+allowVolumeExpansion: false
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: arcadectl-repository
+  labels:
+    arcade.gobha.me/test-run: __RUN_ID__
+provisioner: hostpath.csi.k8s.io
+parameters:
+  kind: repository
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+allowVolumeExpansion: false
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: arcadectl-sentinel
+  labels:
+    arcade.gobha.me/test-run: __RUN_ID__
+provisioner: hostpath.csi.k8s.io
+parameters:
+  kind: sentinel
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+allowVolumeExpansion: false

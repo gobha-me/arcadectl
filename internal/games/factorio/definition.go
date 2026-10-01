@@ -23,7 +23,7 @@ type settings struct {
 
 type serverSettings struct {
 	Name        string           `json:"name"`
-	Description string           `json:"description,omitempty"`
+	Description string           `json:"description"`
 	MaxPlayers  int              `json:"max_players"`
 	Visibility  serverVisibility `json:"visibility"`
 }

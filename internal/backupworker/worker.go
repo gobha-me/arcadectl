@@ -23,6 +23,7 @@ import (
 	"time"
 
 	platformdata "github.com/gobha-me/arcadectl/internal/platform/data"
+	"github.com/gobha-me/arcadectl/internal/workerio"
 )
 
 const (
@@ -45,10 +46,32 @@ const (
 	FailureVerification FailureKind = "VerificationFailed"
 )
 
-// Failure never contains repository output or credential material.
-type Failure struct{ Kind FailureKind }
+type verificationCheckpoint string
 
-func (failure *Failure) Error() string { return "backup worker failed: " + string(failure.Kind) }
+const (
+	checkpointSnapshotSelection verificationCheckpoint = "snapshot-selection"
+	checkpointRepositoryCheck   verificationCheckpoint = "repository-check"
+	checkpointManifest          verificationCheckpoint = "manifest"
+	checkpointInventory         verificationCheckpoint = "inventory"
+	checkpointFile              verificationCheckpoint = "file"
+	checkpointSourceRecheck     verificationCheckpoint = "source-recheck"
+	checkpointStats             verificationCheckpoint = "stats"
+)
+
+// Failure never contains repository output or credential material. Its private
+// checkpoint identifies only a fixed verification stage, never a path or error.
+type Failure struct {
+	Kind       FailureKind
+	checkpoint verificationCheckpoint
+}
+
+func (failure *Failure) Error() string {
+	kind := FailureRepository
+	if failure != nil {
+		kind = boundedFailureKind(failure.Kind)
+	}
+	return "backup worker failed: " + string(kind)
+}
 
 // Config contains fixed mount and executable locations. Production uses the
 // defaults; tests provide isolated paths and a fake Restic runner.
@@ -119,37 +142,37 @@ func Run(ctx context.Context, config Config) (platformdata.BackupWorkerResult, e
 		}
 	}
 	if len(snapshots) != 1 || !slices.Contains(snapshots[0].Tags, manifestTag) {
-		return platformdata.BackupWorkerResult{}, &Failure{Kind: FailureVerification}
+		return platformdata.BackupWorkerResult{}, &Failure{Kind: FailureVerification, checkpoint: checkpointSnapshotSelection}
 	}
 	snapshot := snapshots[0]
 	if snapshot.ID == "" {
-		return platformdata.BackupWorkerResult{}, &Failure{Kind: FailureVerification}
+		return platformdata.BackupWorkerResult{}, &Failure{Kind: FailureVerification, checkpoint: checkpointSnapshotSelection}
 	}
 
 	if _, err := config.Runner.Control(ctx, credentials.environment(), "check", "--no-cache", "--read-data-subset=100%"); err != nil {
-		return platformdata.BackupWorkerResult{}, &Failure{Kind: FailureVerification}
+		return platformdata.BackupWorkerResult{}, &Failure{Kind: FailureVerification, checkpoint: checkpointRepositoryCheck}
 	}
 	if err := verifyDump(ctx, config.Runner, credentials.environment(), snapshot.ID, manifestPath, contents); err != nil {
-		return platformdata.BackupWorkerResult{}, &Failure{Kind: FailureVerification}
+		return platformdata.BackupWorkerResult{}, &Failure{Kind: FailureVerification, checkpoint: checkpointManifest}
 	}
 	if err := verifyInventory(ctx, config.Runner, credentials.environment(), snapshot.ID, config.SourceRoot, manifestPath, int64(len(contents)), manifest); err != nil {
-		return platformdata.BackupWorkerResult{}, &Failure{Kind: FailureVerification}
+		return platformdata.BackupWorkerResult{}, &Failure{Kind: FailureVerification, checkpoint: checkpointInventory}
 	}
 	for _, path := range manifest.Paths {
 		for _, file := range path.Files {
 			repositoryPath := filepath.ToSlash(filepath.Join(config.SourceRoot, path.Name, filepath.FromSlash(file.Path)))
 			if err := verifyFile(ctx, config.Runner, credentials.environment(), snapshot.ID, repositoryPath, file); err != nil {
-				return platformdata.BackupWorkerResult{}, &Failure{Kind: FailureVerification}
+				return platformdata.BackupWorkerResult{}, &Failure{Kind: FailureVerification, checkpoint: checkpointFile}
 			}
 		}
 	}
 	_, after, err := platformdata.BuildBackupManifest(input, config.SourceRoot)
 	if err != nil || !bytes.Equal(after, contents) {
-		return platformdata.BackupWorkerResult{}, &Failure{Kind: FailureVerification}
+		return platformdata.BackupWorkerResult{}, &Failure{Kind: FailureVerification, checkpoint: checkpointSourceRecheck}
 	}
 	stats, err := readStats(ctx, config.Runner, credentials.environment(), snapshot.ID)
 	if err != nil || stats.TotalSize < 0 {
-		return platformdata.BackupWorkerResult{}, &Failure{Kind: FailureVerification}
+		return platformdata.BackupWorkerResult{}, &Failure{Kind: FailureVerification, checkpoint: checkpointStats}
 	}
 
 	verifiedAt := config.Now().UTC()
@@ -360,9 +383,10 @@ func (runner *commandRunner) run(ctx context.Context, environment map[string]str
 	for _, key := range keys {
 		command.Env = append(command.Env, key+"="+environment[key])
 	}
-	command.Stdout = destination
+	output := workerio.NewDrainingWriter(destination)
+	command.Stdout = output
 	command.Stderr = io.Discard
-	if err := command.Run(); err != nil {
+	if err := command.Run(); err != nil || output.Failed() {
 		return errors.New("repository command failed")
 	}
 	return nil
@@ -403,14 +427,32 @@ func ExitCode(err error) int {
 func FailureMessage(err error) []byte {
 	var failure *Failure
 	kind := FailureRepository
-	if errors.As(err, &failure) {
-		kind = failure.Kind
+	var checkpoint verificationCheckpoint
+	if errors.As(err, &failure) && failure != nil {
+		kind = boundedFailureKind(failure.Kind)
+		if kind == FailureVerification {
+			switch failure.checkpoint {
+			case checkpointSnapshotSelection, checkpointRepositoryCheck, checkpointManifest,
+				checkpointInventory, checkpointFile, checkpointSourceRecheck, checkpointStats:
+				checkpoint = failure.checkpoint
+			}
+		}
 	}
 	contents, _ := json.Marshal(struct {
-		Version string      `json:"version"`
-		Failure FailureKind `json:"failure"`
-	}{Version: platformdata.WorkerInputVersion, Failure: kind})
+		Version    string                 `json:"version"`
+		Failure    FailureKind            `json:"failure"`
+		Checkpoint verificationCheckpoint `json:"checkpoint,omitempty"`
+	}{Version: platformdata.WorkerInputVersion, Failure: kind, Checkpoint: checkpoint})
 	return append(contents, '\n')
+}
+
+func boundedFailureKind(kind FailureKind) FailureKind {
+	switch kind {
+	case FailureInput, FailureCredentials, FailureRepository, FailureVerification:
+		return kind
+	default:
+		return FailureRepository
+	}
 }
 
 // SuccessMessage serializes the bounded result for the termination log.

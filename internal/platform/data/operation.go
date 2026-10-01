@@ -281,6 +281,7 @@ func hasActionableCondition(conditions []metav1.Condition, generation int64) boo
 		case arcadev1alpha1.ReasonInvalidReference,
 			arcadev1alpha1.ReasonIdentityMismatch,
 			arcadev1alpha1.ReasonSecretUnavailable,
+			arcadev1alpha1.ReasonStorageUnavailable,
 			arcadev1alpha1.ReasonColdStopPending,
 			arcadev1alpha1.ReasonOperationConflict,
 			arcadev1alpha1.ReasonWorkerRetrying,
