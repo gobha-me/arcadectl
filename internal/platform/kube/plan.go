@@ -62,8 +62,9 @@ type Plan struct {
 // DataClaimPlan separates the desired PVC shape from exact reattach authority.
 // RequiredUID is empty only when this GameServer is creating its own data.
 type DataClaimPlan struct {
-	Desired     *corev1.PersistentVolumeClaim
-	RequiredUID types.UID
+	Desired            *corev1.PersistentVolumeClaim
+	RequiredUID        types.UID
+	ExternallySelected bool // explicit reattach or restore, never expand or relax storage class
 }
 
 // ValidationCategory identifies the bounded part of desired state that made a
@@ -106,6 +107,11 @@ func Build(server *arcadev1alpha1.GameServer, definition game.Definition) (Plan,
 	}
 	labels := workloadLabels(server)
 	claims := make([]DataClaimPlan, 0, len(definition.PersistentPaths))
+	// Status-selected restore candidates are controller-created and may use a
+	// defaulted storage class or later expand. Only immutable spec reattach (or
+	// a rollback to that same identity) keeps the stricter external policy.
+	externallySelected := server.Spec.Storage.Reattach != nil &&
+		(server.Status.ActiveData == nil || server.Status.ActiveData.Identity == server.Spec.Storage.Reattach.Identity)
 	claimNames := make(map[string]string, len(definition.PersistentPaths))
 	for _, persistentPath := range definition.PersistentPaths {
 		claimName := ""
@@ -121,15 +127,17 @@ func Build(server *arcadev1alpha1.GameServer, definition game.Definition) (Plan,
 		}
 		claimNames[persistentPath.Name] = claimName
 		claims = append(claims, DataClaimPlan{
-			Desired:     buildDataClaim(server, definition, persistentPath.Name, claimName, dataIdentity),
-			RequiredUID: claimUID,
+			Desired:            buildDataClaim(server, definition, persistentPath.Name, claimName, dataIdentity),
+			RequiredUID:        claimUID,
+			ExternallySelected: externallySelected,
 		})
 	}
 	files, err := definition.RenderSettingsFiles(server.Spec.Settings.Raw)
 	if err != nil {
 		return Plan{}, invalid(ValidationSettings, fmt.Errorf("render configuration: %w", err))
 	}
-	plan := Plan{DataClaims: claims, DataIdentity: dataIdentity, Reattach: server.Spec.Storage.Reattach != nil}
+	plan := Plan{DataClaims: claims, DataIdentity: dataIdentity,
+		Reattach: server.Status.ActiveData != nil || server.Spec.Storage.Reattach != nil || server.Status.ObservedData != nil}
 	if server.Spec.DesiredState == arcadev1alpha1.DesiredStateStopped {
 		return plan, nil
 	}
@@ -208,13 +216,24 @@ func DataIdentity(serverUID types.UID) (string, error) {
 }
 
 func retainedDataSelection(server *arcadev1alpha1.GameServer, definition game.Definition) (string, map[string]arcadev1alpha1.ExactLocalReference, error) {
-	if server.Spec.Storage.Reattach == nil {
+	selection := server.Status.ActiveData
+	if selection == nil {
+		selection = server.Spec.Storage.Reattach
+	}
+	if selection == nil {
+		// Once this controller has observed an exact generated claim set, a
+		// missing PVC is lost data, not permission to create an empty world.
+		selection = server.Status.ObservedData
+	}
+	if selection == nil {
 		identity, err := DataIdentity(server.UID)
 		return identity, nil, err
 	}
-	selection := server.Spec.Storage.Reattach
 	if selection.Identity == "" {
-		return "", nil, invalid(ValidationStorage, errors.New("reattach data identity is required"))
+		return "", nil, invalid(ValidationStorage, errors.New("selected data identity is required"))
+	}
+	if problems := validation.IsDNS1123Label(selection.Identity); len(problems) > 0 {
+		return "", nil, invalid(ValidationStorage, errors.New("selected data identity must be a DNS label"))
 	}
 	if len(selection.Claims) != len(definition.PersistentPaths) {
 		return "", nil, invalid(ValidationStorage, errors.New("reattach claims must cover every persistent path exactly"))

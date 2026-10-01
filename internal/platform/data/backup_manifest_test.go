@@ -27,6 +27,11 @@ func TestBuildBackupManifestIsCanonicalAndComplete(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "mods", "mod-list.json"), []byte("{}\n"), 0o600); err != nil {
 		t.Fatalf("write mods: %v", err)
 	}
+	for _, directory := range []string{"world/empty", "world/nested/deeper", "mods/empty"} {
+		if err := os.MkdirAll(filepath.Join(root, directory), 0o700); err != nil {
+			t.Fatalf("mkdir %s: %v", directory, err)
+		}
+	}
 	input := backupManifestInput()
 	manifest, first, err := BuildBackupManifest(input, root)
 	if err != nil {
@@ -50,11 +55,86 @@ func TestBuildBackupManifestIsCanonicalAndComplete(t *testing.T) {
 			t.Fatalf("path checksums = %#v, want one SHA-256 file", path)
 		}
 	}
+	if got := strings.Join(manifest.Paths[0].Directories, ","); got != "empty" {
+		t.Fatalf("mods directories = %q, want empty", got)
+	}
+	if got := strings.Join(manifest.Paths[1].Directories, ","); got != "empty,nested,nested/deeper" {
+		t.Fatalf("world directories = %q, want complete sorted topology", got)
+	}
 	if !strings.HasPrefix(ManifestDigest(first), "sha256:") {
 		t.Fatalf("manifest digest = %q", ManifestDigest(first))
 	}
 	if !json.Valid(first) || strings.Contains(string(first), "repository-password") {
 		t.Fatal("manifest is invalid JSON or contains credential material")
+	}
+}
+
+func TestBuildBackupManifestBindsEmptyDirectoryTopology(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	for _, path := range []string{"world", "mods"} {
+		if err := os.Mkdir(filepath.Join(root, path), 0o700); err != nil {
+			t.Fatalf("mkdir %s: %v", path, err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(root, "world", "first"), 0o700); err != nil {
+		t.Fatalf("mkdir first: %v", err)
+	}
+	_, first, err := BuildBackupManifest(backupManifestInput(), root)
+	if err != nil {
+		t.Fatalf("first manifest: %v", err)
+	}
+	if err := os.Rename(filepath.Join(root, "world", "first"), filepath.Join(root, "world", "second")); err != nil {
+		t.Fatalf("rename empty directory: %v", err)
+	}
+	_, second, err := BuildBackupManifest(backupManifestInput(), root)
+	if err != nil {
+		t.Fatalf("second manifest: %v", err)
+	}
+	if ManifestDigest(first) == ManifestDigest(second) {
+		t.Fatal("renaming an empty directory did not change the manifest digest")
+	}
+}
+
+func TestBuildBackupManifestRejectsSymlinkedPathRoot(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "mods"), 0o700); err != nil {
+		t.Fatalf("mkdir mods: %v", err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(root, "world")); err != nil {
+		t.Fatalf("symlink world: %v", err)
+	}
+	if _, _, err := BuildBackupManifest(backupManifestInput(), root); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("BuildBackupManifest() error = %v, want path root refusal", err)
+	}
+}
+
+func TestBuildBackupManifestRejectsNonUTF8Entry(t *testing.T) {
+	t.Parallel()
+	for _, isDirectory := range []bool{false, true} {
+		t.Run(map[bool]string{false: "file", true: "directory"}[isDirectory], func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			for _, path := range []string{"world", "mods"} {
+				if err := os.Mkdir(filepath.Join(root, path), 0o700); err != nil {
+					t.Fatalf("mkdir %s: %v", path, err)
+				}
+			}
+			name := filepath.Join(root, "world", string([]byte{'b', 'a', 'd', 0xff}))
+			var err error
+			if isDirectory {
+				err = os.Mkdir(name, 0o700)
+			} else {
+				err = os.WriteFile(name, []byte("content"), 0o600)
+			}
+			if err != nil {
+				t.Fatalf("create non-UTF-8 entry: %v", err)
+			}
+			if _, _, err := BuildBackupManifest(backupManifestInput(), root); err == nil || !strings.Contains(err.Error(), "unsafe entry") {
+				t.Fatalf("BuildBackupManifest() error = %v, want non-UTF-8 refusal", err)
+			}
+		})
 	}
 }
 

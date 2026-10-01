@@ -132,6 +132,9 @@ func Run(ctx context.Context, config Config) (platformdata.BackupWorkerResult, e
 	if err := verifyDump(ctx, config.Runner, credentials.environment(), snapshot.ID, manifestPath, contents); err != nil {
 		return platformdata.BackupWorkerResult{}, &Failure{Kind: FailureVerification}
 	}
+	if err := verifyInventory(ctx, config.Runner, credentials.environment(), snapshot.ID, config.SourceRoot, manifestPath, int64(len(contents)), manifest); err != nil {
+		return platformdata.BackupWorkerResult{}, &Failure{Kind: FailureVerification}
+	}
 	for _, path := range manifest.Paths {
 		for _, file := range path.Files {
 			repositoryPath := filepath.ToSlash(filepath.Join(config.SourceRoot, path.Name, filepath.FromSlash(file.Path)))

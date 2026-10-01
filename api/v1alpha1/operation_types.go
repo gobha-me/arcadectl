@@ -161,22 +161,34 @@ type DataOperationRequest struct {
 }
 
 // GameBackupSpec is an immutable cold-backup request.
+// +kubebuilder:validation:XValidation:rule="has(self.sourceData) == has(oldSelf.sourceData) && (!has(self.sourceData) || self.sourceData == oldSelf.sourceData)",message="sourceData presence and value are immutable"
 type GameBackupSpec struct {
 	DataOperationRequest `json:",inline"`
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="source is immutable"
 	Source ExactGameServerReference `json:"source"`
+	// SourceData pins the selected complete claim set. It is required after a
+	// controller-owned restore selection; an older unpinned request may never
+	// follow a later status-only data switch at unchanged spec generation.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="sourceData is immutable"
+	SourceData *RetainedDataReference `json:"sourceData,omitempty"`
 	// +kubebuilder:default=Retain
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="retentionPolicy is immutable"
 	RetentionPolicy ArtifactRetentionPolicy `json:"retentionPolicy"`
 }
 
 // GameRestoreSpec restores one exact verified backup into fresh target data.
+// +kubebuilder:validation:XValidation:rule="has(self.targetData) == has(oldSelf.targetData) && (!has(self.targetData) || self.targetData == oldSelf.targetData)",message="targetData presence and value are immutable"
 type GameRestoreSpec struct {
 	DataOperationRequest `json:",inline"`
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="backupRef is immutable"
 	BackupRef ExactLocalReference `json:"backupRef"`
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="target is immutable"
 	Target ExactGameServerReference `json:"target"`
+	// TargetData pins the complete currently selected claim set before restore.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="targetData is immutable"
+	TargetData *RetainedDataReference `json:"targetData,omitempty"`
 }
 
 // DataPathIdentity records one adapter-declared persistent path and the exact
@@ -330,6 +342,33 @@ type GameBackupStatus struct {
 	DataOperationStatus `json:",inline"`
 }
 
+// RestoreRuntimeJournal records intent before each operation-owned GameServer
+// spec update. Zero means that transition has not been requested. Each
+// nonzero generation is immutable so controller restarts cannot reinterpret
+// an already attempted start, stop, or rollback.
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.previousRecoveryGeneration) || has(self.previousRecoveryGeneration)",message="previous recovery intent cannot be removed"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.candidateStartGeneration) || has(self.candidateStartGeneration)",message="candidate start intent cannot be removed"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.rollbackStopGeneration) || has(self.rollbackStopGeneration)",message="rollback stop intent cannot be removed"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.rollbackRestartGeneration) || has(self.rollbackRestartGeneration)",message="rollback restart intent cannot be removed"
+type RestoreRuntimeJournal struct {
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="previous recovery generation is immutable"
+	PreviousRecoveryGeneration int64 `json:"previousRecoveryGeneration,omitempty"`
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="candidate start generation is immutable"
+	CandidateStartGeneration int64 `json:"candidateStartGeneration,omitempty"`
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="rollback stop generation is immutable"
+	RollbackStopGeneration int64 `json:"rollbackStopGeneration,omitempty"`
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="rollback restart generation is immutable"
+	RollbackRestartGeneration int64 `json:"rollbackRestartGeneration,omitempty"`
+}
+
 // GameRestoreStatus records isolated restore data identities. Candidate data
 // cannot become active until artifact and candidate verification succeeds;
 // PreviousData remains available for rollback.
@@ -347,8 +386,44 @@ type GameBackupStatus struct {
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.candidateVerification) || has(self.candidateVerification)",message="candidate verification cannot be removed"
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.activeData) || has(self.activeData)",message="active data cannot be removed"
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.previousData) || has(self.previousData)",message="previous data cannot be removed"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.previousDataIdentity) || has(self.previousDataIdentity)",message="previous data identity cannot be removed"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.preflightVerifiedAt) || has(self.preflightVerifiedAt)",message="repository preflight evidence cannot be removed"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.runtimeJournal) || has(self.runtimeJournal)",message="runtime intent journal cannot be removed"
+// +kubebuilder:validation:XValidation:rule="!has(self.preflightVerifiedAt) || (has(self.source) && has(self.artifact) && self.artifact.verification.result == 'Verified')",message="repository preflight requires a verified artifact and source"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.populateAttempts) || (has(self.populateAttempts) && self.populateAttempts >= oldSelf.populateAttempts)",message="populate attempts cannot decrease"
+// +kubebuilder:validation:XValidation:rule="!has(self.populateRetryPending) || !self.populateRetryPending || (has(self.populateAttempts) && self.populateAttempts > 0 && has(self.phase) && self.phase == 'Running')",message="pending populate retry requires a running attempted restore"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.populateJobUID) || (self.populateAttempts > oldSelf.populateAttempts || (has(self.populateJobUID) && self.populateJobUID == oldSelf.populateJobUID))",message="populate Job UID cannot change within one durable attempt"
 type GameRestoreStatus struct {
 	DataOperationStatus `json:",inline"`
+	// PopulateAttempts counts durable candidate-worker executions. Retry never
+	// changes candidate claim identities or writes to the previous world.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=3
+	PopulateAttempts int32 `json:"populateAttempts,omitempty"`
+	// PopulateRetryPending persists failed-Job cleanup intent across controller
+	// restarts before another execution may own the candidate lease.
+	// +optional
+	PopulateRetryPending bool `json:"populateRetryPending,omitempty"`
+	// PopulateJobUID is recorded before the corresponding Job can run. A
+	// missing previously recorded Job consumes its attempt rather than being
+	// recreated indefinitely after external deletion.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[0-9a-f-]{36}$`
+	PopulateJobUID string `json:"populateJobUID,omitempty"`
+	// PreviousDataIdentity is the exact durable identity shared by the original
+	// claims; it remains available for rollback and audit after activation.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$`
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="previous data identity is immutable"
+	PreviousDataIdentity string `json:"previousDataIdentity,omitempty"`
+	// PreflightVerifiedAt proves that a repository-only worker completed before
+	// the target was stopped or candidate claims were provisioned.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="repository preflight evidence is immutable"
+	PreflightVerifiedAt *metav1.Time `json:"preflightVerifiedAt,omitempty"`
+	// +optional
+	RuntimeJournal *RestoreRuntimeJournal `json:"runtimeJournal,omitempty"`
 	// ActivationStartedAt is set once immediately before the first mutation
 	// that can redirect active data. Its presence makes rollback obligations
 	// durable even after the phase becomes Failed or Cancelled.
@@ -410,7 +485,7 @@ type GameBackupList struct {
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Server",type=string,JSONPath=`.spec.target.name`
 // +kubebuilder:validation:XValidation:rule="!has(self.status) || !has(self.status.fence) || (self.status.fence.gameServer.name == self.spec.target.name && self.status.fence.gameServer.uid == self.spec.target.uid && self.status.fence.gameServer.desiredState == 'Stopped' && ((self.spec.target.desiredState == 'Running' && self.status.fence.gameServer.generation == self.spec.target.generation + 1) || (self.spec.target.desiredState == 'Stopped' && self.status.fence.gameServer.generation == self.spec.target.generation)))",message="cold data fence must match the exact operation-owned stopped generation"
-// +kubebuilder:validation:XValidation:rule="!has(self.status) || !has(self.status.runtime) || (has(self.status.fence) && self.status.runtime.gameServer.name == self.spec.target.name && self.status.runtime.gameServer.uid == self.spec.target.uid && ((self.spec.restartPolicy == 'RestorePreviousState' && self.spec.target.desiredState == 'Running' && self.status.runtime.gameServer.desiredState == 'Running' && self.status.runtime.gameServer.generation == self.status.fence.gameServer.generation + 1) || ((self.spec.restartPolicy != 'RestorePreviousState' || self.spec.target.desiredState == 'Stopped') && self.status.runtime.gameServer.desiredState == 'Stopped' && self.status.runtime.gameServer.generation == self.status.fence.gameServer.generation)))",message="runtime disposition must match the exact operation-owned final generation"
+// +kubebuilder:validation:XValidation:rule="!has(self.status) || !has(self.status.runtime) || (has(self.status.fence) && self.status.runtime.gameServer.name == self.spec.target.name && self.status.runtime.gameServer.uid == self.spec.target.uid && (((self.spec.restartPolicy != 'RestorePreviousState' || self.spec.target.desiredState == 'Stopped') && self.status.runtime.gameServer.desiredState == 'Stopped' && self.status.runtime.gameServer.generation == self.status.fence.gameServer.generation) || (self.spec.restartPolicy == 'RestorePreviousState' && self.spec.target.desiredState == 'Running' && self.status.runtime.gameServer.desiredState == 'Running' && has(self.status.runtimeJournal) && ((self.status.phase == 'Succeeded' && has(self.status.runtimeJournal.candidateStartGeneration) && self.status.runtime.gameServer.generation == self.status.runtimeJournal.candidateStartGeneration) || (self.status.phase in ['Failed', 'Cancelled'] && has(self.status.activationStartedAt) && has(self.status.runtimeJournal.rollbackRestartGeneration) && self.status.runtime.gameServer.generation == self.status.runtimeJournal.rollbackRestartGeneration) || (self.status.phase in ['Failed', 'Cancelled'] && !has(self.status.activationStartedAt) && has(self.status.runtimeJournal.previousRecoveryGeneration) && self.status.runtime.gameServer.generation == self.status.runtimeJournal.previousRecoveryGeneration)))))",message="runtime disposition must match the exact operation-owned final generation journal"
 // +kubebuilder:validation:XValidation:rule="!has(self.status) || !has(self.status.artifact) || (self.status.artifact.provenance.backupRef.name == self.spec.backupRef.name && self.status.artifact.provenance.backupRef.uid == self.spec.backupRef.uid && self.status.artifact.provenance.repositorySecretRef.name == self.spec.repositorySecretRef.name && self.status.artifact.provenance.repositorySecretRef.uid == self.spec.repositorySecretRef.uid && self.status.artifact.provenance.repositorySecretRef.resourceVersion == self.spec.repositorySecretRef.resourceVersion)",message="restore artifact provenance must match the exact backup and repository"
 type GameRestore struct {
 	metav1.TypeMeta   `json:",inline"`

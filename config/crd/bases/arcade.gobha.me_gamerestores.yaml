@@ -187,6 +187,72 @@ spec:
                 - message: namespace must be omitted because references are local
                     to the operation
                   rule: '!has(self.namespace)'
+              targetData:
+                description: TargetData pins the complete currently selected claim
+                  set before restore.
+                properties:
+                  claims:
+                    items:
+                      description: |-
+                        RetainedDataClaimReference pins one adapter path to one exact local PVC.
+                        The namespace is always the containing GameServer namespace.
+                      properties:
+                        claimRef:
+                          description: |-
+                            ExactLocalReference prevents name reuse from silently changing an
+                            operation's subject. The containing operation namespace is implicit, so a
+                            cross-namespace subject cannot be represented.
+                          properties:
+                            name:
+                              maxLength: 253
+                              minLength: 1
+                              pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                              type: string
+                            namespace:
+                              description: |-
+                                Namespace is a rejection sentinel, not a selector. Its presence is
+                                forbidden so ordinary API requests cannot silently prune cross-namespace
+                                intent; the operation namespace is always authoritative.
+                              type: string
+                            uid:
+                              maxLength: 128
+                              minLength: 1
+                              type: string
+                          required:
+                          - name
+                          - uid
+                          type: object
+                          x-kubernetes-validations:
+                          - message: namespace must be omitted because references
+                              are local to the operation
+                            rule: '!has(self.namespace)'
+                        path:
+                          maxLength: 63
+                          minLength: 1
+                          pattern: ^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$
+                          type: string
+                      required:
+                      - claimRef
+                      - path
+                      type: object
+                    maxItems: 16
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - path
+                    x-kubernetes-list-type: map
+                  identity:
+                    maxLength: 63
+                    minLength: 1
+                    pattern: ^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$
+                    type: string
+                required:
+                - claims
+                - identity
+                type: object
+                x-kubernetes-validations:
+                - message: targetData is immutable
+                  rule: self == oldSelf
             required:
             - backupRef
             - cancelRequested
@@ -195,6 +261,9 @@ spec:
             - target
             type: object
             x-kubernetes-validations:
+            - message: targetData presence and value are immutable
+              rule: has(self.targetData) == has(oldSelf.targetData) && (!has(self.targetData)
+                || self.targetData == oldSelf.targetData)
             - message: inline credentials are forbidden; use repositorySecretRef
               rule: '!has(self.inlineCredentials)'
           status:
@@ -674,6 +743,35 @@ spec:
                 - Succeeded
                 - Failed
                 type: string
+              populateAttempts:
+                description: |-
+                  PopulateAttempts counts durable candidate-worker executions. Retry never
+                  changes candidate claim identities or writes to the previous world.
+                format: int32
+                maximum: 3
+                minimum: 0
+                type: integer
+              populateJobUID:
+                description: |-
+                  PopulateJobUID is recorded before the corresponding Job can run. A
+                  missing previously recorded Job consumes its attempt rather than being
+                  recreated indefinitely after external deletion.
+                pattern: ^[0-9a-f-]{36}$
+                type: string
+              populateRetryPending:
+                description: |-
+                  PopulateRetryPending persists failed-Job cleanup intent across controller
+                  restarts before another execution may own the candidate lease.
+                type: boolean
+              preflightVerifiedAt:
+                description: |-
+                  PreflightVerifiedAt proves that a repository-only worker completed before
+                  the target was stopped or candidate claims were provisioned.
+                format: date-time
+                type: string
+                x-kubernetes-validations:
+                - message: repository preflight evidence is immutable
+                  rule: self == oldSelf
               previousData:
                 items:
                   description: |-
@@ -731,6 +829,15 @@ spec:
                 x-kubernetes-list-type: map
                 x-kubernetes-validations:
                 - message: previous data is immutable
+                  rule: self == oldSelf
+              previousDataIdentity:
+                description: |-
+                  PreviousDataIdentity is the exact durable identity shared by the original
+                  claims; it remains available for rollback and audit after activation.
+                pattern: ^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$
+                type: string
+                x-kubernetes-validations:
+                - message: previous data identity is immutable
                   rule: self == oldSelf
               runtime:
                 description: |-
@@ -815,6 +922,51 @@ spec:
                   rule: (self.gameServer.desiredState == 'Running' && self.phase ==
                     'Ready') || (self.gameServer.desiredState == 'Stopped' && self.phase
                     == 'Stopped')
+              runtimeJournal:
+                description: |-
+                  RestoreRuntimeJournal records intent before each operation-owned GameServer
+                  spec update. Zero means that transition has not been requested. Each
+                  nonzero generation is immutable so controller restarts cannot reinterpret
+                  an already attempted start, stop, or rollback.
+                properties:
+                  candidateStartGeneration:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                    x-kubernetes-validations:
+                    - message: candidate start generation is immutable
+                      rule: self == oldSelf
+                  previousRecoveryGeneration:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                    x-kubernetes-validations:
+                    - message: previous recovery generation is immutable
+                      rule: self == oldSelf
+                  rollbackRestartGeneration:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                    x-kubernetes-validations:
+                    - message: rollback restart generation is immutable
+                      rule: self == oldSelf
+                  rollbackStopGeneration:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                    x-kubernetes-validations:
+                    - message: rollback stop generation is immutable
+                      rule: self == oldSelf
+                type: object
+                x-kubernetes-validations:
+                - message: previous recovery intent cannot be removed
+                  rule: '!has(oldSelf.previousRecoveryGeneration) || has(self.previousRecoveryGeneration)'
+                - message: candidate start intent cannot be removed
+                  rule: '!has(oldSelf.candidateStartGeneration) || has(self.candidateStartGeneration)'
+                - message: rollback stop intent cannot be removed
+                  rule: '!has(oldSelf.rollbackStopGeneration) || has(self.rollbackStopGeneration)'
+                - message: rollback restart intent cannot be removed
+                  rule: '!has(oldSelf.rollbackRestartGeneration) || has(self.rollbackRestartGeneration)'
               source:
                 description: |-
                   DataSourceSnapshot is the immutable source manifest resolved before work
@@ -1019,6 +1171,25 @@ spec:
               rule: '!has(oldSelf.activeData) || has(self.activeData)'
             - message: previous data cannot be removed
               rule: '!has(oldSelf.previousData) || has(self.previousData)'
+            - message: previous data identity cannot be removed
+              rule: '!has(oldSelf.previousDataIdentity) || has(self.previousDataIdentity)'
+            - message: repository preflight evidence cannot be removed
+              rule: '!has(oldSelf.preflightVerifiedAt) || has(self.preflightVerifiedAt)'
+            - message: runtime intent journal cannot be removed
+              rule: '!has(oldSelf.runtimeJournal) || has(self.runtimeJournal)'
+            - message: repository preflight requires a verified artifact and source
+              rule: '!has(self.preflightVerifiedAt) || (has(self.source) && has(self.artifact)
+                && self.artifact.verification.result == ''Verified'')'
+            - message: populate attempts cannot decrease
+              rule: '!has(oldSelf.populateAttempts) || (has(self.populateAttempts)
+                && self.populateAttempts >= oldSelf.populateAttempts)'
+            - message: pending populate retry requires a running attempted restore
+              rule: '!has(self.populateRetryPending) || !self.populateRetryPending
+                || (has(self.populateAttempts) && self.populateAttempts > 0 && has(self.phase)
+                && self.phase == ''Running'')'
+            - message: populate Job UID cannot change within one durable attempt
+              rule: '!has(oldSelf.populateJobUID) || (self.populateAttempts > oldSelf.populateAttempts
+                || (has(self.populateJobUID) && self.populateJobUID == oldSelf.populateJobUID))'
             - message: blocked and failed phases require an actionable false or unknown
                 condition
               rule: '!has(self.phase) || !(self.phase in [''Blocked'', ''Failed''])
@@ -1059,15 +1230,23 @@ spec:
             + 1) || (self.spec.target.desiredState == ''Stopped'' && self.status.fence.gameServer.generation
             == self.spec.target.generation)))'
         - message: runtime disposition must match the exact operation-owned final
-            generation
+            generation journal
           rule: '!has(self.status) || !has(self.status.runtime) || (has(self.status.fence)
             && self.status.runtime.gameServer.name == self.spec.target.name && self.status.runtime.gameServer.uid
-            == self.spec.target.uid && ((self.spec.restartPolicy == ''RestorePreviousState''
-            && self.spec.target.desiredState == ''Running'' && self.status.runtime.gameServer.desiredState
-            == ''Running'' && self.status.runtime.gameServer.generation == self.status.fence.gameServer.generation
-            + 1) || ((self.spec.restartPolicy != ''RestorePreviousState'' || self.spec.target.desiredState
-            == ''Stopped'') && self.status.runtime.gameServer.desiredState == ''Stopped''
-            && self.status.runtime.gameServer.generation == self.status.fence.gameServer.generation)))'
+            == self.spec.target.uid && (((self.spec.restartPolicy != ''RestorePreviousState''
+            || self.spec.target.desiredState == ''Stopped'') && self.status.runtime.gameServer.desiredState
+            == ''Stopped'' && self.status.runtime.gameServer.generation == self.status.fence.gameServer.generation)
+            || (self.spec.restartPolicy == ''RestorePreviousState'' && self.spec.target.desiredState
+            == ''Running'' && self.status.runtime.gameServer.desiredState == ''Running''
+            && has(self.status.runtimeJournal) && ((self.status.phase == ''Succeeded''
+            && has(self.status.runtimeJournal.candidateStartGeneration) && self.status.runtime.gameServer.generation
+            == self.status.runtimeJournal.candidateStartGeneration) || (self.status.phase
+            in [''Failed'', ''Cancelled''] && has(self.status.activationStartedAt)
+            && has(self.status.runtimeJournal.rollbackRestartGeneration) && self.status.runtime.gameServer.generation
+            == self.status.runtimeJournal.rollbackRestartGeneration) || (self.status.phase
+            in [''Failed'', ''Cancelled''] && !has(self.status.activationStartedAt)
+            && has(self.status.runtimeJournal.previousRecoveryGeneration) && self.status.runtime.gameServer.generation
+            == self.status.runtimeJournal.previousRecoveryGeneration)))))'
         - message: restore artifact provenance must match the exact backup and repository
           rule: '!has(self.status) || !has(self.status.artifact) || (self.status.artifact.provenance.backupRef.name
             == self.spec.backupRef.name && self.status.artifact.provenance.backupRef.uid

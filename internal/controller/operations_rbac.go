@@ -9,3 +9,6 @@ package controller
 // implementations that require them.
 // +kubebuilder:rbac:groups=arcade.gobha.me,resources=gamebackups;gamerestores,verbs=get;list;watch,namespace=arcadectl-system
 // +kubebuilder:rbac:groups=arcade.gobha.me,resources=gamebackups/status;gamerestores/status,verbs=get;update;patch,namespace=arcadectl-system
+// Restore uses the same narrowly watched namespace and controller authority as backup.
+// +kubebuilder:rbac:groups=arcade.gobha.me,resources=gamerestores,verbs=get;list;watch;update;patch,namespace=arcadectl-system
+// +kubebuilder:rbac:groups=arcade.gobha.me,resources=gamerestores/status,verbs=get;update;patch,namespace=arcadectl-system

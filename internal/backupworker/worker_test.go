@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -142,6 +143,70 @@ func TestRunRejectsCorruptedRepositoryWithoutChangingSource(t *testing.T) {
 				if err != nil || string(contents) != expected {
 					t.Fatalf("source %s changed after failed verification", relative)
 				}
+			}
+		})
+	}
+}
+
+func TestRunRejectsRepositoryDirectoryInventoryDrift(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		mutate func([]resticInventoryRecord, string) []resticInventoryRecord
+	}{
+		{"missing empty directory", func(records []resticInventoryRecord, path string) []resticInventoryRecord {
+			return slices.DeleteFunc(records, func(record resticInventoryRecord) bool { return record.Path == path })
+		}},
+		{"extra directory", func(records []resticInventoryRecord, path string) []resticInventoryRecord {
+			return append(records, resticInventoryRecord{StructType: "node", Path: path + "-extra", Type: "dir"})
+		}},
+		{"symlink in place of directory", func(records []resticInventoryRecord, path string) []resticInventoryRecord {
+			for index := range records {
+				if records[index].Path == path {
+					records[index].Type = "symlink"
+				}
+			}
+			return records
+		}},
+		{"missing recorded file", func(records []resticInventoryRecord, path string) []resticInventoryRecord {
+			file := filepath.Join(filepath.Dir(path), "save.zip")
+			return slices.DeleteFunc(records, func(record resticInventoryRecord) bool { return record.Path == file })
+		}},
+		{"extra file", func(records []resticInventoryRecord, path string) []resticInventoryRecord {
+			return append(records, resticInventoryRecord{StructType: "node", Path: path + "/unexpected", Type: "file", Size: 1})
+		}},
+		{"duplicate directory", func(records []resticInventoryRecord, path string) []resticInventoryRecord {
+			return append(records, resticInventoryRecord{StructType: "node", Path: path, Type: "dir"})
+		}},
+		{"unsafe path", func(records []resticInventoryRecord, path string) []resticInventoryRecord {
+			return append(records, resticInventoryRecord{StructType: "node", Path: path + "/../escape", Type: "file"})
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			input, credentials, source, work := workerFixture(t, t.TempDir())
+			empty := filepath.Join(source, "world", "empty")
+			if err := os.Mkdir(empty, 0o700); err != nil {
+				t.Fatalf("mkdir empty world directory: %v", err)
+			}
+			runner := &fakeRunner{createdAt: time.Unix(1_700_000_000, 0).UTC()}
+			runner.afterCommit = func(r *fakeRunner) {
+				records := decodeFakeInventory(t, r.inventory)
+				r.inventory = encodeFakeInventory(t, test.mutate(records, filepath.ToSlash(empty)))
+			}
+			config := Config{InputPath: input, CredentialsPath: credentials, SourceRoot: source, WorkPath: work, Runner: runner}
+			for attempt := 0; attempt < 2; attempt++ {
+				result, err := Run(context.Background(), config)
+				if err == nil || ExitCode(err) != 30 || result.ArtifactID != "" {
+					t.Fatalf("Run() = (%#v, %v), want unusable repository inventory", result, err)
+				}
+			}
+			if runner.backups != 1 || runner.checks != 2 {
+				t.Fatalf("runner calls: backups=%d checks=%d, want one snapshot and two verifications", runner.backups, runner.checks)
+			}
+			if info, err := os.Stat(empty); err != nil || !info.IsDir() {
+				t.Fatalf("source empty directory changed: info=%v err=%v", info, err)
 			}
 		})
 	}
@@ -329,6 +394,7 @@ type fakeRunner struct {
 	backupFailuresAfterCommit  int
 	checkFailures              int
 	repository                 map[string][]byte
+	inventory                  []byte
 	afterCommit                func(*fakeRunner)
 	streamError                error
 }
@@ -359,10 +425,12 @@ func (runner *fakeRunner) Control(_ context.Context, _ map[string]string, argume
 			return nil, errors.New("simulated interruption before commit")
 		}
 		runner.repository = make(map[string][]byte)
+		var backupPaths []string
 		for _, argument := range arguments {
 			if !filepath.IsAbs(argument) {
 				continue
 			}
+			backupPaths = append(backupPaths, argument)
 			if err := filepath.WalkDir(argument, func(name string, entry fs.DirEntry, err error) error {
 				if err != nil || entry.IsDir() {
 					return err
@@ -376,6 +444,11 @@ func (runner *fakeRunner) Control(_ context.Context, _ map[string]string, argume
 				return nil, err
 			}
 		}
+		inventory, err := captureFakeInventory(backupPaths)
+		if err != nil {
+			return nil, err
+		}
+		runner.inventory = inventory
 		if runner.afterCommit != nil {
 			runner.afterCommit(runner)
 		}
@@ -401,15 +474,103 @@ func (runner *fakeRunner) Control(_ context.Context, _ map[string]string, argume
 
 func (runner *fakeRunner) Stream(_ context.Context, _ map[string]string, destination io.Writer, arguments ...string) error {
 	runner.arguments = append(runner.arguments, arguments...)
-	runner.dumps++
-	name := arguments[len(arguments)-1]
 	if runner.streamError != nil {
 		return runner.streamError
 	}
+	if arguments[0] == "ls" {
+		inventory := runner.inventory
+		if inventory == nil {
+			inventory = fakeInventoryFromRepository(runner.repository)
+		}
+		_, err := destination.Write(inventory)
+		return err
+	}
+	runner.dumps++
+	name := arguments[len(arguments)-1]
 	contents, exists := runner.repository[name]
 	if !exists {
 		return errors.New("stored file is unavailable")
 	}
 	_, err := destination.Write(contents)
 	return err
+}
+
+func captureFakeInventory(paths []string) ([]byte, error) {
+	var output bytes.Buffer
+	encoder := json.NewEncoder(&output)
+	if err := encoder.Encode(resticInventoryRecord{StructType: "snapshot", ID: "snapshot-id"}); err != nil {
+		return nil, err
+	}
+	for _, root := range paths {
+		if err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			kind := "file"
+			if entry.IsDir() {
+				kind = "dir"
+			}
+			return encoder.Encode(resticInventoryRecord{StructType: "node", Path: filepath.ToSlash(path), Type: kind, Size: info.Size()})
+		}); err != nil {
+			return nil, err
+		}
+	}
+	return output.Bytes(), nil
+}
+
+func fakeInventoryFromRepository(repository map[string][]byte) []byte {
+	nodes := make(map[string]resticInventoryRecord)
+	for path, contents := range repository {
+		nodes[path] = resticInventoryRecord{StructType: "node", Path: path, Type: "file", Size: int64(len(contents))}
+		for parent := filepath.Dir(path); parent != path; parent = filepath.Dir(parent) {
+			nodes[parent] = resticInventoryRecord{StructType: "node", Path: parent, Type: "dir"}
+			if parent == "/" {
+				break
+			}
+		}
+	}
+	names := make([]string, 0, len(nodes))
+	for name := range nodes {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	var output bytes.Buffer
+	encoder := json.NewEncoder(&output)
+	_ = encoder.Encode(resticInventoryRecord{StructType: "snapshot", ID: "snapshot-id"})
+	for _, name := range names {
+		_ = encoder.Encode(nodes[name])
+	}
+	return output.Bytes()
+}
+
+func decodeFakeInventory(t *testing.T, contents []byte) []resticInventoryRecord {
+	t.Helper()
+	decoder := json.NewDecoder(bytes.NewReader(contents))
+	var records []resticInventoryRecord
+	for {
+		var record resticInventoryRecord
+		if err := decoder.Decode(&record); err != nil {
+			if errors.Is(err, io.EOF) {
+				return records
+			}
+			t.Fatalf("decode fake inventory: %v", err)
+		}
+		records = append(records, record)
+	}
+}
+
+func encodeFakeInventory(t *testing.T, records []resticInventoryRecord) []byte {
+	t.Helper()
+	var output bytes.Buffer
+	encoder := json.NewEncoder(&output)
+	for _, record := range records {
+		if err := encoder.Encode(record); err != nil {
+			t.Fatalf("encode fake inventory: %v", err)
+		}
+	}
+	return output.Bytes()
 }

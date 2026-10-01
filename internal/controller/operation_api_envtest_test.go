@@ -46,6 +46,32 @@ func testOperationAPI(t *testing.T, ctx context.Context, configuration *rest.Con
 	if err := kubeClient.Get(ctx, key, stored); err != nil {
 		t.Fatalf("get GameBackup: %v", err)
 	}
+	stored.Spec.SourceData = operationTestDataSelection()
+	if err := kubeClient.Update(ctx, stored); err == nil || !strings.Contains(err.Error(), "sourceData presence and value are immutable") {
+		t.Fatalf("late source data pin error = %v, want admission rejection", err)
+	}
+	pinnedBackup := operationTestBackup("backup-pinned")
+	pinnedBackup.Spec.SourceData = operationTestDataSelection()
+	if err := kubeClient.Create(ctx, pinnedBackup); err != nil {
+		t.Fatalf("create initially pinned GameBackup: %v", err)
+	}
+	if err := kubeClient.Get(ctx, client.ObjectKeyFromObject(pinnedBackup), pinnedBackup); err != nil {
+		t.Fatal(err)
+	}
+	pinnedBackup.Spec.SourceData = nil
+	if err := kubeClient.Update(ctx, pinnedBackup); err == nil || !strings.Contains(err.Error(), "sourceData presence and value are immutable") {
+		t.Fatalf("removed source data pin error = %v, want admission rejection", err)
+	}
+	if err := kubeClient.Get(ctx, client.ObjectKeyFromObject(pinnedBackup), pinnedBackup); err != nil {
+		t.Fatal(err)
+	}
+	pinnedBackup.Spec.SourceData.Claims[0].ClaimRef.UID = "replacement"
+	if err := kubeClient.Update(ctx, pinnedBackup); err == nil || !strings.Contains(err.Error(), "sourceData presence and value are immutable") {
+		t.Fatalf("changed source data pin error = %v, want admission rejection", err)
+	}
+	if err := kubeClient.Get(ctx, key, stored); err != nil {
+		t.Fatal(err)
+	}
 	stored.Spec.Source.Generation++
 	if err := kubeClient.Update(ctx, stored); err == nil || !strings.Contains(err.Error(), "source is immutable") {
 		t.Fatalf("mutable source error = %v, want admission rejection", err)
@@ -136,6 +162,25 @@ func testOperationAPI(t *testing.T, ctx context.Context, configuration *rest.Con
 	restoreKey := client.ObjectKeyFromObject(restore)
 	if err := kubeClient.Get(ctx, restoreKey, restored); err != nil {
 		t.Fatalf("get GameRestore: %v", err)
+	}
+	restored.Spec.TargetData = operationTestDataSelection()
+	if err := kubeClient.Update(ctx, restored); err == nil || !strings.Contains(err.Error(), "targetData presence and value are immutable") {
+		t.Fatalf("late target data pin error = %v, want admission rejection", err)
+	}
+	pinnedRestore := operationTestRestore("restore-pinned", string(observed.UID))
+	pinnedRestore.Spec.TargetData = operationTestDataSelection()
+	if err := kubeClient.Create(ctx, pinnedRestore); err != nil {
+		t.Fatalf("create initially pinned GameRestore: %v", err)
+	}
+	if err := kubeClient.Get(ctx, client.ObjectKeyFromObject(pinnedRestore), pinnedRestore); err != nil {
+		t.Fatal(err)
+	}
+	pinnedRestore.Spec.TargetData = nil
+	if err := kubeClient.Update(ctx, pinnedRestore); err == nil || !strings.Contains(err.Error(), "targetData presence and value are immutable") {
+		t.Fatalf("removed target data pin error = %v, want admission rejection", err)
+	}
+	if err := kubeClient.Get(ctx, restoreKey, restored); err != nil {
+		t.Fatal(err)
 	}
 	restored.Spec.Target.Generation++
 	if err := kubeClient.Update(ctx, restored); err == nil || !strings.Contains(err.Error(), "target is immutable") {
@@ -373,6 +418,15 @@ func operationTestBackup(name string) *arcadev1alpha1.GameBackup {
 			},
 			RetentionPolicy: arcadev1alpha1.ArtifactRetentionRetain,
 		},
+	}
+}
+
+func operationTestDataSelection() *arcadev1alpha1.RetainedDataReference {
+	return &arcadev1alpha1.RetainedDataReference{
+		Identity: "data-exact",
+		Claims: []arcadev1alpha1.RetainedDataClaimReference{{
+			Path: "world", ClaimRef: arcadev1alpha1.ExactLocalReference{Name: "world-pvc", UID: "world-pvc-uid"},
+		}},
 	}
 }
 

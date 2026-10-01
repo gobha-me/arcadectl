@@ -8,6 +8,12 @@ metadata:
     app.kubernetes.io/part-of: arcadectl
 rules:
   - apiGroups:
+      - ""
+    resources:
+      - persistentvolumes
+    verbs:
+      - get
+  - apiGroups:
       - storage.k8s.io
     resources:
       - volumeattachments

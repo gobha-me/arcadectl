@@ -99,10 +99,20 @@ func (r *GameServerReconciler) reportFailure(ctx context.Context, server *arcade
 }
 
 func (r *GameServerReconciler) updateStatus(ctx context.Context, server *arcadev1alpha1.GameServer, phase arcadev1alpha1.GameServerPhase, progress conditionProgress, endpoints []arcadev1alpha1.ObservedEndpoint) error {
+	return r.updateStatusWithData(ctx, server, phase, progress, endpoints, nil)
+}
+
+func (r *GameServerReconciler) updateStatusWithData(ctx context.Context, server *arcadev1alpha1.GameServer, phase arcadev1alpha1.GameServerPhase, progress conditionProgress, endpoints []arcadev1alpha1.ObservedEndpoint, data *arcadev1alpha1.RetainedDataReference) error {
 	updated := server.DeepCopy()
 	updated.Status.ObservedGeneration = server.Generation
 	updated.Status.Phase = phase
 	updated.Status.Endpoints = canonicalEndpoints(endpoints)
+	if data != nil {
+		updated.Status.ObservedData = data.DeepCopy()
+	}
+	if updated.Status.ActiveData != nil && !sameDataSelection(updated.Status.ObservedData, updated.Status.ActiveData) {
+		updated.Status.ObservedData = nil
+	}
 	updated.Status.Conditions = r.canonicalConditions(server, progress)
 	if apiequality.Semantic.DeepEqual(server.Status, updated.Status) {
 		return nil

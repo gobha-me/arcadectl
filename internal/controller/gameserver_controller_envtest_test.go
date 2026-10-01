@@ -113,6 +113,10 @@ func TestEnvtestLifecycleStatusCollisionAndRecovery(t *testing.T) {
 	if err := kubeClient.Get(ctx, claimKey, claim); err != nil {
 		t.Fatalf("get retained claim: %v", err)
 	}
+	claim.Spec.VolumeName = "pv-world"
+	if err := kubeClient.Update(ctx, claim); err != nil {
+		t.Fatalf("record fixture backing PersistentVolume: %v", err)
+	}
 	claim.Status.Phase = corev1.ClaimBound
 	claim.Status.Capacity = corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")}
 	if err := kubeClient.Status().Update(ctx, claim); err != nil {
@@ -311,6 +315,20 @@ func testRetainedDataAdmission(t *testing.T, ctx context.Context, kubeClient cli
 	}
 	if err := kubeClient.Get(ctx, key, current); err != nil {
 		t.Fatalf("refresh observed stopped GameServer: %v", err)
+	}
+	current.Status.ActiveData = current.Spec.Storage.Reattach.DeepCopy()
+	if err := kubeClient.Status().Update(ctx, current); err != nil {
+		t.Fatalf("select controller-owned active data in status: %v", err)
+	}
+	if err := kubeClient.Get(ctx, key, current); err != nil {
+		t.Fatal(err)
+	}
+	current.Status.ActiveData = nil
+	if err := kubeClient.Status().Update(ctx, current); err == nil {
+		t.Fatal("controller-selected active data was removable")
+	}
+	if err := kubeClient.Get(ctx, key, current); err != nil {
+		t.Fatal(err)
 	}
 	current.Spec.Storage.Reattach.Claims[0].ClaimRef.UID = "changed-after-observed-stop"
 	if err := kubeClient.Update(ctx, current); err == nil {

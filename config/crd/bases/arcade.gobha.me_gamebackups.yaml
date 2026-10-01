@@ -166,6 +166,74 @@ spec:
                 - message: namespace must be omitted because references are local
                     to the operation
                   rule: '!has(self.namespace)'
+              sourceData:
+                description: |-
+                  SourceData pins the selected complete claim set. It is required after a
+                  controller-owned restore selection; an older unpinned request may never
+                  follow a later status-only data switch at unchanged spec generation.
+                properties:
+                  claims:
+                    items:
+                      description: |-
+                        RetainedDataClaimReference pins one adapter path to one exact local PVC.
+                        The namespace is always the containing GameServer namespace.
+                      properties:
+                        claimRef:
+                          description: |-
+                            ExactLocalReference prevents name reuse from silently changing an
+                            operation's subject. The containing operation namespace is implicit, so a
+                            cross-namespace subject cannot be represented.
+                          properties:
+                            name:
+                              maxLength: 253
+                              minLength: 1
+                              pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                              type: string
+                            namespace:
+                              description: |-
+                                Namespace is a rejection sentinel, not a selector. Its presence is
+                                forbidden so ordinary API requests cannot silently prune cross-namespace
+                                intent; the operation namespace is always authoritative.
+                              type: string
+                            uid:
+                              maxLength: 128
+                              minLength: 1
+                              type: string
+                          required:
+                          - name
+                          - uid
+                          type: object
+                          x-kubernetes-validations:
+                          - message: namespace must be omitted because references
+                              are local to the operation
+                            rule: '!has(self.namespace)'
+                        path:
+                          maxLength: 63
+                          minLength: 1
+                          pattern: ^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$
+                          type: string
+                      required:
+                      - claimRef
+                      - path
+                      type: object
+                    maxItems: 16
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - path
+                    x-kubernetes-list-type: map
+                  identity:
+                    maxLength: 63
+                    minLength: 1
+                    pattern: ^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$
+                    type: string
+                required:
+                - claims
+                - identity
+                type: object
+                x-kubernetes-validations:
+                - message: sourceData is immutable
+                  rule: self == oldSelf
             required:
             - cancelRequested
             - repositorySecretRef
@@ -174,6 +242,9 @@ spec:
             - source
             type: object
             x-kubernetes-validations:
+            - message: sourceData presence and value are immutable
+              rule: has(self.sourceData) == has(oldSelf.sourceData) && (!has(self.sourceData)
+                || self.sourceData == oldSelf.sourceData)
             - message: inline credentials are forbidden; use repositorySecretRef
               rule: '!has(self.inlineCredentials)'
           status:

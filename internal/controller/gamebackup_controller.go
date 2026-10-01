@@ -63,10 +63,10 @@ type GameBackupReconciler struct {
 // Secret get is the Kubernetes RBAC delegation ceiling required to create each narrower resourceName-scoped worker Role; controller code never reads Secrets.
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get,namespace=arcadectl-system
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;update,namespace=arcadectl-system
-// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create,namespace=arcadectl-system
+// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;delete,namespace=arcadectl-system
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;delete,namespace=arcadectl-system
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;delete,namespace=arcadectl-system
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create,namespace=arcadectl-system
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;delete,namespace=arcadectl-system
 
 func (r *GameBackupReconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.Result, error) {
 	backup := &arcadev1alpha1.GameBackup{}
@@ -411,6 +411,17 @@ func (r *GameBackupReconciler) resolveSource(ctx context.Context, backup *arcade
 			ClaimRef: arcadev1alpha1.ExactLocalReference{Name: actual.Name, UID: string(actual.UID)},
 		})
 	}
+	currentData := &arcadev1alpha1.RetainedDataReference{Identity: plan.DataIdentity, Claims: make([]arcadev1alpha1.RetainedDataClaimReference, 0, len(paths))}
+	for _, path := range paths {
+		currentData.Claims = append(currentData.Claims, arcadev1alpha1.RetainedDataClaimReference{Path: path.Name, ClaimRef: path.ClaimRef})
+	}
+	if server.Status.ActiveData != nil && (!sameDataSelection(backup.Spec.SourceData, server.Status.ActiveData) ||
+		!sameDataSelection(server.Status.ObservedData, server.Status.ActiveData)) {
+		return nil, game.Definition{}, platformkube.Plan{}, nil, &backupIssue{arcadev1alpha1.ReasonIdentityMismatch, "the source selected data changed or is not yet observed; create a pinned request from current exact claims"}
+	}
+	if backup.Spec.SourceData != nil && !sameDataSelection(backup.Spec.SourceData, currentData) {
+		return nil, game.Definition{}, platformkube.Plan{}, nil, &backupIssue{arcadev1alpha1.ReasonIdentityMismatch, "the source claims no longer match the immutable request data selection"}
+	}
 	slices.SortFunc(paths, func(left, right arcadev1alpha1.DataPathIdentity) int { return strings.Compare(left.Name, right.Name) })
 	source := &arcadev1alpha1.DataSourceSnapshot{
 		GameServer: backup.Spec.Source, Game: server.Spec.Game, ImageDigest: server.Spec.ImageDigest,
@@ -568,10 +579,7 @@ func backupPodIdentityMatches(job *batchv1.Job, pod *corev1.Pod) bool {
 		!apiequality.Semantic.DeepEqual(pod.Labels, job.Spec.Template.Labels) {
 		return false
 	}
-	wantAnnotations := job.Spec.Template.Annotations
-	gotAnnotations := cloneStringMap(pod.Annotations)
-	delete(gotAnnotations, platformkube.AnnotationBackupPodAuthorized)
-	return apiequality.Semantic.DeepEqual(gotAnnotations, wantAnnotations)
+	return workerPodAnnotationsMatch(pod.Annotations, job.Spec.Template.Annotations, platformkube.AnnotationBackupPodAuthorized)
 }
 
 func backupPodSpecMatches(job *batchv1.Job, pod *corev1.Pod) bool {

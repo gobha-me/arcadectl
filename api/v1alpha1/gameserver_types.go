@@ -167,6 +167,16 @@ type ObservedEndpoint struct {
 type GameServerStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// ActiveData is the controller-selected complete data set. A restore changes
+	// it in one status write after candidate verification; nil selects the
+	// immutable reattach request or the data created for this GameServer UID.
+	// +optional
+	ActiveData *RetainedDataReference `json:"activeData,omitempty"`
+	// ObservedData identifies the exact bound claims that reconciliation last
+	// confirmed. Phase and ObservedGeneration alone cannot prove a status-only
+	// data switch, because it does not increment metadata.generation.
+	// +optional
+	ObservedData *RetainedDataReference `json:"observedData,omitempty"`
 	// +optional
 	Phase GameServerPhase `json:"phase,omitempty"`
 	// +optional
@@ -187,6 +197,7 @@ type GameServerStatus struct {
 // +kubebuilder:printcolumn:name="Desired",type=string,JSONPath=`.spec.desiredState`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:validation:XValidation:rule="(!has(self.spec.storage.reattach) && !has(oldSelf.spec.storage.reattach)) || (has(self.spec.storage.reattach) && has(oldSelf.spec.storage.reattach) && self.spec.storage.reattach == oldSelf.spec.storage.reattach)",message="reattach authority is immutable for a GameServer identity; delete the stopped GameServer and recreate it to select retained data"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.status) || !has(oldSelf.status.activeData) || (has(self.status) && has(self.status.activeData))",message="controller-selected active data cannot be removed"
 type GameServer struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

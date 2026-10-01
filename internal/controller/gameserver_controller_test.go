@@ -116,6 +116,13 @@ func TestReconcileReportsReadyOnlyAfterObservedRuntime(t *testing.T) {
 		t.Fatalf("first Reconcile() error = %v", err)
 	}
 	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhasePending, metav1.ConditionFalse, arcadev1alpha1.ReasonStoragePending)
+	pending := &arcadev1alpha1.GameServer{}
+	if err := kubeClient.Get(context.Background(), request.NamespacedName, pending); err != nil {
+		t.Fatal(err)
+	}
+	if pending.Status.ObservedData != nil {
+		t.Fatalf("unbound storage was reported as observed data: %#v", pending.Status.ObservedData)
+	}
 	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionSpecValid, metav1.ConditionTrue, arcadev1alpha1.ReasonValid)
 	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionStorageReady, metav1.ConditionFalse, arcadev1alpha1.ReasonClaimsProvisioning)
 	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionConfigurationReady, metav1.ConditionTrue, arcadev1alpha1.ReasonConfigurationReady)
@@ -153,6 +160,15 @@ func TestReconcileReportsReadyOnlyAfterObservedRuntime(t *testing.T) {
 	}
 	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseReady, metav1.ConditionTrue, arcadev1alpha1.ReasonReady)
 	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionStorageReady, metav1.ConditionTrue, arcadev1alpha1.ReasonClaimsReady)
+	ready := &arcadev1alpha1.GameServer{}
+	if err := kubeClient.Get(context.Background(), request.NamespacedName, ready); err != nil {
+		t.Fatal(err)
+	}
+	if ready.Status.ObservedData == nil || len(ready.Status.ObservedData.Claims) != 1 ||
+		ready.Status.ObservedData.Claims[0].ClaimRef.Name != "factory-factorio-world" ||
+		ready.Status.ObservedData.Claims[0].ClaimRef.UID != "fixture-factory-factorio-world" {
+		t.Fatalf("ready status lacks exact observed data: %#v", ready.Status.ObservedData)
+	}
 	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionConfigurationReady, metav1.ConditionTrue, arcadev1alpha1.ReasonConfigurationReady)
 	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionWorkloadReady, metav1.ConditionTrue, arcadev1alpha1.ReasonWorkloadAvailable)
 	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionNetworkReady, metav1.ConditionTrue, arcadev1alpha1.ReasonPlayerEndpointReady)
@@ -229,6 +245,78 @@ func TestReconcileReportsReadyOnlyAfterObservedRuntime(t *testing.T) {
 		t.Fatalf("endpoint-recovery Reconcile() error = %v", err)
 	}
 	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseReady, metav1.ConditionTrue, arcadev1alpha1.ReasonReady)
+}
+
+func TestReconcileDoesNotRecreatePreviouslyObservedWorld(t *testing.T) {
+	t.Parallel()
+	server := controllerTestServer(arcadev1alpha1.DesiredStateStopped)
+	reconciler, kubeClient := newTestReconciler(t, server)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)}
+	claimKey := types.NamespacedName{Namespace: server.Namespace, Name: "factory-factorio-world"}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	markClaimBound(t, kubeClient, claimKey, resource.MustParse("10Gi"))
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	stored := &arcadev1alpha1.GameServer{}
+	if err := kubeClient.Get(context.Background(), request.NamespacedName, stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status.ObservedData == nil || stored.Status.ObservedData.Claims[0].ClaimRef.UID == "" {
+		t.Fatalf("bound world lacks exact observation: %#v", stored.Status.ObservedData)
+	}
+	claim := &corev1.PersistentVolumeClaim{}
+	if err := kubeClient.Get(context.Background(), claimKey, claim); err != nil {
+		t.Fatal(err)
+	}
+	if err := kubeClient.Delete(context.Background(), claim); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err == nil {
+		t.Fatal("missing previously observed claim did not fail closed")
+	}
+	assertNotFound(t, kubeClient, claimKey, &corev1.PersistentVolumeClaim{})
+	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionStorageReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRetainedDataMissing)
+}
+
+func TestStatusOnlyDataSwitchCannotReuseStaleStoppedObservation(t *testing.T) {
+	t.Parallel()
+	server := controllerTestServer(arcadev1alpha1.DesiredStateStopped)
+	reconciler, kubeClient := newTestReconciler(t, server)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	markClaimBound(t, kubeClient, types.NamespacedName{Namespace: server.Namespace, Name: "factory-factorio-world"}, resource.MustParse("10Gi"))
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	stored := &arcadev1alpha1.GameServer{}
+	if err := kubeClient.Get(context.Background(), request.NamespacedName, stored); err != nil {
+		t.Fatal(err)
+	}
+	oldGeneration := stored.Generation
+	stored.Status.ActiveData = &arcadev1alpha1.RetainedDataReference{
+		Identity: "restore-candidate",
+		Claims: []arcadev1alpha1.RetainedDataClaimReference{{
+			Path: "world", ClaimRef: arcadev1alpha1.ExactLocalReference{Name: "candidate-world", UID: "candidate-uid"},
+		}},
+	}
+	if err := kubeClient.Status().Update(context.Background(), stored); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err == nil {
+		t.Fatal("missing candidate claim was accepted after a status-only switch")
+	}
+	if err := kubeClient.Get(context.Background(), request.NamespacedName, stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Generation != oldGeneration || stored.Status.ObservedData != nil || stored.Status.Phase != arcadev1alpha1.PhaseFailed {
+		t.Fatalf("status-only switch retained stale observation: %#v", stored.Status)
+	}
+	assertNotFound(t, kubeClient, types.NamespacedName{Namespace: server.Namespace, Name: "candidate-world"}, &corev1.PersistentVolumeClaim{})
 }
 
 func TestReconcileTerminationClearsReachableEndpoints(t *testing.T) {
@@ -979,10 +1067,27 @@ func TestReconcileExpandsButNeverShrinksRetainedData(t *testing.T) {
 	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
 		t.Fatalf("initial Reconcile() error = %v", err)
 	}
+	claimKey := types.NamespacedName{Namespace: "games", Name: "factory-factorio-world"}
+	claim := &corev1.PersistentVolumeClaim{}
+	if err := kubeClient.Get(context.Background(), claimKey, claim); err != nil {
+		t.Fatal(err)
+	}
+	defaultClass := "standard"
+	claim.Spec.StorageClassName = &defaultClass
+	if err := kubeClient.Update(context.Background(), claim); err != nil {
+		t.Fatal(err)
+	}
+	markClaimBound(t, kubeClient, claimKey, resource.MustParse("10Gi"))
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("observe default-class bound world: %v", err)
+	}
 
 	stored := &arcadev1alpha1.GameServer{}
 	if err := kubeClient.Get(context.Background(), request.NamespacedName, stored); err != nil {
 		t.Fatalf("get GameServer: %v", err)
+	}
+	if stored.Status.ObservedData == nil || stored.Status.ObservedData.Claims[0].ClaimRef.UID == "" {
+		t.Fatalf("generated world was not UID-pinned before expansion: %#v", stored.Status.ObservedData)
 	}
 	stored.Spec.Storage.Size = resource.MustParse("20Gi")
 	if err := kubeClient.Update(context.Background(), stored); err != nil {
@@ -991,8 +1096,7 @@ func TestReconcileExpandsButNeverShrinksRetainedData(t *testing.T) {
 	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
 		t.Fatalf("expansion Reconcile() error = %v", err)
 	}
-	claimKey := types.NamespacedName{Namespace: "games", Name: "factory-factorio-world"}
-	claim := &corev1.PersistentVolumeClaim{}
+	claim = &corev1.PersistentVolumeClaim{}
 	if err := kubeClient.Get(context.Background(), claimKey, claim); err != nil {
 		t.Fatalf("get expanded claim: %v", err)
 	}
@@ -1239,6 +1343,7 @@ func plannedBoundClaim(t *testing.T, server *arcadev1alpha1.GameServer, uid type
 	}
 	claim := plan.DataClaims[0].Desired.DeepCopy()
 	claim.UID = uid
+	claim.Spec.VolumeName = "pv-" + claim.Name
 	claim.Status.Phase = corev1.ClaimBound
 	claim.Status.Capacity = corev1.ResourceList{
 		corev1.ResourceStorage: claim.Spec.Resources.Requests[corev1.ResourceStorage].DeepCopy(),
@@ -1285,6 +1390,15 @@ func markClaimBound(t *testing.T, kubeClient client.Client, key types.Namespaced
 	claim := &corev1.PersistentVolumeClaim{}
 	if err := kubeClient.Get(context.Background(), key, claim); err != nil {
 		t.Fatalf("get PersistentVolumeClaim %s: %v", key, err)
+	}
+	if claim.UID == "" {
+		claim.UID = types.UID("fixture-" + claim.Name)
+	}
+	if claim.Spec.VolumeName == "" {
+		claim.Spec.VolumeName = "pv-" + claim.Name
+	}
+	if err := kubeClient.Update(context.Background(), claim); err != nil {
+		t.Fatalf("assign fixture PersistentVolumeClaim identity %s: %v", key, err)
 	}
 	claim.Status.Phase = corev1.ClaimBound
 	claim.Status.Capacity = corev1.ResourceList{corev1.ResourceStorage: capacity}

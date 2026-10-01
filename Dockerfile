@@ -34,16 +34,22 @@ RUN case "$VCS_REF" in ""|*[!0-9a-f]*) echo "VCS_REF must be a full lowercase Gi
     && CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
        go build -trimpath -ldflags="-s -w -buildid=" -o /out/arcadectl-backup-worker ./cmd/arcadectl-backup-worker \
     && CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
+       go build -trimpath -ldflags="-s -w -buildid=" -o /out/arcadectl-restore-worker ./cmd/arcadectl-restore-worker \
+    && CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
        go build -trimpath -ldflags="-s -w -buildid=" -o /out/arcadectl-backup-authorizer ./cmd/arcadectl-backup-authorizer \
+    && CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
+       go build -trimpath -ldflags="-s -w -buildid=" -o /out/arcadectl-restore-authorizer ./cmd/arcadectl-restore-authorizer \
     && mkdir -p /rootfs/licenses \
     && cp /out/arcadectl-controller /rootfs/arcadectl-controller \
     && cp /out/arcadectl-backup-worker /rootfs/arcadectl-backup-worker \
+    && cp /out/arcadectl-restore-worker /rootfs/arcadectl-restore-worker \
     && cp /out/arcadectl-backup-authorizer /rootfs/arcadectl-backup-authorizer \
+    && cp /out/arcadectl-restore-authorizer /rootfs/arcadectl-restore-authorizer \
     && cp LICENSE NOTICE /rootfs/licenses/ \
     && cp licenses/restic-LICENSE /rootfs/licenses/restic-LICENSE \
-    && chmod 0755 /rootfs/arcadectl-controller /rootfs/arcadectl-backup-worker /rootfs/arcadectl-backup-authorizer /rootfs/restic \
+    && chmod 0755 /rootfs/arcadectl-controller /rootfs/arcadectl-backup-worker /rootfs/arcadectl-restore-worker /rootfs/arcadectl-backup-authorizer /rootfs/arcadectl-restore-authorizer /rootfs/restic \
     && chmod 0644 /rootfs/licenses/LICENSE /rootfs/licenses/NOTICE /rootfs/licenses/restic-LICENSE /rootfs/etc/ssl/certs/ca-certificates.crt \
-    && chown 65532:65532 /rootfs/arcadectl-controller /rootfs/arcadectl-backup-worker /rootfs/arcadectl-backup-authorizer \
+    && chown 65532:65532 /rootfs/arcadectl-controller /rootfs/arcadectl-backup-worker /rootfs/arcadectl-restore-worker /rootfs/arcadectl-backup-authorizer /rootfs/arcadectl-restore-authorizer \
     && find /rootfs -exec touch -d "@$SOURCE_DATE_EPOCH" {} +
 
 FROM scratch
