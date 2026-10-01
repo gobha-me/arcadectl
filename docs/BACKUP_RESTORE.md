@@ -198,6 +198,14 @@ controller acquires the previous-world lease or requests a cold stop. The
 controller then waits for the exact stopped generation and full Pod/CSI
 VolumeAttachment detachment before provisioning candidate PVCs.
 
+Candidate provisioning has a five-minute deadline measured from that durable
+cold fence, including controller downtime. If a required candidate is still
+missing or unbound at the deadline, preparation fails with `StorageUnavailable`;
+the original selection is retained and its requested runtime is settled before
+terminal failure. Pending candidates remain retained. Later binding cannot
+revive a recorded failure. Already-bound candidates observed after controller
+downtime can proceed if no failure was recorded.
+
 The populate worker mounts only those candidates. A separate, namespace-bound
 fail-closed admission policy requires its Pod to remain scheduling-gated until
 the controller verifies the exact admitted Job and Pod shape and marks its

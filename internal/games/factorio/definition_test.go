@@ -51,6 +51,37 @@ func TestRenderSettings(t *testing.T) {
 	}
 }
 
+func TestRenderMinimalSettingsIncludesEngineRequiredDescription(t *testing.T) {
+	t.Parallel()
+
+	files, err := Definition().RenderSettingsFiles(json.RawMessage(`{"name":"Factory","visibility":"private"}`))
+	if err != nil {
+		t.Fatalf("render schema-minimal settings: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("rendered files = %d, want 1", len(files))
+	}
+	var rendered map[string]any
+	if err := json.Unmarshal(files[0].Contents, &rendered); err != nil {
+		t.Fatalf("decode rendered settings: %v", err)
+	}
+	if description, present := rendered["description"]; !present || description != "" {
+		t.Fatalf("description = %#v (present=%v), want explicit empty string", description, present)
+	}
+	if rendered["max_players"] != float64(0) {
+		t.Fatalf("omitted maxPlayers = %#v, want engine default unlimited (0)", rendered["max_players"])
+	}
+	visibility, ok := rendered["visibility"].(map[string]any)
+	if !ok || visibility["public"] != false || visibility["lan"] != false {
+		t.Fatalf("private visibility = %#v", rendered["visibility"])
+	}
+	for _, forbidden := range []string{"username", "token", "password"} {
+		if strings.Contains(strings.ToLower(string(files[0].Contents)), forbidden) {
+			t.Fatalf("minimal settings contain credential key %q", forbidden)
+		}
+	}
+}
+
 func TestRenderSettingsRejectsPublicVisibilityAndCredentials(t *testing.T) {
 	t.Parallel()
 

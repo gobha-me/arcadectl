@@ -36,6 +36,12 @@ import (
 
 const (
 	restoreRequeue = time.Second
+	// Provisioning is bounded from the durable, immutable cold fence, including
+	// controller downtime. At the deadline an unbound or absent candidate fails
+	// without activation; already-bound candidates may proceed even if binding
+	// was first observed after the deadline. Once failure is recorded, later
+	// binding cannot revive this operation or renew its deadline.
+	restoreProvisioningTimeout = 5 * time.Minute
 	// A candidate that cannot become Ready is rolled back while both data sets
 	// remain retained. Kubernetes Deployment deadlines normally fail sooner.
 	restoreActivationTimeout   = 15 * time.Minute
@@ -429,12 +435,19 @@ func (r *GameRestoreReconciler) reconcileRestorePreflight(ctx context.Context, r
 		return r.failRestorePreparation(ctx, restore, arcadev1alpha1.ReasonIdentityMismatch, "candidate storage conflicted with an existing retained claim; no previous-world claim was changed")
 	}
 	if !ready {
+		if r.restoreProvisioningExpired(restore) {
+			return r.failRestorePreparation(ctx, restore, arcadev1alpha1.ReasonStorageUnavailable, "candidate storage did not bind within five minutes of the cold fence; inspect storage provisioning, then submit a new restore; previous and pending candidate claims are retained")
+		}
 		return r.holdRestore(ctx, restore, arcadev1alpha1.ReasonColdStopPending, "waiting for every new candidate claim to bind before population")
 	}
 	return ctrl.Result{}, r.writeRestoreStatus(ctx, restore, arcadev1alpha1.DataPhaseRunning, func(updated *arcadev1alpha1.GameRestore) {
 		updated.Status.CandidateData = candidates
 		r.setRestoreCondition(updated, arcadev1alpha1.ConditionTargetReady, metav1.ConditionTrue, arcadev1alpha1.ReasonOperationAccepted, "fresh, exact candidate claims are bound and isolated from active data")
 	})
+}
+
+func (r *GameRestoreReconciler) restoreProvisioningExpired(restore *arcadev1alpha1.GameRestore) bool {
+	return restore.Status.Fence != nil && !r.nowRestore().Time.Before(restore.Status.Fence.EstablishedAt.Add(restoreProvisioningTimeout))
 }
 
 func (r *GameRestoreReconciler) restoreWorkerInput(restore *arcadev1alpha1.GameRestore, subject *restoreSubject, stage restoreworker.Stage) restoreworker.Input {
@@ -655,6 +668,11 @@ func (r *GameRestoreReconciler) reconcileRestoreCandidates(ctx context.Context, 
 			}
 			if restore.Status.CandidateData != nil {
 				return nil, false, errors.New("previously recorded candidate claim disappeared")
+			}
+			if r.restoreProvisioningExpired(restore) {
+				// A restart after the deadline must not create additional pending
+				// storage while settling the existing retained world.
+				return nil, false, nil
 			}
 			if err := r.Create(ctx, desired); err != nil {
 				return nil, false, errors.New("create isolated restore candidate claim failed")

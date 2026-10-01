@@ -1,0 +1,93 @@
+# Copyright 2026 gobha-me
+# SPDX-License-Identifier: Apache-2.0
+# Fixed, fake credentials are substituted only into the owned Kind namespace.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: recovery-repository
+  namespace: arcadectl-system
+  labels: {arcade.gobha.me/e2e-run: @@RUN_ID@@}
+immutable: true
+type: Opaque
+stringData:
+  repository: s3:http://minio:9000/arcadectl
+  password: @@REPOSITORY_PASSWORD@@
+  awsAccessKeyID: @@ACCESS_KEY@@
+  awsSecretAccessKey: @@OBJECT_KEY@@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: recovery-repository-data
+  namespace: arcadectl-system
+  labels: {arcade.gobha.me/e2e-run: @@RUN_ID@@}
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: arcadectl-repository
+  resources: {requests: {storage: 2Gi}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: arcadectl-system
+  labels: {arcade.gobha.me/e2e-run: @@RUN_ID@@}
+spec:
+  selector: {arcade.gobha.me/e2e-component: minio}
+  ports: [{name: s3, port: 9000, targetPort: s3}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: arcadectl-system
+  labels: {arcade.gobha.me/e2e-run: @@RUN_ID@@}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {arcade.gobha.me/e2e-component: minio}
+  template:
+    metadata:
+      labels:
+        arcade.gobha.me/e2e-component: minio
+        arcade.gobha.me/e2e-run: @@RUN_ID@@
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: minio
+          image: @@MINIO_IMAGE@@
+          args: [server, /data, --address, ":9000"]
+          env:
+            - {name: HOME, value: /tmp}
+            - {name: MINIO_BROWSER, value: "off"}
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef: {name: recovery-repository, key: awsAccessKeyID}
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: recovery-repository, key: awsSecretAccessKey}
+          ports: [{name: s3, containerPort: 9000}]
+          readinessProbe:
+            httpGet: {path: /minio/health/cluster, port: s3}
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: recovery-repository-data}
+        - name: tmp
+          emptyDir: {sizeLimit: 64Mi}
