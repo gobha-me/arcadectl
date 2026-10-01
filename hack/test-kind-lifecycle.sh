@@ -563,6 +563,25 @@ run_bounded 180 env KUBECTL="$kubectl_wrapper" "$repository_root/hack/install.sh
 [[ $(kube auth can-i delete persistentvolumeclaims \
   --as=system:serviceaccount:arcadectl-system:arcadectl-controller --namespace "$namespace") == no ]] \
   || die "controller unexpectedly has PVC deletion authority"
+[[ $(kube auth can-i delete persistentvolumeclaims \
+  --as=system:serviceaccount:arcadectl-system:arcadectl-destroy-controller --namespace "$namespace") == yes ]] \
+  || die "separate destroy controller lacks PVC deletion authority"
+[[ $(kube auth can-i delete persistentvolumeclaims \
+  --as=system:serviceaccount:arcadectl-system:arcadectl-destroy-admin --namespace "$namespace") == no ]] \
+  || die "destroy request administrator unexpectedly has direct PVC deletion authority"
+for policy in arcadectl-destroy-worker-gate arcadectl-retained-world-pvc-delete arcadectl-destroy-unsafe-admin; do
+  policy_deadline=$((SECONDS + 60))
+  while true; do
+    policy_status=$(kube get validatingadmissionpolicy "$policy" --output=json)
+    if jq -e '.status.observedGeneration == .metadata.generation and (.status.typeChecking != null)' <<<"$policy_status" >/dev/null; then
+      jq -e '(.status.typeChecking.expressionWarnings // []) | length == 0' <<<"$policy_status" >/dev/null \
+        || die "$policy has CEL typechecking warnings: $(jq -c '.status.typeChecking.expressionWarnings' <<<"$policy_status")"
+      break
+    fi
+    (( SECONDS < policy_deadline )) || die "$policy typechecking status was not observed"
+    sleep 2
+  done
+done
 
 wait_server() {
   local name=$1 wanted_phase=$2 wanted_ready_reason=$3 seconds=$4 observed
@@ -2304,6 +2323,114 @@ done
 kube_bounded 70 delete gameserver "$collision_name" --namespace "$namespace" --wait=true --timeout=60s >/dev/null
 kube_bounded 70 delete service "$collision_name" --namespace "$namespace" --wait=true --timeout=60s >/dev/null
 
+say "proving fresh repository verification and exact destruction of a separate decommissioned world"
+destroy_server_name=destroy-world
+destroy_claim_name="$destroy_server_name-conformance-echo-state"
+destroy_pv_name="arcadectl-e2e-destroy-$run_suffix"
+destroy_world_path="/var/arcadectl-e2e/$run_id-destroy"
+while IFS= read -r node; do
+  [[ -n "$node" ]] || continue
+  run_bounded 10 docker exec "$node" install -d -o 65532 -g 65532 -m 0770 "$destroy_world_path"
+  run_bounded 10 docker exec "$node" touch "$destroy_world_path/retained-physical-sentinel"
+done <<<"$node_names"
+sed -e "s/arcadectl-e2e-world-$run_suffix/$destroy_pv_name/" \
+  -e "s/$claim_name/$destroy_claim_name/" \
+  -e "s|/var/arcadectl-e2e/$run_id|$destroy_world_path|" \
+  "$workspace/persistent-volume.yaml" >"$workspace/destroy-persistent-volume.yaml"
+kube apply --filename "$workspace/destroy-persistent-volume.yaml" >/dev/null
+sed "s/name: $server_name/name: $destroy_server_name/" "$workspace/server.yaml" >"$workspace/destroy-server.yaml"
+kube apply --filename "$workspace/destroy-server.yaml" >/dev/null
+kube_bounded 100 wait persistentvolumeclaim/"$destroy_claim_name" --namespace "$namespace" \
+  --for=jsonpath='{.status.phase}'=Bound --timeout=90s >/dev/null
+wait_server "$destroy_server_name" Stopped RuntimeStopped 90
+destroy_server_uid=$(kube get gameserver "$destroy_server_name" --namespace "$namespace" --output=jsonpath='{.metadata.uid}')
+destroy_generation=$(kube get gameserver "$destroy_server_name" --namespace "$namespace" --output=jsonpath='{.metadata.generation}')
+destroy_claim_uid=$(kube get pvc "$destroy_claim_name" --namespace "$namespace" --output=jsonpath='{.metadata.uid}')
+destroy_data_identity=$(kube get pvc "$destroy_claim_name" --namespace "$namespace" --output=jsonpath='{.metadata.labels.arcade\.gobha\.me/data-identity}')
+[[ -n "$destroy_server_uid" && -n "$destroy_claim_uid" && -n "$destroy_data_identity" ]] \
+  || die "destroy world identity is incomplete"
+sed -e 's/name: running-backup/name: destroy-world-backup/' \
+  -e "s/name: $server_name/name: $destroy_server_name/" \
+  -e "s/uid: $new_server_uid/uid: $destroy_server_uid/" \
+  -e "s/generation: $running_generation/generation: $destroy_generation/" \
+  -e 's/desiredState: Running/desiredState: Stopped/' \
+  -e 's/restartPolicy: RestorePreviousState/restartPolicy: LeaveStopped/' \
+  "$workspace/running-backup.yaml" >"$workspace/destroy-backup.yaml"
+kube apply --filename "$workspace/destroy-backup.yaml" >/dev/null
+wait_backup destroy-world-backup Stopped 240
+destroy_backup_uid=$(kube get gamebackup destroy-world-backup --namespace "$namespace" --output=jsonpath='{.metadata.uid}')
+[[ $(kube get pvc "$destroy_claim_name" --namespace "$namespace" \
+  --output=jsonpath='{.metadata.annotations.arcade\.gobha\.me/cold-backup-uid}') == "$destroy_backup_uid" ]] \
+  || die "LeaveStopped backup did not mark exact retained-world continuity"
+wait_selector_absent leases "arcade.gobha.me/data-identity=$destroy_data_identity" 60
+kube_bounded 70 delete gameserver "$destroy_server_name" --namespace "$namespace" --wait=true --timeout=60s >/dev/null
+assert_runtime_absent "$destroy_server_name"
+[[ $(kube get pvc "$destroy_claim_name" --namespace "$namespace" --output=jsonpath='{.metadata.uid}') == "$destroy_claim_uid" ]] \
+  || die "decommissioning removed or replaced the destroy fixture world"
+cat >"$workspace/destroy-request.yaml" <<EOF
+apiVersion: arcade.gobha.me/v1alpha1
+kind: GameDestroy
+metadata:
+  name: verified-retained-world
+  namespace: $namespace
+spec:
+  mode: VerifiedBackup
+  target:
+    gameServer: {name: $destroy_server_name, uid: $destroy_server_uid}
+    game: conformance-echo
+    data:
+      identity: $destroy_data_identity
+      claims:
+        - path: state
+          claimRef: {name: $destroy_claim_name, uid: $destroy_claim_uid}
+  backupRef: {name: destroy-world-backup, uid: $destroy_backup_uid}
+  repositorySecretRef:
+    name: $repository_secret_name
+    uid: $repository_uid
+    resourceVersion: "$repository_version"
+EOF
+kube apply --filename "$workspace/destroy-request.yaml" >/dev/null
+kube_bounded 100 wait gamedestroy/verified-retained-world --namespace "$namespace" \
+  --for=jsonpath='{.status.phase}'=Preview --timeout=90s >/dev/null
+destroy_preview=$(kube get gamedestroy verified-retained-world --namespace "$namespace" --output=json)
+jq -e '(.status.preview.restoreGuidance | length > 0) and (.status.deletionJournal // [] | length == 0)' \
+  <<<"$destroy_preview" >/dev/null || die "destroy preview omitted guidance or committed deletion before confirmation"
+[[ $(kube get pvc "$destroy_claim_name" --namespace "$namespace" --output=jsonpath='{.metadata.uid}') == "$destroy_claim_uid" ]] \
+  || die "read-only destroy preview changed the world"
+destroy_challenge=$(jq -r '.status.preview.challenge' <<<"$destroy_preview")
+destroy_confirmation=$(jq -cn --arg challenge "$destroy_challenge" '{spec:{confirmationChallenge:$challenge}}')
+kube patch gamedestroy verified-retained-world --namespace "$namespace" --type=merge --patch "$destroy_confirmation" >/dev/null
+kube_bounded 370 wait gamedestroy/verified-retained-world --namespace "$namespace" \
+  --for=jsonpath='{.status.phase}'=Succeeded --timeout=360s >/dev/null
+destroy_evidence=$(kube get gamedestroy verified-retained-world --namespace "$namespace" --output=json)
+destroy_artifact=$(kube get gamebackup destroy-world-backup --namespace "$namespace" --output=jsonpath='{.status.artifact.id}')
+jq -e --arg claim "$destroy_claim_name" --arg uid "$destroy_claim_uid" --arg artifact "$destroy_artifact" \
+  '.status.observedGeneration == .metadata.generation and .status.verification.artifactID == $artifact and
+   .status.verification.pathCount == 1 and (.status.verification.manifestDigest | startswith("sha256:")) and
+   (.status.verification.verifiedAt | length > 0) and (.status.verification.coldAt | length > 0) and
+   (.status.deletionJournal | length == 1) and .status.deletionJournal[0].claimRef.name == $claim and
+   .status.deletionJournal[0].claimRef.uid == $uid and (.status.deletionJournal[0].observedDeletedAt | length > 0)' \
+  <<<"$destroy_evidence" >/dev/null || die "destroy succeeded without exact repository proof and observed claim deletion"
+wait_absent pvc "$destroy_claim_name" 60
+wait_selector_absent leases "arcade.gobha.me/data-identity=$destroy_data_identity" 60
+wait_selector_absent jobs "arcade.gobha.me/data-identity=$destroy_data_identity" 60
+wait_selector_absent pods "arcade.gobha.me/data-identity=$destroy_data_identity" 60
+kube_bounded 70 wait persistentvolume/"$destroy_pv_name" \
+  --for=jsonpath='{.status.phase}'=Released --timeout=60s >/dev/null
+while IFS= read -r node; do
+  [[ -n "$node" ]] || continue
+  run_bounded 10 docker exec "$node" test -f "$destroy_world_path/retained-physical-sentinel" \
+    || die "PVC deletion unexpectedly erased retained physical bytes"
+done <<<"$node_names"
+assert_pvc_identity "$pvc_uid" "$pv_name"
+destroy_logs=$(kube logs deployment/arcadectl-destroy-controller --namespace "$namespace")
+destroy_events=$(kube get events --namespace "$namespace" --output=yaml)
+for canary in "$repository_access_key" "$repository_secret_key" "$repository_password"; do
+  if grep -Fq "$canary" <<<"$destroy_evidence$destroy_logs$destroy_events"; then
+    die "repository credential canary escaped into destroy status, events, or controller logs"
+  fi
+done
+
 say "stopping and safely uninstalling the controller"
 kube patch gameserver "$server_name" --namespace "$namespace" --type=merge --patch '{"spec":{"desiredState":"Stopped"}}' >/dev/null
 wait_server "$server_name" Stopped RuntimeStopped 90
@@ -2326,6 +2453,7 @@ fi
 kube apply --filename "$repository_root/config/install/backup-worker-admission-policy.yaml" >/dev/null
 run_bounded 120 env KUBECTL="$kubectl_wrapper" "$repository_root/hack/uninstall.sh"
 wait_absent deployment arcadectl-controller 60
+wait_absent deployment arcadectl-destroy-controller 60
 wait_selector_absent replicasets app.kubernetes.io/name=arcadectl-controller 60
 wait_selector_absent pods app.kubernetes.io/name=arcadectl-controller 60
 kube get validatingadmissionpolicy arcadectl-backup-worker-gate >/dev/null

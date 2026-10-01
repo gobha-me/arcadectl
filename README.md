@@ -11,13 +11,13 @@ not the platform's domain model.
 
 Arcadectl v2 is under active development and is not production-ready. The
 first milestone proved one Factorio lifecycle: create, configure, start,
-stop, restart, update, and decommission without data loss. Cold backup is
-implemented and has isolated-cluster evidence. Restore execution is now
-implemented but still needs its own end-to-end cluster proof; deliberate
-destruction remains a separate future milestone.
+stop, restart, update, and decommission without data loss. Cold backup and
+isolated restore have Factorio/CSI end-to-end evidence. Deliberate destruction
+is a separate backup-gated administrative operation; it is not a normal
+lifecycle path or a production-world test.
 
-The current foundation includes generated `GameServer`, `GameBackup`, and
-`GameRestore` CRDs, a pure,
+The current foundation includes generated `GameServer`, `GameBackup`,
+`GameRestore`, and `GameDestroy` CRDs, a pure,
 game-neutral Kubernetes resource planner, typed adapter settings rendering, and
 an idempotent controller. The controller starts and stops runtime resources
 while retaining storage, refuses to adopt conflicting resources, and cannot
@@ -34,8 +34,9 @@ Restore preflights a verified v2 artifact before stopping the target, writes
 only to isolated candidate claims, verifies their contents, and atomically
 selects them or rolls back to retained previous data. Its backing-volume
 isolation is currently CSI-only, and v1 backup artifacts cannot be restored by
-this worker. The restore cluster proof, explicit destruction, and production
-deployment remain outstanding.
+this worker. Destroy requires a fresh repository verification while the world
+remains cold, exact PVC UID confirmation, a separate controller identity, and
+a write-ahead deletion journal. Production deployment remains outstanding.
 
 A structurally different synthetic adapter participates in conformance tests
 from the beginning. Adding another game must not require changes to the core
@@ -53,6 +54,7 @@ lifecycle controller.
 
 See [the architecture](docs/ARCHITECTURE.md), [the lifecycle contract](docs/LIFECYCLE.md),
 [the backup and restore contract](docs/BACKUP_RESTORE.md),
+[the destroy contract](docs/DESTROY.md),
 [isolated lifecycle testing](docs/TESTING.md), [install and uninstall](docs/INSTALL.md),
 [the salvage ledger](docs/SALVAGE_LEDGER.md), and [the security policy](SECURITY.md).
 

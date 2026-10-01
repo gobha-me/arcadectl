@@ -1,7 +1,7 @@
 # Install and uninstall
 
-This installation is for an isolated cluster evaluation. It installs one
-controller that watches only `arcadectl-system`. Creating the namespace and the
+This installation is for an isolated cluster evaluation. It installs separate
+ordinary and destroy controllers that watch only `arcadectl-system`. Creating the namespace and the
 cluster-scoped Arcadectl CRDs and admission policies require
 cluster-administrator authority. The running controller receives a namespaced
 Role and a read-only cluster Role for VolumeAttachment detachment checks.
@@ -35,9 +35,9 @@ kubectl config current-context
 ./hack/install.sh 'registry.example/arcadectl/controller@sha256:<64 hex characters>'
 ```
 
-The installer applies `config/install/anchors.yaml` first, waits for all three
+The installer applies `config/install/anchors.yaml` first, waits for all four
 CRDs to be Established, renders the digest-pinned controller resources, applies them,
-and waits for the Deployment to become available. The committed
+and waits for both Deployments to become available. The committed
 `config/install/controller.yaml` uses an all-zero digest only as a deterministic
 generation fixture; it is not an image to deploy.
 
@@ -52,6 +52,12 @@ kubectl auth can-i delete persistentvolumeclaims \
 
 The authorization check must print `no`. `GameServer` resources and every
 resource they control must be created in `arcadectl-system`.
+The separate `arcadectl-destroy-controller` ServiceAccount is the only
+Arcadectl identity permitted to delete managed world PVCs. An unsafe
+no-backup request additionally requires the distinct `arcadectl-destroy-admin`
+identity and API-server auditing. No ordinary user should be able to create
+arbitrary Pods, Jobs, or workloads mounting retained world PVCs in this
+namespace; the cold marker and data Lease do not fence such principals.
 
 Ordinary Arcadectl users must also be denied create, update, patch, delete, and
 deletecollection on managed PVCs. Exact UID checks cannot close Kubernetes'
@@ -62,7 +68,8 @@ enforcement if that assumption does not hold.
 ## Safe controller uninstall
 
 First set every `GameServer` to desired state `Stopped`, wait until every
-status phase is `Stopped`, and let every `GameBackup` and `GameRestore` reach
+status phase is `Stopped`, and let every `GameBackup`, `GameRestore`, and
+`GameDestroy` reach
 `Succeeded`, `Failed`, or `Cancelled`. Then run:
 
 ```sh
@@ -71,7 +78,7 @@ status phase is `Stopped`, and let every `GameBackup` and `GameRestore` reach
 
 The script refuses to proceed while any server is deleting or is not both
 desired and observed Stopped at its current generation; while any backup or
-restore is deleting, non-terminal, or stale; or while any data-operation Job,
+restore or destroy is deleting, non-terminal, or stale; or while any data-operation Job,
 Pod, or retained-data Lease remains. It checks once while the controller is running, scales
 the controller to zero, and checks again before removing authority. If the
 second check fails, it restores the prior replica count. The script requires
@@ -80,12 +87,13 @@ specifications with the shipped manifests and uses server-side dry-runs
 to prove that ungated workers and unauthorized restore-candidate PVC creation
 are denied. It also waits for controller
 Pods to disappear even if the Deployment already reports zero replicas. It removes the
-controller Deployment, namespaced controller RBAC, controller ServiceAccount,
-and VolumeAttachment-reader cluster RBAC. It deliberately retains:
+ordinary and destroy controller Deployments, namespaced controller RBAC and
+ServiceAccounts, and VolumeAttachment-reader cluster RBAC. It deliberately retains:
 
 - the `arcadectl-system` Namespace;
-- the `GameServer`, `GameBackup`, and `GameRestore` CRDs and all their objects;
-- the backup- and restore-worker and restore-candidate PVC
+- the `GameServer`, `GameBackup`, `GameRestore`, and `GameDestroy` CRDs and all their objects;
+- the backup-, restore-, and destroy-worker, destroy authorization, managed
+  retained-world PVC, and restore-candidate PVC
   ValidatingAdmissionPolicies and bindings, which continue to fence any
   retained or recreated operation authority;
 - retained backup artifacts, which are not owned by operation objects;

@@ -12,7 +12,7 @@ render-controller:
 	@./hack/render-controller.sh "$(CONTROLLER_IMAGE)"
 
 test-envtest:
-	go test -tags=envtest -timeout=5m ./internal/controller
+	go test -tags=envtest -p 1 -timeout=5m ./api/v1alpha1 ./internal/controller ./internal/install
 
 test-kind-lifecycle:
 	go test -tags=lifecycletest -timeout=2m ./cmd/arcadectl-controller

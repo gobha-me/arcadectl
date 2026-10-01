@@ -32,6 +32,8 @@ grep -Fq 'go build -trimpath -ldflags="-s -w -buildid=" -o /out/arcadectl-backup
 grep -Fq 'go build -trimpath -ldflags="-s -w -buildid=" -o /out/arcadectl-restore-worker ./cmd/arcadectl-restore-worker' "$controller_dockerfile"
 grep -Fq 'go build -trimpath -ldflags="-s -w -buildid=" -o /out/arcadectl-backup-authorizer ./cmd/arcadectl-backup-authorizer' "$controller_dockerfile"
 grep -Fq 'go build -trimpath -ldflags="-s -w -buildid=" -o /out/arcadectl-restore-authorizer ./cmd/arcadectl-restore-authorizer' "$controller_dockerfile"
+grep -Fq 'go build -trimpath -ldflags="-s -w -buildid=" -o /out/arcadectl-destroy-worker ./cmd/arcadectl-destroy-worker' "$controller_dockerfile"
+grep -Fq 'go build -trimpath -ldflags="-s -w -buildid=" -o /out/arcadectl-destroy-authorizer ./cmd/arcadectl-destroy-authorizer' "$controller_dockerfile"
 grep -Fq 'COPY --from=restic /usr/bin/restic /rootfs/restic' "$controller_dockerfile"
 grep -Fq 'COPY --from=restic /etc/ssl/certs/ca-certificates.crt /rootfs/etc/ssl/certs/ca-certificates.crt' "$controller_dockerfile"
 runtime_copies=$(awk '/^FROM scratch/ { runtime=1; next } runtime && /^COPY / { count++ } END { print count+0 }' "$controller_dockerfile")

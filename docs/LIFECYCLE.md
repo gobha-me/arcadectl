@@ -136,8 +136,13 @@ do not appear in the Pod spec or kubelet probe Events.
   or cancellation. This storage-isolation check currently supports only CSI
   PVs with non-empty driver and volume handle; unsupported backing sources are
   refused. See [the restore contract](BACKUP_RESTORE.md).
-- **Destroy:** not implemented. It will be a separate authorized operation with
-  exact identity confirmation and a successful backup by default.
+- **Destroy:** a separate `GameDestroy` pins the original server UID, game,
+  data identity, and each retained PVC UID. A short-lived preview must be
+  explicitly confirmed. The normal path re-verifies the exact backup in its
+  repository while the world remains cold, then journals and deletes each
+  exact claim under a dedicated destroy-controller identity. A no-backup
+  exception requires a separate destroy-admin identity and reason. See
+  [the destroy contract](DESTROY.md).
 
 The disposable-cluster test suite proves this contract first with a synthetic
 conformance adapter and then with the certified Factorio runtime. The Factorio
@@ -147,10 +152,10 @@ checks that the recreate strategy never exposes overlapping running game
 containers, redeploys the controller without replacing the game Pod, and
 recreates the `GameServer` around the same retained world identity. The
 synthetic proof also runs real stopped and previously-running cold backups
-against isolated MinIO. This is isolated lifecycle evidence, not production
-readiness: restore execution has been implemented but its separate end-to-end
-cluster proof remains pending; explicit destruction and production deployment
-remain unimplemented. See
+against isolated MinIO. Restore has additionally been demonstrated with a
+real Factorio world and a separate candidate PVC on isolated CSI storage.
+This is isolated lifecycle evidence, not production readiness. Deliberate
+destruction is not tested against a production world. See
 [the backup and restore contract](BACKUP_RESTORE.md) for the exact boundary.
 
 ## Retained-world discovery and reattachment

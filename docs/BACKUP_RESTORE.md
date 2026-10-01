@@ -4,12 +4,16 @@ Arcadectl represents data movement as durable namespaced resources. A
 `GameBackup` or `GameRestore` records one immutable request, survives client and
 controller restarts, and exposes bounded progress through status. Cold backup
 and restore execution are implemented in the controller and bounded workers.
-The restore path still needs an isolated end-to-end cluster proof before it is
-considered operationally validated.
+The restore path has been proved end-to-end on an isolated Factorio server with
+CSI-backed candidate and previous PVCs; this does not certify production use.
 
 Creating a `GameBackup` may stop and later restart its exact source server,
 create one bounded worker Job, and read every adapter-declared path. It never
-mutates or deletes a source claim. A `GameRestore` verifies a repository
+writes source world data or deletes a source claim. A successful `LeaveStopped`
+backup records its UID in a protected PVC annotation before becoming terminal;
+the game controller clears that marker before any later runtime activation.
+This permits [deliberate destroy](DESTROY.md) to reject intervening Arcadectl
+starts even after the original GameServer was removed. A `GameRestore` verifies a repository
 snapshot before stopping its target, then writes only to separately retained
 candidate claims; it never mounts the previous world's claims in its worker.
 
@@ -86,7 +90,7 @@ exact Lease annotation for the controller-owned restart generation permits the
 server to resume.
 
 Controller uninstall is fail-closed around this boundary. It requires every
-backup and restore to be terminal at its current generation and refuses while
+backup, restore, and destroy to be terminal at its current generation and refuses while
 any data-operation Job, Pod, or retained-data Lease remains. Both worker
 admission policies and the controller-only restore-candidate PVC CREATE policy,
 with their bindings, remain installed after controller removal. Without these
