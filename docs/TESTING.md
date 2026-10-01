@@ -176,7 +176,13 @@ Secret-identity races, controller-restart restore, confirmed destroy and scoped
 cleanup without the preceding fault injections. It reports a partial diagnostic
 result explicitly; it cannot satisfy this issue's full failure-matrix gate.
 `ARCADECTL_RECOVERY_SMOKE_ONLY=true` proves only CSI setup and sentinel I/O.
-Neither switch is enabled in CI.
+`ARCADECTL_RECOVERY_DIAGNOSTIC_FAULT=filesystem-full` selects one bounded fault
+followed by the same identity, positive recovery, destroy, and cleanup journey.
+The other accepted selections are `bad-credentials`, `capacity`, `worker-crash`,
+and `corruption`; unknown selections or combining this selection with another
+partial mode are refused.
+Single-fault results are also explicitly partial, never full-matrix evidence.
+None of these switches is enabled in CI.
 
 ## Destroy validation boundary
 

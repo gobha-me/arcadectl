@@ -243,7 +243,7 @@ func (r *GameBackupReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 		// A deadline failure can remove every Job Pod. Inspect the durable Job
 		// result before waiting for Pod admission, or it would hold data forever.
 		if jobFailed(job) {
-			reason := r.workerFailureReason(ctx, backup, job)
+			reason, verificationMessage := r.workerFailureReason(ctx, backup, job)
 			if reason == arcadev1alpha1.ReasonWorkerFailed && backup.Status.Attempts < maxBackupAttempts {
 				return ctrl.Result{}, r.writeStatus(ctx, backup, arcadev1alpha1.DataPhaseRunning, func(updated *arcadev1alpha1.GameBackup) {
 					setBackupCondition(updated, arcadev1alpha1.ConditionArtifactReady, metav1.ConditionUnknown, arcadev1alpha1.ReasonWorkerRetrying, "the interrupted worker will be removed before a serialized retry starts", r.now())
@@ -251,7 +251,7 @@ func (r *GameBackupReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 			}
 			message := "the bounded backup worker failed; inspect repository availability and create a new operation after correction"
 			if reason == arcadev1alpha1.ReasonVerificationFailed {
-				message = "repository-side verification failed; the incomplete artifact is not usable"
+				message = verificationMessage
 			} else if reason == arcadev1alpha1.ReasonSecretUnavailable {
 				message = "the immutable repository Secret does not satisfy the documented S3 key contract; create a corrected Secret and new operation"
 			}
@@ -950,10 +950,10 @@ func (r *GameBackupReconciler) workerResult(ctx context.Context, backup *arcadev
 	return platformdata.BackupWorkerResult{}, errBackupWorkerResultPending
 }
 
-func (r *GameBackupReconciler) workerFailureReason(ctx context.Context, backup *arcadev1alpha1.GameBackup, job *batchv1.Job) string {
+func (r *GameBackupReconciler) workerFailureReason(ctx context.Context, backup *arcadev1alpha1.GameBackup, job *batchv1.Job) (string, string) {
 	pods := &corev1.PodList{}
 	if err := r.directReader().List(ctx, pods, client.InNamespace(backup.Namespace), client.MatchingLabels{platformkube.LabelBackupUID: string(backup.UID)}); err != nil {
-		return arcadev1alpha1.ReasonWorkerFailed
+		return arcadev1alpha1.ReasonWorkerFailed, ""
 	}
 	for i := range pods.Items {
 		pod := &pods.Items[i]
@@ -967,22 +967,62 @@ func (r *GameBackupReconciler) workerFailureReason(ctx context.Context, backup *
 				if status.Name == "backup-authorizer" && status.State.Terminated != nil {
 					switch status.State.Terminated.ExitCode {
 					case 11:
-						return arcadev1alpha1.ReasonSecretUnavailable
+						return arcadev1alpha1.ReasonSecretUnavailable, ""
 					case 12:
-						return arcadev1alpha1.ReasonWorkerFailed
+						return arcadev1alpha1.ReasonWorkerFailed, ""
 					}
 				}
 				continue
 			}
 			switch status.State.Terminated.ExitCode {
 			case 11:
-				return arcadev1alpha1.ReasonSecretUnavailable
+				return arcadev1alpha1.ReasonSecretUnavailable, ""
 			case 30:
-				return arcadev1alpha1.ReasonVerificationFailed
+				return arcadev1alpha1.ReasonVerificationFailed, backupVerificationFailureMessage(status.State.Terminated.Message)
 			}
 		}
 	}
-	return arcadev1alpha1.ReasonWorkerFailed
+	return arcadev1alpha1.ReasonWorkerFailed, ""
+}
+
+// Worker output is untrusted. Only fixed checkpoint names may select fixed
+// operator-facing text; no repository output, path, or supplied error is copied.
+func backupVerificationFailureMessage(raw string) string {
+	const fallback = "repository-side verification failed; the incomplete artifact is not usable"
+	if len(raw) > 4095 {
+		return fallback
+	}
+	var failure struct {
+		Version    string `json:"version"`
+		Failure    string `json:"failure"`
+		Checkpoint string `json:"checkpoint"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&failure) != nil || decoder.Decode(&struct{}{}) != io.EOF ||
+		failure.Version != platformdata.WorkerInputVersion || failure.Failure != "VerificationFailed" {
+		return fallback
+	}
+	var detail string
+	switch failure.Checkpoint {
+	case "snapshot-selection":
+		detail = "snapshot selection"
+	case "repository-check":
+		detail = "full repository check"
+	case "manifest":
+		detail = "manifest readback"
+	case "inventory":
+		detail = "snapshot inventory"
+	case "file":
+		detail = "file checksum readback"
+	case "source-recheck":
+		detail = "cold source recheck"
+	case "stats":
+		detail = "snapshot statistics"
+	default:
+		return fallback
+	}
+	return "repository-side verification failed at " + detail + "; the incomplete artifact is not usable"
 }
 
 func (r *GameBackupReconciler) finishSuccess(ctx context.Context, backup *arcadev1alpha1.GameBackup, _ *arcadev1alpha1.GameServer) (ctrl.Result, error) {

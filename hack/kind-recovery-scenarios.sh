@@ -337,6 +337,16 @@ EOF
 }
 
 run_recovery_scenarios() {
+  local diagnostic_fault=${ARCADECTL_RECOVERY_DIAGNOSTIC_FAULT:-}
+  case "$diagnostic_fault" in
+    ''|bad-credentials|capacity|worker-crash|corruption|filesystem-full) ;;
+    *) die "unknown bounded recovery diagnostic fault" ;;
+  esac
+  if [[ -n "$diagnostic_fault" ]]; then
+    [[ "${ARCADECTL_RECOVERY_POSTFAULTS_ONLY:-false}" != true &&
+      "${ARCADECTL_RECOVERY_SMOKE_ONLY:-false}" != true ]] \
+      || die "single-fault diagnosis cannot be combined with another partial mode"
+  fi
   recovery_extra_canaries=()
   # shellcheck source=hack/kind-recovery-faults.sh
   source "$repository_root/hack/kind-recovery-faults.sh"
@@ -360,6 +370,16 @@ run_recovery_scenarios() {
   if [[ "${ARCADECTL_RECOVERY_POSTFAULTS_ONLY:-false}" == true ]]; then
     say "diagnostic post-fault journey only; no full failure-matrix evidence claimed"
     recovery_record "diagnostic post-fault journey selected; bad credentials, capacity, crash, corruption and ENOSPC omitted"
+  elif [[ -n "$diagnostic_fault" ]]; then
+    say "diagnostic single-fault journey only ($diagnostic_fault); no full failure-matrix evidence claimed"
+    recovery_record "diagnostic single fault=$diagnostic_fault selected; all other fault groups omitted"
+    case "$diagnostic_fault" in
+      bad-credentials) recovery_fault_bad_credentials ;;
+      capacity) recovery_fault_capacity ;;
+      worker-crash) recovery_fault_worker_crash ;;
+      corruption) recovery_fault_corrupt_snapshot ;;
+      filesystem-full) recovery_fault_filesystem_full ;;
+    esac
   else
     recovery_fault_bad_credentials
     recovery_fault_capacity
@@ -382,8 +402,8 @@ run_recovery_scenarios() {
   done
   recovery_cleanup_fixtures
   collect_diagnostics
-  if [[ "${ARCADECTL_RECOVERY_POSTFAULTS_ONLY:-false}" == true ]]; then
-    say "diagnostic post-fault journey passed only; full recovery proof still required (source_head=$candidate_sha source_dirty=$source_dirty); evidence=$artifact_directory"
+  if [[ "${ARCADECTL_RECOVERY_POSTFAULTS_ONLY:-false}" == true || -n "$diagnostic_fault" ]]; then
+    say "partial diagnostic recovery journey passed only; full recovery proof still required (source_head=$candidate_sha source_dirty=$source_dirty); evidence=$artifact_directory"
   else
     say "real Factorio recovery/failure-safety proof passed (source_head=$candidate_sha source_dirty=$source_dirty); evidence=$artifact_directory"
   fi

@@ -14,8 +14,9 @@ import (
 func main() {
 	result, err := backupworker.Run(context.Background(), backupworker.Config{})
 	if err != nil {
-		_ = os.WriteFile(backupworker.DefaultTerminationPath, backupworker.FailureMessage(err), 0o600)
-		_, _ = fmt.Fprintln(os.Stderr, "backup worker failed")
+		message := backupworker.FailureMessage(err)
+		_ = os.WriteFile(backupworker.DefaultTerminationPath, message, 0o600)
+		_, _ = os.Stderr.Write(message)
 		os.Exit(backupworker.ExitCode(err))
 	}
 	message, err := backupworker.SuccessMessage(result)
