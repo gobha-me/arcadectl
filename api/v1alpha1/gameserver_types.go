@@ -73,6 +73,7 @@ const (
 	ReasonReady                         = "Ready"
 	ReasonStoragePending                = "StoragePending"
 	ReasonWorkloadPending               = "WorkloadPending"
+	ReasonDataOperationActive           = "DataOperationActive"
 	ReasonReconcileFailed               = "ReconcileFailed"
 )
 

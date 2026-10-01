@@ -2,8 +2,9 @@
 
 This installation is for an isolated cluster evaluation. It installs one
 controller that watches only `arcadectl-system`. Creating the namespace and the
-cluster-scoped Arcadectl CRDs require cluster-administrator authority; the
-running controller receives only a namespaced Role.
+cluster-scoped Arcadectl CRDs and admission policy require
+cluster-administrator authority. The running controller receives a namespaced
+Role and a read-only cluster Role for VolumeAttachment detachment checks.
 
 ## Build and identify the candidate image
 
@@ -60,21 +61,37 @@ enforcement if that assumption does not hold.
 
 ## Safe controller uninstall
 
-First set every `GameServer` to desired state `Stopped` and wait until every
-status phase is `Stopped`. Then run:
+First set every `GameServer` to desired state `Stopped`, wait until every
+status phase is `Stopped`, and let every `GameBackup` reach `Succeeded`,
+`Failed`, or `Cancelled`. Then run:
 
 ```sh
 ./hack/uninstall.sh
 ```
 
-The script refuses to proceed while any server is not both desired and observed
-Stopped at its current generation. It removes only the controller Deployment,
-RoleBinding, Role, and ServiceAccount. It deliberately retains:
+The script refuses to proceed while any server is deleting or is not both
+desired and observed Stopped at its current generation; while any backup is
+deleting, non-terminal, or stale; or while any backup Job, Pod, or retained-data
+operation Lease remains. It checks once while the controller is running, scales
+the controller to zero, and checks again before removing authority. If the
+second check fails, it restores the prior replica count. The script requires
+`jq`. Each check compares the complete installed policy and binding
+specifications with the shipped manifests and uses a server-side dry-run
+to prove that an ungated backup worker is denied. It also waits for controller
+Pods to disappear even if the Deployment already reports zero replicas. It removes the
+controller Deployment, namespaced controller RBAC, controller ServiceAccount,
+and VolumeAttachment-reader cluster RBAC. It deliberately retains:
 
 - the `arcadectl-system` Namespace;
 - the `GameServer`, `GameBackup`, and `GameRestore` CRDs and all their objects;
+- the backup-worker ValidatingAdmissionPolicy and binding, which continue to
+  fence the narrowly scoped authority retained by historical backup objects;
 - retained backup artifacts, which are not owned by operation objects; and
 - every independently retained world PVC.
+
+Do not manually remove that admission policy or binding while any backup-owned
+ServiceAccount, Role, or RoleBinding exists. Reinstall reapplies the same
+fail-closed policy before starting the controller.
 
 Do not delete `config/install/anchors.yaml`, the `arcadectl-system` Namespace,
 or the install resources as one aggregate bundle. Namespace deletion erases

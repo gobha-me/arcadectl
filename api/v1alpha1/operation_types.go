@@ -45,6 +45,7 @@ const (
 	ReasonSecretUnavailable  = "SecretUnavailable"
 	ReasonColdStopPending    = "ColdStopPending"
 	ReasonOperationConflict  = "OperationConflict"
+	ReasonWorkerRetrying     = "WorkerRetrying"
 	ReasonWorkerFailed       = "WorkerFailed"
 	ReasonVerificationFailed = "VerificationFailed"
 	ReasonOperationCancelled = "Cancelled"
@@ -382,6 +383,7 @@ type GameRestoreStatus struct {
 // +kubebuilder:resource:shortName=gb
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Server",type=string,JSONPath=`.spec.source.name`
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.status) || !has(oldSelf.status.phase) || !(oldSelf.status.phase in ['Cancelled', 'Succeeded', 'Failed']) || self.spec.cancelRequested == oldSelf.spec.cancelRequested",message="cancellation cannot be newly requested after backup completion"
 // +kubebuilder:validation:XValidation:rule="!has(self.status) || !has(self.status.fence) || (self.status.fence.gameServer.name == self.spec.source.name && self.status.fence.gameServer.uid == self.spec.source.uid && self.status.fence.gameServer.desiredState == 'Stopped' && ((self.spec.source.desiredState == 'Running' && self.status.fence.gameServer.generation == self.spec.source.generation + 1) || (self.spec.source.desiredState == 'Stopped' && self.status.fence.gameServer.generation == self.spec.source.generation)))",message="cold data fence must match the exact operation-owned stopped generation"
 // +kubebuilder:validation:XValidation:rule="!has(self.status) || !has(self.status.runtime) || (has(self.status.fence) && self.status.runtime.gameServer.name == self.spec.source.name && self.status.runtime.gameServer.uid == self.spec.source.uid && ((self.spec.restartPolicy == 'RestorePreviousState' && self.spec.source.desiredState == 'Running' && self.status.runtime.gameServer.desiredState == 'Running' && self.status.runtime.gameServer.generation == self.status.fence.gameServer.generation + 1) || ((self.spec.restartPolicy != 'RestorePreviousState' || self.spec.source.desiredState == 'Stopped') && self.status.runtime.gameServer.desiredState == 'Stopped' && self.status.runtime.gameServer.generation == self.status.fence.gameServer.generation)))",message="runtime disposition must match the exact operation-owned final generation"
 // +kubebuilder:validation:XValidation:rule="!has(self.status) || !has(self.status.artifact) || (self.status.artifact.provenance.backupRef.name == self.metadata.name && self.status.artifact.provenance.repositorySecretRef.name == self.spec.repositorySecretRef.name && self.status.artifact.provenance.repositorySecretRef.uid == self.spec.repositorySecretRef.uid && self.status.artifact.provenance.repositorySecretRef.resourceVersion == self.spec.repositorySecretRef.resourceVersion)",message="artifact provenance must match the backup operation and repository"

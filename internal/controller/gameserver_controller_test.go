@@ -19,6 +19,7 @@ import (
 	"github.com/gobha-me/arcadectl/internal/platform/game"
 	platformkube "github.com/gobha-me/arcadectl/internal/platform/kube"
 	appsv1 "k8s.io/api/apps/v1"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -1017,6 +1018,78 @@ func TestReconcileExpandsButNeverShrinksRetainedData(t *testing.T) {
 	}
 }
 
+func TestReconcileFreezesStoppedStorageWhileDataOperationOwnsWorld(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	server := controllerTestServer(arcadev1alpha1.DesiredStateStopped)
+	reconciler, kubeClient := newTestReconciler(t, server)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)}
+	if _, err := reconciler.Reconcile(ctx, request); err != nil {
+		t.Fatalf("initial Reconcile() error = %v", err)
+	}
+	claimKey := types.NamespacedName{Namespace: server.Namespace, Name: "factory-factorio-world"}
+	before := &corev1.PersistentVolumeClaim{}
+	if err := kubeClient.Get(ctx, claimKey, before); err != nil {
+		t.Fatalf("get initial claim: %v", err)
+	}
+
+	stored := &arcadev1alpha1.GameServer{}
+	if err := kubeClient.Get(ctx, request.NamespacedName, stored); err != nil {
+		t.Fatalf("get GameServer: %v", err)
+	}
+	stored.Spec.Storage.Size = resource.MustParse("20Gi")
+	if err := kubeClient.Update(ctx, stored); err != nil {
+		t.Fatalf("request expansion while fenced: %v", err)
+	}
+	plan, err := platformkube.Build(stored, factorio.Definition())
+	if err != nil {
+		t.Fatalf("build fenced data identity: %v", err)
+	}
+	holder := "backup-uid"
+	lease := &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: platformkube.DataOperationLeaseName(plan.DataIdentity), Namespace: server.Namespace,
+			Labels: map[string]string{
+				platformkube.LabelManagedBy: platformkube.ManagerName, platformkube.LabelDataIdentity: plan.DataIdentity,
+				platformkube.LabelBackupUID: holder, platformkube.LabelInstance: server.Name,
+			},
+			Annotations: map[string]string{platformkube.AnnotationBackupName: "backup"},
+		},
+		Spec: coordinationv1.LeaseSpec{HolderIdentity: &holder},
+	}
+	if err := kubeClient.Create(ctx, lease); err != nil {
+		t.Fatalf("create active data-operation Lease: %v", err)
+	}
+	if _, err := reconciler.Reconcile(ctx, request); err != nil {
+		t.Fatalf("fenced stopped Reconcile() error = %v", err)
+	}
+	after := &corev1.PersistentVolumeClaim{}
+	if err := kubeClient.Get(ctx, claimKey, after); err != nil {
+		t.Fatalf("get fenced claim: %v", err)
+	}
+	if before.UID != after.UID || before.ResourceVersion != after.ResourceVersion || !reflect.DeepEqual(before.Spec, after.Spec) {
+		t.Fatalf("fenced claim mutated: before=%#v after=%#v", before, after)
+	}
+	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseStopped, metav1.ConditionFalse, arcadev1alpha1.ReasonDataOperationActive)
+	assertCondition(t, kubeClient, request.NamespacedName, arcadev1alpha1.ConditionStorageReady, metav1.ConditionUnknown, arcadev1alpha1.ReasonDataOperationActive)
+	assertListLength(t, kubeClient, &corev1.ConfigMapList{}, 0)
+	assertListLength(t, kubeClient, &appsv1.DeploymentList{}, 0)
+	assertListLength(t, kubeClient, &corev1.ServiceList{}, 0)
+
+	if err := kubeClient.Delete(ctx, lease); err != nil {
+		t.Fatalf("release data-operation Lease: %v", err)
+	}
+	if _, err := reconciler.Reconcile(ctx, request); err != nil {
+		t.Fatalf("post-fence expansion Reconcile() error = %v", err)
+	}
+	if err := kubeClient.Get(ctx, claimKey, after); err != nil {
+		t.Fatalf("get expanded claim: %v", err)
+	}
+	if got := after.Spec.Resources.Requests[corev1.ResourceStorage]; got.Cmp(resource.MustParse("20Gi")) != 0 {
+		t.Fatalf("storage after fence release = %s, want 20Gi", got.String())
+	}
+}
+
 func newTestReconciler(t *testing.T, objects ...client.Object) (*GameServerReconciler, client.Client) {
 	t.Helper()
 	scheme := runtime.NewScheme()
@@ -1025,6 +1098,9 @@ func newTestReconciler(t *testing.T, objects ...client.Object) (*GameServerRecon
 	}
 	if err := appsv1.AddToScheme(scheme); err != nil {
 		t.Fatalf("add apps scheme: %v", err)
+	}
+	if err := coordinationv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add coordination scheme: %v", err)
 	}
 	if err := arcadev1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatalf("add Arcadectl scheme: %v", err)

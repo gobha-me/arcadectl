@@ -1,2 +1,5 @@
 Arcadectl
 Copyright 2026 gobha-me
+
+This product includes restic, Copyright (c) 2014 Alexander Neumann,
+distributed under the BSD 2-Clause License. See licenses/restic-LICENSE.

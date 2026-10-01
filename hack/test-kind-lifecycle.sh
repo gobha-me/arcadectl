@@ -9,6 +9,7 @@ readonly kind_version=v0.33.0
 readonly kind_node_image='kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5'
 readonly kubectl_image='registry.k8s.io/kubectl@sha256:5ed410ebac5dc976cc717098994dcdb29bbbd38f6bd65f582311f5be4ba719cf'
 readonly registry_image='registry:3.0.0@sha256:6c5666b861f3505b116bb9aa9b25175e71210414bd010d92035ff64018f9457e'
+readonly restic_inspector_image='restic/restic@sha256:39d9072fb5651c80d75c7a811612eb60b4c06b32ffe87c2e9f3c7222e1797e76'
 readonly lifecycle_suite="${ARCADECTL_LIFECYCLE_SUITE:-synthetic}"
 case "$lifecycle_suite" in
   synthetic|factorio) ;;
@@ -59,6 +60,7 @@ node_names=
 node_ids=
 controller_tag=
 synthetic_tag=
+minio_tag=
 factorio_a_tag=
 factorio_b_tag=
 overlap_monitor_pid=
@@ -257,6 +259,9 @@ cleanup() {
       docker image rm "$synthetic_tag" >/dev/null 2>&1 || cleanup_status=1
     fi
   fi
+  if [[ -n "$minio_tag" ]] && grep -Fxq "$minio_tag" <<<"$image_references"; then
+    docker image rm "$minio_tag" >/dev/null 2>&1 || cleanup_status=1
+  fi
   if [[ -n "$factorio_a_tag" ]]; then
     if grep -Fxq "$factorio_a_tag" <<<"$image_references"; then
       docker image rm "$factorio_a_tag" >/dev/null 2>&1 || cleanup_status=1
@@ -307,6 +312,10 @@ cleanup() {
     printf 'task synthetic image tag still exists after cleanup: %s\n' "$synthetic_tag" >&2
     cleanup_status=1
   fi
+  if [[ -n "$minio_tag" ]] && grep -Fxq "$minio_tag" <<<"$image_references"; then
+    printf 'task MinIO image tag still exists after cleanup: %s\n' "$minio_tag" >&2
+    cleanup_status=1
+  fi
   if [[ -n "$factorio_a_tag" ]] && grep -Fxq "$factorio_a_tag" <<<"$image_references"; then
     printf 'task Factorio A image tag still exists after cleanup: %s\n' "$factorio_a_tag" >&2
     cleanup_status=1
@@ -346,7 +355,7 @@ finish() {
 }
 trap finish EXIT
 
-for command in awk basename chmod cp curl date docker find git go grep head mktemp sed seq sleep tail timeout touch tr; do
+for command in awk basename chmod cp curl date docker find git go grep head jq mktemp sed seq sha256sum sleep tail timeout touch tr; do
   command -v "$command" >/dev/null 2>&1 || die "required command is unavailable: $command"
 done
 docker info >/dev/null 2>&1 || die "Docker daemon is unavailable"
@@ -418,6 +427,7 @@ if [[ "$lifecycle_suite" == factorio ]]; then
   factorio_b_tag="$registry_host/gobha-me/arcadectl-factorio:$run_id-b"
 else
   synthetic_tag="$registry_host/gobha-me/arcadectl-conformance-server:$run_id"
+  minio_tag="$registry_host/arcadectl-minio-fixture:$run_id"
 fi
 
 controller_build_args=(
@@ -452,6 +462,10 @@ else
     --build-arg "SOURCE_DIRTY=$source_dirty" \
     --tag "$synthetic_tag" \
     "$repository_root"
+  say "building MinIO fixture from checksum-pinned official source"
+  run_bounded 600 docker build \
+    --file "$repository_root/images/minio-fixture/Dockerfile" \
+    --tag "$minio_tag" "$repository_root/images/minio-fixture"
 fi
 run_bounded 120 docker push "$controller_tag" >/dev/null
 if [[ "$lifecycle_suite" == factorio ]]; then
@@ -459,6 +473,7 @@ if [[ "$lifecycle_suite" == factorio ]]; then
   run_bounded 240 docker push "$factorio_b_tag" >/dev/null
 else
   run_bounded 120 docker push "$synthetic_tag" >/dev/null
+  run_bounded 120 docker push "$minio_tag" >/dev/null
 fi
 
 resolve_digest() {
@@ -481,6 +496,8 @@ else
   synthetic_digest=$(resolve_digest "$synthetic_tag") || die "synthetic registry digest is unavailable"
   readonly synthetic_digest
   readonly synthetic_image="ghcr.io/gobha-me/arcadectl-conformance-server@$synthetic_digest"
+  minio_digest=$(resolve_digest "$minio_tag") || die "MinIO fixture registry digest is unavailable"
+  readonly minio_image="$registry_host/arcadectl-minio-fixture@$minio_digest"
 fi
 readonly controller_digest
 
@@ -676,6 +693,73 @@ assert_controller_image() {
   IFS='|' read -r image image_id <<<"$output"
   [[ "$image" == "$controller_image" ]] || die "controller Pod image is not the intended digest: $image"
   [[ "$image_id" == *"$controller_digest"* ]] || die "controller Pod imageID does not prove the intended digest: $image_id"
+}
+
+prove_backup_worker_admission_boundary() {
+  local probe_name="backup-admission-$run_suffix"
+  local denial_output= accepted=false
+  cat >"$workspace/backup-admission-ungated.yaml" <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $probe_name
+  namespace: $namespace
+  labels:
+    app.kubernetes.io/managed-by: arcadectl
+    app.kubernetes.io/name: backup-worker
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile: {type: RuntimeDefault}
+  containers:
+    - name: probe
+      image: $controller_image
+      command: ["/arcadectl-controller", "--help"]
+      resources:
+        requests: {cpu: 1m, memory: 8Mi}
+        limits: {cpu: 10m, memory: 16Mi}
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: {drop: [ALL]}
+EOF
+  local deadline=$((SECONDS + 30))
+  while (( SECONDS < deadline )); do
+    if ! denial_output=$(kube create --dry-run=server --filename "$workspace/backup-admission-ungated.yaml" 2>&1); then
+      if grep -Fq 'must enter admission with exactly one execution gate' <<<"$denial_output"; then
+        accepted=true
+        break
+      fi
+      die "unexpected backup admission denial: $denial_output"
+    fi
+    sleep 1
+  done
+  [[ "$accepted" == true ]] || die "backup admission policy did not reject an ungated worker Pod"
+
+  sed '/  containers:/i\  schedulingGates:\n    - name: arcade.gobha.me/backup-authorized' \
+    "$workspace/backup-admission-ungated.yaml" >"$workspace/backup-admission-gated.yaml"
+  kube create --filename "$workspace/backup-admission-gated.yaml" >/dev/null
+  [[ $(kube get pod "$probe_name" --namespace "$namespace" --output=jsonpath='{.status.phase}|{.spec.nodeName}|{.spec.schedulingGates[0].name}') == "Pending||arcade.gobha.me/backup-authorized" ]] \
+    || die "admission probe did not remain unscheduled behind the exact gate"
+
+  if denial_output=$(kube set image "pod/$probe_name" 'probe=registry.invalid/forbidden:latest' --namespace "$namespace" 2>&1); then
+    die "backup admission policy allowed executable Pod mutation"
+  fi
+  grep -Fq 'executable fields are immutable' <<<"$denial_output" \
+    || die "unexpected executable-mutation denial: $denial_output"
+  if denial_output=$(kube patch pod "$probe_name" --namespace "$namespace" --type=json --patch='[
+    {"op":"add","path":"/metadata/annotations","value":{"arcade.gobha.me/backup-pod-authorized":"forged"}},
+    {"op":"remove","path":"/spec/schedulingGates/0"}
+  ]' 2>&1); then
+    die "backup admission policy allowed a non-controller to remove the execution gate"
+  fi
+  grep -Fq 'Only the Arcadectl controller may authorize' <<<"$denial_output" \
+    || die "unexpected gate-removal denial: $denial_output"
+  kube delete pod "$probe_name" --namespace "$namespace" --wait=true >/dev/null
 }
 
 prove_storage_boundary() {
@@ -1173,10 +1257,15 @@ EOF
   assert_runtime_absent "$server_name"
   assert_pvc_identity "$pvc_uid" "$pv_name"
   verify_factorio_storage
+  wait_selector_absent jobs arcade.gobha.me/data-operation 60
+  wait_selector_absent pods arcade.gobha.me/data-operation 60
+  wait_selector_absent leases arcade.gobha.me/data-identity 60
   run_bounded 120 env KUBECTL="$kubectl_wrapper" "$repository_root/hack/uninstall.sh"
   wait_absent deployment arcadectl-controller 60
   wait_selector_absent replicasets app.kubernetes.io/name=arcadectl-controller 60
   wait_selector_absent pods app.kubernetes.io/name=arcadectl-controller 60
+  kube get validatingadmissionpolicy arcadectl-backup-worker-gate >/dev/null
+  kube get validatingadmissionpolicybinding arcadectl-backup-worker-gate >/dev/null
   kube get namespace "$namespace" >/dev/null
   kube get customresourcedefinition gameservers.arcade.gobha.me >/dev/null
   kube get gameserver "$server_name" --namespace "$namespace" >/dev/null
@@ -1210,6 +1299,8 @@ EOF
   say "certified Factorio lifecycle proof passed (source_head=$candidate_sha source_dirty=$source_dirty evidence=$artifact_directory)"
 }
 
+say "proving backup worker admission cannot be bypassed"
+prove_backup_worker_admission_boundary
 prove_storage_boundary
 
 if [[ "$lifecycle_suite" == factorio ]]; then
@@ -1395,6 +1486,766 @@ grep -Fxq 'marker=first-seed' <<<"$state" || die "GameServer recreation changed 
 grep -Fxq 'seed=third-seed' <<<"$state" || die "GameServer recreation did not apply current settings"
 assert_pvc_identity "$pvc_uid" "$pv_name"
 
+wait_backup() {
+  local name=$1 wanted_runtime=$2 seconds=$3 observed generation observed_generation phase verification runtime_phase
+  local fence_generation server_generation server_desired
+  local runtime_network_patched=false
+  local deadline=$((SECONDS + seconds))
+  while (( SECONDS < deadline )); do
+    if [[ "$wanted_runtime" == Ready && "$runtime_network_patched" == false ]]; then
+      fence_generation=$(kube get gamebackup "$name" --namespace "$namespace" --output=jsonpath='{.status.fence.gameServer.generation}' 2>/dev/null || true)
+      IFS='|' read -r server_generation server_desired <<<"$(kube get gameserver "$server_name" --namespace "$namespace" \
+        --output=jsonpath='{.metadata.generation}|{.spec.desiredState}' 2>/dev/null || true)"
+      if [[ "$fence_generation" =~ ^[0-9]+$ && "$server_generation" =~ ^[0-9]+$ && \
+        "$server_generation" -gt "$fence_generation" && "$server_desired" == Running ]] && \
+        kube get service "$server_name" --namespace "$namespace" >/dev/null 2>&1; then
+        patch_player_service "$server_name" >/dev/null
+        runtime_network_patched=true
+      fi
+    fi
+    observed=$(kube get gamebackup "$name" --namespace "$namespace" \
+      --output=jsonpath='{.metadata.generation}|{.status.observedGeneration}|{.status.phase}|{.status.artifact.verification.result}|{.status.runtime.phase}' 2>/dev/null || true)
+    IFS='|' read -r generation observed_generation phase verification runtime_phase <<<"$observed"
+    if [[ -n "$generation" && "$generation" == "$observed_generation" && "$phase" == Succeeded && \
+      "$verification" == Verified && "$runtime_phase" == "$wanted_runtime" ]]; then
+      return 0
+    fi
+    sleep 2
+  done
+  printf 'timed out waiting for GameBackup %s; observed %s\n' "$name" "$observed" >&2
+  return 1
+}
+
+assert_backup_artifact() {
+  local name=$1 expected_runtime=$2 artifact
+  artifact=$(kube get gamebackup "$name" --namespace "$namespace" \
+    --output=jsonpath='{.status.source.gameServer.uid}|{.status.source.paths[0].name}|{.status.source.paths[0].claimRef.uid}|{.status.artifact.id}|{.status.artifact.manifestDigest}|{.status.artifact.pathCount}|{.status.artifact.verification.result}|{.status.runtime.phase}')
+  IFS='|' read -r artifact_server_uid artifact_path artifact_claim_uid artifact_id artifact_digest artifact_paths artifact_verification artifact_runtime <<<"$artifact"
+  [[ "$artifact_server_uid" == "$new_server_uid" ]] || die "$name recorded the wrong source GameServer UID"
+  [[ "$artifact_path" == state && "$artifact_claim_uid" == "$pvc_uid" ]] || die "$name recorded the wrong retained path identity"
+  [[ "$artifact_id" =~ ^backup-[0-9a-f]{64}$ ]] || die "$name did not publish a deterministic artifact ID"
+  [[ "$artifact_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "$name did not publish a canonical manifest digest"
+  [[ "$artifact_paths" == 1 && "$artifact_verification" == Verified ]] || die "$name did not verify every declared path"
+  [[ "$artifact_runtime" == "$expected_runtime" ]] || die "$name did not settle the requested runtime disposition"
+}
+
+assert_no_repository_credentials() {
+  local canary
+  for canary in "$repository_access_key" "$repository_secret_key" "$repository_password"; do
+    if grep -Fq "$canary" "$@"; then
+      die "repository credential canary escaped into public worker evidence or stored artifact"
+    fi
+  done
+}
+
+assert_worker_evidence_private() {
+  local pod=$1 container=$2
+  kube logs "$pod" --namespace "$namespace" --container="$container" \
+    >"$workspace/worker-log" 2>"$workspace/worker-log-error" \
+    || die "could not capture worker logs before cleanup"
+  kube get pod "$pod" --namespace "$namespace" --output=json >"$workspace/worker-pod"
+  assert_no_repository_credentials "$workspace/worker-log" "$workspace/worker-log-error" "$workspace/worker-pod"
+}
+
+say "starting isolated pinned MinIO for real cold-backup proof"
+repository_secret_name=backup-repository
+repository_access_key="access-$run_suffix"
+repository_secret_key="object-$run_suffix-canary"
+repository_password="restic-$run_suffix-canary"
+cat >"$workspace/backup-repository.yaml" <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: $repository_secret_name
+  namespace: $namespace
+immutable: true
+type: Opaque
+stringData:
+  repository: s3:http://minio:9000/arcadectl
+  password: $repository_password
+  awsAccessKeyID: $repository_access_key
+  awsSecretAccessKey: $repository_secret_key
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: $namespace
+  labels:
+    arcade.gobha.me/e2e-run: $run_id
+spec:
+  selector:
+    arcade.gobha.me/e2e-component: minio
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: s3
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: $namespace
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      arcade.gobha.me/e2e-component: minio
+  template:
+    metadata:
+      labels:
+        arcade.gobha.me/e2e-component: minio
+        arcade.gobha.me/e2e-run: $run_id
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: minio
+          image: $minio_image
+          imagePullPolicy: IfNotPresent
+          args: ["server", "/data", "--address", ":9000"]
+          env:
+            - name: HOME
+              value: /tmp
+            - name: MINIO_BROWSER
+              value: "off"
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: $repository_secret_name
+                  key: awsAccessKeyID
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: $repository_secret_name
+                  key: awsSecretAccessKey
+          ports:
+            - name: s3
+              containerPort: 9000
+          readinessProbe:
+            httpGet:
+              path: /minio/health/cluster
+              port: s3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+EOF
+kube apply --filename "$workspace/backup-repository.yaml" >/dev/null
+kube_bounded 130 rollout status deployment/minio --namespace "$namespace" --timeout=120s >/dev/null
+
+cat >"$workspace/restic-init.yaml" <<EOF
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: restic-init
+  namespace: $namespace
+  labels:
+    arcade.gobha.me/e2e-run: $run_id
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 120
+  template:
+    metadata:
+      labels:
+        arcade.gobha.me/e2e-run: $run_id
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: restic-init
+          image: $controller_image
+          imagePullPolicy: IfNotPresent
+          command: ["/restic"]
+          args: ["--no-cache", "--repo", "s3:http://minio:9000/arcadectl", "--password-file", "/credentials/password", "init"]
+          env:
+            - name: HOME
+              value: /work
+            - name: TMPDIR
+              value: /work
+            - name: RESTIC_CACHE_DIR
+              value: /work/cache
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: $repository_secret_name
+                  key: awsAccessKeyID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: $repository_secret_name
+                  key: awsSecretAccessKey
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: credentials
+              mountPath: /credentials
+              readOnly: true
+            - name: work
+              mountPath: /work
+      volumes:
+        - name: credentials
+          secret:
+            secretName: $repository_secret_name
+            defaultMode: 0444
+        - name: work
+          emptyDir:
+            sizeLimit: 64Mi
+EOF
+kube apply --filename "$workspace/restic-init.yaml" >/dev/null
+kube_bounded 130 wait job/restic-init --namespace "$namespace" --for=condition=complete --timeout=120s >/dev/null
+kube_bounded 70 delete job/restic-init --namespace "$namespace" --wait=true --timeout=60s >/dev/null
+
+backup_utility_image='busybox@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0'
+cat >"$workspace/restic-seed.yaml" <<EOF
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: restic-seed
+  namespace: $namespace
+  labels:
+    arcade.gobha.me/e2e-run: $run_id
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 120
+  template:
+    metadata:
+      labels:
+        arcade.gobha.me/e2e-run: $run_id
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: seed
+          image: $backup_utility_image
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-ec"]
+          args: ["dd if=/dev/urandom of=/seed/payload.bin bs=1024 count=65536"]
+          resources:
+            requests: {cpu: 5m, memory: 8Mi}
+            limits: {cpu: 50m, memory: 32Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {name: seed, mountPath: /seed}
+      containers:
+        - name: restic-seed
+          image: $controller_image
+          imagePullPolicy: IfNotPresent
+          command: ["/restic"]
+          args: ["--no-cache", "--repo", "s3:http://minio:9000/arcadectl", "--password-file", "/credentials/password", "backup", "--quiet", "/seed/payload.bin"]
+          env:
+            - name: HOME
+              value: /work
+            - name: TMPDIR
+              value: /work
+            - name: RESTIC_CACHE_DIR
+              value: /work/cache
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef: {name: $repository_secret_name, key: awsAccessKeyID}
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: {name: $repository_secret_name, key: awsSecretAccessKey}
+          resources:
+            requests: {cpu: 25m, memory: 32Mi}
+            limits: {cpu: 250m, memory: 128Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {name: credentials, mountPath: /credentials, readOnly: true}
+            - {name: work, mountPath: /work}
+            - {name: seed, mountPath: /seed, readOnly: true}
+      volumes:
+        - name: credentials
+          secret: {secretName: $repository_secret_name, defaultMode: 0444}
+        - name: work
+          emptyDir: {sizeLimit: 64Mi}
+        - name: seed
+          emptyDir: {sizeLimit: 80Mi}
+EOF
+kube apply --filename "$workspace/restic-seed.yaml" >/dev/null
+kube_bounded 130 wait job/restic-seed --namespace "$namespace" --for=condition=complete --timeout=120s >/dev/null
+kube_bounded 70 delete job/restic-seed --namespace "$namespace" --wait=true --timeout=60s >/dev/null
+
+repository_uid=$(kube get secret "$repository_secret_name" --namespace "$namespace" --output=jsonpath='{.metadata.uid}')
+repository_version=$(kube get secret "$repository_secret_name" --namespace "$namespace" --output=jsonpath='{.metadata.resourceVersion}')
+running_generation=$(kube get gameserver "$server_name" --namespace "$namespace" --output=jsonpath='{.metadata.generation}')
+[[ -n "$repository_uid" && -n "$repository_version" && -n "$running_generation" ]] || die "backup exact-reference inputs are incomplete"
+
+cat >"$workspace/running-backup.yaml" <<EOF
+apiVersion: arcade.gobha.me/v1alpha1
+kind: GameBackup
+metadata:
+  name: running-backup
+  namespace: $namespace
+spec:
+  source:
+    name: $server_name
+    uid: $new_server_uid
+    generation: $running_generation
+    desiredState: Running
+  repositorySecretRef:
+    name: $repository_secret_name
+    uid: $repository_uid
+    resourceVersion: "$repository_version"
+  restartPolicy: RestorePreviousState
+  retentionPolicy: Retain
+EOF
+
+say "interrupting real Restic verification and proving same-operation lock recovery"
+kube scale deployment/arcadectl-controller --namespace "$namespace" --replicas=0 >/dev/null
+kube_bounded 70 wait pod --namespace "$namespace" --selector=app.kubernetes.io/name=arcadectl-controller --for=delete --timeout=60s >/dev/null
+kube apply --filename "$workspace/running-backup.yaml" >/dev/null
+running_backup_uid=$(kube get gamebackup running-backup --namespace "$namespace" --output=jsonpath='{.metadata.uid}')
+[[ -n "$running_backup_uid" ]] || die "running backup did not receive a UID"
+backup_name_digest=$(printf 'arcadectl/backup-job/%s' "$running_backup_uid" | sha256sum | awk '{print $1}')
+running_backup_job="backup-${backup_name_digest:0:32}"
+
+cat >"$workspace/restic-interruption.yaml" <<EOF
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: restic-interruption
+  namespace: $namespace
+  labels:
+    arcade.gobha.me/e2e-run: $run_id
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 120
+  template:
+    metadata:
+      labels:
+        arcade.gobha.me/e2e-run: $run_id
+    spec:
+      hostname: $running_backup_job
+      shareProcessNamespace: true
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: interrupted-verifier
+          image: $controller_image
+          imagePullPolicy: IfNotPresent
+          command: ["/restic"]
+          args: ["--no-cache", "--repo", "s3:http://minio:9000/arcadectl", "--password-file", "/credentials/password", "--limit-download", "1", "check", "--read-data"]
+          env:
+            - name: HOME
+              value: /work
+            - name: TMPDIR
+              value: /work
+            - name: RESTIC_CACHE_DIR
+              value: /work/cache
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef: {name: $repository_secret_name, key: awsAccessKeyID}
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: {name: $repository_secret_name, key: awsSecretAccessKey}
+          resources:
+            requests: {cpu: 25m, memory: 32Mi}
+            limits: {cpu: 250m, memory: 128Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {name: credentials, mountPath: /credentials, readOnly: true}
+            - {name: work, mountPath: /work}
+        - name: interrupter
+          image: $backup_utility_image
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              attempts=0
+              while [ "\$attempts" -lt 30 ]; do
+                pid="\$(pidof restic 2>/dev/null || true)"
+                if [ -n "\$pid" ]; then
+                  sleep 3
+                  kill -KILL \$pid
+                  echo verification-interrupted
+                  exit 0
+                fi
+                attempts=\$((attempts + 1))
+                sleep 1
+              done
+              echo restic-process-not-found >&2
+              exit 1
+          resources:
+            requests: {cpu: 5m, memory: 8Mi}
+            limits: {cpu: 50m, memory: 32Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+      volumes:
+        - name: credentials
+          secret: {secretName: $repository_secret_name, defaultMode: 0444}
+        - name: work
+          emptyDir: {sizeLimit: 64Mi}
+EOF
+kube apply --filename "$workspace/restic-interruption.yaml" >/dev/null
+kube_bounded 130 wait job/restic-interruption --namespace "$namespace" --for=condition=failed --timeout=120s >/dev/null
+interruption_pod=$(kube get pods --namespace "$namespace" --selector=job-name=restic-interruption --output=jsonpath='{.items[0].metadata.name}')
+interrupted_exit=$(kube get pod "$interruption_pod" --namespace "$namespace" --output=jsonpath='{.status.containerStatuses[?(@.name=="interrupted-verifier")].state.terminated.exitCode}')
+[[ "$interrupted_exit" == 137 ]] || die "Restic verification was not forcefully interrupted: exit $interrupted_exit"
+[[ $(kube logs "$interruption_pod" --namespace "$namespace" --container=interrupter) == verification-interrupted ]] \
+  || die "Restic interruption sidecar did not confirm the fault"
+[[ -z $(kube get gamebackup running-backup --namespace "$namespace" --output=jsonpath='{.status.artifact.id}') ]] \
+  || die "interrupted verification published a usable artifact"
+kube_bounded 70 delete job/restic-interruption --namespace "$namespace" --wait=true --timeout=60s >/dev/null
+
+kube scale deployment/arcadectl-controller --namespace "$namespace" --replicas=1 >/dev/null
+kube_bounded 130 rollout status deployment/arcadectl-controller --namespace "$namespace" --timeout=120s >/dev/null
+say "refusing a live overlapping backup worker and serializing its retry"
+wait_present job "$running_backup_job" 90
+overlap_deadline=$((SECONDS + 90))
+first_worker_pod=
+first_worker_uid=
+worker_lease=
+while (( SECONDS < overlap_deadline )); do
+  first_worker_pod=$(kube get pods --namespace "$namespace" --selector="arcade.gobha.me/backup-uid=$running_backup_uid" \
+    --output=jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  first_worker_uid=$(kube get pod "$first_worker_pod" --namespace "$namespace" --output=jsonpath='{.metadata.uid}' 2>/dev/null || true)
+  first_worker_phase=$(kube get pod "$first_worker_pod" --namespace "$namespace" --output=jsonpath='{.status.phase}' 2>/dev/null || true)
+  worker_lease=$(kube get leases --namespace "$namespace" --selector="arcade.gobha.me/backup-uid=$running_backup_uid" \
+    --output=jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  worker_holder=$(kube get lease "$worker_lease" --namespace "$namespace" \
+    --output=go-template='{{index .metadata.annotations "arcade.gobha.me/worker-pod-uid"}}' 2>/dev/null || true)
+  if [[ -n "$first_worker_uid" && "$first_worker_phase" == Running && "$worker_holder" == "$first_worker_uid" ]]; then
+    break
+  fi
+  sleep 1
+done
+[[ -n "$first_worker_uid" && "$first_worker_phase" == Running && "$worker_holder" == "$first_worker_uid" ]] \
+  || die "first backup worker never acquired its Pod-UID execution claim while live"
+worker_container_id=$(kube get pod "$first_worker_pod" --namespace "$namespace" \
+  --output=jsonpath='{.status.containerStatuses[?(@.name=="backup-worker")].containerID}')
+worker_container_id=${worker_container_id#containerd://}
+[[ "$worker_container_id" =~ ^[0-9a-f]{64}$ ]] || die "authorized worker container identity is invalid"
+worker_pid=$(docker exec "$cluster_name-control-plane" crictl inspect "$worker_container_id" | jq -r '.info.pid // empty')
+[[ "$worker_pid" =~ ^[1-9][0-9]*$ ]] || die "authorized worker runtime PID is invalid"
+docker exec "$cluster_name-control-plane" kill -STOP "$worker_pid"
+[[ $(kube get pod "$first_worker_pod" --namespace "$namespace" --output=jsonpath='{.status.phase}') == Running ]] \
+  || die "authorized worker did not remain live after the deterministic pause"
+say "refusing controller uninstall while a backup worker is active"
+if uninstall_output=$(run_bounded 30 env KUBECTL="$kubectl_wrapper" "$repository_root/hack/uninstall.sh" 2>&1); then
+  die "safe uninstall accepted an active backup worker"
+fi
+[[ "$uninstall_output" == *"every GameBackup must be terminal"* ]] \
+  || die "safe uninstall did not report the active GameBackup boundary"
+kube get deployment arcadectl-controller --namespace "$namespace" >/dev/null
+kube get validatingadmissionpolicy arcadectl-backup-worker-gate >/dev/null
+kube get validatingadmissionpolicybinding arcadectl-backup-worker-gate >/dev/null
+kube scale deployment/arcadectl-controller --namespace "$namespace" --replicas=0 >/dev/null
+kube_bounded 70 wait pod --namespace "$namespace" --selector=app.kubernetes.io/name=arcadectl-controller --for=delete --timeout=60s >/dev/null
+[[ $(kube get pod "$first_worker_pod" --namespace "$namespace" --output=jsonpath='{.status.phase}') == Running ]] \
+  || die "first backup worker did not remain live for the overlap proof"
+
+running_job_uid=$(kube get job "$running_backup_job" --namespace "$namespace" --output=jsonpath='{.metadata.uid}')
+overlap_pod="backup-overlap-$run_suffix"
+cat >"$workspace/backup-overlap.yaml" <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $overlap_pod
+  namespace: $namespace
+  annotations:
+    arcade.gobha.me/e2e-run: $run_id
+  labels:
+    arcade.gobha.me/backup-uid: $running_backup_uid
+    arcade.gobha.me/e2e-run: $run_id
+  ownerReferences:
+    - apiVersion: batch/v1
+      kind: Job
+      name: $running_backup_job
+      uid: $running_job_uid
+      controller: true
+      blockOwnerDeletion: true
+spec:
+  hostname: $running_backup_job
+  serviceAccountName: $running_backup_job-authority
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  schedulingGates:
+    - name: arcade.gobha.me/backup-authorized
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    supplementalGroups: [65532]
+    seccompProfile: {type: RuntimeDefault}
+  initContainers:
+    - name: backup-authorizer
+      image: $controller_image
+      imagePullPolicy: IfNotPresent
+      command: ["/arcadectl-backup-authorizer"]
+      env:
+        - name: POD_NAMESPACE
+          valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+        - name: POD_UID
+          valueFrom: {fieldRef: {fieldPath: metadata.uid}}
+      resources:
+        requests: {cpu: 5m, memory: 16Mi}
+        limits: {cpu: 50m, memory: 32Mi}
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: {drop: ["ALL"]}
+      volumeMounts:
+        - {name: input, mountPath: /arcadectl/input, readOnly: true}
+        - {name: credentials, mountPath: /arcadectl/authorized-credentials}
+        - {name: authority, mountPath: /var/run/secrets/kubernetes.io/serviceaccount, readOnly: true}
+  containers:
+    - name: overlap-sentinel
+      image: $backup_utility_image
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/sh", "-ec", "sleep 300"]
+      resources:
+        requests: {cpu: 5m, memory: 8Mi}
+        limits: {cpu: 50m, memory: 32Mi}
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: {drop: ["ALL"]}
+      volumeMounts:
+        - {name: source, mountPath: /arcadectl/source/state, readOnly: true}
+  volumes:
+    - name: input
+      configMap: {name: $running_backup_job-input, defaultMode: 0444}
+    - name: credentials
+      emptyDir: {sizeLimit: 2Mi}
+    - name: source
+      persistentVolumeClaim: {claimName: $claim_name, readOnly: true}
+    - name: authority
+      projected:
+        defaultMode: 0444
+        sources:
+          - serviceAccountToken: {path: token, expirationSeconds: 600}
+          - configMap:
+              name: kube-root-ca.crt
+              items: [{key: ca.crt, path: ca.crt}]
+EOF
+kube apply --filename "$workspace/backup-overlap.yaml" >/dev/null
+overlap_uid=$(kube get pod "$overlap_pod" --namespace "$namespace" --output=jsonpath='{.metadata.uid}')
+[[ -n "$overlap_uid" ]] || die "gated overlap probe did not receive a Pod UID"
+kube get pod "$overlap_pod" --namespace "$namespace" --output=json \
+  | jq --arg uid "$overlap_uid" \
+      '.metadata.annotations["arcade.gobha.me/backup-pod-authorized"] = $uid | del(.spec.schedulingGates)' \
+  | kube replace --filename - --as=system:serviceaccount:arcadectl-system:arcadectl-controller >/dev/null
+actual_overlap_owner=$(kube get pod "$overlap_pod" --namespace "$namespace" \
+  --output=go-template='{{range .metadata.ownerReferences}}{{if eq .kind "Job"}}{{.uid}}{{end}}{{end}}')
+actual_overlap_claim=$(kube get pod "$overlap_pod" --namespace "$namespace" \
+  --output=jsonpath='{.spec.volumes[?(@.name=="source")].persistentVolumeClaim.claimName}')
+[[ "$actual_overlap_owner" == "$running_job_uid" && "$actual_overlap_claim" == "$claim_name" ]] \
+  || die "overlap probe did not retain the exact Job ownership and source claim"
+overlap_deadline=$((SECONDS + 60))
+overlap_exit=
+while (( SECONDS < overlap_deadline )); do
+  overlap_exit=$(kube get pod "$overlap_pod" --namespace "$namespace" \
+    --output=jsonpath='{.status.initContainerStatuses[?(@.name=="backup-authorizer")].state.terminated.exitCode}' 2>/dev/null || true)
+  [[ -n "$overlap_exit" ]] && break
+  sleep 1
+done
+[[ "$overlap_exit" == 12 ]] || die "overlapping worker authorizer exit was $overlap_exit, want 12"
+[[ $(kube get pod "$first_worker_pod" --namespace "$namespace" --output=jsonpath='{.status.phase}') == Running ]] \
+  || die "first backup worker was not live when the overlap was refused"
+[[ $(kube get lease "$worker_lease" --namespace "$namespace" \
+  --output=go-template='{{index .metadata.annotations "arcade.gobha.me/worker-pod-uid"}}') == "$first_worker_uid" ]] \
+  || die "overlapping worker replaced the live execution holder"
+assert_worker_evidence_private "$overlap_pod" backup-authorizer
+kube_bounded 70 delete pod "$overlap_pod" --namespace "$namespace" --wait=true --timeout=60s >/dev/null
+docker exec "$cluster_name-control-plane" kill -KILL "$worker_pid"
+kube_bounded 70 wait job/"$running_backup_job" --namespace "$namespace" --for=condition=failed --timeout=60s >/dev/null
+assert_worker_evidence_private "$first_worker_pod" backup-authorizer
+assert_worker_evidence_private "$first_worker_pod" backup-worker
+[[ -z $(kube get gamebackup running-backup --namespace "$namespace" --output=jsonpath='{.status.artifact.id}') ]] \
+  || die "force-stopped authorized worker published a usable artifact"
+
+kube scale deployment/arcadectl-controller --namespace "$namespace" --replicas=1 >/dev/null
+kube_bounded 130 rollout status deployment/arcadectl-controller --namespace "$namespace" --timeout=120s >/dev/null
+say "backing up a running server and restoring its prior Ready state"
+wait_backup running-backup Ready 240
+running_backup_attempts=$(kube get gamebackup running-backup --namespace "$namespace" --output=jsonpath='{.status.attempts}')
+[[ "$running_backup_attempts" =~ ^[0-9]+$ && "$running_backup_attempts" -ge 2 ]] \
+  || die "live worker overlap did not converge through a bounded serialized retry"
+wait_server "$server_name" Ready Ready 90
+assert_backup_artifact running-backup Ready
+assert_pvc_identity "$pvc_uid" "$pv_name"
+grep -Fxq 'marker=first-seed' <<<"$(probe_state "$server_name")" || die "running cold backup changed retained world bytes"
+
+say "backing up an already-stopped server and leaving it stopped"
+kube patch gameserver "$server_name" --namespace "$namespace" --type=merge --patch '{"spec":{"desiredState":"Stopped"}}' >/dev/null
+wait_server "$server_name" Stopped RuntimeStopped 90
+assert_runtime_absent "$server_name"
+stopped_generation=$(kube get gameserver "$server_name" --namespace "$namespace" --output=jsonpath='{.metadata.generation}')
+sed -e 's/name: running-backup/name: stopped-backup/' \
+  -e "s/generation: $running_generation/generation: $stopped_generation/" \
+  -e 's/desiredState: Running/desiredState: Stopped/' \
+  -e 's/restartPolicy: RestorePreviousState/restartPolicy: LeaveStopped/' \
+  "$workspace/running-backup.yaml" >"$workspace/stopped-backup.yaml"
+kube apply --filename "$workspace/stopped-backup.yaml" >/dev/null
+wait_backup stopped-backup Stopped 240
+assert_backup_artifact stopped-backup Stopped
+assert_runtime_absent "$server_name"
+assert_pvc_identity "$pvc_uid" "$pv_name"
+verify_marker_while_stopped
+
+say "independently inspecting repository artifacts without mounting source worlds"
+cat >"$workspace/artifact-inspector.yaml" <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: artifact-inspector
+  namespace: $namespace
+  labels:
+    arcade.gobha.me/e2e-run: $run_id
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  activeDeadlineSeconds: 180
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    fsGroup: 65532
+    seccompProfile: {type: RuntimeDefault}
+  containers:
+    - name: inspector
+      image: $restic_inspector_image
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/sh", "-ec", "sleep 170"]
+      env:
+        - {name: RESTIC_REPOSITORY, value: "s3:http://minio:9000/arcadectl"}
+        - {name: RESTIC_PASSWORD_FILE, value: /credentials/password}
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef: {name: $repository_secret_name, key: awsAccessKeyID}
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef: {name: $repository_secret_name, key: awsSecretAccessKey}
+      resources:
+        requests: {cpu: 5m, memory: 32Mi}
+        limits: {cpu: 250m, memory: 128Mi}
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: {drop: ["ALL"]}
+      volumeMounts:
+        - {name: credentials, mountPath: /credentials, readOnly: true}
+  volumes:
+    - name: credentials
+      secret: {secretName: $repository_secret_name, defaultMode: 0444}
+EOF
+kube apply --filename "$workspace/artifact-inspector.yaml" >/dev/null
+kube_bounded 100 wait pod/artifact-inspector --namespace "$namespace" --for=condition=Ready --timeout=90s >/dev/null
+for backup in running-backup stopped-backup; do
+  artifact_id=$(kube get gamebackup "$backup" --namespace "$namespace" --output=jsonpath='{.status.artifact.id}')
+  artifact_digest=$(kube get gamebackup "$backup" --namespace "$namespace" --output=jsonpath='{.status.artifact.manifestDigest}')
+  kube exec artifact-inspector --namespace "$namespace" -- /usr/bin/restic --no-cache \
+    snapshots --json --tag "arcadectl-artifact=$artifact_id" \
+    >"$workspace/repository-snapshots" 2>"$workspace/repository-error" \
+    || die "could not inspect exact repository snapshot"
+  snapshot_id=$(jq -er --arg digest "arcadectl-manifest=${artifact_digest#sha256:}" \
+    'if length == 1 and (.[0].tags | index($digest)) != null then .[0].id else error("snapshot identity mismatch") end' \
+    "$workspace/repository-snapshots")
+  [[ "$snapshot_id" =~ ^[0-9a-f]{64}$ ]] || die "repository snapshot identity is invalid"
+  kube exec artifact-inspector --namespace "$namespace" -- /usr/bin/restic --no-cache \
+    dump "$snapshot_id" /arcadectl/work/manifest.json \
+    >"$workspace/repository-manifest" 2>"$workspace/repository-error" \
+    || die "could not retrieve repository manifest"
+  stored_digest=$(sha256sum "$workspace/repository-manifest" | awk '{print "sha256:" $1}')
+  [[ "$stored_digest" == "$artifact_digest" ]] || die "independent repository manifest digest mismatch"
+  jq -e --arg uid "$new_server_uid" --arg claim "$pvc_uid" --arg id "$artifact_id" \
+    '.artifactID == $id and .serverUID == $uid and (.paths | length) == 1 and .paths[0].name == "state" and .paths[0].claimUID == $claim' \
+    "$workspace/repository-manifest" >/dev/null || die "independent repository manifest identity mismatch"
+  kube exec artifact-inspector --namespace "$namespace" -- /usr/bin/restic --no-cache ls --json "$snapshot_id" \
+    >"$workspace/repository-inventory" 2>"$workspace/repository-error" \
+    || die "could not inspect complete repository file inventory"
+  jq -r 'select(.type == "file") | .path' "$workspace/repository-inventory" >"$workspace/repository-paths"
+  [[ -s "$workspace/repository-paths" ]] || die "repository file inventory is empty"
+  while IFS= read -r repository_path; do
+    [[ "$repository_path" == /arcadectl/work/manifest.json || "$repository_path" == /arcadectl/source/state/* ]] \
+      || die "repository contains a file outside the declared world and manifest"
+    kube exec artifact-inspector --namespace "$namespace" -- /usr/bin/restic --no-cache dump "$snapshot_id" "$repository_path" \
+      >"$workspace/repository-file" 2>"$workspace/repository-error" \
+      || die "could not independently read repository file"
+    assert_no_repository_credentials "$workspace/repository-file" "$workspace/repository-error"
+  done <"$workspace/repository-paths"
+  assert_no_repository_credentials "$workspace/repository-manifest" "$workspace/repository-inventory" "$workspace/repository-snapshots"
+done
+kube_bounded 70 delete pod/artifact-inspector --namespace "$namespace" --wait=true --timeout=60s >/dev/null
+
+backup_public_evidence=$(kube get gamebackups --namespace "$namespace" --output=yaml)
+backup_events=$(kube get events --namespace "$namespace" --output=yaml)
+backup_controller_logs=$(kube logs deployment/arcadectl-controller --namespace "$namespace")
+for canary in "$repository_access_key" "$repository_secret_key" "$repository_password"; do
+  if grep -Fq "$canary" <<<"$backup_public_evidence$backup_events$backup_controller_logs"; then
+    die "repository credential canary escaped into API status, events, or controller logs"
+  fi
+done
+
 say "proving a last-stage foreign Service collision causes zero partial mutation"
 cat >"$workspace/collision-service.yaml" <<EOF
 apiVersion: v1
@@ -1459,10 +2310,62 @@ wait_server "$server_name" Stopped RuntimeStopped 90
 assert_runtime_absent "$server_name"
 assert_pvc_identity "$pvc_uid" "$pv_name"
 verify_marker_while_stopped
+wait_selector_absent jobs arcade.gobha.me/data-operation 60
+wait_selector_absent pods arcade.gobha.me/data-operation 60
+wait_selector_absent leases arcade.gobha.me/data-identity 60
+say "refusing uninstall when the installed admission policy has drifted"
+kube patch validatingadmissionpolicy arcadectl-backup-worker-gate --type=json \
+  --patch='[{"op":"replace","path":"/spec/validations/3/expression","value":"true"}]' >/dev/null
+if drift_uninstall_output=$(run_bounded 30 env KUBECTL="$kubectl_wrapper" "$repository_root/hack/uninstall.sh" 2>&1); then
+  die "safe uninstall accepted a policy that permits arbitrary gate removal"
+fi
+[[ "$drift_uninstall_output" == *"differs from the shipped specification"* ]] \
+  || die "safe uninstall did not reject the exact admission-policy drift"
+[[ $(kube get deployment arcadectl-controller --namespace "$namespace" --output=jsonpath='{.spec.replicas}') == 1 ]] \
+  || die "unsafe policy caused uninstall to scale the controller"
+kube apply --filename "$repository_root/config/install/backup-worker-admission-policy.yaml" >/dev/null
 run_bounded 120 env KUBECTL="$kubectl_wrapper" "$repository_root/hack/uninstall.sh"
 wait_absent deployment arcadectl-controller 60
 wait_selector_absent replicasets app.kubernetes.io/name=arcadectl-controller 60
 wait_selector_absent pods app.kubernetes.io/name=arcadectl-controller 60
+kube get validatingadmissionpolicy arcadectl-backup-worker-gate >/dev/null
+kube get validatingadmissionpolicybinding arcadectl-backup-worker-gate >/dev/null
+retained_authority="$running_backup_job-authority"
+kube get serviceaccount "$retained_authority" --namespace "$namespace" >/dev/null
+kube get role "$retained_authority" --namespace "$namespace" >/dev/null
+kube get rolebinding "$retained_authority" --namespace "$namespace" >/dev/null
+cat >"$workspace/post-uninstall-authority-probe.yaml" <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: post-uninstall-authority-probe
+  namespace: $namespace
+spec:
+  serviceAccountName: $retained_authority
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile: {type: RuntimeDefault}
+  containers:
+    - name: probe
+      image: $controller_image
+      command: ["/arcadectl-controller", "--help"]
+      resources:
+        requests: {cpu: 1m, memory: 8Mi}
+        limits: {cpu: 10m, memory: 16Mi}
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: {drop: [ALL]}
+EOF
+if post_uninstall_denial=$(kube create --dry-run=server --filename "$workspace/post-uninstall-authority-probe.yaml" 2>&1); then
+  die "retained backup authority escaped the post-uninstall admission gate"
+fi
+grep -Fq 'must enter admission with exactly one execution gate' <<<"$post_uninstall_denial" \
+  || die "unexpected post-uninstall backup authority denial: $post_uninstall_denial"
 kube get namespace "$namespace" >/dev/null
 kube get customresourcedefinition gameservers.arcade.gobha.me >/dev/null
 kube get gameserver "$server_name" --namespace "$namespace" >/dev/null

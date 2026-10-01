@@ -116,9 +116,15 @@ do not appear in the Pod spec or kubelet probe Events.
   it with the corrected exact references; retained claims remain untouched.
   Restore activation will use its separately reviewed typed operation contract
   rather than weakening this reattachment fence.
-- **Backup:** represented by an immutable `GameBackup`; execution is not yet
-  implemented. The request pins the GameServer generation and repository
-  Secret identity, and success will require verification of every adapter path.
+- **Backup:** an immutable `GameBackup` pins the GameServer generation and
+  repository Secret revision. The controller acquires the retained-data lease,
+  establishes an exact cold fence after Pod and CSI attachment absence, and
+  runs a UID-derived Restic worker. Success requires repository verification of
+  every adapter path. Runtime recovery remains serialized by the same lease.
+  While that lease is active, stopped-server storage is frozen: claim creation,
+  expansion, configuration, and networking cannot race a mounted backup
+  worker. The ownerless Lease survives foreground operation deletion until the
+  finalizer settles runtime and explicitly releases it.
 - **Restore:** represented by an immutable `GameRestore`; execution is not yet
   implemented. Candidate and previous data identities support verified atomic
   activation and rollback without overwriting the active world.
@@ -131,10 +137,11 @@ proof starts a real server, verifies a real save from a separate read-only Pod
 while compute is stopped, updates between distinct immutable image digests,
 checks that the recreate strategy never exposes overlapping running game
 containers, redeploys the controller without replacing the game Pod, and
-recreates the `GameServer` around the same retained world identity. This is
-isolated lifecycle evidence, not production readiness: backup and restore have
-durable API contracts but no workers; explicit destruction and production
-deployment remain unimplemented. See
+recreates the `GameServer` around the same retained world identity. The
+synthetic proof also runs real stopped and previously-running cold backups
+against isolated MinIO. This is isolated lifecycle evidence, not production
+readiness: restore has a durable API contract but no worker; explicit
+destruction and production deployment remain unimplemented. See
 [the backup and restore contract](BACKUP_RESTORE.md) for the exact boundary.
 
 ## Retained-world discovery and reattachment

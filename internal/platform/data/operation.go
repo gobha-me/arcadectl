@@ -256,6 +256,7 @@ func hasActionableCondition(conditions []metav1.Condition, generation int64) boo
 			arcadev1alpha1.ReasonSecretUnavailable,
 			arcadev1alpha1.ReasonColdStopPending,
 			arcadev1alpha1.ReasonOperationConflict,
+			arcadev1alpha1.ReasonWorkerRetrying,
 			arcadev1alpha1.ReasonWorkerFailed,
 			arcadev1alpha1.ReasonVerificationFailed:
 			return true
@@ -375,6 +376,9 @@ func terminal(phase arcadev1alpha1.DataOperationPhase) bool {
 }
 
 func allowed(kind OperationKind, current, next arcadev1alpha1.DataOperationPhase) bool {
+	if current == "" && next == arcadev1alpha1.DataPhaseCancelling {
+		return true
+	}
 	if next == arcadev1alpha1.DataPhaseFailed {
 		return current != "" && !(kind == RestoreOperation && current == arcadev1alpha1.DataPhaseActivating)
 	}
@@ -394,7 +398,8 @@ func allowed(kind OperationKind, current, next arcadev1alpha1.DataOperationPhase
 	case arcadev1alpha1.DataPhasePending:
 		return next == arcadev1alpha1.DataPhasePreparing || next == arcadev1alpha1.DataPhaseBlocked
 	case arcadev1alpha1.DataPhasePreparing:
-		return next == arcadev1alpha1.DataPhaseRunning || next == arcadev1alpha1.DataPhaseBlocked
+		return next == arcadev1alpha1.DataPhaseRunning || next == arcadev1alpha1.DataPhaseBlocked ||
+			(kind == BackupOperation && next == arcadev1alpha1.DataPhaseVerifying)
 	case arcadev1alpha1.DataPhaseRunning:
 		return next == arcadev1alpha1.DataPhaseVerifying
 	case arcadev1alpha1.DataPhaseVerifying:

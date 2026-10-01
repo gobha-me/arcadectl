@@ -1076,6 +1076,10 @@ spec:
         - spec
         type: object
         x-kubernetes-validations:
+        - message: cancellation cannot be newly requested after backup completion
+          rule: '!has(oldSelf.status) || !has(oldSelf.status.phase) || !(oldSelf.status.phase
+            in [''Cancelled'', ''Succeeded'', ''Failed'']) || self.spec.cancelRequested
+            == oldSelf.spec.cancelRequested'
         - message: cold data fence must match the exact operation-owned stopped generation
           rule: '!has(self.status) || !has(self.status.fence) || (self.status.fence.gameServer.name
             == self.spec.source.name && self.status.fence.gameServer.uid == self.spec.source.uid

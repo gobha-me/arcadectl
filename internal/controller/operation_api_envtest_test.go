@@ -271,6 +271,20 @@ func testOperationAPI(t *testing.T, ctx context.Context, configuration *rest.Con
 	if err := kubeClient.Status().Update(ctx, terminalBackup); err == nil || !strings.Contains(err.Error(), "terminal operation phase cannot change") {
 		t.Fatalf("terminal phase regression error = %v, want admission rejection", err)
 	}
+	if err := kubeClient.Get(ctx, client.ObjectKeyFromObject(terminalBackup), terminalBackup); err != nil {
+		t.Fatalf("refresh terminal backup before cancellation: %v", err)
+	}
+	terminalGeneration := terminalBackup.Generation
+	terminalBackup.Spec.CancelRequested = true
+	if err := kubeClient.Update(ctx, terminalBackup); err == nil || !strings.Contains(err.Error(), "cancellation cannot be newly requested after backup completion") {
+		t.Fatalf("post-terminal cancellation error = %v, want admission rejection", err)
+	}
+	if err := kubeClient.Get(ctx, client.ObjectKeyFromObject(terminalBackup), terminalBackup); err != nil {
+		t.Fatalf("refresh terminal backup after rejected cancellation: %v", err)
+	}
+	if terminalBackup.Generation != terminalGeneration || terminalBackup.Status.ObservedGeneration != terminalGeneration || terminalBackup.Spec.CancelRequested {
+		t.Fatalf("rejected cancellation made historical status stale: %#v", terminalBackup)
+	}
 
 	incompleteBackup := operationTestBackup("backup-incomplete-success")
 	if err := kubeClient.Create(ctx, incompleteBackup); err != nil {
