@@ -202,6 +202,74 @@ func TestBuildExactRetainedDataPlan(t *testing.T) {
 	}
 }
 
+func TestBuildSelectsCompleteStatusDataOverImmutableReattach(t *testing.T) {
+	t.Parallel()
+	server := testServer("factory", "factorio", arcadev1alpha1.DesiredStateStopped)
+	server.Spec.Storage.Reattach = &arcadev1alpha1.RetainedDataReference{
+		Identity: "data-original",
+		Claims: []arcadev1alpha1.RetainedDataClaimReference{{
+			Path: "world", ClaimRef: arcadev1alpha1.ExactLocalReference{Name: "original-world", UID: "original-uid"},
+		}},
+	}
+	server.Status.ActiveData = &arcadev1alpha1.RetainedDataReference{
+		Identity: "data-candidate",
+		Claims: []arcadev1alpha1.RetainedDataClaimReference{{
+			Path: "world", ClaimRef: arcadev1alpha1.ExactLocalReference{Name: "candidate-world", UID: "candidate-uid"},
+		}},
+	}
+	plan, err := Build(server, factorio.Definition())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Reattach || plan.DataIdentity != "data-candidate" || len(plan.DataClaims) != 1 ||
+		plan.DataClaims[0].Desired.Name != "candidate-world" || plan.DataClaims[0].RequiredUID != "candidate-uid" || plan.DataClaims[0].ExternallySelected {
+		t.Fatalf("status-selected data plan = %#v", plan)
+	}
+	server.Status.ActiveData.Claims[0].ClaimRef.UID = ""
+	if _, err := Build(server, factorio.Definition()); err == nil {
+		t.Fatal("Build accepted a status-selected claim without exact UID")
+	}
+}
+
+func TestBuildRollbackToExternalReattachKeepsStrictPolicy(t *testing.T) {
+	t.Parallel()
+	server := testServer("factory", "factorio", arcadev1alpha1.DesiredStateStopped)
+	server.Spec.Storage.Reattach = &arcadev1alpha1.RetainedDataReference{
+		Identity: "data-original",
+		Claims:   []arcadev1alpha1.RetainedDataClaimReference{{Path: "world", ClaimRef: arcadev1alpha1.ExactLocalReference{Name: "original-world", UID: "original-uid"}}},
+	}
+	server.Status.ActiveData = server.Spec.Storage.Reattach.DeepCopy()
+	plan, err := Build(server, factorio.Definition())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.DataClaims[0].ExternallySelected || plan.DataClaims[0].RequiredUID != "original-uid" {
+		t.Fatalf("rollback loosened explicit reattach policy: %#v", plan.DataClaims[0])
+	}
+}
+
+func TestBuildPinsPreviouslyObservedGeneratedData(t *testing.T) {
+	t.Parallel()
+	server := testServer("factory", "factorio", arcadev1alpha1.DesiredStateStopped)
+	identity, err := DataIdentity(server.UID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Status.ObservedData = &arcadev1alpha1.RetainedDataReference{
+		Identity: identity,
+		Claims: []arcadev1alpha1.RetainedDataClaimReference{{
+			Path: "world", ClaimRef: arcadev1alpha1.ExactLocalReference{Name: "factory-factorio-world", UID: "first-claim-uid"},
+		}},
+	}
+	plan, err := Build(server, factorio.Definition())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Reattach || plan.DataClaims[0].RequiredUID != "first-claim-uid" {
+		t.Fatalf("previously observed world was not pinned: %#v", plan)
+	}
+}
+
 func TestDataIdentity(t *testing.T) {
 	t.Parallel()
 

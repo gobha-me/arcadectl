@@ -1,7 +1,9 @@
 # Isolated lifecycle testing
 
-The lifecycle harness proves the controller contract in a disposable local
-Kubernetes cluster. Run it from the repository root on Linux with:
+The existing lifecycle harness proves server lifecycle and cold backup in a
+disposable local Kubernetes cluster. It does **not yet** prove the new restore
+controller end to end. Run the established harness from the repository root on
+Linux with:
 
 ```sh
 make test-kind-lifecycle
@@ -76,6 +78,35 @@ Worker unit tests capture independent upload-time repository bytes instead of
 dumping the live source. Manifest corruption, same-size corruption, truncation,
 extra bytes, missing files, and repository read errors must all refuse a usable
 result, preserve source contents, and refuse duplicate snapshots on retry.
+
+## Restore validation status
+
+Issue #20 adds hermetic tests for v2 manifest directory topology, Restic
+inventory drift, candidate file verification and unsafe-entry rejection,
+restore authorizer identity checks, CSI backing-volume isolation, API
+admission/status rules, and controller retry and rollback paths. The existing
+`make test-kind-lifecycle` and
+`make test-kind-factorio` scenarios still exercise backup and lifecycle, not
+the full `GameRestore` journey.
+
+On 2026-10-01 an isolated external Kubernetes test using CSI-backed Ceph RBD
+storage completed the positive restore journey with a dirty, test-only image.
+A real Factorio server reached Ready and wrote a save; Restic uploaded and
+verified a v2 artifact; repository-only preflight completed before target
+stop; a fresh, distinct CSI-backed claim was populated and verified; and the
+server returned to Ready using that new claim. A marker written before backup
+survived, while one written after backup was absent. The prior claim remained
+separate. Unauthorized worker Pod and candidate-PVC admission probes were
+denied. The test namespace, both PVs, and exact test-owned cluster-scoped
+resources were removed afterward. Network-plugin annotations discovered in
+this run are covered by focused tests without weakening controller-owned Pod
+identity fields.
+
+This proves the positive path on one CSI environment, not all failure paths or
+a release image. Cluster-level interrupted populate, cancellation, rollback,
+and CSI alias rejection remain unproven; unit and envtest coverage is not a
+substitute for those experiments. Do not treat an older v1 backup as
+restorable.
 
 ## Certified Factorio lifecycle
 

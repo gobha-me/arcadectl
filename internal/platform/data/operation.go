@@ -31,13 +31,27 @@ func ArtifactID(operationUID types.UID) (string, error) {
 	return deterministicID("backup", operationUID, "")
 }
 
-// RestoreCandidateID returns the stable candidate-data identity for one path
-// of a GameRestore. A retry cannot allocate a second candidate for that path.
+// RestoreCandidateID returns one DNS-label-safe claim name per restored path.
+// A retry cannot allocate a second candidate for that path.
 func RestoreCandidateID(operationUID types.UID, pathName string) (string, error) {
 	if pathName == "" {
 		return "", errors.New("persistent path name is required")
 	}
-	return deterministicID("restore", operationUID, pathName)
+	return restoreLabel(operationUID, "claim/"+pathName)
+}
+
+// RestoreDataIdentity labels the complete candidate claim set as one data
+// identity, distinct from both its individual claim names and other restores.
+func RestoreDataIdentity(operationUID types.UID) (string, error) {
+	return restoreLabel(operationUID, "data")
+}
+
+func restoreLabel(operationUID types.UID, discriminator string) (string, error) {
+	if operationUID == "" {
+		return "", errors.New("operation UID is required")
+	}
+	digest := sha256.Sum256([]byte("arcadectl/restore/" + string(operationUID) + "/" + discriminator))
+	return fmt.Sprintf("restore-%x", digest[:24]), nil
 }
 
 func deterministicID(kind string, operationUID types.UID, discriminator string) (string, error) {
@@ -120,8 +134,21 @@ func ValidateRestoreStatus(operation *arcadev1alpha1.GameRestore) error {
 		return errors.New("GameRestore is required")
 	}
 	status := &operation.Status
+	if status.PopulateAttempts < 0 || status.PopulateAttempts > 3 ||
+		(status.PopulateRetryPending && (status.PopulateAttempts == 0 || status.Phase != arcadev1alpha1.DataPhaseRunning)) {
+		return errors.New("restore candidate execution attempts or retry intent are invalid")
+	}
+	if status.PopulateJobUID != "" && status.PopulateAttempts == 0 {
+		return errors.New("restore candidate Job identity requires a durable attempt")
+	}
 	if err := validateCommonStatus(RestoreOperation, &operation.Spec.DataOperationRequest, &operation.Spec.Target, &status.DataOperationStatus, operation.Generation); err != nil {
 		return err
+	}
+	if err := validateRestoreRuntimeStatus(operation); err != nil {
+		return err
+	}
+	if status.PreflightVerifiedAt != nil && (status.Source == nil || !verifiedArtifact(status.Artifact)) {
+		return errors.New("restore repository preflight requires a verified source artifact")
 	}
 	if status.Artifact != nil {
 		expectedID, err := ArtifactID(types.UID(operation.Spec.BackupRef.UID))
@@ -237,7 +264,7 @@ func validateCommonStatus(kind OperationKind, request *arcadev1alpha1.DataOperat
 			return errors.New("succeeded operation requires completedAt")
 		}
 	}
-	if terminal(status.Phase) && status.Fence != nil {
+	if kind == BackupOperation && terminal(status.Phase) && status.Fence != nil {
 		if err := validateRuntimeDisposition(request.RestartPolicy, *subject, status.Fence, status.Runtime); err != nil {
 			return err
 		}
@@ -286,6 +313,76 @@ func validateRuntimeDisposition(policy arcadev1alpha1.RestartPolicy, subject arc
 	observed := disposition.GameServer
 	if observed.Name != subject.Name || observed.UID != subject.UID || observed.DesiredState != wantState || observed.Generation != wantGeneration || disposition.Phase != wantPhase {
 		return errors.New("runtime disposition does not satisfy the requested restart policy")
+	}
+	return nil
+}
+
+func validateRestoreRuntimeStatus(operation *arcadev1alpha1.GameRestore) error {
+	status := &operation.Status
+	journal := status.RuntimeJournal
+	if journal != nil {
+		if status.Fence == nil {
+			return errors.New("restore runtime intent requires a cold data fence")
+		}
+		fence := status.Fence.GameServer.Generation
+		if journal.PreviousRecoveryGeneration < 0 || journal.CandidateStartGeneration < 0 ||
+			journal.RollbackStopGeneration < 0 || journal.RollbackRestartGeneration < 0 {
+			return errors.New("restore runtime intent generation is invalid")
+		}
+		if journal.PreviousRecoveryGeneration != 0 &&
+			(journal.PreviousRecoveryGeneration != fence+1 || journal.CandidateStartGeneration != 0 ||
+				journal.RollbackStopGeneration != 0 || journal.RollbackRestartGeneration != 0 || status.ActivationStartedAt != nil) {
+			return errors.New("previous-world recovery intent conflicts with activation")
+		}
+		if journal.CandidateStartGeneration != 0 &&
+			(journal.CandidateStartGeneration != fence+1 || status.ActivationStartedAt == nil) {
+			return errors.New("candidate start intent is not the exact first post-fence generation")
+		}
+		if journal.RollbackStopGeneration != 0 &&
+			(journal.CandidateStartGeneration == 0 || journal.RollbackStopGeneration != fence+2) {
+			return errors.New("rollback stop intent is not after candidate start")
+		}
+		if journal.RollbackRestartGeneration != 0 {
+			want := fence + 1
+			if journal.RollbackStopGeneration != 0 {
+				want = fence + 3
+			}
+			// A candidate-start journal entry may precede its GameServer spec
+			// write. If that write never happened, rollback remains cold at
+			// the fence and previous-world restart legitimately uses fence+1.
+			// The reconciler must prove that live stopped generation before
+			// recording this intent.
+			if status.ActivationStartedAt == nil || journal.RollbackRestartGeneration != want {
+				return errors.New("rollback restart intent is not the exact post-fence generation")
+			}
+		}
+	}
+	if !terminal(status.Phase) || status.Fence == nil {
+		return nil
+	}
+	if operation.Spec.RestartPolicy != arcadev1alpha1.RestartRestorePreviousState ||
+		operation.Spec.Target.DesiredState != arcadev1alpha1.DesiredStateRunning {
+		return validateRuntimeDisposition(operation.Spec.RestartPolicy, operation.Spec.Target, status.Fence, status.Runtime)
+	}
+	if status.Runtime == nil {
+		return errors.New("terminal fenced restore requires a runtime disposition")
+	}
+	wantGeneration := int64(0)
+	if journal != nil {
+		switch {
+		case status.Phase == arcadev1alpha1.DataPhaseSucceeded && status.ActivationStartedAt != nil:
+			wantGeneration = journal.CandidateStartGeneration
+		case status.ActivationStartedAt != nil && (status.Phase == arcadev1alpha1.DataPhaseFailed || status.Phase == arcadev1alpha1.DataPhaseCancelled):
+			wantGeneration = journal.RollbackRestartGeneration
+		case status.ActivationStartedAt == nil && (status.Phase == arcadev1alpha1.DataPhaseFailed || status.Phase == arcadev1alpha1.DataPhaseCancelled):
+			wantGeneration = journal.PreviousRecoveryGeneration
+		}
+	}
+	runtime := status.Runtime
+	if wantGeneration == 0 || runtime.GameServer.Generation != wantGeneration ||
+		runtime.GameServer.Name != operation.Spec.Target.Name || runtime.GameServer.UID != operation.Spec.Target.UID ||
+		runtime.GameServer.DesiredState != arcadev1alpha1.DesiredStateRunning || runtime.Phase != arcadev1alpha1.PhaseReady {
+		return errors.New("restore runtime disposition does not match its durable generation intent")
 	}
 	return nil
 }

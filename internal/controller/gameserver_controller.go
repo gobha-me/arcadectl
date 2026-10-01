@@ -222,7 +222,7 @@ func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 	if server.Spec.DesiredState == arcadev1alpha1.DesiredStateStopped {
 		progress.set(arcadev1alpha1.ConditionReady, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopped,
 			"the game server is stopped; persistent data is retained")
-		return ctrl.Result{}, r.updateStatus(ctx, server, arcadev1alpha1.PhaseStopped, progress, nil)
+		return ctrl.Result{}, r.updateStatusWithData(ctx, server, arcadev1alpha1.PhaseStopped, progress, nil, storage.data)
 	}
 
 	if err := r.reconcileConfigMap(ctx, plan.Configuration); err != nil {
@@ -293,7 +293,7 @@ func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 	if storage.ready && available && networkReady {
 		progress.set(arcadev1alpha1.ConditionReady, metav1.ConditionTrue, arcadev1alpha1.ReasonReady,
 			"the current game workload and certified player endpoint are ready")
-		return ctrl.Result{}, r.updateStatus(ctx, server, arcadev1alpha1.PhaseReady, progress, endpoints)
+		return ctrl.Result{}, r.updateStatusWithData(ctx, server, arcadev1alpha1.PhaseReady, progress, endpoints, storage.data)
 	}
 	phase := arcadev1alpha1.PhaseStarting
 	readyReason := arcadev1alpha1.ReasonWorkloadPending
@@ -333,12 +333,24 @@ func (r *GameServerReconciler) dataOperationLocked(ctx context.Context, server *
 		lease.Labels[platformkube.LabelDataIdentity] != dataIdentity || lease.Spec.HolderIdentity == nil || *lease.Spec.HolderIdentity == "" {
 		return true, nil
 	}
+	wantGeneration := strconv.FormatInt(server.Generation, 10)
+	if lease.Labels[platformkube.LabelRestoreUID] != "" {
+		operation := arcadev1alpha1.ExactLocalReference{
+			Name: lease.Annotations[platformkube.AnnotationRestoreName], UID: *lease.Spec.HolderIdentity,
+		}
+		if platformkube.RestoreOperationLeaseMatches(lease, operation, server.Name, dataIdentity) &&
+			lease.Annotations[platformkube.AnnotationRestoreSettlementData] == dataIdentity &&
+			lease.Annotations[platformkube.AnnotationRuntimeSettlementState] == string(server.Spec.DesiredState) &&
+			lease.Annotations[platformkube.AnnotationRuntimeSettlementGeneration] == wantGeneration {
+			return false, nil
+		}
+		return true, nil
+	}
 	operation := arcadev1alpha1.ExactLocalReference{
 		Name: lease.Annotations[platformkube.AnnotationBackupName],
 		UID:  *lease.Spec.HolderIdentity,
 	}
 	runtimeOwner := platformkube.BackupOperationLeaseMatches(lease, operation, server.Name)
-	wantGeneration := strconv.FormatInt(server.Generation, 10)
 	if server.Spec.DesiredState == arcadev1alpha1.DesiredStateRunning &&
 		runtimeOwner &&
 		lease.Labels[platformkube.LabelInstance] == server.Name &&
@@ -351,13 +363,17 @@ func (r *GameServerReconciler) dataOperationLocked(ctx context.Context, server *
 }
 
 func (r *GameServerReconciler) preflightStorage(ctx context.Context, server *arcadev1alpha1.GameServer, plan platformkube.Plan) *reconcileFailure {
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
 	plannedClaims := make(map[string]platformkube.DataClaimPlan, len(plan.DataClaims))
 	for _, claim := range plan.DataClaims {
 		desired := claim.Desired
 		plannedClaims[desired.Name] = claim
 		existing := &corev1.PersistentVolumeClaim{}
 		key := client.ObjectKeyFromObject(desired)
-		if err := r.Get(ctx, key, existing); err != nil {
+		if err := reader.Get(ctx, key, existing); err != nil {
 			if apierrors.IsNotFound(err) {
 				if claim.RequiredUID != "" {
 					return retainedDataFailure(arcadev1alpha1.ReasonRetainedDataMissing,
@@ -396,7 +412,7 @@ func (r *GameServerReconciler) preflightStorage(ctx context.Context, server *arc
 		}
 	}
 	identityClaims := &corev1.PersistentVolumeClaimList{}
-	if err := r.List(ctx, identityClaims, client.InNamespace(server.Namespace), client.MatchingLabels{
+	if err := reader.List(ctx, identityClaims, client.InNamespace(server.Namespace), client.MatchingLabels{
 		platformkube.LabelDataIdentity: plan.DataIdentity,
 	}); err != nil {
 		return newReconcileFailure(
@@ -586,7 +602,7 @@ func (r *GameServerReconciler) reconcileDataClaim(ctx context.Context, claim pla
 	if existingSize.Cmp(desiredSize) >= 0 {
 		return nil
 	}
-	if claim.RequiredUID != "" {
+	if claim.ExternallySelected {
 		return fmt.Errorf("%w: referenced claim %s is smaller than requested and reattach never expands claims", errRetainedDataConflict, key)
 	}
 	updated := existing.DeepCopy()
@@ -605,14 +621,20 @@ type storageObservation struct {
 	status  metav1.ConditionStatus
 	reason  string
 	message string
+	data    *arcadev1alpha1.RetainedDataReference
 }
 
 func (r *GameServerReconciler) observeStorage(ctx context.Context, desiredClaims []platformkube.DataClaimPlan) (storageObservation, *reconcileFailure) {
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
+	dataSelection := &arcadev1alpha1.RetainedDataReference{Claims: make([]arcadev1alpha1.RetainedDataClaimReference, 0, len(desiredClaims))}
 	for _, claim := range desiredClaims {
 		desired := claim.Desired
 		actual := &corev1.PersistentVolumeClaim{}
 		key := client.ObjectKeyFromObject(desired)
-		if err := r.Get(ctx, key, actual); err != nil {
+		if err := reader.Get(ctx, key, actual); err != nil {
 			return storageObservation{}, newReconcileFailure(
 				arcadev1alpha1.ConditionStorageReady,
 				arcadev1alpha1.ReasonStorageOperationFailed,
@@ -644,21 +666,43 @@ func (r *GameServerReconciler) observeStorage(ctx context.Context, desiredClaims
 				message: fmt.Sprintf("PersistentVolumeClaim %s is waiting to bind; inspect storage class and provisioner events", key),
 			}, nil
 		}
+		if actual.UID == "" {
+			return storageObservation{}, retainedDataFailure(
+				arcadev1alpha1.ReasonRetainedDataConflict,
+				"a bound retained claim has no Kubernetes UID; no exact data identity can be reported",
+				errors.New("bound retained claim is missing UID"),
+			)
+		}
+		if actual.Spec.VolumeName == "" {
+			return storageObservation{}, retainedDataFailure(
+				arcadev1alpha1.ReasonRetainedDataConflict,
+				"a bound retained claim has no backing PersistentVolume; inspect its exact storage identity",
+				errors.New("bound retained claim is missing backing PV name"),
+			)
+		}
 		requested := desired.Spec.Resources.Requests[corev1.ResourceStorage]
-		observed := actual.Status.Capacity[corev1.ResourceStorage]
-		if observed.Cmp(requested) < 0 {
+		capacity := actual.Status.Capacity[corev1.ResourceStorage]
+		if capacity.Cmp(requested) < 0 {
 			return storageObservation{
 				status:  metav1.ConditionFalse,
 				reason:  arcadev1alpha1.ReasonClaimExpansionPending,
 				message: fmt.Sprintf("PersistentVolumeClaim %s is waiting for requested capacity; inspect storage expansion events", key),
 			}, nil
 		}
+		if dataSelection.Identity == "" {
+			dataSelection.Identity = desired.Labels[platformkube.LabelDataIdentity]
+		}
+		dataSelection.Claims = append(dataSelection.Claims, arcadev1alpha1.RetainedDataClaimReference{
+			Path:     desired.Labels[platformkube.LabelDataPath],
+			ClaimRef: arcadev1alpha1.ExactLocalReference{Name: actual.Name, UID: string(actual.UID)},
+		})
 	}
 	return storageObservation{
 		ready:   true,
 		status:  metav1.ConditionTrue,
 		reason:  arcadev1alpha1.ReasonClaimsReady,
 		message: "all retained data claims are bound at their requested capacity",
+		data:    dataSelection,
 	}, nil
 }
 
@@ -695,13 +739,13 @@ func validateExistingDataClaimBase(existing *corev1.PersistentVolumeClaim, claim
 			return fmt.Errorf("identity label %q does not match", label)
 		}
 	}
-	if !storageClassCompatible(existing.Spec.StorageClassName, desired.Spec.StorageClassName, claim.RequiredUID != "") {
+	if !storageClassCompatible(existing.Spec.StorageClassName, desired.Spec.StorageClassName, claim.ExternallySelected) {
 		return errors.New("storage class does not match")
 	}
 	if !slices.Equal(existing.Spec.AccessModes, desired.Spec.AccessModes) {
 		return errors.New("access modes do not match")
 	}
-	if claim.RequiredUID != "" {
+	if claim.ExternallySelected {
 		existingSize := existing.Spec.Resources.Requests[corev1.ResourceStorage]
 		desiredSize := desired.Spec.Resources.Requests[corev1.ResourceStorage]
 		if existingSize.Cmp(desiredSize) < 0 {

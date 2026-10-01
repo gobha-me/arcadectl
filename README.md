@@ -9,10 +9,12 @@ not the platform's domain model.
 
 ## Status
 
-Arcadectl v2 is under active development and is not deployable yet. The first
-milestone proves one complete Factorio lifecycle: create, configure, start,
-stop, restart, update, and decommission without data loss. Backup, restore, and
-deliberate destruction are separately gated follow-on milestones.
+Arcadectl v2 is under active development and is not production-ready. The
+first milestone proved one Factorio lifecycle: create, configure, start,
+stop, restart, update, and decommission without data loss. Cold backup is
+implemented and has isolated-cluster evidence. Restore execution is now
+implemented but still needs its own end-to-end cluster proof; deliberate
+destruction remains a separate future milestone.
 
 The current foundation includes generated `GameServer`, `GameBackup`, and
 `GameRestore` CRDs, a pure,
@@ -25,11 +27,15 @@ the certified Factorio lifecycle is exercised in a disposable-cluster proof.
 Retained worlds carry a durable data identity, and a replacement server must
 explicitly reattach every adapter path by exact local PVC name and UID; a
 same-name resource is never authority to adopt an old world.
-Cold backup now stops the exact source when necessary, backs up every declared
+Cold backup stops the exact source when necessary, backs up every declared
 path through a bounded Restic worker, verifies the repository artifact, and
 optionally restores prior runtime intent. Its isolated proof uses real MinIO.
-Restore remains contract-only. Explicit destruction and production deployment
-also remain unimplemented.
+Restore preflights a verified v2 artifact before stopping the target, writes
+only to isolated candidate claims, verifies their contents, and atomically
+selects them or rolls back to retained previous data. Its backing-volume
+isolation is currently CSI-only, and v1 backup artifacts cannot be restored by
+this worker. The restore cluster proof, explicit destruction, and production
+deployment remain outstanding.
 
 A structurally different synthetic adapter participates in conformance tests
 from the beginning. Adding another game must not require changes to the core

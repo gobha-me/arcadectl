@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	arcadev1alpha1 "github.com/gobha-me/arcadectl/api/v1alpha1"
 )
@@ -23,7 +24,7 @@ import (
 const (
 	// BackupFormatVersion identifies the canonical Arcadectl manifest stored in
 	// every verified repository snapshot.
-	BackupFormatVersion = "arcadectl.backup/v1"
+	BackupFormatVersion = "arcadectl.backup/v2"
 	// WorkerInputVersion identifies the controller-to-worker contract.
 	WorkerInputVersion = "arcadectl.backup-worker/v1"
 )
@@ -52,13 +53,16 @@ type BackupManifest struct {
 }
 
 // BackupManifestPath binds one adapter path to its exact retained claim and
-// the complete regular-file set observed while the world was cold.
+// the complete directory topology and regular-file set observed while the
+// world was cold. The path root itself is implicit; Directories records every
+// child directory, including empty ones.
 type BackupManifestPath struct {
-	Name      string               `json:"name"`
-	MountPath string               `json:"mountPath"`
-	ClaimName string               `json:"claimName"`
-	ClaimUID  string               `json:"claimUID"`
-	Files     []BackupFileChecksum `json:"files"`
+	Name        string               `json:"name"`
+	MountPath   string               `json:"mountPath"`
+	ClaimName   string               `json:"claimName"`
+	ClaimUID    string               `json:"claimUID"`
+	Directories []string             `json:"directories"`
+	Files       []BackupFileChecksum `json:"files"`
 }
 
 // BackupFileChecksum is relative to the named persistent-path root. Arcadectl
@@ -103,16 +107,17 @@ func BuildBackupManifest(input BackupWorkerInput, sourceRoot string) (BackupMani
 	}
 	for _, sourcePath := range input.Source.Paths {
 		root := filepath.Join(sourceRoot, sourcePath.Name)
-		files, err := hashPath(root)
+		files, directories, err := hashPath(root)
 		if err != nil {
 			return BackupManifest{}, nil, fmt.Errorf("hash persistent path %q: %w", sourcePath.Name, err)
 		}
 		manifest.Paths = append(manifest.Paths, BackupManifestPath{
-			Name:      sourcePath.Name,
-			MountPath: sourcePath.MountPath,
-			ClaimName: sourcePath.ClaimRef.Name,
-			ClaimUID:  sourcePath.ClaimRef.UID,
-			Files:     files,
+			Name:        sourcePath.Name,
+			MountPath:   sourcePath.MountPath,
+			ClaimName:   sourcePath.ClaimRef.Name,
+			ClaimUID:    sourcePath.ClaimRef.UID,
+			Directories: directories,
+			Files:       files,
 		})
 	}
 	slices.SortFunc(manifest.Paths, func(left, right BackupManifestPath) int {
@@ -170,15 +175,16 @@ func ManifestDigest(contents []byte) string {
 	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
-func hashPath(root string) ([]BackupFileChecksum, error) {
-	info, err := os.Stat(root)
+func hashPath(root string) ([]BackupFileChecksum, []string, error) {
+	info, err := os.Lstat(root)
 	if err != nil {
-		return nil, errors.New("persistent path is unavailable")
+		return nil, nil, errors.New("persistent path is unavailable")
 	}
 	if !info.IsDir() {
-		return nil, errors.New("persistent path is not a directory")
+		return nil, nil, errors.New("persistent path is not a directory")
 	}
 	files := make([]BackupFileChecksum, 0)
+	directories := make([]string, 0)
 	err = filepath.WalkDir(root, func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return errors.New("persistent path cannot be read completely")
@@ -186,7 +192,12 @@ func hashPath(root string) ([]BackupFileChecksum, error) {
 		if name == root {
 			return nil
 		}
+		relative, err := filepath.Rel(root, name)
+		if err != nil || relative == "." || filepath.IsAbs(relative) || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || !utf8.ValidString(relative) || strings.ContainsRune(relative, utf8.RuneError) {
+			return errors.New("persistent path contains an unsafe entry")
+		}
 		if entry.IsDir() {
+			directories = append(directories, filepath.ToSlash(relative))
 			return nil
 		}
 		info, err := entry.Info()
@@ -196,10 +207,6 @@ func hashPath(root string) ([]BackupFileChecksum, error) {
 		if !info.Mode().IsRegular() {
 			return errors.New("persistent path contains an unsupported non-regular entry")
 		}
-		relative, err := filepath.Rel(root, name)
-		if err != nil || relative == "." || filepath.IsAbs(relative) || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-			return errors.New("persistent path contains an unsafe entry")
-		}
 		checksum, err := hashFile(name)
 		if err != nil {
 			return err
@@ -208,12 +215,13 @@ func hashPath(root string) ([]BackupFileChecksum, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	slices.SortFunc(files, func(left, right BackupFileChecksum) int {
 		return strings.Compare(left.Path, right.Path)
 	})
-	return files, nil
+	slices.Sort(directories)
+	return files, directories, nil
 }
 
 func hashFile(name string) (string, error) {

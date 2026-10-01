@@ -50,6 +50,7 @@ rules:
   - serviceaccounts
   verbs:
   - create
+  - delete
   - get
   - list
   - watch
@@ -69,6 +70,7 @@ rules:
   - arcade.gobha.me
   resources:
   - gamebackups
+  - gamerestores
   - gameservers
   verbs:
   - get
@@ -86,14 +88,6 @@ rules:
   - get
   - patch
   - update
-- apiGroups:
-  - arcade.gobha.me
-  resources:
-  - gamerestores
-  verbs:
-  - get
-  - list
-  - watch
 - apiGroups:
   - batch
   resources:
@@ -124,6 +118,7 @@ rules:
   - roles
   verbs:
   - create
+  - delete
   - get
   - list
   - watch

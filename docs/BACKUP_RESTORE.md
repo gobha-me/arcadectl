@@ -3,12 +3,15 @@
 Arcadectl represents data movement as durable namespaced resources. A
 `GameBackup` or `GameRestore` records one immutable request, survives client and
 controller restarts, and exposes bounded progress through status. Cold backup
-execution is implemented. Restore remains a separately reviewed slice.
+and restore execution are implemented in the controller and bounded workers.
+The restore path still needs an isolated end-to-end cluster proof before it is
+considered operationally validated.
 
 Creating a `GameBackup` may stop and later restart its exact source server,
 create one bounded worker Job, and read every adapter-declared path. It never
-mutates or deletes a source claim. `GameRestore` remains contract-only and does
-not create workers or alter claims.
+mutates or deletes a source claim. A `GameRestore` verifies a repository
+snapshot before stopping its target, then writes only to separately retained
+candidate claims; it never mounts the previous world's claims in its worker.
 
 ## Exact authority
 
@@ -83,12 +86,11 @@ exact Lease annotation for the controller-owned restart generation permits the
 server to resume.
 
 Controller uninstall is fail-closed around this boundary. It requires every
-backup to be terminal at its current generation and refuses while any backup
-Job, Pod, or retained-data Lease remains. The backup-worker admission policy
-and binding remain installed after controller removal because historical
-backup objects retain their narrowly scoped ServiceAccount and RBAC objects;
-without the gate, a principal allowed to create Pods could reuse that dormant
-authority.
+backup and restore to be terminal at its current generation and refuses while
+any data-operation Job, Pod, or retained-data Lease remains. Both worker
+admission policies and the controller-only restore-candidate PVC CREATE policy,
+with their bindings, remain installed after controller removal. Without these
+gates, a principal could reuse operation authority or preempt a candidate name.
 
 Before work begins, status records one source snapshot:
 
@@ -166,15 +168,66 @@ deterministic artifact ID to the live `GameBackup` UID before every status
 write. The reconciler uses that validator before every status write; it is not
 optional worker policy.
 
+New backups use manifest format `arcadectl.backup/v2`. It records every regular
+file's size and SHA-256 plus the complete child-directory topology, including
+empty directories, for each adapter-declared path. Both backup and restore
+verification reject symlinks, special entries, unlisted repository nodes, and
+incomplete or noncanonical manifests. A successful v1 artifact remains a
+historical backup record, but this restore worker does not accept it; create a
+new verified v2 backup before requesting restore. There is no automatic v1-to-v2
+conversion.
+
 ## Restore and atomic activation
 
-A restore references one exact `GameBackup` UID and one exact target GameServer
-generation. The source artifact must have a successful verification result and
-must match the target adapter contract before any target mutation.
+A restore references one exact `GameBackup` UID, immutable repository Secret
+revision, and target GameServer generation. The source must be a successful,
+verified v2 artifact matching the target game, image digest, settings digest,
+and complete persistent-path contract. If the target already has a
+controller-selected data set, `spec.targetData` must pin that complete exact
+claim set; similarly, a later backup of a restored world must pin
+`spec.sourceData`.
 
-Restore never writes over active world data. A worker populates fresh candidate
+The first worker is a repository-only preflight with no target PVC mount or
+GameServer/PVC read authority. It checks the exact snapshot and manifest,
+complete Restic inventory, repository data, and each stored file before the
+controller acquires the previous-world lease or requests a cold stop. The
+controller then waits for the exact stopped generation and full Pod/CSI
+VolumeAttachment detachment before provisioning candidate PVCs.
+
+The populate worker mounts only those candidates. A separate, namespace-bound
+fail-closed admission policy requires its Pod to remain scheduling-gated until
+the controller verifies the exact admitted Job and Pod shape and marks its
+UID. Its short-lived authorizer checks both operation-held data leases, the
+stopped GameServer's selected and observed previous claim set, exact bound
+PVC identities, and the immutable Secret revision before releasing credentials
+into a Pod-private memory volume. The Restic container receives no Kubernetes
+API token. Preflight and populate use distinct stage authority and workers;
+their RBAC and inputs are removed after worker cleanup.
+
+Before candidate writes and again before activation, uncached PVC/PV checks
+require distinct bound volumes and CSI driver/volume handles across the
+previous and candidate sets. Candidates must also be distinct from any
+still-existing exact backup-source PVCs; the source and previous world may
+legitimately be the same volume.
+The candidate PVC must have been created no earlier than its GameRestore, and
+its backing CSI PV no earlier than the candidate PVC. This rejects rebinding an
+older retained source PV even if the backup-source PVC was removed. Candidate
+PVC creation is admitted only for the controller service account; the
+storage control plane may still bind and update the claim afterward. These
+proofs assume the admission policies remain protected and CSI drivers assign
+unique handles to independent volumes.
+Only CSI PV sources with non-empty driver and volume handle are certified for
+this isolation check. HostPath, Local, NFS, and unknown sources fail closed;
+using them for a target or candidate does not silently weaken restore safety.
+
+Restore never writes over active world data. A worker populates candidate
 claims whose deterministic identities derive from the `GameRestore` UID and
-path name. Before `Activating`, status must bind the exact backup/repository
+path name. It rejects unlisted candidate entries and symlinks, verifies each
+written file's exact size and hash, syncs files and directories, and rebuilds
+the complete canonical manifest from the candidates. A failed populate Job
+may be retried at most twice after its old Job, Pod, and execution claim have
+been cleared; all three attempts use the same exact candidate PVC identities.
+Before `Activating`, status must bind the exact backup/repository
 provenance, record a candidate verification whose manifest digest and path count
 match the verified artifact, and record a complete, distinct previous-claim
 set for rollback. Status distinguishes candidate, active, and previous claim
@@ -185,7 +238,10 @@ retained and are the rollback authority. `activationStartedAt` makes that
 obligation durable across controller restarts and later terminal phases. A
 restore that reached activation cannot become `Failed` or `Cancelled` until
 immutable `activeData` proves every active claim is again the corresponding
-previous claim.
+previous claim and the requested previous runtime has settled. A failed or
+cancelled restore retains both previous and candidate PVCs; it never deletes
+either set. An unresolved identity or rollback mismatch holds the leases and
+requires operator inspection rather than guessing which world is active.
 
 ## Retry, cancellation, and retention
 
@@ -194,9 +250,11 @@ candidate identity are pure functions of that UID. Reconciliation may repeat
 work, but it must converge on those same identities. It may never allocate a
 second successful artifact or a second candidate set for the same object.
 
-Transient work can increment `status.attempts` while retaining the same
-identities. Resolved source, fence, artifact, runtime disposition, and restore
-claim identities are set-once and immutable through API admission. Terminal
+Transient backup work can increment `status.attempts`; restore population has
+its own `populateAttempts`, `populateRetryPending`, and exact Job-UID journal.
+All retries retain the same data identities. Resolved source, fence, artifact,
+runtime disposition, and restore claim identities are set-once and immutable
+through API admission. Terminal
 `Succeeded`, `Failed`, and `Cancelled` phases cannot regress. Retrying a
 terminal request requires a new operation object and therefore an explicit new
 UID.

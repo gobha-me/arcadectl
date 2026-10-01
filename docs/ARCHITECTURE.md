@@ -34,16 +34,16 @@ resources. Because Pods ultimately select PVCs by name, principals allowed to
 replace managed PVCs are outside the ordinary-user trust boundary and require
 separate admission enforcement.
 Durable `GameBackup` and `GameRestore` APIs pin exact namespaced identities and
-define retry-safe operation state. Cold backup uses a bounded Job, exact
-per-operation RBAC, a suspended-Job plus admitted-Pod scheduling gate, and a
-data-identity Lease whose atomic Pod-UID execution claim prevents transiently
-overlapping Job Pods from sharing credentials. The controller removes the Pod
-gate only after the final admitted executable shape exactly matches the stored
-Job template. A namespace-bound, fail-closed `ValidatingAdmissionPolicy`
-prevents admission-time gate stripping and executable mutation during that
-transition;
-restore execution remains deferred. The authenticated API and CLI remain
-planned rather than implemented.
+define retry-safe operation state. Cold backup and isolated restore use bounded
+Jobs, exact per-stage RBAC, suspended Jobs with admitted-Pod scheduling gates,
+and data-identity Leases whose atomic Pod-UID execution claims prevent
+overlapping workers from sharing credentials. The controller removes a Pod
+gate only after the admitted executable shape exactly matches the stored Job
+template. Separate namespace-bound, fail-closed admission policies protect
+backup and restore workers. Restore preflight has repository-only authority;
+populate can mount only candidates, after a cold target fence and exact-claim
+authorization. The authenticated API and CLI remain planned rather than
+implemented.
 
 ## Game adapter contract
 
@@ -103,8 +103,9 @@ Stopped intent removes controlled runtime before validating retained storage,
 so data corruption or disappearance cannot prevent deactivation. Runtime
 absence remains explicit even when storage then fails, allowing an
 administrator to correct a bad exact reference by deleting and recreating the
-stopped `GameServer`, without briefly restarting compute. A future restore
-worker gets a separately reviewed typed activation contract.
+stopped `GameServer`, without briefly restarting compute. Restore uses a
+separate typed controller operation to select verified candidate data; ordinary
+reattachment rules are not weakened.
 
 Validated non-secret settings are rendered into an owned ConfigMap. A pinned,
 non-root init container mounts that ConfigMap read-only and atomically
@@ -128,8 +129,12 @@ administrator port and probe diagnostics never enter the Pod spec or Events.
 explicit confirmation, and a successful backup by default. An override must be
 equally explicit and is recorded as an unsafe administrative decision.
 
-Restore targets a newly provisioned volume before it changes the active server
-reference. A failed restore cannot partially replace the active world.
+Restore targets newly provisioned retained claims before it changes the active
+server reference. Candidate/previous/backup-source backing-volume checks are
+currently certified only for CSI PVs with a driver and volume handle. A failed
+restore cannot partially overwrite the previous world; unresolved rollback
+holds its leases for operator inspection. The first restore end-to-end cluster
+proof is still pending.
 The complete identity, idempotency, cancellation, retention, and state-machine
 contract is documented in [BACKUP_RESTORE.md](BACKUP_RESTORE.md).
 

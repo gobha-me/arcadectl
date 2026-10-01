@@ -38,6 +38,15 @@ func TestDeterministicOperationIdentities(t *testing.T) {
 	if world != worldAgain || world == other {
 		t.Fatalf("candidate IDs world=%q repeat=%q other=%q", world, worldAgain, other)
 	}
+	identity, err := RestoreDataIdentity(uid)
+	if err != nil || identity == world || identity == other {
+		t.Fatalf("restore data identity = %q, %v", identity, err)
+	}
+	for _, label := range []string{world, other, identity} {
+		if len(label) > 63 || !strings.HasPrefix(label, "restore-") {
+			t.Fatalf("restore label %q is not a bounded PVC/data identity", label)
+		}
+	}
 }
 
 func TestDeterministicOperationIdentitiesRejectAmbiguity(t *testing.T) {
@@ -48,6 +57,53 @@ func TestDeterministicOperationIdentitiesRejectAmbiguity(t *testing.T) {
 	}
 	if _, err := RestoreCandidateID("uid", ""); err == nil {
 		t.Fatal("RestoreCandidateID accepted an empty path name")
+	}
+	if _, err := RestoreDataIdentity(""); err == nil {
+		t.Fatal("RestoreDataIdentity accepted an empty operation UID")
+	}
+}
+
+func TestRestoreRuntimeJournalAllowsExactRollbackGenerations(t *testing.T) {
+	t.Parallel()
+	restore := validRestoreStatus()
+	restore.Spec.RestartPolicy = arcadev1alpha1.RestartRestorePreviousState
+	restore.Status.RuntimeJournal = &arcadev1alpha1.RestoreRuntimeJournal{CandidateStartGeneration: 3}
+	restore.Status.Runtime = &arcadev1alpha1.RuntimeDisposition{
+		GameServer: arcadev1alpha1.ExactGameServerReference{
+			ExactLocalReference: restore.Spec.Target.ExactLocalReference,
+			Generation:          3, DesiredState: arcadev1alpha1.DesiredStateRunning,
+		},
+		Phase: arcadev1alpha1.PhaseReady, CompletedAt: testTime(),
+	}
+	if err := ValidateRestoreStatus(restore); err != nil {
+		t.Fatalf("verified candidate start rejected: %v", err)
+	}
+	rollback := restore.DeepCopy()
+	rollback.Status.Phase = arcadev1alpha1.DataPhaseFailed
+	rollback.Status.ActiveData = append([]arcadev1alpha1.DataPathIdentity(nil), rollback.Status.PreviousData...)
+	rollback.Status.RuntimeJournal.RollbackStopGeneration = 4
+	rollback.Status.RuntimeJournal.RollbackRestartGeneration = 5
+	rollback.Status.Runtime.GameServer.Generation = 5
+	rollback.Status.Conditions = []metav1.Condition{{Type: arcadev1alpha1.ConditionOperationComplete, Status: metav1.ConditionFalse,
+		Reason: arcadev1alpha1.ReasonVerificationFailed, Message: "previous world restored; inspect failed candidate", ObservedGeneration: 1}}
+	if err := ValidateRestoreStatus(rollback); err != nil {
+		t.Fatalf("verified rollback at fence+3 rejected: %v", err)
+	}
+	coldRollback := rollback.DeepCopy()
+	coldRollback.Status.RuntimeJournal.RollbackStopGeneration = 0
+	coldRollback.Status.RuntimeJournal.RollbackRestartGeneration = 3
+	coldRollback.Status.Runtime.GameServer.Generation = 3
+	if err := ValidateRestoreStatus(coldRollback); err != nil {
+		t.Fatalf("journalled candidate start without a spec write must permit cold rollback at fence+1: %v", err)
+	}
+	coldRollback.Status.RuntimeJournal.RollbackRestartGeneration = 5
+	coldRollback.Status.Runtime.GameServer.Generation = 5
+	if err := ValidateRestoreStatus(coldRollback); err == nil {
+		t.Fatal("cold rollback accepted a generation beyond its unchanged fence")
+	}
+	rollback.Status.Runtime.GameServer.Generation = 3
+	if err := ValidateRestoreStatus(rollback); err == nil {
+		t.Fatal("rollback accepted a stale candidate-start runtime generation")
 	}
 }
 

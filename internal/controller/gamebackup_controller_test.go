@@ -106,6 +106,46 @@ func TestGameBackupReconcileStoppedSourceToVerifiedArtifact(t *testing.T) {
 	}
 }
 
+func TestBackupRequestCannotFollowStatusOnlyDataSwitch(t *testing.T) {
+	t.Parallel()
+	reconciler, kubeClient, request := newBackupTestReconciler(t, arcadev1alpha1.DesiredStateStopped, arcadev1alpha1.RestartLeaveStopped)
+	server := &arcadev1alpha1.GameServer{}
+	serverKey := types.NamespacedName{Namespace: request.Namespace, Name: "factory"}
+	if err := kubeClient.Get(context.Background(), serverKey, server); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := platformkube.DataIdentity(server.UID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := &arcadev1alpha1.RetainedDataReference{
+		Identity: identity,
+		Claims: []arcadev1alpha1.RetainedDataClaimReference{{Path: "world", ClaimRef: arcadev1alpha1.ExactLocalReference{
+			Name: "factory-factorio-world", UID: "claim-uid",
+		}}},
+	}
+	server.Status.ActiveData = selected.DeepCopy()
+	server.Status.ObservedData = selected.DeepCopy()
+	if err := kubeClient.Status().Update(context.Background(), server); err != nil {
+		t.Fatal(err)
+	}
+	backup := getBackup(t, kubeClient, request.NamespacedName)
+	if _, _, _, _, issue := reconciler.resolveSource(context.Background(), backup); issue == nil || issue.reason != arcadev1alpha1.ReasonIdentityMismatch {
+		t.Fatalf("unpinned pre-switch request followed selected data: %#v", issue)
+	}
+	pinned := backup.DeepCopy()
+	pinned.Name = "backup-pinned"
+	pinned.UID = "backup-pinned-uid"
+	pinned.ResourceVersion = ""
+	pinned.Spec.SourceData = selected.DeepCopy()
+	if err := kubeClient.Create(context.Background(), pinned); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, _, issue := reconciler.resolveSource(context.Background(), pinned); issue != nil {
+		t.Fatalf("exact pinned request was refused: %#v", issue)
+	}
+}
+
 func TestGameBackupPreviouslyRunningStopsBeforeWorkerAndRestartsExactly(t *testing.T) {
 	t.Parallel()
 	reconciler, kubeClient, request := newBackupTestReconciler(t, arcadev1alpha1.DesiredStateRunning, arcadev1alpha1.RestartRestorePreviousState)

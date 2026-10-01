@@ -114,8 +114,8 @@ do not appear in the Pod spec or kubelet probe Events.
   adapter path. It is immutable for that `GameServer` identity. To correct a
   bad reference, keep desired state `Stopped`, delete the object, and recreate
   it with the corrected exact references; retained claims remain untouched.
-  Restore activation will use its separately reviewed typed operation contract
-  rather than weakening this reattachment fence.
+  Restore activation uses its separate typed operation contract rather than
+  weakening this reattachment fence.
 - **Backup:** an immutable `GameBackup` pins the GameServer generation and
   repository Secret revision. The controller acquires the retained-data lease,
   establishes an exact cold fence after Pod and CSI attachment absence, and
@@ -125,9 +125,17 @@ do not appear in the Pod spec or kubelet probe Events.
   expansion, configuration, and networking cannot race a mounted backup
   worker. The ownerless Lease survives foreground operation deletion until the
   finalizer settles runtime and explicitly releases it.
-- **Restore:** represented by an immutable `GameRestore`; execution is not yet
-  implemented. Candidate and previous data identities support verified atomic
-  activation and rollback without overwriting the active world.
+- **Restore:** an immutable `GameRestore` pins a verified v2 `GameBackup`, exact
+  repository Secret revision, target generation, and (after an earlier restore)
+  the target's selected claim set. A repository-only preflight runs before the
+  target is stopped. Once the previous world is observed cold and detached,
+  the controller provisions separately retained candidate PVCs, and a gated
+  worker verifies and populates only those claims. After candidate verification,
+  the controller switches the selected data set, observes the requested
+  runtime, or rolls back to the previous set. Both sets are retained on failure
+  or cancellation. This storage-isolation check currently supports only CSI
+  PVs with non-empty driver and volume handle; unsupported backing sources are
+  refused. See [the restore contract](BACKUP_RESTORE.md).
 - **Destroy:** not implemented. It will be a separate authorized operation with
   exact identity confirmation and a successful backup by default.
 
@@ -140,8 +148,9 @@ containers, redeploys the controller without replacing the game Pod, and
 recreates the `GameServer` around the same retained world identity. The
 synthetic proof also runs real stopped and previously-running cold backups
 against isolated MinIO. This is isolated lifecycle evidence, not production
-readiness: restore has a durable API contract but no worker; explicit
-destruction and production deployment remain unimplemented. See
+readiness: restore execution has been implemented but its separate end-to-end
+cluster proof remains pending; explicit destruction and production deployment
+remain unimplemented. See
 [the backup and restore contract](BACKUP_RESTORE.md) for the exact boundary.
 
 ## Retained-world discovery and reattachment

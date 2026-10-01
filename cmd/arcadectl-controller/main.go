@@ -93,6 +93,13 @@ func main() {
 		setupLog.Error(err, "register GameBackup controller")
 		os.Exit(1)
 	}
+	restoreReconciler := &controller.GameRestoreReconciler{
+		Client: manager.GetClient(), APIReader: manager.GetAPIReader(), Scheme: manager.GetScheme(), Catalog: gameCatalog, WorkerImage: backupWorkerImage,
+	}
+	if err := restoreReconciler.SetupWithManager(manager); err != nil {
+		setupLog.Error(err, "register GameRestore controller")
+		os.Exit(1)
+	}
 	if err := manager.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "register health check")
 		os.Exit(1)

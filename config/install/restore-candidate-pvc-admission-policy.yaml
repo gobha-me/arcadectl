@@ -1,0 +1,30 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: arcadectl-restore-candidate-pvc-create
+  labels:
+    app.kubernetes.io/name: arcadectl-controller
+    app.kubernetes.io/part-of: arcadectl
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    resourceRules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+        resources:
+          - persistentvolumeclaims
+        scope: Namespaced
+  validations:
+    - expression: >-
+        !((has(object.metadata.name) && object.metadata.name.startsWith('restore-')) ||
+          (has(object.metadata.generateName) && object.metadata.generateName.startsWith('restore-'))) ||
+        request.userInfo.username == 'system:serviceaccount:arcadectl-system:arcadectl-controller'
+      message: Only the Arcadectl controller may create restore candidate PVCs.

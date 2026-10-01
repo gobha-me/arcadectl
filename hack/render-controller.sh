@@ -31,7 +31,11 @@ for manifest in \
   "$install_directory/volumeattachment-cluster-role.yaml" \
   "$install_directory/volumeattachment-cluster-role-binding.yaml" \
   "$install_directory/backup-worker-admission-policy.yaml" \
-  "$install_directory/backup-worker-admission-policy-binding.yaml"; do
+  "$install_directory/backup-worker-admission-policy-binding.yaml" \
+  "$install_directory/restore-worker-admission-policy.yaml" \
+  "$install_directory/restore-worker-admission-policy-binding.yaml" \
+  "$install_directory/restore-candidate-pvc-admission-policy.yaml" \
+  "$install_directory/restore-candidate-pvc-admission-policy-binding.yaml"; do
   printf '%s\n' "$(<"$manifest")"
 done
 

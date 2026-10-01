@@ -43,6 +43,10 @@ func TestRenderedControllerManifest(t *testing.T) {
 		"rbac.authorization.k8s.io/v1, Kind=ClusterRoleBinding /arcadectl-volumeattachment-reader",
 		"admissionregistration.k8s.io/v1, Kind=ValidatingAdmissionPolicy /arcadectl-backup-worker-gate",
 		"admissionregistration.k8s.io/v1, Kind=ValidatingAdmissionPolicyBinding /arcadectl-backup-worker-gate",
+		"admissionregistration.k8s.io/v1, Kind=ValidatingAdmissionPolicy /arcadectl-restore-worker-gate",
+		"admissionregistration.k8s.io/v1, Kind=ValidatingAdmissionPolicyBinding /arcadectl-restore-worker-gate",
+		"admissionregistration.k8s.io/v1, Kind=ValidatingAdmissionPolicy /arcadectl-restore-candidate-pvc-create",
+		"admissionregistration.k8s.io/v1, Kind=ValidatingAdmissionPolicyBinding /arcadectl-restore-candidate-pvc-create",
 		"apps/v1, Kind=Deployment arcadectl-system/arcadectl-controller",
 	}
 	if got := objectIdentities(objects); !slices.Equal(got, expected) {
@@ -53,7 +57,9 @@ func TestRenderedControllerManifest(t *testing.T) {
 	assertRoleBinding(t, objects[2])
 	assertVolumeAttachmentAuthority(t, objects[3], objects[4])
 	assertBackupWorkerAdmission(t, objects[5], objects[6])
-	assertControllerDeployment(t, objects[7], testControllerImage)
+	assertRestoreWorkerAdmission(t, objects[7], objects[8])
+	assertRestoreCandidatePVCAdmission(t, objects[9], objects[10])
+	assertControllerDeployment(t, objects[11], testControllerImage)
 }
 
 func TestClusterAnchorsAreRetainedAndRestricted(t *testing.T) {
@@ -166,6 +172,62 @@ func assertBackupWorkerAdmission(t *testing.T, policyObject, bindingObject *unst
 		binding.Spec.MatchResources == nil || binding.Spec.MatchResources.NamespaceSelector == nil ||
 		binding.Spec.MatchResources.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "arcadectl-system" {
 		t.Fatalf("backup worker admission binding = %#v", binding.Spec)
+	}
+}
+
+func assertRestoreWorkerAdmission(t *testing.T, policyObject, bindingObject *unstructured.Unstructured) {
+	t.Helper()
+	policy := &admissionregistrationv1.ValidatingAdmissionPolicy{}
+	convertObject(t, policyObject, policy)
+	if policy.Spec.FailurePolicy == nil || *policy.Spec.FailurePolicy != admissionregistrationv1.Fail ||
+		len(policy.Spec.MatchConstraints.ResourceRules) != 1 || len(policy.Spec.Validations) != 4 {
+		t.Fatalf("restore worker admission is not fail closed: %#v", policy.Spec)
+	}
+	joined := ""
+	for _, variable := range policy.Spec.Variables {
+		joined += variable.Expression + "\n"
+	}
+	for _, validation := range policy.Spec.Validations {
+		joined += validation.Expression + "\n"
+	}
+	for _, required := range []string{"restore-authorized", "restore-pod-authorized", "oldObject.spec.serviceAccountName", "request.userInfo.username", "object.spec.containers == oldObject.spec.containers", "object.metadata.labels == oldObject.metadata.labels", "object.metadata.ownerReferences == oldObject.metadata.ownerReferences"} {
+		if !strings.Contains(joined, required) {
+			t.Errorf("restore worker admission validation omits %q", required)
+		}
+	}
+	binding := &admissionregistrationv1.ValidatingAdmissionPolicyBinding{}
+	convertObject(t, bindingObject, binding)
+	if binding.Spec.PolicyName != policy.Name || !slices.Equal(binding.Spec.ValidationActions, []admissionregistrationv1.ValidationAction{admissionregistrationv1.Deny}) ||
+		binding.Spec.MatchResources == nil || binding.Spec.MatchResources.NamespaceSelector == nil ||
+		binding.Spec.MatchResources.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "arcadectl-system" {
+		t.Fatalf("restore worker admission binding = %#v", binding.Spec)
+	}
+}
+
+func assertRestoreCandidatePVCAdmission(t *testing.T, policyObject, bindingObject *unstructured.Unstructured) {
+	t.Helper()
+	policy := &admissionregistrationv1.ValidatingAdmissionPolicy{}
+	convertObject(t, policyObject, policy)
+	if policy.Spec.FailurePolicy == nil || *policy.Spec.FailurePolicy != admissionregistrationv1.Fail ||
+		len(policy.Spec.MatchConstraints.ResourceRules) != 1 || len(policy.Spec.Validations) != 1 {
+		t.Fatalf("candidate PVC admission is not fail closed: %#v", policy.Spec)
+	}
+	rule := policy.Spec.MatchConstraints.ResourceRules[0]
+	if !slices.Equal(rule.Resources, []string{"persistentvolumeclaims"}) ||
+		!slices.Equal(rule.Operations, []admissionregistrationv1.OperationType{admissionregistrationv1.Create}) {
+		t.Fatalf("candidate PVC admission matches unsafe operations: %#v", rule)
+	}
+	for _, required := range []string{"restore-", "request.userInfo.username", "system:serviceaccount:arcadectl-system:arcadectl-controller"} {
+		if !strings.Contains(policy.Spec.Validations[0].Expression, required) {
+			t.Errorf("candidate PVC admission omits %q", required)
+		}
+	}
+	binding := &admissionregistrationv1.ValidatingAdmissionPolicyBinding{}
+	convertObject(t, bindingObject, binding)
+	if binding.Spec.PolicyName != policy.Name || !slices.Equal(binding.Spec.ValidationActions, []admissionregistrationv1.ValidationAction{admissionregistrationv1.Deny}) ||
+		binding.Spec.MatchResources == nil || binding.Spec.MatchResources.NamespaceSelector == nil ||
+		binding.Spec.MatchResources.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "arcadectl-system" {
+		t.Fatalf("candidate PVC admission binding = %#v", binding.Spec)
 	}
 }
 
@@ -292,20 +354,26 @@ func TestUninstallRequiresSettledDataOperations(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		backups string
-		jobs    string
-		pods    string
-		leases  string
-		message string
+		name     string
+		backups  string
+		restores string
+		jobs     string
+		pods     string
+		leases   string
+		message  string
 	}{
 		{name: "running backup", backups: "nightly\tRunning\t1\t1\t\n", message: "every GameBackup must be terminal"},
 		{name: "preparing backup", backups: "nightly\tPreparing\t1\t1\t\n", message: "every GameBackup must be terminal"},
 		{name: "verifying backup", backups: "nightly\tVerifying\t1\t1\t\n", message: "every GameBackup must be terminal"},
 		{name: "stale terminal backup", backups: "nightly\tSucceeded\t2\t1\t\n", message: "current generation"},
 		{name: "deleting terminal backup", backups: "nightly\tSucceeded\t2\t2\t2026-09-21T00:00:00Z\n", message: "not deleting"},
+		{name: "running restore", restores: "restore-one\tRunning\t1\t1\t\n", message: "every GameRestore must be terminal"},
+		{name: "stale terminal restore", restores: "restore-one\tFailed\t2\t1\t\n", message: "current generation"},
+		{name: "deleting terminal restore", restores: "restore-one\tCancelled\t2\t2\t2026-09-21T00:00:00Z\n", message: "not deleting"},
 		{name: "backup job by name", backups: "nightly\tSucceeded\t1\t1\t\n", jobs: "backup-deadbeef\t\t\t\n", message: "Jobs, Pods, or Leases"},
 		{name: "backup job by labels", backups: "nightly\tSucceeded\t1\t1\t\n", jobs: "renamed\tarcadectl\tbackup-worker\t\n", message: "Jobs, Pods, or Leases"},
+		{name: "restore job by name", jobs: "restore-deadbeef\t\t\t\n", message: "Jobs, Pods, or Leases"},
+		{name: "restore pod by service account", pods: "renamed\t\t\t\trestore-deadbeef-authority\t\n", message: "Jobs, Pods, or Leases"},
 		{name: "backup pod by service account", backups: "nightly\tFailed\t1\t1\t\n", pods: "renamed\t\t\t\tbackup-deadbeef-authority\t\n", message: "Jobs, Pods, or Leases"},
 		{name: "backup pod by owner", backups: "nightly\tFailed\t1\t1\t\n", pods: "renamed\t\t\t\tdefault\tbatch/v1/Job/backup-deadbeef \n", message: "Jobs, Pods, or Leases"},
 		{name: "data operation lease by name", backups: "nightly\tCancelled\t1\t1\t\n", leases: "data-operation-deadbeef\t\t\n", message: "Jobs, Pods, or Leases"},
@@ -320,6 +388,7 @@ func TestUninstallRequiresSettledDataOperations(t *testing.T) {
 				"KUBECTL_LOG="+logPath,
 				"KUBECTL_SERVERS=factory\tStopped\tStopped\t2\t2\n",
 				"KUBECTL_BACKUPS="+test.backups,
+				"KUBECTL_RESTORES="+test.restores,
 				"KUBECTL_DATA_JOBS="+test.jobs,
 				"KUBECTL_DATA_PODS="+test.pods,
 				"KUBECTL_DATA_LEASES="+test.leases,
@@ -378,6 +447,10 @@ func TestUninstallRequiresEffectiveRetainedAdmissionGate(t *testing.T) {
 		{name: "policy object selector excludes workers", env: `KUBECTL_POLICY_FILTER=.spec.matchConstraints.objectSelector = {"matchLabels":{"exclude":"workers"}}`},
 		{name: "binding only warns", env: `KUBECTL_BINDING_FILTER=.spec.validationActions = ["Warn"]`},
 		{name: "binding object selector excludes workers", env: `KUBECTL_BINDING_FILTER=.spec.matchResources.objectSelector = {"matchLabels":{"exclude":"workers"}}`},
+		{name: "restore gate allows relabeling", env: `KUBECTL_RESTORE_POLICY_FILTER=.spec.validations[2].expression = "true"`},
+		{name: "restore binding only warns", env: `KUBECTL_RESTORE_BINDING_FILTER=.spec.validationActions = ["Warn"]`},
+		{name: "candidate PVC policy allows all creators", env: `KUBECTL_PVC_POLICY_FILTER=.spec.validations[0].expression = "true"`},
+		{name: "candidate PVC binding only warns", env: `KUBECTL_PVC_BINDING_FILTER=.spec.validationActions = ["Warn"]`},
 		{name: "gate does not deny", env: "KUBECTL_ADMISSION_MODE=allow"},
 		{name: "unexpected admission failure", env: "KUBECTL_ADMISSION_MODE=unexpected"},
 	}
@@ -502,7 +575,7 @@ func writeFakeKubectl(t *testing.T) (string, string) {
 	directory := t.TempDir()
 	commandPath := filepath.Join(directory, "kubectl")
 	logPath := filepath.Join(directory, "kubectl.log")
-	for _, fixture := range []string{"backup-worker-admission-policy", "backup-worker-admission-policy-binding"} {
+	for _, fixture := range []string{"backup-worker-admission-policy", "backup-worker-admission-policy-binding", "restore-worker-admission-policy", "restore-worker-admission-policy-binding", "restore-candidate-pvc-admission-policy", "restore-candidate-pvc-admission-policy-binding"} {
 		contents, err := os.ReadFile(filepath.Join(repositoryRoot(t), "config", "install", fixture+".yaml"))
 		if err != nil {
 			t.Fatalf("read admission fixture: %v", err)
@@ -537,6 +610,7 @@ if [ "${1:-}" = "get" ]; then
         printf '%b' "${KUBECTL_BACKUPS:-}"
       fi
       ;;
+    gamerestores.arcade.gobha.me) printf '%b' "${KUBECTL_RESTORES:-}" ;;
     jobs.batch) printf '%b' "${KUBECTL_DATA_JOBS:-}" ;;
     pods)
       case "$*" in
@@ -554,10 +628,20 @@ if [ "${1:-}" = "get" ]; then
     leases.coordination.k8s.io) printf '%b' "${KUBECTL_DATA_LEASES:-}" ;;
     deployment) printf '%b' "${KUBECTL_CONTROLLER_REPLICAS:-}" ;;
     validatingadmissionpolicies.admissionregistration.k8s.io)
-      jq "${KUBECTL_POLICY_FILTER:-.}" "$fixture_dir/backup-worker-admission-policy.json"
+      case "${3:-}" in
+        arcadectl-backup-worker-gate) jq "${KUBECTL_POLICY_FILTER:-.}" "$fixture_dir/backup-worker-admission-policy.json" ;;
+        arcadectl-restore-worker-gate) jq "${KUBECTL_RESTORE_POLICY_FILTER:-.}" "$fixture_dir/restore-worker-admission-policy.json" ;;
+        arcadectl-restore-candidate-pvc-create) jq "${KUBECTL_PVC_POLICY_FILTER:-.}" "$fixture_dir/restore-candidate-pvc-admission-policy.json" ;;
+        *) exit 42 ;;
+      esac
       ;;
     validatingadmissionpolicybindings.admissionregistration.k8s.io)
-      jq "${KUBECTL_BINDING_FILTER:-.}" "$fixture_dir/backup-worker-admission-policy-binding.json"
+      case "${3:-}" in
+        arcadectl-backup-worker-gate) jq "${KUBECTL_BINDING_FILTER:-.}" "$fixture_dir/backup-worker-admission-policy-binding.json" ;;
+        arcadectl-restore-worker-gate) jq "${KUBECTL_RESTORE_BINDING_FILTER:-.}" "$fixture_dir/restore-worker-admission-policy-binding.json" ;;
+        arcadectl-restore-candidate-pvc-create) jq "${KUBECTL_PVC_BINDING_FILTER:-.}" "$fixture_dir/restore-candidate-pvc-admission-policy-binding.json" ;;
+        *) exit 42 ;;
+      esac
       ;;
   esac
 fi
@@ -567,12 +651,16 @@ if [ "${1:-}" = "create" ]; then
       case "$*" in
         *backup-worker-admission-policy-binding.yaml*) cat "$fixture_dir/backup-worker-admission-policy-binding.json" ;;
         *backup-worker-admission-policy.yaml*) cat "$fixture_dir/backup-worker-admission-policy.json" ;;
+        *restore-worker-admission-policy-binding.yaml*) cat "$fixture_dir/restore-worker-admission-policy-binding.json" ;;
+        *restore-worker-admission-policy.yaml*) cat "$fixture_dir/restore-worker-admission-policy.json" ;;
+        *restore-candidate-pvc-admission-policy-binding.yaml*) cat "$fixture_dir/restore-candidate-pvc-admission-policy-binding.json" ;;
+        *restore-candidate-pvc-admission-policy.yaml*) cat "$fixture_dir/restore-candidate-pvc-admission-policy.json" ;;
         *) exit 42 ;;
       esac
       exit 0
       ;;
   esac
-  cat >/dev/null
+  probe=$(cat)
   case "${KUBECTL_ADMISSION_MODE:-deny}" in
     allow) exit 0 ;;
     unexpected)
@@ -580,7 +668,11 @@ if [ "${1:-}" = "create" ]; then
       exit 1
       ;;
     deny)
-      printf '%s\n' 'Arcadectl backup worker Pods must enter admission with exactly one execution gate and no authorization marker.' >&2
+      case "$probe" in
+        *'kind: PersistentVolumeClaim'*) printf '%s\n' 'Only the Arcadectl controller may create restore candidate PVCs.' >&2 ;;
+        *'name: restore-worker'*) printf '%s\n' 'Arcadectl restore worker Pods must enter admission with exactly one execution gate and no authorization marker.' >&2 ;;
+        *) printf '%s\n' 'Arcadectl backup worker Pods must enter admission with exactly one execution gate and no authorization marker.' >&2 ;;
+      esac
       exit 1
       ;;
   esac
@@ -634,14 +726,13 @@ func assertRole(t *testing.T, object *unstructured.Unstructured) {
 		{APIGroups: []string{""}, Resources: []string{"persistentvolumeclaims"}, Verbs: []string{"create", "get", "list", "patch", "update", "watch"}},
 		{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get", "list", "update", "watch"}},
 		{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get"}},
-		{APIGroups: []string{""}, Resources: []string{"serviceaccounts"}, Verbs: []string{"create", "get", "list", "watch"}},
+		{APIGroups: []string{""}, Resources: []string{"serviceaccounts"}, Verbs: []string{"create", "delete", "get", "list", "watch"}},
 		{APIGroups: []string{"apps"}, Resources: []string{"deployments"}, Verbs: []string{"create", "delete", "get", "list", "patch", "update", "watch"}},
-		{APIGroups: []string{"arcade.gobha.me"}, Resources: []string{"gamebackups", "gameservers"}, Verbs: []string{"get", "list", "patch", "update", "watch"}},
+		{APIGroups: []string{"arcade.gobha.me"}, Resources: []string{"gamebackups", "gamerestores", "gameservers"}, Verbs: []string{"get", "list", "patch", "update", "watch"}},
 		{APIGroups: []string{"arcade.gobha.me"}, Resources: []string{"gamebackups/status", "gamerestores/status", "gameservers/status"}, Verbs: []string{"get", "patch", "update"}},
-		{APIGroups: []string{"arcade.gobha.me"}, Resources: []string{"gamerestores"}, Verbs: []string{"get", "list", "watch"}},
 		{APIGroups: []string{"batch"}, Resources: []string{"jobs"}, Verbs: []string{"create", "delete", "get", "list", "update", "watch"}},
 		{APIGroups: []string{"coordination.k8s.io"}, Resources: []string{"leases"}, Verbs: []string{"create", "delete", "get", "list", "patch", "update", "watch"}},
-		{APIGroups: []string{"rbac.authorization.k8s.io"}, Resources: []string{"rolebindings", "roles"}, Verbs: []string{"create", "get", "list", "watch"}},
+		{APIGroups: []string{"rbac.authorization.k8s.io"}, Resources: []string{"rolebindings", "roles"}, Verbs: []string{"create", "delete", "get", "list", "watch"}},
 	}
 	got := normalizedRules(role.Rules)
 	want := normalizedRules(expected)
@@ -691,7 +782,10 @@ func assertVolumeAttachmentAuthority(t *testing.T, roleObject, bindingObject *un
 	t.Helper()
 	role := &rbacv1.ClusterRole{}
 	convertObject(t, roleObject, role)
-	want := []rbacv1.PolicyRule{{APIGroups: []string{"storage.k8s.io"}, Resources: []string{"volumeattachments"}, Verbs: []string{"get", "list", "watch"}}}
+	want := []rbacv1.PolicyRule{
+		{APIGroups: []string{""}, Resources: []string{"persistentvolumes"}, Verbs: []string{"get"}},
+		{APIGroups: []string{"storage.k8s.io"}, Resources: []string{"volumeattachments"}, Verbs: []string{"get", "list", "watch"}},
+	}
 	if got := normalizedRules(role.Rules); !slices.EqualFunc(got, normalizedRules(want), func(a, b rbacv1.PolicyRule) bool {
 		return slices.Equal(a.APIGroups, b.APIGroups) && slices.Equal(a.Resources, b.Resources) && slices.Equal(a.Verbs, b.Verbs)
 	}) {
