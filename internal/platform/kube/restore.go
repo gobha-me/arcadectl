@@ -27,14 +27,14 @@ import (
 )
 
 const (
-	LabelRestoreUID                = "arcade.gobha.me/restore-uid"
-	LabelRestoreStage              = "arcade.gobha.me/restore-stage"
-	AnnotationRestoreName          = "arcade.gobha.me/restore-name"
-	AnnotationRestorePodAuthorized = "arcade.gobha.me/restore-pod-authorized"
+	LabelRestoreUID                 = "arcade.gobha.me/restore-uid"
+	LabelRestoreStage               = "arcade.gobha.me/restore-stage"
+	AnnotationRestoreName           = "arcade.gobha.me/restore-name"
+	AnnotationRestorePodAuthorized  = "arcade.gobha.me/restore-pod-authorized"
 	AnnotationRestoreSettlementData = "arcade.gobha.me/restore-settlement-data-identity"
-	RestoreFinalizer               = "arcade.gobha.me/restore-protection"
-	RestoreSchedulingGate          = "arcade.gobha.me/restore-authorized"
-	restoreInputKey                = "input.json"
+	RestoreFinalizer                = "arcade.gobha.me/restore-protection"
+	RestoreSchedulingGate           = "arcade.gobha.me/restore-authorized"
+	restoreInputKey                 = "input.json"
 )
 
 // RestoreResources are deliberately stage-specific. Preflight has no PVC
