@@ -224,6 +224,15 @@ func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 			"the game server is stopped; persistent data is retained")
 		return ctrl.Result{}, r.updateStatusWithData(ctx, server, arcadev1alpha1.PhaseStopped, progress, nil, storage.data)
 	}
+	if err := r.clearColdBackupMarkers(ctx, server, plan.DataClaims); err != nil {
+		return ctrl.Result{}, r.reportFailure(ctx, server, progress, newReconcileFailure(
+			arcadev1alpha1.ConditionStorageReady,
+			arcadev1alpha1.ReasonRetainedDataConflict,
+			"prior cold-backup evidence cannot be invalidated before runtime activation; inspect the exact retained claims",
+			err,
+			true,
+		))
+	}
 
 	if err := r.reconcileConfigMap(ctx, plan.Configuration); err != nil {
 		key := client.ObjectKeyFromObject(plan.Configuration)

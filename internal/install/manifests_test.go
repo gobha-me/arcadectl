@@ -41,13 +41,28 @@ func TestRenderedControllerManifest(t *testing.T) {
 		"rbac.authorization.k8s.io/v1, Kind=RoleBinding arcadectl-system/arcadectl-controller",
 		"rbac.authorization.k8s.io/v1, Kind=ClusterRole /arcadectl-volumeattachment-reader",
 		"rbac.authorization.k8s.io/v1, Kind=ClusterRoleBinding /arcadectl-volumeattachment-reader",
+		"/v1, Kind=ServiceAccount arcadectl-system/arcadectl-destroy-controller",
+		"/v1, Kind=ServiceAccount arcadectl-system/arcadectl-destroy-admin",
+		"rbac.authorization.k8s.io/v1, Kind=Role arcadectl-system/arcadectl-destroy-controller",
+		"rbac.authorization.k8s.io/v1, Kind=Role arcadectl-system/arcadectl-destroy-admin",
+		"rbac.authorization.k8s.io/v1, Kind=RoleBinding arcadectl-system/arcadectl-destroy-controller",
+		"rbac.authorization.k8s.io/v1, Kind=RoleBinding arcadectl-system/arcadectl-destroy-admin",
+		"rbac.authorization.k8s.io/v1, Kind=ClusterRole /arcadectl-destroy-volumeattachment-reader",
+		"rbac.authorization.k8s.io/v1, Kind=ClusterRoleBinding /arcadectl-destroy-volumeattachment-reader",
 		"admissionregistration.k8s.io/v1, Kind=ValidatingAdmissionPolicy /arcadectl-backup-worker-gate",
 		"admissionregistration.k8s.io/v1, Kind=ValidatingAdmissionPolicyBinding /arcadectl-backup-worker-gate",
 		"admissionregistration.k8s.io/v1, Kind=ValidatingAdmissionPolicy /arcadectl-restore-worker-gate",
 		"admissionregistration.k8s.io/v1, Kind=ValidatingAdmissionPolicyBinding /arcadectl-restore-worker-gate",
 		"admissionregistration.k8s.io/v1, Kind=ValidatingAdmissionPolicy /arcadectl-restore-candidate-pvc-create",
 		"admissionregistration.k8s.io/v1, Kind=ValidatingAdmissionPolicyBinding /arcadectl-restore-candidate-pvc-create",
+		"admissionregistration.k8s.io/v1, Kind=ValidatingAdmissionPolicy /arcadectl-destroy-worker-gate",
+		"admissionregistration.k8s.io/v1, Kind=ValidatingAdmissionPolicyBinding /arcadectl-destroy-worker-gate",
+		"admissionregistration.k8s.io/v1, Kind=ValidatingAdmissionPolicy /arcadectl-retained-world-pvc-delete",
+		"admissionregistration.k8s.io/v1, Kind=ValidatingAdmissionPolicyBinding /arcadectl-retained-world-pvc-delete",
+		"admissionregistration.k8s.io/v1, Kind=ValidatingAdmissionPolicy /arcadectl-destroy-unsafe-admin",
+		"admissionregistration.k8s.io/v1, Kind=ValidatingAdmissionPolicyBinding /arcadectl-destroy-unsafe-admin",
 		"apps/v1, Kind=Deployment arcadectl-system/arcadectl-controller",
+		"apps/v1, Kind=Deployment arcadectl-system/arcadectl-destroy-controller",
 	}
 	if got := objectIdentities(objects); !slices.Equal(got, expected) {
 		t.Fatalf("rendered objects = %#v, want %#v", got, expected)
@@ -56,10 +71,12 @@ func TestRenderedControllerManifest(t *testing.T) {
 	assertRole(t, objects[1])
 	assertRoleBinding(t, objects[2])
 	assertVolumeAttachmentAuthority(t, objects[3], objects[4])
-	assertBackupWorkerAdmission(t, objects[5], objects[6])
-	assertRestoreWorkerAdmission(t, objects[7], objects[8])
-	assertRestoreCandidatePVCAdmission(t, objects[9], objects[10])
-	assertControllerDeployment(t, objects[11], testControllerImage)
+	assertBackupWorkerAdmission(t, objects[13], objects[14])
+	assertRestoreWorkerAdmission(t, objects[15], objects[16])
+	assertRestoreCandidatePVCAdmission(t, objects[17], objects[18])
+	assertDestroyAuthority(t, objects)
+	assertControllerDeployment(t, objects[25], testControllerImage)
+	assertDestroyDeployment(t, objects[26], testControllerImage)
 }
 
 func TestClusterAnchorsAreRetainedAndRestricted(t *testing.T) {
@@ -75,6 +92,7 @@ func TestClusterAnchorsAreRetainedAndRestricted(t *testing.T) {
 		"apiextensions.k8s.io/v1, Kind=CustomResourceDefinition /gameservers.arcade.gobha.me",
 		"apiextensions.k8s.io/v1, Kind=CustomResourceDefinition /gamebackups.arcade.gobha.me",
 		"apiextensions.k8s.io/v1, Kind=CustomResourceDefinition /gamerestores.arcade.gobha.me",
+		"apiextensions.k8s.io/v1, Kind=CustomResourceDefinition /gamedestroys.arcade.gobha.me",
 	}
 	if got := objectIdentities(objects); !slices.Equal(got, expected) {
 		t.Fatalf("anchor objects = %#v, want %#v", got, expected)
@@ -125,6 +143,15 @@ func TestUninstallManifestPreservesClusterAnchorsAndData(t *testing.T) {
 	objects := decodeObjects(t, contents)
 	expected := []string{
 		"apps/v1, Kind=Deployment arcadectl-system/arcadectl-controller",
+		"apps/v1, Kind=Deployment arcadectl-system/arcadectl-destroy-controller",
+		"rbac.authorization.k8s.io/v1, Kind=ClusterRoleBinding /arcadectl-destroy-volumeattachment-reader",
+		"rbac.authorization.k8s.io/v1, Kind=ClusterRole /arcadectl-destroy-volumeattachment-reader",
+		"rbac.authorization.k8s.io/v1, Kind=RoleBinding arcadectl-system/arcadectl-destroy-controller",
+		"rbac.authorization.k8s.io/v1, Kind=Role arcadectl-system/arcadectl-destroy-controller",
+		"/v1, Kind=ServiceAccount arcadectl-system/arcadectl-destroy-controller",
+		"rbac.authorization.k8s.io/v1, Kind=RoleBinding arcadectl-system/arcadectl-destroy-admin",
+		"rbac.authorization.k8s.io/v1, Kind=Role arcadectl-system/arcadectl-destroy-admin",
+		"/v1, Kind=ServiceAccount arcadectl-system/arcadectl-destroy-admin",
 		"rbac.authorization.k8s.io/v1, Kind=ClusterRoleBinding /arcadectl-volumeattachment-reader",
 		"rbac.authorization.k8s.io/v1, Kind=ClusterRole /arcadectl-volumeattachment-reader",
 		"rbac.authorization.k8s.io/v1, Kind=RoleBinding arcadectl-system/arcadectl-controller",
@@ -250,8 +277,10 @@ func TestInstallScriptAppliesAnchorsThenController(t *testing.T) {
 		"wait --for=condition=Established customresourcedefinition/gameservers.arcade.gobha.me --timeout=60s",
 		"wait --for=condition=Established customresourcedefinition/gamebackups.arcade.gobha.me --timeout=60s",
 		"wait --for=condition=Established customresourcedefinition/gamerestores.arcade.gobha.me --timeout=60s",
+		"wait --for=condition=Established customresourcedefinition/gamedestroys.arcade.gobha.me --timeout=60s",
 		"apply -f /tmp/",
 		"rollout status deployment/arcadectl-controller --namespace arcadectl-system --timeout=120s",
+		"rollout status deployment/arcadectl-destroy-controller --namespace arcadectl-system --timeout=120s",
 	} {
 		if !strings.Contains(logText, commandFragment) {
 			t.Errorf("install command log %q omits %q", logText, commandFragment)
@@ -291,7 +320,7 @@ func TestUninstallRequiresEveryServerStopped(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read fake kubectl log: %v", err)
 		}
-		if strings.Contains(string(logContents), "delete") {
+		if strings.Contains(string(logContents), "delete --filename ") {
 			t.Fatalf("unsafe uninstall reached delete: %s", logContents)
 		}
 	})
@@ -307,7 +336,7 @@ func TestUninstallRequiresEveryServerStopped(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read fake kubectl log: %v", err)
 		}
-		if strings.Contains(string(logContents), "delete") {
+		if strings.Contains(string(logContents), "delete --filename ") {
 			t.Fatalf("stale uninstall reached delete: %s", logContents)
 		}
 	})
@@ -324,7 +353,7 @@ func TestUninstallRequiresEveryServerStopped(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read fake kubectl log: %v", err)
 		}
-		if strings.Contains(string(logContents), "delete") {
+		if strings.Contains(string(logContents), "delete --filename ") {
 			t.Fatalf("deleting-server uninstall reached delete: %s", logContents)
 		}
 	})
@@ -333,7 +362,7 @@ func TestUninstallRequiresEveryServerStopped(t *testing.T) {
 		fakeKubectl, logPath := writeFakeKubectl(t)
 		command := exec.CommandContext(context.Background(), filepath.Join(repositoryRoot(t), "hack", "uninstall.sh"))
 		command.Env = append(os.Environ(), "KUBECTL="+fakeKubectl, "KUBECTL_LOG="+logPath,
-			"KUBECTL_SERVERS=factory\tStopped\tStopped\t2\t2\t\n", "KUBECTL_CONTROLLER_REPLICAS=1")
+			"KUBECTL_SERVERS=factory\tStopped\tStopped\t2\t2\t\n", "KUBECTL_CONTROLLER_REPLICAS=1", "KUBECTL_DESTROY_CONTROLLER_REPLICAS=1")
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("safe uninstall failed: %v\n%s", err, output)
 		}
@@ -347,6 +376,9 @@ func TestUninstallRequiresEveryServerStopped(t *testing.T) {
 		if !strings.Contains(string(logContents), "scale deployment/arcadectl-controller --namespace arcadectl-system --replicas=0") {
 			t.Fatalf("safe uninstall did not quiesce the controller: %s", logContents)
 		}
+		if !strings.Contains(string(logContents), "scale deployment/arcadectl-destroy-controller --namespace arcadectl-system --replicas=0") {
+			t.Fatalf("safe uninstall did not quiesce the destroy controller: %s", logContents)
+		}
 	})
 }
 
@@ -357,6 +389,7 @@ func TestUninstallRequiresSettledDataOperations(t *testing.T) {
 		name     string
 		backups  string
 		restores string
+		destroys string
 		jobs     string
 		pods     string
 		leases   string
@@ -370,9 +403,15 @@ func TestUninstallRequiresSettledDataOperations(t *testing.T) {
 		{name: "running restore", restores: "restore-one\tRunning\t1\t1\t\n", message: "every GameRestore must be terminal"},
 		{name: "stale terminal restore", restores: "restore-one\tFailed\t2\t1\t\n", message: "current generation"},
 		{name: "deleting terminal restore", restores: "restore-one\tCancelled\t2\t2\t2026-09-21T00:00:00Z\n", message: "not deleting"},
+		{name: "verifying destroy", destroys: "destroy-one\tVerifying\t1\t1\t\n", message: "every GameDestroy must be terminal"},
+		{name: "deleting destroy", destroys: "destroy-one\tDeleting\t1\t1\t\n", message: "every GameDestroy must be terminal"},
+		{name: "stale terminal destroy", destroys: "destroy-one\tSucceeded\t2\t1\t\n", message: "current generation"},
+		{name: "deleting terminal destroy", destroys: "destroy-one\tSucceeded\t2\t2\t2026-10-01T00:00:00Z\n", message: "not deleting"},
 		{name: "backup job by name", backups: "nightly\tSucceeded\t1\t1\t\n", jobs: "backup-deadbeef\t\t\t\n", message: "Jobs, Pods, or Leases"},
 		{name: "backup job by labels", backups: "nightly\tSucceeded\t1\t1\t\n", jobs: "renamed\tarcadectl\tbackup-worker\t\n", message: "Jobs, Pods, or Leases"},
 		{name: "restore job by name", jobs: "restore-deadbeef\t\t\t\n", message: "Jobs, Pods, or Leases"},
+		{name: "destroy job by name", jobs: "destroy-deadbeef\t\t\t\n", message: "Jobs, Pods, or Leases"},
+		{name: "destroy pod by service account", pods: "renamed\t\t\t\tdestroy-deadbeef-authority\t\n", message: "Jobs, Pods, or Leases"},
 		{name: "restore pod by service account", pods: "renamed\t\t\t\trestore-deadbeef-authority\t\n", message: "Jobs, Pods, or Leases"},
 		{name: "backup pod by service account", backups: "nightly\tFailed\t1\t1\t\n", pods: "renamed\t\t\t\tbackup-deadbeef-authority\t\n", message: "Jobs, Pods, or Leases"},
 		{name: "backup pod by owner", backups: "nightly\tFailed\t1\t1\t\n", pods: "renamed\t\t\t\tdefault\tbatch/v1/Job/backup-deadbeef \n", message: "Jobs, Pods, or Leases"},
@@ -389,6 +428,7 @@ func TestUninstallRequiresSettledDataOperations(t *testing.T) {
 				"KUBECTL_SERVERS=factory\tStopped\tStopped\t2\t2\n",
 				"KUBECTL_BACKUPS="+test.backups,
 				"KUBECTL_RESTORES="+test.restores,
+				"KUBECTL_DESTROYS="+test.destroys,
 				"KUBECTL_DATA_JOBS="+test.jobs,
 				"KUBECTL_DATA_PODS="+test.pods,
 				"KUBECTL_DATA_LEASES="+test.leases,
@@ -401,7 +441,7 @@ func TestUninstallRequiresSettledDataOperations(t *testing.T) {
 			if readErr != nil {
 				t.Fatalf("read fake kubectl log: %v", readErr)
 			}
-			if strings.Contains(string(logContents), "delete") {
+			if strings.Contains(string(logContents), "delete --filename ") {
 				t.Fatalf("unsafe uninstall reached delete: %s", logContents)
 			}
 		})
@@ -427,7 +467,7 @@ func TestUninstallFailsClosedWhenSafetyStateCannotBeRead(t *testing.T) {
 	if readErr != nil {
 		t.Fatalf("read fake kubectl log: %v", readErr)
 	}
-	if strings.Contains(string(logContents), "delete") || strings.Contains(string(logContents), "scale") {
+	if strings.Contains(string(logContents), "delete --filename ") || strings.Contains(string(logContents), "scale deployment/") {
 		t.Fatalf("unreadable safety state mutated the controller: %s", logContents)
 	}
 }
@@ -451,6 +491,12 @@ func TestUninstallRequiresEffectiveRetainedAdmissionGate(t *testing.T) {
 		{name: "restore binding only warns", env: `KUBECTL_RESTORE_BINDING_FILTER=.spec.validationActions = ["Warn"]`},
 		{name: "candidate PVC policy allows all creators", env: `KUBECTL_PVC_POLICY_FILTER=.spec.validations[0].expression = "true"`},
 		{name: "candidate PVC binding only warns", env: `KUBECTL_PVC_BINDING_FILTER=.spec.validationActions = ["Warn"]`},
+		{name: "destroy worker gate allows ungating", env: `KUBECTL_DESTROY_POLICY_FILTER=.spec.validations[3].expression = "true"`},
+		{name: "destroy worker binding only warns", env: `KUBECTL_DESTROY_BINDING_FILTER=.spec.validationActions = ["Warn"]`},
+		{name: "retained PVC delete allows all", env: `KUBECTL_DESTROY_PVC_POLICY_FILTER=.spec.validations[2].expression = "true"`},
+		{name: "retained PVC binding only warns", env: `KUBECTL_DESTROY_PVC_BINDING_FILTER=.spec.validationActions = ["Warn"]`},
+		{name: "unsafe destroy allows all", env: `KUBECTL_DESTROY_UNSAFE_POLICY_FILTER=.spec.validations[0].expression = "true"`},
+		{name: "unsafe destroy binding only warns", env: `KUBECTL_DESTROY_UNSAFE_BINDING_FILTER=.spec.validationActions = ["Warn"]`},
 		{name: "gate does not deny", env: "KUBECTL_ADMISSION_MODE=allow"},
 		{name: "unexpected admission failure", env: "KUBECTL_ADMISSION_MODE=unexpected"},
 	}
@@ -471,7 +517,7 @@ func TestUninstallRequiresEffectiveRetainedAdmissionGate(t *testing.T) {
 			if readErr != nil {
 				t.Fatalf("read fake kubectl log: %v", readErr)
 			}
-			if strings.Contains(string(logContents), "delete") || strings.Contains(string(logContents), "scale") {
+			if strings.Contains(string(logContents), "delete --filename ") || strings.Contains(string(logContents), "scale deployment/") {
 				t.Fatalf("unsafe admission gate mutated the controller: %s", logContents)
 			}
 		})
@@ -575,7 +621,7 @@ func writeFakeKubectl(t *testing.T) (string, string) {
 	directory := t.TempDir()
 	commandPath := filepath.Join(directory, "kubectl")
 	logPath := filepath.Join(directory, "kubectl.log")
-	for _, fixture := range []string{"backup-worker-admission-policy", "backup-worker-admission-policy-binding", "restore-worker-admission-policy", "restore-worker-admission-policy-binding", "restore-candidate-pvc-admission-policy", "restore-candidate-pvc-admission-policy-binding"} {
+	for _, fixture := range []string{"backup-worker-admission-policy", "backup-worker-admission-policy-binding", "restore-worker-admission-policy", "restore-worker-admission-policy-binding", "restore-candidate-pvc-admission-policy", "restore-candidate-pvc-admission-policy-binding", "destroy-worker-admission-policy", "destroy-worker-admission-policy-binding", "destroy-pvc-admission-policy", "destroy-pvc-admission-policy-binding", "destroy-unsafe-admission-policy", "destroy-unsafe-admission-policy-binding"} {
 		contents, err := os.ReadFile(filepath.Join(repositoryRoot(t), "config", "install", fixture+".yaml"))
 		if err != nil {
 			t.Fatalf("read admission fixture: %v", err)
@@ -611,6 +657,7 @@ if [ "${1:-}" = "get" ]; then
       fi
       ;;
     gamerestores.arcade.gobha.me) printf '%b' "${KUBECTL_RESTORES:-}" ;;
+    gamedestroys.arcade.gobha.me) printf '%b' "${KUBECTL_DESTROYS:-}" ;;
     jobs.batch) printf '%b' "${KUBECTL_DATA_JOBS:-}" ;;
     pods)
       case "$*" in
@@ -622,16 +669,25 @@ if [ "${1:-}" = "get" ]; then
             printf '%b' "${KUBECTL_CONTROLLER_PODS:-}"
           fi
           ;;
+        *app.kubernetes.io/name=arcadectl-destroy-controller*) printf '%b' "${KUBECTL_DESTROY_CONTROLLER_PODS:-}" ;;
         *) printf '%b' "${KUBECTL_DATA_PODS:-}" ;;
       esac
       ;;
     leases.coordination.k8s.io) printf '%b' "${KUBECTL_DATA_LEASES:-}" ;;
-    deployment) printf '%b' "${KUBECTL_CONTROLLER_REPLICAS:-}" ;;
+    deployment)
+      case "${3:-}" in
+        arcadectl-destroy-controller) printf '%b' "${KUBECTL_DESTROY_CONTROLLER_REPLICAS:-}" ;;
+        *) printf '%b' "${KUBECTL_CONTROLLER_REPLICAS:-}" ;;
+      esac
+      ;;
     validatingadmissionpolicies.admissionregistration.k8s.io)
       case "${3:-}" in
         arcadectl-backup-worker-gate) jq "${KUBECTL_POLICY_FILTER:-.}" "$fixture_dir/backup-worker-admission-policy.json" ;;
         arcadectl-restore-worker-gate) jq "${KUBECTL_RESTORE_POLICY_FILTER:-.}" "$fixture_dir/restore-worker-admission-policy.json" ;;
         arcadectl-restore-candidate-pvc-create) jq "${KUBECTL_PVC_POLICY_FILTER:-.}" "$fixture_dir/restore-candidate-pvc-admission-policy.json" ;;
+        arcadectl-destroy-worker-gate) jq "${KUBECTL_DESTROY_POLICY_FILTER:-.}" "$fixture_dir/destroy-worker-admission-policy.json" ;;
+        arcadectl-retained-world-pvc-delete) jq "${KUBECTL_DESTROY_PVC_POLICY_FILTER:-.}" "$fixture_dir/destroy-pvc-admission-policy.json" ;;
+        arcadectl-destroy-unsafe-admin) jq "${KUBECTL_DESTROY_UNSAFE_POLICY_FILTER:-.}" "$fixture_dir/destroy-unsafe-admission-policy.json" ;;
         *) exit 42 ;;
       esac
       ;;
@@ -640,6 +696,9 @@ if [ "${1:-}" = "get" ]; then
         arcadectl-backup-worker-gate) jq "${KUBECTL_BINDING_FILTER:-.}" "$fixture_dir/backup-worker-admission-policy-binding.json" ;;
         arcadectl-restore-worker-gate) jq "${KUBECTL_RESTORE_BINDING_FILTER:-.}" "$fixture_dir/restore-worker-admission-policy-binding.json" ;;
         arcadectl-restore-candidate-pvc-create) jq "${KUBECTL_PVC_BINDING_FILTER:-.}" "$fixture_dir/restore-candidate-pvc-admission-policy-binding.json" ;;
+        arcadectl-destroy-worker-gate) jq "${KUBECTL_DESTROY_BINDING_FILTER:-.}" "$fixture_dir/destroy-worker-admission-policy-binding.json" ;;
+        arcadectl-retained-world-pvc-delete) jq "${KUBECTL_DESTROY_PVC_BINDING_FILTER:-.}" "$fixture_dir/destroy-pvc-admission-policy-binding.json" ;;
+        arcadectl-destroy-unsafe-admin) jq "${KUBECTL_DESTROY_UNSAFE_BINDING_FILTER:-.}" "$fixture_dir/destroy-unsafe-admission-policy-binding.json" ;;
         *) exit 42 ;;
       esac
       ;;
@@ -655,6 +714,12 @@ if [ "${1:-}" = "create" ]; then
         *restore-worker-admission-policy.yaml*) cat "$fixture_dir/restore-worker-admission-policy.json" ;;
         *restore-candidate-pvc-admission-policy-binding.yaml*) cat "$fixture_dir/restore-candidate-pvc-admission-policy-binding.json" ;;
         *restore-candidate-pvc-admission-policy.yaml*) cat "$fixture_dir/restore-candidate-pvc-admission-policy.json" ;;
+        *destroy-worker-admission-policy-binding.yaml*) cat "$fixture_dir/destroy-worker-admission-policy-binding.json" ;;
+        *destroy-worker-admission-policy.yaml*) cat "$fixture_dir/destroy-worker-admission-policy.json" ;;
+        *destroy-pvc-admission-policy-binding.yaml*) cat "$fixture_dir/destroy-pvc-admission-policy-binding.json" ;;
+        *destroy-pvc-admission-policy.yaml*) cat "$fixture_dir/destroy-pvc-admission-policy.json" ;;
+        *destroy-unsafe-admission-policy-binding.yaml*) cat "$fixture_dir/destroy-unsafe-admission-policy-binding.json" ;;
+        *destroy-unsafe-admission-policy.yaml*) cat "$fixture_dir/destroy-unsafe-admission-policy.json" ;;
         *) exit 42 ;;
       esac
       exit 0
@@ -671,6 +736,7 @@ if [ "${1:-}" = "create" ]; then
       case "$probe" in
         *'kind: PersistentVolumeClaim'*) printf '%s\n' 'Only the Arcadectl controller may create restore candidate PVCs.' >&2 ;;
         *'name: restore-worker'*) printf '%s\n' 'Arcadectl restore worker Pods must enter admission with exactly one execution gate and no authorization marker.' >&2 ;;
+        *'name: destroy-worker'*) printf '%s\n' 'Arcadectl destroy worker Pods must enter admission with exactly one execution gate and no authorization marker.' >&2 ;;
         *) printf '%s\n' 'Arcadectl backup worker Pods must enter admission with exactly one execution gate and no authorization marker.' >&2 ;;
       esac
       exit 1
@@ -796,6 +862,105 @@ func assertVolumeAttachmentAuthority(t *testing.T, roleObject, bindingObject *un
 	if binding.RoleRef.Kind != "ClusterRole" || binding.RoleRef.Name != role.Name || len(binding.Subjects) != 1 ||
 		binding.Subjects[0].Kind != "ServiceAccount" || binding.Subjects[0].Name != "arcadectl-controller" || binding.Subjects[0].Namespace != "arcadectl-system" {
 		t.Fatalf("VolumeAttachment ClusterRoleBinding = role %#v subjects %#v", binding.RoleRef, binding.Subjects)
+	}
+}
+
+func assertDestroyAuthority(t *testing.T, objects []*unstructured.Unstructured) {
+	t.Helper()
+	controller := &rbacv1.Role{}
+	convertObject(t, objects[7], controller)
+	admin := &rbacv1.Role{}
+	convertObject(t, objects[8], admin)
+	for _, role := range []*rbacv1.Role{controller, admin} {
+		if role.Namespace != "arcadectl-system" {
+			t.Fatalf("destroy Role %q namespace = %q", role.Name, role.Namespace)
+		}
+	}
+	deletePVC := false
+	for _, rule := range controller.Rules {
+		if slices.Contains(rule.Resources, "persistentvolumeclaims") && slices.Contains(rule.Verbs, "delete") {
+			deletePVC = true
+		}
+	}
+	if !deletePVC {
+		t.Fatal("dedicated destroy controller lacks exact PVC deletion authority")
+	}
+	for _, rule := range admin.Rules {
+		if slices.Contains(rule.Resources, "persistentvolumeclaims") || slices.Contains(rule.Resources, "gamedestroys/status") {
+			t.Fatalf("unsafe admin Role has destructive/controller authority: %#v", rule)
+		}
+	}
+	for index, want := range map[int]string{9: "arcadectl-destroy-controller", 10: "arcadectl-destroy-admin"} {
+		binding := &rbacv1.RoleBinding{}
+		convertObject(t, objects[index], binding)
+		if binding.RoleRef.Name != want || len(binding.Subjects) != 1 || binding.Subjects[0].Name != want {
+			t.Fatalf("destroy RoleBinding %q = %#v", want, binding)
+		}
+	}
+	for _, check := range []struct {
+		policyIndex int
+		name        string
+		fragments   []string
+	}{
+		{19, "arcadectl-destroy-worker-gate", []string{"destroy-authorized", "destroy-pod-authorized", "arcadectl-destroy-controller", "object.spec.containers == oldObject.spec.containers"}},
+		{21, "arcadectl-retained-world-pvc-delete", []string{"request.operation != 'DELETE'", "arcadectl-destroy-controller", "data-identity", "data-policy", "cold-backup-uid", "request.operation != 'CREATE'", "arcadectl-controller", "object.metadata.labels[key] == oldObject.metadata.labels[key]"}},
+		{23, "arcadectl-destroy-unsafe-admin", []string{"UnsafeNoBackup", "arcadectl-destroy-admin", "unsafe-requested-by", "object.spec == oldObject.spec"}},
+	} {
+		policy := &admissionregistrationv1.ValidatingAdmissionPolicy{}
+		convertObject(t, objects[check.policyIndex], policy)
+		binding := &admissionregistrationv1.ValidatingAdmissionPolicyBinding{}
+		convertObject(t, objects[check.policyIndex+1], binding)
+		if policy.Name != check.name || policy.Spec.FailurePolicy == nil || *policy.Spec.FailurePolicy != admissionregistrationv1.Fail ||
+			binding.Spec.PolicyName != check.name || !slices.Equal(binding.Spec.ValidationActions, []admissionregistrationv1.ValidationAction{admissionregistrationv1.Deny}) ||
+			binding.Spec.MatchResources == nil || binding.Spec.MatchResources.NamespaceSelector == nil ||
+			binding.Spec.MatchResources.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "arcadectl-system" {
+			t.Fatalf("destroy policy/binding %q is not fail closed: policy %#v binding %#v", check.name, policy.Spec, binding.Spec)
+		}
+		if len(policy.Spec.MatchConstraints.ResourceRules) != 1 {
+			t.Fatalf("destroy policy %q has ambiguous resource rules: %#v", check.name, policy.Spec.MatchConstraints.ResourceRules)
+		}
+		rule := policy.Spec.MatchConstraints.ResourceRules[0]
+		switch check.name {
+		case "arcadectl-destroy-worker-gate":
+			if !slices.Equal(rule.Operations, []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update}) || !slices.Contains(rule.Resources, "pods") {
+				t.Fatalf("destroy worker gate match = %#v", rule)
+			}
+		case "arcadectl-retained-world-pvc-delete":
+			if !slices.Equal(rule.Operations, []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update, admissionregistrationv1.Delete}) || !slices.Equal(rule.Resources, []string{"persistentvolumeclaims"}) {
+				t.Fatalf("retained PVC policy match = %#v", rule)
+			}
+		case "arcadectl-destroy-unsafe-admin":
+			if !slices.Equal(rule.Operations, []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update}) || !slices.Equal(rule.Resources, []string{"gamedestroys"}) {
+				t.Fatalf("unsafe destroy policy match = %#v", rule)
+			}
+		}
+		var expressions []string
+		for _, variable := range policy.Spec.Variables {
+			expressions = append(expressions, variable.Expression)
+		}
+		for _, validation := range policy.Spec.Validations {
+			expressions = append(expressions, validation.Expression)
+		}
+		joined := strings.Join(expressions, "\n")
+		for _, fragment := range check.fragments {
+			if !strings.Contains(joined, fragment) {
+				t.Errorf("destroy policy %q omits %q", check.name, fragment)
+			}
+		}
+	}
+}
+
+func assertDestroyDeployment(t *testing.T, object *unstructured.Unstructured, image string) {
+	t.Helper()
+	deployment := &appsv1.Deployment{}
+	convertObject(t, object, deployment)
+	if deployment.Namespace != "arcadectl-system" || deployment.Spec.Template.Spec.ServiceAccountName != "arcadectl-destroy-controller" || len(deployment.Spec.Template.Spec.Containers) != 1 {
+		t.Fatalf("destroy deployment identity = %#v", deployment)
+	}
+	container := deployment.Spec.Template.Spec.Containers[0]
+	if container.Image != image || !slices.Contains(container.Args, "--controller-mode=destroy") ||
+		!slices.Contains(container.Args, "--backup-worker-image=$(BACKUP_WORKER_IMAGE)") {
+		t.Fatalf("destroy deployment image or arguments = %#v", container)
 	}
 }
 

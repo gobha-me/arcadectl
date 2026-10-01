@@ -47,7 +47,8 @@ var backupConditionOrder = []string{
 }
 
 // GameBackupReconciler turns one immutable operation into one cold,
-// repository-verified artifact without ever mutating or deleting source PVCs.
+// repository-verified artifact without writing source world data or deleting
+// source PVCs. Leave-stopped success records a durable cold-provenance marker.
 type GameBackupReconciler struct {
 	client.Client
 	APIReader   client.Reader
@@ -991,6 +992,11 @@ func (r *GameBackupReconciler) finishSuccess(ctx context.Context, backup *arcade
 	}
 	if pending {
 		return ctrl.Result{RequeueAfter: backupRequeue}, nil
+	}
+	if backup.Spec.RestartPolicy == arcadev1alpha1.RestartLeaveStopped {
+		if err := r.markLeaveStoppedBackup(ctx, backup, runtime); err != nil {
+			return r.hold(ctx, backup, arcadev1alpha1.ReasonIdentityMismatch, "the exact cold source claim cannot be marked for retained-world protection; inspect PVC identity and admission state")
+		}
 	}
 	err = r.writeStatus(ctx, backup, arcadev1alpha1.DataPhaseSucceeded, func(updated *arcadev1alpha1.GameBackup) {
 		now := r.now()

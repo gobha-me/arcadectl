@@ -188,6 +188,131 @@ subjects:
     name: arcadectl-controller
     namespace: arcadectl-system
 ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: arcadectl-destroy-controller
+  namespace: arcadectl-system
+  labels:
+    app.kubernetes.io/name: arcadectl-destroy-controller
+    app.kubernetes.io/part-of: arcadectl
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: arcadectl-destroy-admin
+  namespace: arcadectl-system
+  labels:
+    app.kubernetes.io/name: arcadectl-destroy-admin
+    app.kubernetes.io/part-of: arcadectl
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: arcadectl-destroy-controller
+  namespace: arcadectl-system
+rules:
+- apiGroups: [""]
+  resources: ["persistentvolumeclaims"]
+  verbs: ["get", "list", "watch", "delete"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch", "update"]
+- apiGroups: [""]
+  resources: ["configmaps", "serviceaccounts"]
+  verbs: ["create", "get", "list", "watch", "delete"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get"]
+- apiGroups: ["arcade.gobha.me"]
+  resources: ["gamedestroys"]
+  verbs: ["get", "list", "watch", "patch", "update"]
+- apiGroups: ["arcade.gobha.me"]
+  resources: ["gamebackups", "gameservers"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["arcade.gobha.me"]
+  resources: ["gamedestroys/status"]
+  verbs: ["get", "patch", "update"]
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["create", "delete", "get", "list", "watch", "update"]
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["create", "delete", "get", "list", "watch", "patch", "update"]
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources: ["roles", "rolebindings"]
+  verbs: ["create", "delete", "get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: arcadectl-destroy-admin
+  namespace: arcadectl-system
+rules:
+- apiGroups: ["arcade.gobha.me"]
+  resources: ["gamedestroys"]
+  verbs: ["create", "get", "list", "watch", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: arcadectl-destroy-controller
+  namespace: arcadectl-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: arcadectl-destroy-controller
+subjects:
+- kind: ServiceAccount
+  name: arcadectl-destroy-controller
+  namespace: arcadectl-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: arcadectl-destroy-admin
+  namespace: arcadectl-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: arcadectl-destroy-admin
+subjects:
+- kind: ServiceAccount
+  name: arcadectl-destroy-admin
+  namespace: arcadectl-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: arcadectl-destroy-volumeattachment-reader
+  labels:
+    app.kubernetes.io/name: arcadectl-destroy-controller
+    app.kubernetes.io/part-of: arcadectl
+rules:
+- apiGroups: [""]
+  resources: ["persistentvolumes"]
+  verbs: ["get"]
+- apiGroups: ["storage.k8s.io"]
+  resources: ["volumeattachments"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: arcadectl-destroy-volumeattachment-reader
+  labels:
+    app.kubernetes.io/name: arcadectl-destroy-controller
+    app.kubernetes.io/part-of: arcadectl
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: arcadectl-destroy-volumeattachment-reader
+subjects:
+- kind: ServiceAccount
+  name: arcadectl-destroy-controller
+  namespace: arcadectl-system
+---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -471,6 +596,265 @@ spec:
       matchLabels:
         kubernetes.io/metadata.name: arcadectl-system
 ---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: arcadectl-destroy-worker-gate
+  labels:
+    app.kubernetes.io/name: arcadectl-destroy-controller
+    app.kubernetes.io/part-of: arcadectl
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    resourceRules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      operations: ["CREATE", "UPDATE"]
+      resources: ["pods", "pods/ephemeralcontainers", "pods/resize"]
+      scope: Namespaced
+  variables:
+  - name: isDestroyWorker
+    expression: >-
+      (has(object.metadata.labels) &&
+       'app.kubernetes.io/managed-by' in object.metadata.labels &&
+       'app.kubernetes.io/name' in object.metadata.labels &&
+       object.metadata.labels['app.kubernetes.io/managed-by'] == 'arcadectl' &&
+       object.metadata.labels['app.kubernetes.io/name'] == 'destroy-worker') ||
+      (has(object.metadata.ownerReferences) &&
+       object.metadata.ownerReferences.exists(owner,
+         owner.apiVersion == 'batch/v1' && owner.kind == 'Job' &&
+         owner.name.startsWith('destroy-'))) ||
+      object.spec.serviceAccountName.startsWith('destroy-') ||
+      (oldObject != null && (
+        (has(oldObject.metadata.labels) &&
+         'app.kubernetes.io/managed-by' in oldObject.metadata.labels &&
+         'app.kubernetes.io/name' in oldObject.metadata.labels &&
+         oldObject.metadata.labels['app.kubernetes.io/managed-by'] == 'arcadectl' &&
+         oldObject.metadata.labels['app.kubernetes.io/name'] == 'destroy-worker') ||
+        (has(oldObject.metadata.ownerReferences) &&
+         oldObject.metadata.ownerReferences.exists(owner,
+           owner.apiVersion == 'batch/v1' && owner.kind == 'Job' &&
+           owner.name.startsWith('destroy-'))) ||
+        oldObject.spec.serviceAccountName.startsWith('destroy-')))
+  - name: newAuthorization
+    expression: >-
+      has(object.metadata.annotations) &&
+      'arcade.gobha.me/destroy-pod-authorized' in object.metadata.annotations
+        ? object.metadata.annotations['arcade.gobha.me/destroy-pod-authorized'] : ''
+  - name: oldAuthorization
+    expression: >-
+      oldObject != null && has(oldObject.metadata.annotations) &&
+      'arcade.gobha.me/destroy-pod-authorized' in oldObject.metadata.annotations
+        ? oldObject.metadata.annotations['arcade.gobha.me/destroy-pod-authorized'] : ''
+  validations:
+  - expression: >-
+      !variables.isDestroyWorker || !has(request.subResource) || request.subResource == ''
+    message: Arcadectl destroy worker Pod subresources are not mutable.
+  - expression: >-
+      !variables.isDestroyWorker || request.operation != 'CREATE' ||
+      (has(object.spec.schedulingGates) && size(object.spec.schedulingGates) == 1 &&
+       object.spec.schedulingGates[0].name == 'arcade.gobha.me/destroy-authorized' &&
+       variables.newAuthorization == '' &&
+       (!has(object.spec.nodeName) || object.spec.nodeName == ''))
+    message: Arcadectl destroy worker Pods must enter admission with exactly one execution gate and no authorization marker.
+  - expression: >-
+      !variables.isDestroyWorker || request.operation != 'UPDATE' ||
+      (object.metadata.labels == oldObject.metadata.labels &&
+       object.metadata.ownerReferences == oldObject.metadata.ownerReferences &&
+       object.spec.containers == oldObject.spec.containers &&
+       has(object.spec.initContainers) == has(oldObject.spec.initContainers) &&
+       (!has(object.spec.initContainers) || object.spec.initContainers == oldObject.spec.initContainers) &&
+       has(object.spec.volumes) == has(oldObject.spec.volumes) &&
+       (!has(object.spec.volumes) || object.spec.volumes == oldObject.spec.volumes) &&
+       object.spec.serviceAccountName == oldObject.spec.serviceAccountName &&
+       has(object.spec.automountServiceAccountToken) == has(oldObject.spec.automountServiceAccountToken) &&
+       (!has(object.spec.automountServiceAccountToken) ||
+        object.spec.automountServiceAccountToken == oldObject.spec.automountServiceAccountToken) &&
+       has(object.spec.activeDeadlineSeconds) == has(oldObject.spec.activeDeadlineSeconds) &&
+       (!has(object.spec.activeDeadlineSeconds) || object.spec.activeDeadlineSeconds == oldObject.spec.activeDeadlineSeconds) &&
+       has(object.spec.tolerations) == has(oldObject.spec.tolerations) &&
+       (!has(object.spec.tolerations) || object.spec.tolerations == oldObject.spec.tolerations) &&
+       has(object.spec.nodeSelector) == has(oldObject.spec.nodeSelector) &&
+       (!has(object.spec.nodeSelector) || object.spec.nodeSelector == oldObject.spec.nodeSelector) &&
+       has(object.spec.affinity) == has(oldObject.spec.affinity) &&
+       (!has(object.spec.affinity) || object.spec.affinity == oldObject.spec.affinity))
+    message: Arcadectl destroy worker executable fields are immutable while the scheduling gate is removed.
+  - expression: >-
+      !variables.isDestroyWorker || request.operation != 'UPDATE' ||
+      (has(object.spec.schedulingGates) == has(oldObject.spec.schedulingGates) &&
+       (!has(object.spec.schedulingGates) || object.spec.schedulingGates == oldObject.spec.schedulingGates) &&
+       variables.newAuthorization == variables.oldAuthorization) ||
+      (request.userInfo.username == 'system:serviceaccount:arcadectl-system:arcadectl-destroy-controller' &&
+       has(oldObject.spec.schedulingGates) && size(oldObject.spec.schedulingGates) == 1 &&
+       oldObject.spec.schedulingGates[0].name == 'arcade.gobha.me/destroy-authorized' &&
+       !has(object.spec.schedulingGates) && variables.oldAuthorization == '' &&
+       variables.newAuthorization == object.metadata.uid)
+    message: Only the dedicated Arcadectl destroy controller may authorize the exact destroy worker Pod.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: arcadectl-destroy-worker-gate
+  labels:
+    app.kubernetes.io/name: arcadectl-destroy-controller
+    app.kubernetes.io/part-of: arcadectl
+spec:
+  policyName: arcadectl-destroy-worker-gate
+  validationActions: [Deny]
+  matchResources:
+    matchPolicy: Equivalent
+    objectSelector: {}
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: arcadectl-system
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: arcadectl-retained-world-pvc-delete
+  labels:
+    app.kubernetes.io/name: arcadectl-destroy-controller
+    app.kubernetes.io/part-of: arcadectl
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    resourceRules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      operations: ["CREATE", "UPDATE", "DELETE"]
+      resources: ["persistentvolumeclaims"]
+      scope: Namespaced
+  variables:
+  - name: wasManagedWorld
+    expression: >-
+      oldObject != null && has(oldObject.metadata.labels) &&
+      'app.kubernetes.io/managed-by' in oldObject.metadata.labels &&
+      oldObject.metadata.labels['app.kubernetes.io/managed-by'] == 'arcadectl' &&
+      'arcade.gobha.me/data-identity' in oldObject.metadata.labels &&
+      'arcade.gobha.me/data-policy' in oldObject.metadata.labels &&
+      oldObject.metadata.labels['arcade.gobha.me/data-policy'] == 'retain'
+  - name: newColdBackupUID
+    expression: >-
+      object != null && has(object.metadata.annotations) &&
+      'arcade.gobha.me/cold-backup-uid' in object.metadata.annotations
+        ? object.metadata.annotations['arcade.gobha.me/cold-backup-uid'] : ''
+  - name: oldColdBackupUID
+    expression: >-
+      oldObject != null && has(oldObject.metadata.annotations) &&
+      'arcade.gobha.me/cold-backup-uid' in oldObject.metadata.annotations
+        ? oldObject.metadata.annotations['arcade.gobha.me/cold-backup-uid'] : ''
+  validations:
+  - expression: >-
+      request.operation != 'CREATE' || variables.newColdBackupUID == ''
+    message: New PVCs cannot claim a verified cold-backup identity.
+  - expression: >-
+      request.operation != 'UPDATE' ||
+      variables.newColdBackupUID == variables.oldColdBackupUID ||
+      request.userInfo.username == 'system:serviceaccount:arcadectl-system:arcadectl-controller'
+    message: Only the ordinary Arcadectl controller may change a PVC cold-backup marker.
+  - expression: >-
+      !variables.wasManagedWorld || request.operation != 'DELETE' ||
+      request.userInfo.username == 'system:serviceaccount:arcadectl-system:arcadectl-destroy-controller'
+    message: Only the dedicated Arcadectl destroy controller may delete a retained world PVC.
+  - expression: >-
+      !variables.wasManagedWorld || request.operation != 'UPDATE' ||
+      (has(object.metadata.labels) &&
+       ['app.kubernetes.io/managed-by', 'app.kubernetes.io/instance',
+        'arcade.gobha.me/data-identity', 'arcade.gobha.me/data-policy',
+        'arcade.gobha.me/data-path'].all(key,
+          key in oldObject.metadata.labels && key in object.metadata.labels &&
+          object.metadata.labels[key] == oldObject.metadata.labels[key]))
+    message: Managed retained world PVC identity and retention labels cannot be changed or removed.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: arcadectl-retained-world-pvc-delete
+  labels:
+    app.kubernetes.io/name: arcadectl-destroy-controller
+    app.kubernetes.io/part-of: arcadectl
+spec:
+  policyName: arcadectl-retained-world-pvc-delete
+  validationActions: [Deny]
+  matchResources:
+    matchPolicy: Equivalent
+    objectSelector: {}
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: arcadectl-system
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: arcadectl-destroy-unsafe-admin
+  labels:
+    app.kubernetes.io/name: arcadectl-destroy-controller
+    app.kubernetes.io/part-of: arcadectl
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    resourceRules:
+    - apiGroups: ["arcade.gobha.me"]
+      apiVersions: ["v1alpha1"]
+      operations: ["CREATE", "UPDATE"]
+      resources: ["gamedestroys"]
+      scope: Namespaced
+  variables:
+  - name: isUnsafe
+    expression: >-
+      object.spec.mode == 'UnsafeNoBackup' ||
+      (oldObject != null && oldObject.spec.mode == 'UnsafeNoBackup')
+  validations:
+  - expression: >-
+      !variables.isUnsafe ||
+      request.userInfo.username == 'system:serviceaccount:arcadectl-system:arcadectl-destroy-admin' ||
+      (request.operation == 'UPDATE' && oldObject != null &&
+       request.userInfo.username == 'system:serviceaccount:arcadectl-system:arcadectl-destroy-controller' &&
+       object.spec == oldObject.spec)
+    message: Unsafe no-backup destroy requires the distinct Arcadectl destroy admin identity.
+  - expression: >-
+      !variables.isUnsafe ||
+      (has(object.metadata.annotations) &&
+       'arcade.gobha.me/unsafe-requested-by' in object.metadata.annotations &&
+       object.metadata.annotations['arcade.gobha.me/unsafe-requested-by'] ==
+         'system:serviceaccount:arcadectl-system:arcadectl-destroy-admin' &&
+       (oldObject == null ||
+        (has(oldObject.metadata.annotations) &&
+         'arcade.gobha.me/unsafe-requested-by' in oldObject.metadata.annotations &&
+         object.metadata.annotations['arcade.gobha.me/unsafe-requested-by'] ==
+           oldObject.metadata.annotations['arcade.gobha.me/unsafe-requested-by'])))
+    message: Unsafe destroy must retain its immutable administrator audit identity annotation.
+  auditAnnotations:
+  - key: unsafe-destroy-target-uid
+    valueExpression: >-
+      object.spec.mode == 'UnsafeNoBackup' ? string(object.spec.target.gameServer.uid) : ''
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: arcadectl-destroy-unsafe-admin
+  labels:
+    app.kubernetes.io/name: arcadectl-destroy-controller
+    app.kubernetes.io/part-of: arcadectl
+spec:
+  policyName: arcadectl-destroy-unsafe-admin
+  validationActions: [Deny]
+  matchResources:
+    matchPolicy: Equivalent
+    objectSelector: {}
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: arcadectl-system
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -504,6 +888,86 @@ spec:
           image: ghcr.io/gobha-me/arcadectl-controller@sha256:0000000000000000000000000000000000000000000000000000000000000000
           imagePullPolicy: IfNotPresent
           args:
+            - --watch-namespace=$(POD_NAMESPACE)
+            - --backup-worker-image=$(BACKUP_WORKER_IMAGE)
+            - --leader-elect=true
+            - --metrics-bind-address=0
+            - --health-probe-bind-address=:8081
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: BACKUP_WORKER_IMAGE
+              value: ghcr.io/gobha-me/arcadectl-controller@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          ports:
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 2
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 2
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: arcadectl-destroy-controller
+  namespace: arcadectl-system
+  labels:
+    app.kubernetes.io/name: arcadectl-destroy-controller
+    app.kubernetes.io/part-of: arcadectl
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: arcadectl-destroy-controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: arcadectl-destroy-controller
+        app.kubernetes.io/part-of: arcadectl
+    spec:
+      serviceAccountName: arcadectl-destroy-controller
+      automountServiceAccountToken: true
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: destroy-controller
+          image: ghcr.io/gobha-me/arcadectl-controller@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          imagePullPolicy: IfNotPresent
+          args:
+            - --controller-mode=destroy
             - --watch-namespace=$(POD_NAMESPACE)
             - --backup-worker-image=$(BACKUP_WORKER_IMAGE)
             - --leader-elect=true

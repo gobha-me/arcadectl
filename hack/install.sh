@@ -21,9 +21,11 @@ trap 'rm -f -- "$controller_manifest"' EXIT
 for custom_resource_definition in \
   gameservers.arcade.gobha.me \
   gamebackups.arcade.gobha.me \
-  gamerestores.arcade.gobha.me; do
+  gamerestores.arcade.gobha.me \
+  gamedestroys.arcade.gobha.me; do
   "$kubectl_command" wait --for=condition=Established \
     "customresourcedefinition/$custom_resource_definition" --timeout=60s
 done
 "$kubectl_command" apply -f "$controller_manifest"
 "$kubectl_command" rollout status deployment/arcadectl-controller --namespace arcadectl-system --timeout=120s
+"$kubectl_command" rollout status deployment/arcadectl-destroy-controller --namespace arcadectl-system --timeout=120s

@@ -64,7 +64,14 @@ CRD, RBAC, and controller manifests and proves:
   inspector also scans every stored file and manifest for credential canaries;
 - fail-closed behavior when a foreign Service occupies a deterministic name,
   with no partial sibling resources; and
-- safe uninstall that leaves the namespace, all Arcadectl CRDs, GameServer,
+- explicit verified-backup destruction of a separate stopped world after
+  its GameServer has been removed: a durable cold marker, read-only preview
+  and restore guidance, challenge confirmation, fresh repository verification,
+  exact-UID deletion journal, and exact-name PVC absence; the primary world
+  stays unchanged and the `Retain` PV and physical sentinel remain;
+- separate ordinary and destroy controller PVC permissions and warning-free
+  CEL typechecking of the destroy admission policies; and
+- safe uninstall of both controllers that leaves the namespace, all Arcadectl CRDs, GameServer,
   operation records, and retained PVC.
 
 The MinIO service uses an ephemeral volume and exists only inside the owned Kind
@@ -107,6 +114,23 @@ a release image. Cluster-level interrupted populate, cancellation, rollback,
 and CSI alias rejection remain unproven; unit and envtest coverage is not a
 substitute for those experiments. Do not treat an older v1 backup as
 restorable.
+
+## Destroy validation boundary
+
+The synthetic Kind proof exercises the normal `VerifiedBackup` positive path
+against real Restic/MinIO and Kubernetes controllers. It intentionally uses a
+separate disposable world, not a production cluster or the primary retention
+fixture. PVC deletion is not physical erasure when the PV reclaim policy is
+`Retain`; the proof checks that distinction explicitly.
+
+Unit tests cover exact-UID replacement, lease conflicts, confirmation expiry,
+cancel/finalizer cleanup, repository rejection, retry after a durable journal,
+and partial multi-claim deletion. Real API-server envtest cases cover CRD
+immutability/status rules and admission denial of ordinary PVC deletion,
+cold-marker forgery, unsafe requests by the wrong identity, and worker
+gate/executable mutation. These do not prove every interruption or CSI path in
+a real cluster. The unsafe no-backup exception is never exercised against a
+real world in the Kind proof.
 
 ## Certified Factorio lifecycle
 

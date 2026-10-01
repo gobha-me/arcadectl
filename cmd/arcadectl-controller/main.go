@@ -34,11 +34,13 @@ func main() {
 	var healthAddress string
 	var watchNamespace string
 	var backupWorkerImage string
+	var controllerMode string
 	var leaderElection bool
 	flag.StringVar(&metricsAddress, "metrics-bind-address", ":8080", "address for the metrics endpoint")
 	flag.StringVar(&healthAddress, "health-probe-bind-address", ":8081", "address for health probes")
 	flag.StringVar(&watchNamespace, "watch-namespace", os.Getenv("POD_NAMESPACE"), "single namespace containing GameServers and their resources")
 	flag.StringVar(&backupWorkerImage, "backup-worker-image", os.Getenv("BACKUP_WORKER_IMAGE"), "backup worker image pinned by sha256 digest")
+	flag.StringVar(&controllerMode, "controller-mode", "normal", "controller identity: normal or destroy")
 	flag.BoolVar(&leaderElection, "leader-elect", false, "enable leader election")
 	loggerOptions := zap.Options{Development: false}
 	loggerOptions.BindFlags(flag.CommandLine)
@@ -61,7 +63,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	options, err := managerOptions(scheme, watchNamespace, metricsAddress, healthAddress, leaderElection)
+	if controllerMode != "normal" && controllerMode != "destroy" {
+		setupLog.Error(errors.New("controller mode must be normal or destroy"), "validate controller mode")
+		os.Exit(1)
+	}
+	options, err := managerOptionsForMode(scheme, watchNamespace, metricsAddress, healthAddress, leaderElection, controllerMode)
 	if err != nil {
 		setupLog.Error(err, "validate manager options")
 		os.Exit(1)
@@ -72,33 +78,43 @@ func main() {
 		os.Exit(1)
 	}
 
-	reconciler := &controller.GameServerReconciler{
-		Client:    manager.GetClient(),
-		APIReader: manager.GetAPIReader(),
-		Scheme:    manager.GetScheme(),
-		Catalog:   gameCatalog,
-	}
-	if err := reconciler.SetupWithManager(manager); err != nil {
-		setupLog.Error(err, "register GameServer controller")
-		os.Exit(1)
-	}
 	if !regexp.MustCompile(`^[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}$`).MatchString(backupWorkerImage) {
 		setupLog.Error(errors.New("backup worker image must be a lowercase repository pinned by sha256 digest"), "validate backup worker image")
 		os.Exit(1)
 	}
-	backupReconciler := &controller.GameBackupReconciler{
-		Client: manager.GetClient(), APIReader: manager.GetAPIReader(), Scheme: manager.GetScheme(), Catalog: gameCatalog, WorkerImage: backupWorkerImage,
-	}
-	if err := backupReconciler.SetupWithManager(manager); err != nil {
-		setupLog.Error(err, "register GameBackup controller")
-		os.Exit(1)
-	}
-	restoreReconciler := &controller.GameRestoreReconciler{
-		Client: manager.GetClient(), APIReader: manager.GetAPIReader(), Scheme: manager.GetScheme(), Catalog: gameCatalog, WorkerImage: backupWorkerImage,
-	}
-	if err := restoreReconciler.SetupWithManager(manager); err != nil {
-		setupLog.Error(err, "register GameRestore controller")
-		os.Exit(1)
+	if controllerMode == "destroy" {
+		destroyReconciler := &controller.GameDestroyReconciler{
+			Client: manager.GetClient(), APIReader: manager.GetAPIReader(), Scheme: manager.GetScheme(), Catalog: gameCatalog, WorkerImage: backupWorkerImage,
+		}
+		if err := destroyReconciler.SetupWithManager(manager); err != nil {
+			setupLog.Error(err, "register GameDestroy controller")
+			os.Exit(1)
+		}
+	} else {
+		reconciler := &controller.GameServerReconciler{
+			Client:    manager.GetClient(),
+			APIReader: manager.GetAPIReader(),
+			Scheme:    manager.GetScheme(),
+			Catalog:   gameCatalog,
+		}
+		if err := reconciler.SetupWithManager(manager); err != nil {
+			setupLog.Error(err, "register GameServer controller")
+			os.Exit(1)
+		}
+		backupReconciler := &controller.GameBackupReconciler{
+			Client: manager.GetClient(), APIReader: manager.GetAPIReader(), Scheme: manager.GetScheme(), Catalog: gameCatalog, WorkerImage: backupWorkerImage,
+		}
+		if err := backupReconciler.SetupWithManager(manager); err != nil {
+			setupLog.Error(err, "register GameBackup controller")
+			os.Exit(1)
+		}
+		restoreReconciler := &controller.GameRestoreReconciler{
+			Client: manager.GetClient(), APIReader: manager.GetAPIReader(), Scheme: manager.GetScheme(), Catalog: gameCatalog, WorkerImage: backupWorkerImage,
+		}
+		if err := restoreReconciler.SetupWithManager(manager); err != nil {
+			setupLog.Error(err, "register GameRestore controller")
+			os.Exit(1)
+		}
 	}
 	if err := manager.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "register health check")
@@ -117,12 +133,23 @@ func main() {
 }
 
 func managerOptions(scheme *runtime.Scheme, watchNamespace, metricsAddress, healthAddress string, leaderElection bool) (ctrl.Options, error) {
+	return managerOptionsForMode(scheme, watchNamespace, metricsAddress, healthAddress, leaderElection, "normal")
+}
+
+func managerOptionsForMode(scheme *runtime.Scheme, watchNamespace, metricsAddress, healthAddress string, leaderElection bool, mode string) (ctrl.Options, error) {
 	watchNamespace = strings.TrimSpace(watchNamespace)
 	if watchNamespace == "" {
 		return ctrl.Options{}, errors.New("watch namespace is required")
 	}
 	if problems := validation.IsDNS1123Label(watchNamespace); len(problems) > 0 {
 		return ctrl.Options{}, fmt.Errorf("invalid watch namespace: %s", strings.Join(problems, "; "))
+	}
+	if mode != "normal" && mode != "destroy" {
+		return ctrl.Options{}, errors.New("controller mode must be normal or destroy")
+	}
+	leaderElectionID := "controller.arcade.gobha.me"
+	if mode == "destroy" {
+		leaderElectionID = "destroy-controller.arcade.gobha.me"
 	}
 	return ctrl.Options{
 		Scheme: scheme,
@@ -132,7 +159,7 @@ func managerOptions(scheme *runtime.Scheme, watchNamespace, metricsAddress, heal
 		Metrics:                 metricsserver.Options{BindAddress: metricsAddress},
 		HealthProbeBindAddress:  healthAddress,
 		LeaderElection:          leaderElection,
-		LeaderElectionID:        "controller.arcade.gobha.me",
+		LeaderElectionID:        leaderElectionID,
 		LeaderElectionNamespace: watchNamespace,
 	}, nil
 }

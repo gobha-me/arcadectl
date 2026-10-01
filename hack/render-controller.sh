@@ -19,8 +19,8 @@ readonly repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly install_directory="$repository_root/config/install"
 readonly template="$install_directory/deployment.yaml.tmpl"
 
-if [[ $(grep -Fo '@@CONTROLLER_IMAGE@@' "$template" | wc -l) -ne 2 ]]; then
-  echo "controller Deployment template must contain exactly two image placeholders" >&2
+if [[ $(grep -Fo '@@CONTROLLER_IMAGE@@' "$template" | wc -l) -ne 4 ]]; then
+  echo "controller Deployment template must contain exactly four image placeholders" >&2
   exit 1
 fi
 
@@ -30,12 +30,23 @@ for manifest in \
   "$install_directory/role-binding.yaml" \
   "$install_directory/volumeattachment-cluster-role.yaml" \
   "$install_directory/volumeattachment-cluster-role-binding.yaml" \
+  "$install_directory/destroy-service-account.yaml" \
+  "$repository_root/config/rbac/destroy-role.yaml" \
+  "$install_directory/destroy-role-binding.yaml" \
+  "$install_directory/destroy-volumeattachment-cluster-role.yaml" \
+  "$install_directory/destroy-volumeattachment-cluster-role-binding.yaml" \
   "$install_directory/backup-worker-admission-policy.yaml" \
   "$install_directory/backup-worker-admission-policy-binding.yaml" \
   "$install_directory/restore-worker-admission-policy.yaml" \
   "$install_directory/restore-worker-admission-policy-binding.yaml" \
   "$install_directory/restore-candidate-pvc-admission-policy.yaml" \
-  "$install_directory/restore-candidate-pvc-admission-policy-binding.yaml"; do
+  "$install_directory/restore-candidate-pvc-admission-policy-binding.yaml" \
+  "$install_directory/destroy-worker-admission-policy.yaml" \
+  "$install_directory/destroy-worker-admission-policy-binding.yaml" \
+  "$install_directory/destroy-pvc-admission-policy.yaml" \
+  "$install_directory/destroy-pvc-admission-policy-binding.yaml" \
+  "$install_directory/destroy-unsafe-admission-policy.yaml" \
+  "$install_directory/destroy-unsafe-admission-policy-binding.yaml"; do
   printf '%s\n' "$(<"$manifest")"
 done
 

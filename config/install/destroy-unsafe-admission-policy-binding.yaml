@@ -1,0 +1,17 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: arcadectl-destroy-unsafe-admin
+  labels:
+    app.kubernetes.io/name: arcadectl-destroy-controller
+    app.kubernetes.io/part-of: arcadectl
+spec:
+  policyName: arcadectl-destroy-unsafe-admin
+  validationActions: [Deny]
+  matchResources:
+    matchPolicy: Equivalent
+    objectSelector: {}
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: arcadectl-system

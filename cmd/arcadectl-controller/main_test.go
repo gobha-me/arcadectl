@@ -45,3 +45,23 @@ func TestManagerOptionsRejectInvalidNamespace(t *testing.T) {
 		}
 	}
 }
+
+func TestDestroyManagerUsesSeparateLeaderIdentity(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"normal", "destroy"} {
+		options, err := managerOptionsForMode(runtime.NewScheme(), "games", "0", ":8081", true, mode)
+		if err != nil {
+			t.Fatalf("managerOptionsForMode(%q): %v", mode, err)
+		}
+		want := "controller.arcade.gobha.me"
+		if mode == "destroy" {
+			want = "destroy-controller.arcade.gobha.me"
+		}
+		if options.LeaderElectionID != want {
+			t.Errorf("mode %q leader ID = %q, want %q", mode, options.LeaderElectionID, want)
+		}
+	}
+	if _, err := managerOptionsForMode(runtime.NewScheme(), "games", "0", ":8081", false, "unknown"); err == nil {
+		t.Fatal("unknown controller mode accepted")
+	}
+}

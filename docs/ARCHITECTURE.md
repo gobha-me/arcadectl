@@ -125,16 +125,21 @@ container logs; Factorio's normal stdout and stderr remain available. Its
 silent, fixed readiness helper checks RCON only inside the container, so the
 administrator port and probe diagnostics never enter the Pod spec or Events.
 
-`destroy` is a different operation. It requires the exact server identity,
-explicit confirmation, and a successful backup by default. An override must be
-equally explicit and is recorded as an unsafe administrative decision.
+`GameDestroy` is a different operation under a dedicated controller identity
+with PVC-delete permission. It requires the exact original server and world
+claim identities, a short-lived preview echo, and fresh repository verification
+of a successful leave-stopped backup by default. A distinct destroy-admin
+identity and recorded reason are required for an unsafe no-backup exception.
+The ordinary controller never gains PVC-delete permission. See
+[DESTROY.md](DESTROY.md) for the trusted-namespace boundary and partial-failure
+journal.
 
 Restore targets newly provisioned retained claims before it changes the active
 server reference. Candidate/previous/backup-source backing-volume checks are
 currently certified only for CSI PVs with a driver and volume handle. A failed
 restore cannot partially overwrite the previous world; unresolved rollback
 holds its leases for operator inspection. The first restore end-to-end cluster
-proof is still pending.
+proof has been completed for a real Factorio world on isolated CSI storage.
 The complete identity, idempotency, cancellation, retention, and state-machine
 contract is documented in [BACKUP_RESTORE.md](BACKUP_RESTORE.md).
 

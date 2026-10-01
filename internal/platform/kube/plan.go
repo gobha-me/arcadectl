@@ -28,13 +28,16 @@ import (
 )
 
 const (
-	LabelManagedBy              = "app.kubernetes.io/managed-by"
-	LabelName                   = "app.kubernetes.io/name"
-	LabelInstance               = "app.kubernetes.io/instance"
-	LabelGame                   = "arcade.gobha.me/game"
-	LabelDataPolicy             = "arcade.gobha.me/data-policy"
-	LabelDataPath               = "arcade.gobha.me/data-path"
-	LabelDataIdentity           = "arcade.gobha.me/data-identity"
+	LabelManagedBy    = "app.kubernetes.io/managed-by"
+	LabelName         = "app.kubernetes.io/name"
+	LabelInstance     = "app.kubernetes.io/instance"
+	LabelGame         = "arcade.gobha.me/game"
+	LabelDataPolicy   = "arcade.gobha.me/data-policy"
+	LabelDataPath     = "arcade.gobha.me/data-path"
+	LabelDataIdentity = "arcade.gobha.me/data-identity"
+	// AnnotationColdBackupUID records the last verified backup that left this
+	// exact retained world cold. A later Arcadectl runtime activation clears it.
+	AnnotationColdBackupUID     = "arcade.gobha.me/cold-backup-uid"
 	AnnotationConfigurationHash = "arcade.gobha.me/configuration-sha256"
 	ManagerName                 = "arcadectl"
 	maxSettingsLen              = 64 * 1024
