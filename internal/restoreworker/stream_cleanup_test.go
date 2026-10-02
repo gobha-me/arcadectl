@@ -7,16 +7,25 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
 
-type rejectingStreamWriter struct{ calls int }
+type rejectingStreamWriter struct {
+	calls    int
+	rejected chan struct{}
+}
 
 func (writer *rejectingStreamWriter) Write([]byte) (int, error) {
 	writer.calls++
+	if writer.rejected != nil && writer.calls == 1 {
+		close(writer.rejected)
+	}
 	return 0, errors.New("destination-full credential-canary")
 }
 
@@ -49,11 +58,40 @@ func TestCommandRunnerDrainingStillHonorsContextCancellation(t *testing.T) {
 	if err := os.WriteFile(program, []byte("#!/bin/sh\nexec /usr/bin/yes credential-canary\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	// Execute the stable shell, not a just-written script inode. Some Linux
+	// filesystems can still report ETXTBSY for a fresh executable; that tests
+	// fixture startup instead of the intended drain/cancellation contract.
+	// Holding a writable descriptor deterministically exercises this distinction.
+	if runtime.GOOS == "linux" {
+		writer, err := os.OpenFile(program, os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer writer.Close()
+		command := exec.Command(program)
+		if err := command.Start(); !errors.Is(err, syscall.ETXTBSY) {
+			if err == nil {
+				_ = command.Process.Kill()
+				_ = command.Wait()
+			}
+			t.Fatal("fixture did not exercise the executable-busy startup condition")
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	started := time.Now()
-	err := (&commandRunner{path: program}).Stream(ctx, nil, &rejectingStreamWriter{}, "dump")
-	if err == nil || strings.Contains(err.Error(), "canary") || ctx.Err() == nil || time.Since(started) > 2*time.Second {
+	writer := &rejectingStreamWriter{rejected: make(chan struct{})}
+	// Cancel only after destination rejection, so scheduler load cannot turn
+	// this into a process-startup timeout instead of a draining cancellation.
+	go func() {
+		select {
+		case <-writer.rejected:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	err := (&commandRunner{path: "/bin/sh"}).Stream(ctx, nil, writer, program, "dump")
+	if err == nil || strings.Contains(err.Error(), "canary") || !errors.Is(ctx.Err(), context.Canceled) || writer.calls != 1 || time.Since(started) > 5*time.Second {
 		t.Fatalf("draining ignored cancellation or leaked output: err=%v context=%v duration=%v", err, ctx.Err(), time.Since(started))
 	}
 }
