@@ -13,6 +13,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  kind-api:
+    name: Kind authenticated admin API
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Prove isolated authenticated API bootstrap and rotation
+        run: make test-kind-api
+
   kind-recovery:
     name: Kind recovery failure safety
     runs-on: ubuntu-24.04
@@ -42,7 +57,7 @@ jobs:
   go-and-policy:
     name: Go and policy
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -82,6 +97,20 @@ jobs:
             echo "Independent clean builds produced different controller images" >&2
             exit 1
           fi
+      - name: Build and inspect reproducible API image
+        run: |
+          for tag in first second; do
+            docker build --no-cache --file Dockerfile.api \
+              --build-arg VCS_REF="$(git rev-parse HEAD)" \
+              --build-arg SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" \
+              --tag "arcadectl-api:ci-$tag" .
+          done
+          first_id=$(docker image inspect --format '{{.Id}}' arcadectl-api:ci-first)
+          second_id=$(docker image inspect --format '{{.Id}}' arcadectl-api:ci-second)
+          test "$first_id" = "$second_id"
+          test "$(docker image inspect --format '{{.Config.User}}' arcadectl-api:ci-first)" = '65532:65532'
+          test "$(docker image inspect --format '{{json .Config.Entrypoint}}' arcadectl-api:ci-first)" = '["/arcadectl-api"]'
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' arcadectl-api:ci-first)" = "$(git rev-parse HEAD)"
 
   kind-lifecycle:
     name: Kind lifecycle

@@ -1,0 +1,13 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: arcadectl-api
+  namespace: arcadectl-system
+  labels:
+    app.kubernetes.io/name: arcadectl-api
+    app.kubernetes.io/part-of: arcadectl
+rules:
+- apiGroups: [arcade.gobha.me]
+  resources: [gameservers, gamebackups, gamerestores, gamedestroys]
+  verbs: [get, list, watch, create, update, patch, delete]
