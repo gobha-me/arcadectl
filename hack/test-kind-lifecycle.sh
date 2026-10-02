@@ -28,6 +28,8 @@ fi
 readonly collision_name=collision
 
 readonly repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=hack/repository-health.sh
+source "$repository_root/hack/repository-health.sh"
 workspace=$(mktemp -d "${TMPDIR:-/tmp}/arcadectl-kind-lifecycle.XXXXXX")
 readonly workspace
 run_suffix=$(basename "$workspace" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9' | tail -c 12)
@@ -1719,6 +1721,8 @@ EOF
 kube apply --filename "$workspace/backup-repository.yaml" >/dev/null
 kube_bounded 130 rollout status deployment/minio --namespace "$namespace" --timeout=120s >/dev/null
 
+backup_utility_image='busybox@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0'
+repository_health_container=$(repository_health_init_container "$backup_utility_image")
 cat >"$workspace/restic-init.yaml" <<EOF
 apiVersion: batch/v1
 kind: Job
@@ -1728,7 +1732,7 @@ metadata:
   labels:
     arcade.gobha.me/e2e-run: $run_id
 spec:
-  backoffLimit: 1
+  backoffLimit: 0
   activeDeadlineSeconds: 120
   template:
     metadata:
@@ -1744,6 +1748,7 @@ spec:
         fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
+      initContainers: [$repository_health_container]
       containers:
         - name: restic-init
           image: $controller_image
@@ -1798,7 +1803,6 @@ kube apply --filename "$workspace/restic-init.yaml" >/dev/null
 kube_bounded 130 wait job/restic-init --namespace "$namespace" --for=condition=complete --timeout=120s >/dev/null
 kube_bounded 70 delete job/restic-init --namespace "$namespace" --wait=true --timeout=60s >/dev/null
 
-backup_utility_image='busybox@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0'
 cat >"$workspace/restic-seed.yaml" <<EOF
 apiVersion: batch/v1
 kind: Job
