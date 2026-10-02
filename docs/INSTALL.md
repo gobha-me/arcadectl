@@ -35,7 +35,7 @@ kubectl config current-context
 ./hack/install.sh 'registry.example/arcadectl/controller@sha256:<64 hex characters>'
 ```
 
-The installer applies `config/install/anchors.yaml` first, waits for all four
+The installer applies `config/install/anchors.yaml` first, waits for all five
 CRDs to be Established, renders the digest-pinned controller resources, applies them,
 and waits for both Deployments to become available. The committed
 `config/install/controller.yaml` uses an all-zero digest only as a deterministic
@@ -67,7 +67,12 @@ enforcement if that assumption does not hold.
 
 ## Safe controller uninstall
 
-First set every `GameServer` to desired state `Stopped`, wait until every
+Remove the separately installed API Deployment and wait for all API
+ServiceAccount Pods to disappear before removing controller authority. Scaling
+the API to zero alone is insufficient. This controller-only uninstaller does
+not remove the API surface or credentials; see [the admin API](ADMIN_API.md).
+Let every `ArcadeOperation` become terminal at its current generation, with no
+deletion in progress or remaining finalizer. Then set every `GameServer` to desired state `Stopped`, wait until every
 status phase is `Stopped`, and let every `GameBackup`, `GameRestore`, and
 `GameDestroy` reach
 `Succeeded`, `Failed`, or `Cancelled`. Then run:
@@ -76,7 +81,9 @@ status phase is `Stopped`, and let every `GameBackup`, `GameRestore`, and
 ./hack/uninstall.sh
 ```
 
-The script refuses to proceed while any server is deleting or is not both
+The script refuses to proceed while an API Deployment or API ServiceAccount Pod
+exists, or any receipt is deleting, non-terminal, stale, or still finalized;
+while any server is deleting or is not both
 desired and observed Stopped at its current generation; while any backup or
 restore or destroy is deleting, non-terminal, or stale; or while any data-operation Job,
 Pod, or retained-data Lease remains. It checks once while the controller is running, scales
@@ -91,7 +98,8 @@ ordinary and destroy controller Deployments, namespaced controller RBAC and
 ServiceAccounts, and VolumeAttachment-reader cluster RBAC. It deliberately retains:
 
 - the `arcadectl-system` Namespace;
-- the `GameServer`, `GameBackup`, `GameRestore`, and `GameDestroy` CRDs and all their objects;
+- the `GameServer`, `GameBackup`, `GameRestore`, `GameDestroy`, and
+  `ArcadeOperation` CRDs and all their objects;
 - the backup-, restore-, and destroy-worker, destroy authorization, managed
   retained-world PVC, and restore-candidate PVC
   ValidatingAdmissionPolicies and bindings, which continue to fence any
