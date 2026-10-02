@@ -6,6 +6,7 @@ set -euo pipefail
 
 readonly repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly controller_dockerfile="$repository_root/Dockerfile"
+readonly api_dockerfile="$repository_root/Dockerfile.api"
 readonly factorio_dockerfile="$repository_root/images/factorio/Dockerfile"
 readonly conformance_dockerfile="$repository_root/images/conformance/Dockerfile"
 readonly minio_dockerfile="$repository_root/images/minio-fixture/Dockerfile"
@@ -21,6 +22,7 @@ bash -n "$factorio_readiness"
 sh -n "$materializer"
 bash -n "$repository_root/hack/generate-install.sh"
 bash -n "$repository_root/hack/render-controller.sh"
+bash -n "$repository_root/hack/render-api.sh"
 bash -n "$repository_root/hack/install.sh"
 bash -n "$repository_root/hack/uninstall.sh"
 bash -n "$lifecycle_harness"
@@ -57,6 +59,18 @@ grep -Fq 'USER 65532:65532' "$controller_dockerfile"
 grep -Fq 'ARG LIFECYCLE_TEST=false' "$controller_dockerfile"
 grep -Fq 'true) set -- -tags=lifecycletest' "$controller_dockerfile"
 grep -Fq 'arcade.gobha.me/source-dirty="$SOURCE_DIRTY"' "$controller_dockerfile"
+grep -Fq 'golang:1.26.0-alpine3.23@sha256:d4c4845f5d60c6a974c6000ce58ae079328d03ab7f721a0734277e69905473e5' "$api_dockerfile"
+grep -Fq 'GOTOOLCHAIN=local GOMAXPROCS=2 GOMEMLIMIT=1GiB GOFLAGS="-mod=readonly -p=2"' "$api_dockerfile"
+grep -Fq 'go build -trimpath -ldflags="-s -w -buildid=" -o /rootfs/arcadectl-api ./cmd/arcadectl-api' "$api_dockerfile"
+grep -Fq 'cp LICENSE NOTICE /rootfs/licenses/' "$api_dockerfile"
+grep -Fq 'find /rootfs -exec touch -d "@$SOURCE_DATE_EPOCH" {} +' "$api_dockerfile"
+grep -Fq 'USER 65532:65532' "$api_dockerfile"
+grep -Fq 'ENTRYPOINT ["/arcadectl-api"]' "$api_dockerfile"
+api_runtime_copies=$(awk '/^FROM scratch/ { runtime=1; next } runtime && /^COPY / { count++ } END { print count+0 }' "$api_dockerfile")
+if [[ "$api_runtime_copies" != 1 ]] || grep -Eq '^COPY .*restic|^COPY .*arcadectl-admin-credential' "$api_dockerfile"; then
+  echo "API runtime must contain only its normalized non-admin API filesystem" >&2
+  exit 1
+fi
 grep -Eq '^FROM factoriotools/factorio@sha256:[0-9a-f]{64}$' "$factorio_dockerfile"
 grep -Fq 'sha256sum -c -' "$factorio_dockerfile"
 grep -Fq 'COPY --chmod=0555 readiness-probe.sh /arcadectl/readiness' "$factorio_dockerfile"

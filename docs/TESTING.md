@@ -250,3 +250,21 @@ written below the suite's `artifacts/kind-lifecycle/`,
 `artifacts/factorio-lifecycle/` or `artifacts/kind-recovery/` directory before cleanup. ConfigMap data,
 Secrets, raw node logs, and the kubeconfig are never copied into diagnostics.
 CI uploads only those directories for three days.
+## Authenticated API proof
+
+`make test-kind-api` creates a checksum-pinned disposable Kind cluster and private
+registry. It builds a separate non-root API image, initializes a fake generated
+administrator credential using the trusted-admin utility, and provisions a
+test-only TLS certificate. It proves HTTPS authentication, projected-secret
+rotation without restart, old-token rejection, expired-credential recovery
+from an unready API, private output modes, and token/verifier-free audit logs.
+It then removes only the exact task-owned cluster, registry, image tag, and
+private temporary files. No real-world cluster, server, or credential is used.
+
+The ordinary race suite covers malformed/duplicate headers, authorization-before-
+body/handler, expiry/revocation, strict verifier parsing/serial high watermarks,
+concurrent credential CAS and ambiguous writes, bounded failed/stalled auditing,
+live capability lifetime, TLS trust and certificate readiness, and deterministic
+API manifest/RBAC shape. The real API-server envtest additionally proves ordinary
+API CR permissions, denied status/core/cluster/foreign-namespace authority, and
+the distinct-identity unsafe destroy admission boundary.

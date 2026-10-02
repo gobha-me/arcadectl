@@ -55,6 +55,7 @@ lifecycle controller.
 See [the architecture](docs/ARCHITECTURE.md), [the lifecycle contract](docs/LIFECYCLE.md),
 [the backup and restore contract](docs/BACKUP_RESTORE.md),
 [the destroy contract](docs/DESTROY.md),
+[the authenticated admin boundary](docs/ADMIN_API.md),
 [isolated lifecycle testing](docs/TESTING.md), [install and uninstall](docs/INSTALL.md),
 [the salvage ledger](docs/SALVAGE_LEDGER.md), and [the security policy](SECURITY.md).
 

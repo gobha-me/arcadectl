@@ -173,6 +173,10 @@ func TestEnvtestDestroyAdmission(t *testing.T) {
 		assertDestroyAdmissionDenied(t, unsafeAdmin.Update(ctx, forged), "audit identity annotation")
 	})
 
+	t.Run("authenticated API least privilege and unsafe refusal", func(t *testing.T) {
+		assertAPIAdmissionAndRBAC(t, ctx, config, admin, scheme)
+	})
+
 	t.Run("worker scheduling gate", func(t *testing.T) {
 		ungated := destroyAdmissionPod("ungated-worker")
 		ungated.Spec.SchedulingGates = nil
