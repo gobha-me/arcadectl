@@ -17,6 +17,9 @@ The opaque bearer contains 256 random bits and expires after 30 days by default.
 Only a single Authorization header using the Bearer scheme is accepted. Query
 parameters and cookies are not credentials. Expired/incorrect/malformed tokens
 receive 401 before any handler reads a body or performs a mutation.
+The transport accepts bounded RFC 6750 bearer syntax; the credential verifier
+enforces the generated token format. A future JWT/OIDC authenticator does not
+require changes to transport encoding, adapters, or reconcilers.
 
 The managed Secret is `arcadectl-system/arcadectl-admin-credential`, type
 `arcade.gobha.me/admin-credential`. It contains the private `token` and the

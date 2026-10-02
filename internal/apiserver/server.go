@@ -8,7 +8,6 @@ package apiserver
 import (
 	"context"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -44,6 +43,7 @@ type Server struct {
 }
 
 var opaqueID = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,64}$`)
+var bearerSyntax = regexp.MustCompile(`^[a-zA-Z0-9._~+/-]+=*$`)
 var namespaceID = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 var routePattern = regexp.MustCompile(`^/v1(/[a-zA-Z0-9_.-]+|/\{[a-zA-Z][a-zA-Z0-9_]*\})+$`)
 
@@ -206,12 +206,14 @@ func bearerToken(header http.Header) (string, bool) {
 			values = append(values, candidates...)
 		}
 	}
-	if len(values) != 1 || len(values[0]) != len("Bearer ")+43 || !strings.EqualFold(values[0][:7], "Bearer ") {
+	if len(values) != 1 || len(values[0]) <= len("Bearer ") || len(values[0]) > len("Bearer ")+4096 || !strings.EqualFold(values[0][:7], "Bearer ") {
 		return "", false
 	}
 	token := values[0][7:]
-	decoded, err := base64.RawURLEncoding.Strict().DecodeString(token)
-	if err != nil || len(decoded) != 32 || base64.RawURLEncoding.EncodeToString(decoded) != token {
+	// RFC 6750 transport syntax is independent of the authenticator's token
+	// format. FileVerifier enforces the generated opaque credential; a future
+	// OIDC implementation can accept a JWT without changing this router.
+	if !bearerSyntax.MatchString(token) {
 		return "", false
 	}
 	return token, true

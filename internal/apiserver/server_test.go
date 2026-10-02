@@ -130,6 +130,41 @@ func TestCredentialDenialNeverEntersWriteOrReadsBody(t *testing.T) {
 	}
 }
 
+type jwtLikeAuthenticator struct {
+	token     string
+	principal adminauth.Principal
+}
+
+func (auth jwtLikeAuthenticator) Authenticate(_ context.Context, token string) (adminauth.Principal, error) {
+	if token != auth.token {
+		return adminauth.Principal{}, adminauth.ErrUnauthorized
+	}
+	return auth.principal, nil
+}
+
+func TestAuthenticatorReplacementDoesNotDependOnOpaqueTokenEncoding(t *testing.T) {
+	server, auth, _ := testBoundary(t)
+	// A fake authenticator is intentional: this tests the interface/transport,
+	// not a premature or unverified implementation of OIDC signature checking.
+	jwt := "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJhZG1pbiJ9.signature_fixture"
+	server.authenticator = jwtLikeAuthenticator{token: jwt, principal: auth.principal}
+	request := httptest.NewRequest(http.MethodGet, "/v1/auth/self", nil)
+	request.Header.Set("Authorization", "Bearer "+jwt)
+	writer := httptest.NewRecorder()
+	server.ServeHTTP(writer, request)
+	if writer.Code != 200 {
+		t.Fatal("pluggable authenticator coupled to opaque bearer encoding")
+	}
+	for _, value := range []string{"Bearer " + jwt + ",other", "Bearer " + jwt + "\t", "Bearer " + strings.Repeat("a", 4097), "Bearer ="} {
+		request.Header.Set("Authorization", value)
+		writer := httptest.NewRecorder()
+		server.ServeHTTP(writer, request)
+		if writer.Code != 401 {
+			t.Fatal("generic bearer syntax accepted malformed input")
+		}
+	}
+}
+
 func TestAuthenticatorFailureAndIdentityValidation(t *testing.T) {
 	for _, test := range []struct {
 		name      string
