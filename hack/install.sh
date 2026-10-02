@@ -22,7 +22,8 @@ for custom_resource_definition in \
   gameservers.arcade.gobha.me \
   gamebackups.arcade.gobha.me \
   gamerestores.arcade.gobha.me \
-  gamedestroys.arcade.gobha.me; do
+  gamedestroys.arcade.gobha.me \
+  arcadeoperations.arcade.gobha.me; do
   "$kubectl_command" wait --for=condition=Established \
     "customresourcedefinition/$custom_resource_definition" --timeout=60s
 done

@@ -115,6 +115,13 @@ func main() {
 			setupLog.Error(err, "register GameRestore controller")
 			os.Exit(1)
 		}
+		operationReconciler := &controller.ArcadeOperationReconciler{
+			Client: manager.GetClient(), APIReader: manager.GetAPIReader(), Scheme: manager.GetScheme(), Catalog: gameCatalog,
+		}
+		if err := operationReconciler.SetupWithManager(manager); err != nil {
+			setupLog.Error(err, "register ArcadeOperation controller")
+			os.Exit(1)
+		}
 	}
 	if err := manager.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "register health check")

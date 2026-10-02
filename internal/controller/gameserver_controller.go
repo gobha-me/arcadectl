@@ -342,6 +342,9 @@ func (r *GameServerReconciler) dataOperationLocked(ctx context.Context, server *
 		lease.Labels[platformkube.LabelDataIdentity] != dataIdentity || lease.Spec.HolderIdentity == nil || *lease.Spec.HolderIdentity == "" {
 		return true, nil
 	}
+	if lease.Labels[operationReceiptUIDLabel] != "" {
+		return !receiptRuntimeAllowed(ctx, reader, server, lease), nil
+	}
 	wantGeneration := strconv.FormatInt(server.Generation, 10)
 	if lease.Labels[platformkube.LabelRestoreUID] != "" {
 		operation := arcadev1alpha1.ExactLocalReference{

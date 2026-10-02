@@ -16,7 +16,7 @@ jobs:
   kind-api:
     name: Kind authenticated admin API
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -25,7 +25,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Prove isolated authenticated API bootstrap and rotation
+      - name: Prove isolated authenticated API and HTTP Factorio lifecycle
         run: make test-kind-api
 
   kind-recovery:

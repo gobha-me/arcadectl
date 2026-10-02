@@ -11,6 +11,7 @@ go tool controller-gen \
   paths=./internal/controller/... \
   output:rbac:artifacts:config=config/rbac
 ./hack/generate-install.sh ghcr.io/gobha-me/arcadectl-controller@sha256:0000000000000000000000000000000000000000000000000000000000000000
+bash ./hack/verify-openapi.sh
 
 generated_paths=(
   api/v1alpha1/zz_generated.deepcopy.go

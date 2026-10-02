@@ -1,0 +1,5848 @@
+{
+  "components": {
+    "schemas": {
+      "BackupRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "repositorySecretName": {
+            "maxLength": 253,
+            "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+            "type": "string"
+          },
+          "restartPolicy": {
+            "enum": [
+              "LeaveStopped",
+              "RestorePreviousState"
+            ],
+            "maxLength": 512,
+            "type": "string"
+          },
+          "version": {
+            "enum": [
+              "v1"
+            ],
+            "maxLength": 512,
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "repositorySecretName",
+          "restartPolicy"
+        ],
+        "type": "object"
+      },
+      "CancelRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "destroyRef": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "maxLength": 253,
+                "minLength": 1,
+                "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+                "type": "string"
+              },
+              "uid": {
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "uid"
+            ],
+            "type": "object"
+          },
+          "version": {
+            "enum": [
+              "v1"
+            ],
+            "maxLength": 512,
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "destroyRef"
+        ],
+        "type": "object"
+      },
+      "Compute": {
+        "additionalProperties": false,
+        "properties": {
+          "cpuLimit": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "cpuRequest": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "memoryLimit": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "memoryRequest": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "cpuRequest",
+          "cpuLimit",
+          "memoryRequest",
+          "memoryLimit"
+        ],
+        "type": "object"
+      },
+      "Condition": {
+        "additionalProperties": false,
+        "properties": {
+          "observedGeneration": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "reason": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "status": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "type": {
+            "maxLength": 512,
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "status",
+          "reason",
+          "observedGeneration"
+        ],
+        "type": "object"
+      },
+      "ConfigureRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "compute": {
+            "additionalProperties": false,
+            "properties": {
+              "cpuLimit": {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              "cpuRequest": {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              "memoryLimit": {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              "memoryRequest": {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "cpuRequest",
+              "cpuLimit",
+              "memoryRequest",
+              "memoryLimit"
+            ],
+            "type": "object"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/Settings"
+          },
+          "storage": {
+            "additionalProperties": false,
+            "properties": {
+              "size": {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              "storageClassName": {
+                "maxLength": 253,
+                "pattern": "^(?:[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?)?$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "size"
+            ],
+            "type": "object"
+          },
+          "version": {
+            "enum": [
+              "v1"
+            ],
+            "maxLength": 512,
+            "type": "string"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "type": "object"
+      },
+      "ConfirmRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "challenge": {
+            "maxLength": 128,
+            "minLength": 16,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "type": "string"
+          },
+          "destroyRef": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "maxLength": 253,
+                "minLength": 1,
+                "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+                "type": "string"
+              },
+              "uid": {
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "uid"
+            ],
+            "type": "object"
+          },
+          "version": {
+            "enum": [
+              "v1"
+            ],
+            "maxLength": 512,
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "destroyRef",
+          "challenge"
+        ],
+        "type": "object"
+      },
+      "CreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "compute": {
+            "additionalProperties": false,
+            "properties": {
+              "cpuLimit": {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              "cpuRequest": {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              "memoryLimit": {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              "memoryRequest": {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "cpuRequest",
+              "cpuLimit",
+              "memoryRequest",
+              "memoryLimit"
+            ],
+            "type": "object"
+          },
+          "desiredState": {
+            "enum": [
+              "Running",
+              "Stopped"
+            ],
+            "maxLength": 512,
+            "type": "string"
+          },
+          "game": {
+            "maxLength": 63,
+            "minLength": 1,
+            "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "image": {
+            "additionalProperties": false,
+            "oneOf": [
+              {
+                "required": [
+                  "digest"
+                ]
+              },
+              {
+                "required": [
+                  "version"
+                ]
+              }
+            ],
+            "properties": {
+              "digest": {
+                "maxLength": 71,
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "version": {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "name": {
+            "maxLength": 63,
+            "minLength": 1,
+            "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "retainedWorld": {
+            "additionalProperties": false,
+            "properties": {
+              "decommissionOperationRef": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "maxLength": 253,
+                    "minLength": 1,
+                    "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+                    "type": "string"
+                  },
+                  "uid": {
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "pattern": "^[A-Za-z0-9_.-]+$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "uid"
+                ],
+                "type": "object"
+              },
+              "snapshotDigest": {
+                "maxLength": 71,
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "decommissionOperationRef",
+              "snapshotDigest"
+            ],
+            "type": "object"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/Settings"
+          },
+          "storage": {
+            "additionalProperties": false,
+            "properties": {
+              "size": {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              "storageClassName": {
+                "maxLength": 253,
+                "pattern": "^(?:[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?)?$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "size"
+            ],
+            "type": "object"
+          },
+          "version": {
+            "enum": [
+              "v1"
+            ],
+            "maxLength": 512,
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "name",
+          "game",
+          "image",
+          "desiredState",
+          "compute",
+          "storage",
+          "settings"
+        ],
+        "type": "object"
+      },
+      "DestroyPreview": {
+        "additionalProperties": false,
+        "properties": {
+          "challenge": {
+            "maxLength": 128,
+            "minLength": 16,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "type": "string"
+          },
+          "expiresAt": {
+            "format": "date-time",
+            "maxLength": 512,
+            "type": "string"
+          },
+          "restoreGuidance": {
+            "maxLength": 512,
+            "type": "string"
+          }
+        },
+        "required": [
+          "challenge",
+          "expiresAt",
+          "restoreGuidance"
+        ],
+        "type": "object"
+      },
+      "DestroyRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "backupRef": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "maxLength": 253,
+                "minLength": 1,
+                "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+                "type": "string"
+              },
+              "uid": {
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "uid"
+            ],
+            "type": "object"
+          },
+          "version": {
+            "enum": [
+              "v1"
+            ],
+            "maxLength": 512,
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "backupRef"
+        ],
+        "type": "object"
+      },
+      "EmptyRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "enum": [
+              "v1"
+            ],
+            "maxLength": 512,
+            "type": "string"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "type": "object"
+      },
+      "Endpoint": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 63,
+            "minLength": 1,
+            "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "port": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "protocol": {
+            "maxLength": 512,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "protocol",
+          "address",
+          "port"
+        ],
+        "type": "object"
+      },
+      "Error": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "enum": [
+              "unauthenticated",
+              "forbidden",
+              "unavailable",
+              "internal",
+              "not_found",
+              "method_not_allowed",
+              "invalid_content_type",
+              "invalid_body",
+              "invalid_request",
+              "invalid_idempotency_key",
+              "precondition_required",
+              "invalid_precondition",
+              "precondition_failed",
+              "idempotency_conflict",
+              "invalid_reference",
+              "unsupported",
+              "validation_failed",
+              "image_unavailable",
+              "api_unavailable",
+              "commit_unknown"
+            ],
+            "type": "string"
+          },
+          "operationID": {
+            "maxLength": 63,
+            "minLength": 1,
+            "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "suggestedAction": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "version": {
+            "enum": [
+              "v1"
+            ],
+            "maxLength": 512,
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "code"
+        ],
+        "type": "object"
+      },
+      "ExactReference": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "maxLength": 253,
+            "minLength": 1,
+            "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+            "type": "string"
+          },
+          "uid": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.-]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "uid"
+        ],
+        "type": "object"
+      },
+      "Failure": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "message": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "suggestedAction": {
+            "maxLength": 512,
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "retryable",
+          "message",
+          "suggestedAction"
+        ],
+        "type": "object"
+      },
+      "Image": {
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "required": [
+              "digest"
+            ]
+          },
+          {
+            "required": [
+              "version"
+            ]
+          }
+        ],
+        "properties": {
+          "digest": {
+            "maxLength": 71,
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "version": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "NativeOperation": {
+        "additionalProperties": false,
+        "properties": {
+          "completedAt": {
+            "format": "date-time",
+            "maxLength": 512,
+            "type": "string"
+          },
+          "conditions": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "observedGeneration": {
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "reason": {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                "status": {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                "type": {
+                  "maxLength": 512,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "status",
+                "reason",
+                "observedGeneration"
+              ],
+              "type": "object"
+            },
+            "maxItems": 16,
+            "type": "array"
+          },
+          "destroyPreview": {
+            "additionalProperties": false,
+            "properties": {
+              "challenge": {
+                "maxLength": 128,
+                "minLength": 16,
+                "pattern": "^[A-Za-z0-9_-]+$",
+                "type": "string"
+              },
+              "expiresAt": {
+                "format": "date-time",
+                "maxLength": 512,
+                "type": "string"
+              },
+              "restoreGuidance": {
+                "maxLength": 512,
+                "type": "string"
+              }
+            },
+            "required": [
+              "challenge",
+              "expiresAt",
+              "restoreGuidance"
+            ],
+            "type": "object"
+          },
+          "generation": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "kind": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 253,
+            "minLength": 1,
+            "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+            "type": "string"
+          },
+          "observedGeneration": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "phase": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "uid": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.-]+$",
+            "type": "string"
+          },
+          "version": {
+            "enum": [
+              "v1"
+            ],
+            "maxLength": 512,
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "kind",
+          "name",
+          "uid",
+          "generation",
+          "phase",
+          "observedGeneration",
+          "conditions"
+        ],
+        "type": "object"
+      },
+      "Operation": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "child": {
+            "additionalProperties": false,
+            "properties": {
+              "generation": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "kind": {
+                "maxLength": 512,
+                "type": "string"
+              },
+              "name": {
+                "maxLength": 253,
+                "minLength": 1,
+                "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+                "type": "string"
+              },
+              "uid": {
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "name",
+              "uid",
+              "generation"
+            ],
+            "type": "object"
+          },
+          "completedAt": {
+            "format": "date-time",
+            "maxLength": 512,
+            "type": "string"
+          },
+          "destroyPreview": {
+            "additionalProperties": false,
+            "properties": {
+              "challenge": {
+                "maxLength": 128,
+                "minLength": 16,
+                "pattern": "^[A-Za-z0-9_-]+$",
+                "type": "string"
+              },
+              "expiresAt": {
+                "format": "date-time",
+                "maxLength": 512,
+                "type": "string"
+              },
+              "restoreGuidance": {
+                "maxLength": 512,
+                "type": "string"
+              }
+            },
+            "required": [
+              "challenge",
+              "expiresAt",
+              "restoreGuidance"
+            ],
+            "type": "object"
+          },
+          "failure": {
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "maxLength": 512,
+                "type": "string"
+              },
+              "message": {
+                "maxLength": 512,
+                "type": "string"
+              },
+              "retryable": {
+                "type": "boolean"
+              },
+              "suggestedAction": {
+                "maxLength": 512,
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "retryable",
+              "message",
+              "suggestedAction"
+            ],
+            "type": "object"
+          },
+          "generation": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "observedGeneration": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "operationID": {
+            "maxLength": 63,
+            "minLength": 1,
+            "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "phase": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "pollURL": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "startedAt": {
+            "format": "date-time",
+            "maxLength": 512,
+            "type": "string"
+          },
+          "uid": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.-]+$",
+            "type": "string"
+          },
+          "version": {
+            "enum": [
+              "v1"
+            ],
+            "maxLength": 512,
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "operationID",
+          "uid",
+          "generation",
+          "action",
+          "phase",
+          "observedGeneration",
+          "pollURL"
+        ],
+        "type": "object"
+      },
+      "OperationChild": {
+        "additionalProperties": false,
+        "properties": {
+          "generation": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "kind": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 253,
+            "minLength": 1,
+            "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+            "type": "string"
+          },
+          "uid": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.-]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "name",
+          "uid",
+          "generation"
+        ],
+        "type": "object"
+      },
+      "OperationList": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "action": {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                "child": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "generation": {
+                      "format": "int64",
+                      "type": "integer"
+                    },
+                    "kind": {
+                      "maxLength": 512,
+                      "type": "string"
+                    },
+                    "name": {
+                      "maxLength": 253,
+                      "minLength": 1,
+                      "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+                      "type": "string"
+                    },
+                    "uid": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "pattern": "^[A-Za-z0-9_.-]+$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "name",
+                    "uid",
+                    "generation"
+                  ],
+                  "type": "object"
+                },
+                "completedAt": {
+                  "format": "date-time",
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                "destroyPreview": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "challenge": {
+                      "maxLength": 128,
+                      "minLength": 16,
+                      "pattern": "^[A-Za-z0-9_-]+$",
+                      "type": "string"
+                    },
+                    "expiresAt": {
+                      "format": "date-time",
+                      "maxLength": 512,
+                      "type": "string"
+                    },
+                    "restoreGuidance": {
+                      "maxLength": 512,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "challenge",
+                    "expiresAt",
+                    "restoreGuidance"
+                  ],
+                  "type": "object"
+                },
+                "failure": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": {
+                      "maxLength": 512,
+                      "type": "string"
+                    },
+                    "message": {
+                      "maxLength": 512,
+                      "type": "string"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "suggestedAction": {
+                      "maxLength": 512,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "retryable",
+                    "message",
+                    "suggestedAction"
+                  ],
+                  "type": "object"
+                },
+                "generation": {
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "observedGeneration": {
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "operationID": {
+                  "maxLength": 63,
+                  "minLength": 1,
+                  "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+                  "type": "string"
+                },
+                "phase": {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                "pollURL": {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                "startedAt": {
+                  "format": "date-time",
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                "uid": {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.-]+$",
+                  "type": "string"
+                },
+                "version": {
+                  "enum": [
+                    "v1"
+                  ],
+                  "maxLength": 512,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "version",
+                "operationID",
+                "uid",
+                "generation",
+                "action",
+                "phase",
+                "observedGeneration",
+                "pollURL"
+              ],
+              "type": "object"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "version": {
+            "enum": [
+              "v1"
+            ],
+            "maxLength": 512,
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "items"
+        ],
+        "type": "object"
+      },
+      "RestoreRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "backupRef": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "maxLength": 253,
+                "minLength": 1,
+                "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+                "type": "string"
+              },
+              "uid": {
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "uid"
+            ],
+            "type": "object"
+          },
+          "restartPolicy": {
+            "enum": [
+              "LeaveStopped",
+              "RestorePreviousState"
+            ],
+            "maxLength": 512,
+            "type": "string"
+          },
+          "version": {
+            "enum": [
+              "v1"
+            ],
+            "maxLength": 512,
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "backupRef",
+          "restartPolicy"
+        ],
+        "type": "object"
+      },
+      "RetainedClaim": {
+        "additionalProperties": false,
+        "properties": {
+          "claimRef": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "maxLength": 253,
+                "minLength": 1,
+                "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+                "type": "string"
+              },
+              "uid": {
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "uid"
+            ],
+            "type": "object"
+          },
+          "path": {
+            "maxLength": 63,
+            "minLength": 1,
+            "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "claimRef"
+        ],
+        "type": "object"
+      },
+      "RetainedSelector": {
+        "additionalProperties": false,
+        "properties": {
+          "decommissionOperationRef": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "maxLength": 253,
+                "minLength": 1,
+                "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+                "type": "string"
+              },
+              "uid": {
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "uid"
+            ],
+            "type": "object"
+          },
+          "snapshotDigest": {
+            "maxLength": 71,
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "decommissionOperationRef",
+          "snapshotDigest"
+        ],
+        "type": "object"
+      },
+      "RetainedWorld": {
+        "additionalProperties": false,
+        "properties": {
+          "claims": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "claimRef": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "name": {
+                      "maxLength": 253,
+                      "minLength": 1,
+                      "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+                      "type": "string"
+                    },
+                    "uid": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "pattern": "^[A-Za-z0-9_.-]+$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "uid"
+                  ],
+                  "type": "object"
+                },
+                "path": {
+                  "maxLength": 63,
+                  "minLength": 1,
+                  "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "claimRef"
+              ],
+              "type": "object"
+            },
+            "maxItems": 16,
+            "type": "array"
+          },
+          "dataIdentity": {
+            "maxLength": 63,
+            "minLength": 1,
+            "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "game": {
+            "maxLength": 63,
+            "minLength": 1,
+            "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "operationID": {
+            "maxLength": 63,
+            "minLength": 1,
+            "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "operationUID": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.-]+$",
+            "type": "string"
+          },
+          "originalServer": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "maxLength": 253,
+                "minLength": 1,
+                "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+                "type": "string"
+              },
+              "uid": {
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "uid"
+            ],
+            "type": "object"
+          },
+          "snapshotDigest": {
+            "maxLength": 71,
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "version": {
+            "enum": [
+              "v1"
+            ],
+            "maxLength": 512,
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "operationID",
+          "operationUID",
+          "originalServer",
+          "game",
+          "dataIdentity",
+          "claims",
+          "snapshotDigest"
+        ],
+        "type": "object"
+      },
+      "Self": {
+        "additionalProperties": false,
+        "properties": {
+          "credentialId": {
+            "maxLength": 64,
+            "type": "string"
+          },
+          "expiresAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "principalId": {
+            "maxLength": 64,
+            "type": "string"
+          },
+          "version": {
+            "enum": [
+              "v1"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "principalId",
+          "credentialId",
+          "expiresAt"
+        ],
+        "type": "object"
+      },
+      "Server": {
+        "additionalProperties": false,
+        "properties": {
+          "compute": {
+            "additionalProperties": false,
+            "properties": {
+              "cpuLimit": {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              "cpuRequest": {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              "memoryLimit": {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              "memoryRequest": {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "cpuRequest",
+              "cpuLimit",
+              "memoryRequest",
+              "memoryLimit"
+            ],
+            "type": "object"
+          },
+          "conditions": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "observedGeneration": {
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "reason": {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                "status": {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                "type": {
+                  "maxLength": 512,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "status",
+                "reason",
+                "observedGeneration"
+              ],
+              "type": "object"
+            },
+            "maxItems": 16,
+            "type": "array"
+          },
+          "desiredState": {
+            "enum": [
+              "Running",
+              "Stopped"
+            ],
+            "maxLength": 512,
+            "type": "string"
+          },
+          "endpoints": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "address": {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                "name": {
+                  "maxLength": 63,
+                  "minLength": 1,
+                  "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+                  "type": "string"
+                },
+                "port": {
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "protocol": {
+                  "maxLength": 512,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "protocol",
+                "address",
+                "port"
+              ],
+              "type": "object"
+            },
+            "maxItems": 16,
+            "type": "array"
+          },
+          "game": {
+            "maxLength": 63,
+            "minLength": 1,
+            "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "generation": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "imageDigest": {
+            "maxLength": 71,
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 63,
+            "minLength": 1,
+            "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "observedGeneration": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "phase": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/Settings"
+          },
+          "storage": {
+            "additionalProperties": false,
+            "properties": {
+              "size": {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              "storageClassName": {
+                "maxLength": 253,
+                "pattern": "^(?:[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?)?$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "size"
+            ],
+            "type": "object"
+          },
+          "uid": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.-]+$",
+            "type": "string"
+          },
+          "version": {
+            "enum": [
+              "v1"
+            ],
+            "maxLength": 512,
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "name",
+          "uid",
+          "generation",
+          "game",
+          "imageDigest",
+          "desiredState",
+          "compute",
+          "storage",
+          "settings",
+          "phase",
+          "observedGeneration",
+          "conditions",
+          "endpoints"
+        ],
+        "type": "object"
+      },
+      "ServerList": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "compute": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "cpuLimit": {
+                      "maxLength": 64,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "cpuRequest": {
+                      "maxLength": 64,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "memoryLimit": {
+                      "maxLength": 64,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "memoryRequest": {
+                      "maxLength": 64,
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "cpuRequest",
+                    "cpuLimit",
+                    "memoryRequest",
+                    "memoryLimit"
+                  ],
+                  "type": "object"
+                },
+                "conditions": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "observedGeneration": {
+                        "format": "int64",
+                        "type": "integer"
+                      },
+                      "reason": {
+                        "maxLength": 512,
+                        "type": "string"
+                      },
+                      "status": {
+                        "maxLength": 512,
+                        "type": "string"
+                      },
+                      "type": {
+                        "maxLength": 512,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "status",
+                      "reason",
+                      "observedGeneration"
+                    ],
+                    "type": "object"
+                  },
+                  "maxItems": 16,
+                  "type": "array"
+                },
+                "desiredState": {
+                  "enum": [
+                    "Running",
+                    "Stopped"
+                  ],
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                "endpoints": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "address": {
+                        "maxLength": 512,
+                        "type": "string"
+                      },
+                      "name": {
+                        "maxLength": 63,
+                        "minLength": 1,
+                        "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+                        "type": "string"
+                      },
+                      "port": {
+                        "format": "int64",
+                        "type": "integer"
+                      },
+                      "protocol": {
+                        "maxLength": 512,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "protocol",
+                      "address",
+                      "port"
+                    ],
+                    "type": "object"
+                  },
+                  "maxItems": 16,
+                  "type": "array"
+                },
+                "game": {
+                  "maxLength": 63,
+                  "minLength": 1,
+                  "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+                  "type": "string"
+                },
+                "generation": {
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "imageDigest": {
+                  "maxLength": 71,
+                  "pattern": "^sha256:[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "name": {
+                  "maxLength": 63,
+                  "minLength": 1,
+                  "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+                  "type": "string"
+                },
+                "observedGeneration": {
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "phase": {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                "settings": {
+                  "$ref": "#/components/schemas/Settings"
+                },
+                "storage": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "size": {
+                      "maxLength": 64,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "storageClassName": {
+                      "maxLength": 253,
+                      "pattern": "^(?:[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?)?$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "size"
+                  ],
+                  "type": "object"
+                },
+                "uid": {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.-]+$",
+                  "type": "string"
+                },
+                "version": {
+                  "enum": [
+                    "v1"
+                  ],
+                  "maxLength": 512,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "version",
+                "name",
+                "uid",
+                "generation",
+                "game",
+                "imageDigest",
+                "desiredState",
+                "compute",
+                "storage",
+                "settings",
+                "phase",
+                "observedGeneration",
+                "conditions",
+                "endpoints"
+              ],
+              "type": "object"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "version": {
+            "enum": [
+              "v1"
+            ],
+            "maxLength": 512,
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "items"
+        ],
+        "type": "object"
+      },
+      "Settings": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "description": {
+                "maxLength": 200,
+                "type": "string"
+              },
+              "maxPlayers": {
+                "maximum": 65535,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "name": {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              "visibility": {
+                "enum": [
+                  "private",
+                  "lan"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "visibility"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Storage": {
+        "additionalProperties": false,
+        "properties": {
+          "size": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "storageClassName": {
+            "maxLength": 253,
+            "pattern": "^(?:[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?)?$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "size"
+        ],
+        "type": "object"
+      },
+      "UpdateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "image": {
+            "additionalProperties": false,
+            "oneOf": [
+              {
+                "required": [
+                  "digest"
+                ]
+              },
+              {
+                "required": [
+                  "version"
+                ]
+              }
+            ],
+            "properties": {
+              "digest": {
+                "maxLength": 71,
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "version": {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "version": {
+            "enum": [
+              "v1"
+            ],
+            "maxLength": 512,
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "image"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "description": "Projected opaque administrator credential; authenticated before all validation, reads and mutation effects.",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "title": "Arcadectl ordinary administrator API",
+    "version": "v1"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/v1/auth/self": {
+      "get": {
+        "operationId": "auth_self__v1_auth_self",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Self"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-arcadectl-action": "auth.self"
+      }
+    },
+    "/v1/backups/{name}": {
+      "get": {
+        "operationId": "operation_read__v1_backups_name",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "maxLength": 253,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeOperation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-arcadectl-action": "operation.read"
+      }
+    },
+    "/v1/destroy-operations/{operationID}/cancel": {
+      "post": {
+        "operationId": "world_destroy_cancel__v1_destroy_operations_operationID_cancel",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "operationID",
+            "required": true,
+            "schema": {
+              "maxLength": 63,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "description": "One strong exact ETag from the corresponding current resource GET. Weak tags, wildcard tags and lists are rejected.",
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelRequest"
+              }
+            }
+          },
+          "description": "Strict JSON, at most 65536 bytes; duplicate keys, unknown fields, trailing values and unsafe fields are rejected.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-arcadectl-action": "world.destroy.cancel"
+      }
+    },
+    "/v1/destroy-operations/{operationID}/confirm": {
+      "post": {
+        "operationId": "world_destroy_confirm__v1_destroy_operations_operationID_confirm",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "operationID",
+            "required": true,
+            "schema": {
+              "maxLength": 63,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "description": "One strong exact ETag from the corresponding current resource GET. Weak tags, wildcard tags and lists are rejected.",
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmRequest"
+              }
+            }
+          },
+          "description": "Strict JSON, at most 65536 bytes; duplicate keys, unknown fields, trailing values and unsafe fields are rejected.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-arcadectl-action": "world.destroy.confirm"
+      }
+    },
+    "/v1/destroys/{name}": {
+      "get": {
+        "operationId": "operation_read__v1_destroys_name",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "maxLength": 253,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeOperation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-arcadectl-action": "operation.read"
+      }
+    },
+    "/v1/operations": {
+      "get": {
+        "operationId": "operation_read__v1_operations",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationList"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-arcadectl-action": "operation.read"
+      }
+    },
+    "/v1/operations/{operationID}": {
+      "get": {
+        "operationId": "operation_read__v1_operations_operationID",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "operationID",
+            "required": true,
+            "schema": {
+              "maxLength": 63,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-arcadectl-action": "operation.read"
+      }
+    },
+    "/v1/restores/{name}": {
+      "get": {
+        "operationId": "operation_read__v1_restores_name",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "maxLength": 253,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeOperation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-arcadectl-action": "operation.read"
+      }
+    },
+    "/v1/retained-worlds/{operationID}": {
+      "get": {
+        "operationId": "operation_read__v1_retained_worlds_operationID",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "operationID",
+            "required": true,
+            "schema": {
+              "maxLength": 63,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetainedWorld"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-arcadectl-action": "operation.read"
+      }
+    },
+    "/v1/retained-worlds/{operationID}/destroy": {
+      "post": {
+        "operationId": "world_destroy_preview__v1_retained_worlds_operationID_destroy",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "operationID",
+            "required": true,
+            "schema": {
+              "maxLength": 63,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "description": "One strong exact ETag from the corresponding current resource GET. Weak tags, wildcard tags and lists are rejected.",
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DestroyRequest"
+              }
+            }
+          },
+          "description": "Strict JSON, at most 65536 bytes; duplicate keys, unknown fields, trailing values and unsafe fields are rejected.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-arcadectl-action": "world.destroy.preview"
+      }
+    },
+    "/v1/servers": {
+      "get": {
+        "operationId": "server_read__v1_servers",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServerList"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-arcadectl-action": "server.read"
+      },
+      "post": {
+        "operationId": "server_create__v1_servers",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-None-Match",
+            "required": true,
+            "schema": {
+              "enum": [
+                "*"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRequest"
+              }
+            }
+          },
+          "description": "Strict JSON, at most 65536 bytes; duplicate keys, unknown fields, trailing values and unsafe fields are rejected.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-arcadectl-action": "server.create"
+      }
+    },
+    "/v1/servers/{name}": {
+      "get": {
+        "operationId": "server_read__v1_servers_name",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "maxLength": 63,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Server"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-arcadectl-action": "server.read"
+      },
+      "patch": {
+        "operationId": "server_configure__v1_servers_name",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "maxLength": 63,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "description": "One strong exact ETag from the corresponding current resource GET. Weak tags, wildcard tags and lists are rejected.",
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfigureRequest"
+              }
+            }
+          },
+          "description": "Strict JSON, at most 65536 bytes; duplicate keys, unknown fields, trailing values and unsafe fields are rejected.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-arcadectl-action": "server.configure"
+      }
+    },
+    "/v1/servers/{name}/backup": {
+      "post": {
+        "operationId": "world_backup__v1_servers_name_backup",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "maxLength": 63,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "description": "One strong exact ETag from the corresponding current resource GET. Weak tags, wildcard tags and lists are rejected.",
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackupRequest"
+              }
+            }
+          },
+          "description": "Strict JSON, at most 65536 bytes; duplicate keys, unknown fields, trailing values and unsafe fields are rejected.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-arcadectl-action": "world.backup"
+      }
+    },
+    "/v1/servers/{name}/decommission": {
+      "post": {
+        "operationId": "server_decommission__v1_servers_name_decommission",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "maxLength": 63,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "description": "One strong exact ETag from the corresponding current resource GET. Weak tags, wildcard tags and lists are rejected.",
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmptyRequest"
+              }
+            }
+          },
+          "description": "Strict JSON, at most 65536 bytes; duplicate keys, unknown fields, trailing values and unsafe fields are rejected.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-arcadectl-action": "server.decommission"
+      }
+    },
+    "/v1/servers/{name}/destroy": {
+      "post": {
+        "operationId": "world_destroy_preview__v1_servers_name_destroy",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "maxLength": 63,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "description": "One strong exact ETag from the corresponding current resource GET. Weak tags, wildcard tags and lists are rejected.",
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DestroyRequest"
+              }
+            }
+          },
+          "description": "Strict JSON, at most 65536 bytes; duplicate keys, unknown fields, trailing values and unsafe fields are rejected.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-arcadectl-action": "world.destroy.preview"
+      }
+    },
+    "/v1/servers/{name}/restart": {
+      "post": {
+        "operationId": "server_restart__v1_servers_name_restart",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "maxLength": 63,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "description": "One strong exact ETag from the corresponding current resource GET. Weak tags, wildcard tags and lists are rejected.",
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmptyRequest"
+              }
+            }
+          },
+          "description": "Strict JSON, at most 65536 bytes; duplicate keys, unknown fields, trailing values and unsafe fields are rejected.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-arcadectl-action": "server.restart"
+      }
+    },
+    "/v1/servers/{name}/restore": {
+      "post": {
+        "operationId": "world_restore__v1_servers_name_restore",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "maxLength": 63,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "description": "One strong exact ETag from the corresponding current resource GET. Weak tags, wildcard tags and lists are rejected.",
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoreRequest"
+              }
+            }
+          },
+          "description": "Strict JSON, at most 65536 bytes; duplicate keys, unknown fields, trailing values and unsafe fields are rejected.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-arcadectl-action": "world.restore"
+      }
+    },
+    "/v1/servers/{name}/start": {
+      "post": {
+        "operationId": "server_start__v1_servers_name_start",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "maxLength": 63,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "description": "One strong exact ETag from the corresponding current resource GET. Weak tags, wildcard tags and lists are rejected.",
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmptyRequest"
+              }
+            }
+          },
+          "description": "Strict JSON, at most 65536 bytes; duplicate keys, unknown fields, trailing values and unsafe fields are rejected.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-arcadectl-action": "server.start"
+      }
+    },
+    "/v1/servers/{name}/stop": {
+      "post": {
+        "operationId": "server_stop__v1_servers_name_stop",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "maxLength": 63,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "description": "One strong exact ETag from the corresponding current resource GET. Weak tags, wildcard tags and lists are rejected.",
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmptyRequest"
+              }
+            }
+          },
+          "description": "Strict JSON, at most 65536 bytes; duplicate keys, unknown fields, trailing values and unsafe fields are rejected.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-arcadectl-action": "server.stop"
+      }
+    },
+    "/v1/servers/{name}/update": {
+      "post": {
+        "operationId": "server_update__v1_servers_name_update",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "maxLength": 63,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "description": "One strong exact ETag from the corresponding current resource GET. Weak tags, wildcard tags and lists are rejected.",
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateRequest"
+              }
+            }
+          },
+          "description": "Strict JSON, at most 65536 bytes; duplicate keys, unknown fields, trailing values and unsafe fields are rejected.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-arcadectl-action": "server.update"
+      }
+    }
+  }
+}

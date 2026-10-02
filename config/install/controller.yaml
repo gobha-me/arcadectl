@@ -78,9 +78,7 @@ rules:
 - apiGroups:
   - arcade.gobha.me
   resources:
-  - gamebackups
-  - gamerestores
-  - gameservers
+  - arcadeoperations
   verbs:
   - get
   - list
@@ -90,6 +88,7 @@ rules:
 - apiGroups:
   - arcade.gobha.me
   resources:
+  - arcadeoperations/status
   - gamebackups/status
   - gamerestores/status
   - gameservers/status
@@ -97,6 +96,40 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - arcade.gobha.me
+  resources:
+  - gamebackups
+  - gamerestores
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - arcade.gobha.me
+  resources:
+  - gamedestroys
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - watch
+- apiGroups:
+  - arcade.gobha.me
+  resources:
+  - gameservers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - batch
   resources:

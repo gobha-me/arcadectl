@@ -19,8 +19,14 @@ import (
 	"syscall"
 	"time"
 
+	arcadev1 "github.com/gobha-me/arcadectl/api/v1alpha1"
 	"github.com/gobha-me/arcadectl/internal/adminauth"
 	"github.com/gobha-me/arcadectl/internal/apiserver"
+	"github.com/gobha-me/arcadectl/internal/catalog"
+	platformimage "github.com/gobha-me/arcadectl/internal/platform/image"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type options struct {
@@ -101,6 +107,30 @@ func run(ctx context.Context, config options, auditOutput io.Writer) error {
 	api, health, verifier, err := newServers(config, auditOutput)
 	if err != nil {
 		return err
+	}
+	boundary, ok := api.Handler.(*apiserver.Server)
+	if !ok {
+		return errors.New("API operation boundary unavailable")
+	}
+	clusterConfig, err := rest.InClusterConfig()
+	if err != nil {
+		return errors.New("API Kubernetes configuration unavailable")
+	}
+	clusterConfig.Timeout = 10 * time.Second
+	scheme := runtime.NewScheme()
+	if arcadev1.AddToScheme(scheme) != nil {
+		return errors.New("API resource schema unavailable")
+	}
+	clusterClient, err := client.New(clusterConfig, client.Options{Scheme: scheme})
+	if err != nil {
+		return errors.New("API Kubernetes client unavailable")
+	}
+	gameCatalog, err := catalog.Builtins()
+	if err != nil {
+		return errors.New("API game catalog unavailable")
+	}
+	if err := boundary.RegisterOperations(apiserver.OperationsConfig{Store: apiserver.NewKubernetesReceiptStore(clusterClient, clusterClient), Catalog: gameCatalog, Resolver: platformimage.NewRegistryResolver()}); err != nil {
+		return errors.New("API operation routes unavailable")
 	}
 	apiListener, err := net.Listen("tcp", config.listen)
 	if err != nil {

@@ -22,7 +22,8 @@ for manifest in \
   "$repository_root/config/crd/bases/arcade.gobha.me_gameservers.yaml" \
   "$repository_root/config/crd/bases/arcade.gobha.me_gamebackups.yaml" \
   "$repository_root/config/crd/bases/arcade.gobha.me_gamerestores.yaml" \
-  "$repository_root/config/crd/bases/arcade.gobha.me_gamedestroys.yaml"; do
+  "$repository_root/config/crd/bases/arcade.gobha.me_gamedestroys.yaml" \
+  "$repository_root/config/crd/bases/arcade.gobha.me_arcadeoperations.yaml"; do
   printf '%s\n' "$(<"$manifest")"
 done >"$anchors_temporary"
 "$repository_root/hack/render-controller.sh" "$1" >"$controller_temporary"

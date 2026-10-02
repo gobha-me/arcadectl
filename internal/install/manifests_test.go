@@ -93,6 +93,7 @@ func TestClusterAnchorsAreRetainedAndRestricted(t *testing.T) {
 		"apiextensions.k8s.io/v1, Kind=CustomResourceDefinition /gamebackups.arcade.gobha.me",
 		"apiextensions.k8s.io/v1, Kind=CustomResourceDefinition /gamerestores.arcade.gobha.me",
 		"apiextensions.k8s.io/v1, Kind=CustomResourceDefinition /gamedestroys.arcade.gobha.me",
+		"apiextensions.k8s.io/v1, Kind=CustomResourceDefinition /arcadeoperations.arcade.gobha.me",
 	}
 	if got := objectIdentities(objects); !slices.Equal(got, expected) {
 		t.Fatalf("anchor objects = %#v, want %#v", got, expected)
@@ -278,6 +279,7 @@ func TestInstallScriptAppliesAnchorsThenController(t *testing.T) {
 		"wait --for=condition=Established customresourcedefinition/gamebackups.arcade.gobha.me --timeout=60s",
 		"wait --for=condition=Established customresourcedefinition/gamerestores.arcade.gobha.me --timeout=60s",
 		"wait --for=condition=Established customresourcedefinition/gamedestroys.arcade.gobha.me --timeout=60s",
+		"wait --for=condition=Established customresourcedefinition/arcadeoperations.arcade.gobha.me --timeout=60s",
 		"apply -f /tmp/",
 		"rollout status deployment/arcadectl-controller --namespace arcadectl-system --timeout=120s",
 		"rollout status deployment/arcadectl-destroy-controller --namespace arcadectl-system --timeout=120s",
@@ -386,15 +388,24 @@ func TestUninstallRequiresSettledDataOperations(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		backups  string
-		restores string
-		destroys string
-		jobs     string
-		pods     string
-		leases   string
-		message  string
+		name          string
+		backups       string
+		restores      string
+		destroys      string
+		operations    string
+		apiDeployment string
+		jobs          string
+		pods          string
+		leases        string
+		message       string
 	}{
+		{name: "pending API receipt", operations: "ao-pending\tAccepted\t1\t1\t\n", message: "every ArcadeOperation must be terminal"},
+		{name: "destroy awaiting confirmation receipt", operations: "ao-pending\tAwaitingConfirmation\t1\t1\t\n", message: "every ArcadeOperation must be terminal"},
+		{name: "stale terminal API receipt", operations: "ao-done\tSucceeded\t2\t1\t\n", message: "current generation"},
+		{name: "deleting terminal API receipt", operations: "ao-done\tSucceeded\t1\t1\t2026-10-02T00:00:00Z\n", message: "not deleting"},
+		{name: "terminal receipt fence finalizer", operations: "ao-done\tSucceeded\t1\t1\t\tarcade.gobha.me/operation-fence \n", message: "free of finalizers"},
+		{name: "API Deployment still exists", apiDeployment: "deployment.apps/arcadectl-api\n", message: "API Deployment still exists"},
+		{name: "unlabelled API Pod", pods: "renamed\t\t\t\tarcadectl-api\t\n", message: "API Pods still exist"},
 		{name: "running backup", backups: "nightly\tRunning\t1\t1\t\n", message: "every GameBackup must be terminal"},
 		{name: "preparing backup", backups: "nightly\tPreparing\t1\t1\t\n", message: "every GameBackup must be terminal"},
 		{name: "verifying backup", backups: "nightly\tVerifying\t1\t1\t\n", message: "every GameBackup must be terminal"},
@@ -429,6 +440,8 @@ func TestUninstallRequiresSettledDataOperations(t *testing.T) {
 				"KUBECTL_BACKUPS="+test.backups,
 				"KUBECTL_RESTORES="+test.restores,
 				"KUBECTL_DESTROYS="+test.destroys,
+				"KUBECTL_OPERATIONS="+test.operations,
+				"KUBECTL_API_DEPLOYMENT="+test.apiDeployment,
 				"KUBECTL_DATA_JOBS="+test.jobs,
 				"KUBECTL_DATA_PODS="+test.pods,
 				"KUBECTL_DATA_LEASES="+test.leases,
@@ -597,6 +610,44 @@ func TestUninstallRestoresControllerWhenStateChangesAfterQuiescing(t *testing.T)
 	}
 }
 
+func TestUninstallRechecksAPIOperationsAfterQuiescing(t *testing.T) {
+	t.Parallel()
+	fakeKubectl, logPath := writeFakeKubectl(t)
+	command := exec.CommandContext(context.Background(), filepath.Join(repositoryRoot(t), "hack", "uninstall.sh"))
+	command.Env = append(os.Environ(), "KUBECTL="+fakeKubectl, "KUBECTL_LOG="+logPath,
+		"KUBECTL_SERVERS=factory\tStopped\tStopped\t2\t2\t\n",
+		"KUBECTL_OPERATIONS=ao-done\tSucceeded\t1\t1\t\n",
+		"KUBECTL_OPERATIONS_AFTER_QUIESCE=ao-new\tAccepted\t1\t1\t\n",
+		"KUBECTL_CONTROLLER_REPLICAS=1")
+	output, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "every ArcadeOperation must be terminal") || !strings.Contains(string(output), "restoring the controller to 1 replicas") {
+		t.Fatalf("racing receipt admission was not refused: %v\n%s", err, output)
+	}
+	contents, err := os.ReadFile(logPath)
+	if err != nil || strings.Contains(string(contents), "delete --filename") {
+		t.Fatal("uninstall reached deletion after new receipt")
+	}
+}
+
+func TestUninstallFailsClosedWhenAPISafetyStateCannotBeRead(t *testing.T) {
+	t.Parallel()
+	for _, resource := range []string{"deployment", "arcadeoperations.arcade.gobha.me"} {
+		t.Run(resource, func(t *testing.T) {
+			fakeKubectl, logPath := writeFakeKubectl(t)
+			command := exec.CommandContext(context.Background(), filepath.Join(repositoryRoot(t), "hack", "uninstall.sh"))
+			command.Env = append(os.Environ(), "KUBECTL="+fakeKubectl, "KUBECTL_LOG="+logPath,
+				"KUBECTL_SERVERS=factory\tStopped\tStopped\t2\t2\t\n", "KUBECTL_FAIL_GET="+resource)
+			if output, err := command.CombinedOutput(); err == nil {
+				t.Fatalf("unreadable API safety state accepted: %s", output)
+			}
+			contents, err := os.ReadFile(logPath)
+			if err != nil || strings.Contains(string(contents), "delete --filename") || strings.Contains(string(contents), "scale deployment/") {
+				t.Fatal("unreadable safety state reached controller mutation")
+			}
+		})
+	}
+}
+
 func renderController(t *testing.T, image string) []byte {
 	t.Helper()
 	command := exec.CommandContext(context.Background(), filepath.Join(repositoryRoot(t), "hack", "render-controller.sh"), image)
@@ -658,6 +709,14 @@ if [ "${1:-}" = "get" ]; then
       ;;
     gamerestores.arcade.gobha.me) printf '%b' "${KUBECTL_RESTORES:-}" ;;
     gamedestroys.arcade.gobha.me) printf '%b' "${KUBECTL_DESTROYS:-}" ;;
+    arcadeoperations.arcade.gobha.me)
+      operation_gets=$(grep -c '^get arcadeoperations.arcade.gobha.me ' "$KUBECTL_LOG")
+      if [ "$operation_gets" -gt 1 ] && [ "${KUBECTL_OPERATIONS_AFTER_QUIESCE+x}" = x ]; then
+        printf '%b' "$KUBECTL_OPERATIONS_AFTER_QUIESCE"
+      else
+        printf '%b' "${KUBECTL_OPERATIONS:-}"
+      fi
+      ;;
     jobs.batch) printf '%b' "${KUBECTL_DATA_JOBS:-}" ;;
     pods)
       case "$*" in
@@ -676,6 +735,7 @@ if [ "${1:-}" = "get" ]; then
     leases.coordination.k8s.io) printf '%b' "${KUBECTL_DATA_LEASES:-}" ;;
     deployment)
       case "${3:-}" in
+        arcadectl-api) printf '%b' "${KUBECTL_API_DEPLOYMENT:-}" ;;
         arcadectl-destroy-controller) printf '%b' "${KUBECTL_DESTROY_CONTROLLER_REPLICAS:-}" ;;
         *) printf '%b' "${KUBECTL_CONTROLLER_REPLICAS:-}" ;;
       esac
@@ -794,8 +854,11 @@ func assertRole(t *testing.T, object *unstructured.Unstructured) {
 		{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get"}},
 		{APIGroups: []string{""}, Resources: []string{"serviceaccounts"}, Verbs: []string{"create", "delete", "get", "list", "watch"}},
 		{APIGroups: []string{"apps"}, Resources: []string{"deployments"}, Verbs: []string{"create", "delete", "get", "list", "patch", "update", "watch"}},
-		{APIGroups: []string{"arcade.gobha.me"}, Resources: []string{"gamebackups", "gamerestores", "gameservers"}, Verbs: []string{"get", "list", "patch", "update", "watch"}},
-		{APIGroups: []string{"arcade.gobha.me"}, Resources: []string{"gamebackups/status", "gamerestores/status", "gameservers/status"}, Verbs: []string{"get", "patch", "update"}},
+		{APIGroups: []string{"arcade.gobha.me"}, Resources: []string{"arcadeoperations"}, Verbs: []string{"get", "list", "patch", "update", "watch"}},
+		{APIGroups: []string{"arcade.gobha.me"}, Resources: []string{"arcadeoperations/status", "gamebackups/status", "gamerestores/status", "gameservers/status"}, Verbs: []string{"get", "patch", "update"}},
+		{APIGroups: []string{"arcade.gobha.me"}, Resources: []string{"gamebackups", "gamerestores"}, Verbs: []string{"create", "get", "list", "patch", "update", "watch"}},
+		{APIGroups: []string{"arcade.gobha.me"}, Resources: []string{"gamedestroys"}, Verbs: []string{"create", "get", "list", "patch", "watch"}},
+		{APIGroups: []string{"arcade.gobha.me"}, Resources: []string{"gameservers"}, Verbs: []string{"create", "delete", "get", "list", "patch", "update", "watch"}},
 		{APIGroups: []string{"batch"}, Resources: []string{"jobs"}, Verbs: []string{"create", "delete", "get", "list", "update", "watch"}},
 		{APIGroups: []string{"coordination.k8s.io"}, Resources: []string{"leases"}, Verbs: []string{"create", "delete", "get", "list", "patch", "update", "watch"}},
 		{APIGroups: []string{"rbac.authorization.k8s.io"}, Resources: []string{"rolebindings", "roles"}, Verbs: []string{"create", "delete", "get", "list", "watch"}},

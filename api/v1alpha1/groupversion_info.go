@@ -24,6 +24,7 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&GameBackup{}, &GameBackupList{},
 		&GameRestore{}, &GameRestoreList{},
 		&GameDestroy{}, &GameDestroyList{},
+		&ArcadeOperation{}, &ArcadeOperationList{},
 	)
 	metav1.AddToGroupVersion(scheme, GroupVersion)
 	return nil

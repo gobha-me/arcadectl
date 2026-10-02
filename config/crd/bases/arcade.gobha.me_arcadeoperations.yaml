@@ -1,0 +1,1481 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.18.0
+  name: arcadeoperations.arcade.gobha.me
+spec:
+  group: arcade.gobha.me
+  names:
+    kind: ArcadeOperation
+    listKind: ArcadeOperationList
+    plural: arcadeoperations
+    shortNames:
+    - ao
+    singular: arcadeoperation
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.action
+      name: Action
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ArcadeOperation is the durable admission/idempotency ledger. API RBAC cannot
+          update/delete receipts or write status. Deleting a receipt never owns/deletes
+          a GameServer, its retained PVCs, or a backup artifact.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              ArcadeOperationSpec is an immutable idempotency/admission receipt. Raw keys,
+              credentials, authentication claims, raw HTTP bodies, and authorization capabilities are never
+              persisted. Only an API-authenticated and audited create (or a separately
+              trusted Kubernetes administrator) admits a receipt.
+            properties:
+              action:
+                description: |-
+                  ArcadeOperationAction is ordinary administrator intent. There is deliberately
+                  no unsafe-no-backup action: that exception remains a distinct Kubernetes
+                  administrator boundary, not a bearer API capability.
+                enum:
+                - server.create
+                - server.configure
+                - server.start
+                - server.stop
+                - server.restart
+                - server.update
+                - world.backup
+                - world.restore
+                - server.decommission
+                - world.destroy.preview
+                - world.destroy.confirm
+                - world.destroy.cancel
+                type: string
+              admission:
+                description: |-
+                  OperationAdmission contains non-secret audit correlation only. It is not a
+                  serialized authorization capability and is never re-authenticated by workers.
+                properties:
+                  admittedAt:
+                    format: date-time
+                    type: string
+                  credentialExpiresAt:
+                    format: date-time
+                    type: string
+                  credentialID:
+                    maxLength: 64
+                    pattern: ^[A-Za-z0-9_.-]{1,64}$
+                    type: string
+                  principalID:
+                    maxLength: 64
+                    pattern: ^[A-Za-z0-9_.-]{1,64}$
+                    type: string
+                  requestID:
+                    pattern: ^[0-9a-f]{32}$
+                    type: string
+                required:
+                - admittedAt
+                - credentialExpiresAt
+                - credentialID
+                - principalID
+                - requestID
+                type: object
+              keyDigest:
+                pattern: ^sha256:[0-9a-f]{64}$
+                type: string
+              request:
+                description: |-
+                  OperationRequest is the typed request union. The translator also validates
+                  action/field consistency before planning: direct Kubernetes administrators
+                  cannot accidentally turn an invalid receipt into another operation.
+                properties:
+                  backup:
+                    properties:
+                      repositorySecretName:
+                        description: |-
+                          RepositorySecretName is resolved once, controller-side, to immutable exact
+                          UID/resourceVersion evidence before any child operation is created.
+                        maxLength: 253
+                        pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                        type: string
+                      restartPolicy:
+                        description: |-
+                          RestartPolicy controls what happens after an operation safely stops a
+                          running GameServer. LeaveStopped is the fail-closed default.
+                        enum:
+                        - LeaveStopped
+                        - RestorePreviousState
+                        type: string
+                    required:
+                    - repositorySecretName
+                    - restartPolicy
+                    type: object
+                  configure:
+                    properties:
+                      compute:
+                        description: ComputeSpec bounds CPU and memory assigned to
+                          the game container.
+                        properties:
+                          cpuLimit:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          cpuRequest:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          memoryLimit:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          memoryRequest:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                        required:
+                        - cpuLimit
+                        - cpuRequest
+                        - memoryLimit
+                        - memoryRequest
+                        type: object
+                      settingsJSON:
+                        maxLength: 65536
+                        minLength: 2
+                        type: string
+                      storage:
+                        description: |-
+                          StorageSpec describes each adapter-declared persistent data claim. The same
+                          size and storage class are applied independently to every persistent path.
+                        properties:
+                          reattach:
+                            description: |-
+                              Reattach explicitly selects a complete retained data set. When omitted,
+                              the controller creates data for this GameServer identity and refuses to
+                              adopt claims retained by an earlier same-name GameServer.
+                            properties:
+                              claims:
+                                items:
+                                  description: |-
+                                    RetainedDataClaimReference pins one adapter path to one exact local PVC.
+                                    The namespace is always the containing GameServer namespace.
+                                  properties:
+                                    claimRef:
+                                      description: |-
+                                        ExactLocalReference prevents name reuse from silently changing an
+                                        operation's subject. The containing operation namespace is implicit, so a
+                                        cross-namespace subject cannot be represented.
+                                      properties:
+                                        name:
+                                          maxLength: 253
+                                          minLength: 1
+                                          pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                                          type: string
+                                        namespace:
+                                          description: |-
+                                            Namespace is a rejection sentinel, not a selector. Its presence is
+                                            forbidden so ordinary API requests cannot silently prune cross-namespace
+                                            intent; the operation namespace is always authoritative.
+                                          type: string
+                                        uid:
+                                          maxLength: 128
+                                          minLength: 1
+                                          type: string
+                                      required:
+                                      - name
+                                      - uid
+                                      type: object
+                                      x-kubernetes-validations:
+                                      - message: namespace must be omitted because
+                                          references are local to the operation
+                                        rule: '!has(self.namespace)'
+                                    path:
+                                      maxLength: 63
+                                      minLength: 1
+                                      pattern: ^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$
+                                      type: string
+                                  required:
+                                  - claimRef
+                                  - path
+                                  type: object
+                                maxItems: 16
+                                minItems: 1
+                                type: array
+                                x-kubernetes-list-map-keys:
+                                - path
+                                x-kubernetes-list-type: map
+                              identity:
+                                maxLength: 63
+                                minLength: 1
+                                pattern: ^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$
+                                type: string
+                            required:
+                            - claims
+                            - identity
+                            type: object
+                          size:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          storageClassName:
+                            type: string
+                        required:
+                        - size
+                        type: object
+                    type: object
+                  create:
+                    properties:
+                      compute:
+                        description: ComputeSpec bounds CPU and memory assigned to
+                          the game container.
+                        properties:
+                          cpuLimit:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          cpuRequest:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          memoryLimit:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          memoryRequest:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                        required:
+                        - cpuLimit
+                        - cpuRequest
+                        - memoryLimit
+                        - memoryRequest
+                        type: object
+                      desiredState:
+                        description: DesiredState is the administrator's durable power
+                          intent.
+                        enum:
+                        - Running
+                        - Stopped
+                        type: string
+                      game:
+                        maxLength: 63
+                        pattern: ^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$
+                        type: string
+                      retainedWorld:
+                        description: |-
+                          OperationRetainedWorldSelector requires durable original identity rather than
+                          the existence or identity of a later same-name GameServer.
+                        properties:
+                          decommissionOperationRef:
+                            description: |-
+                              ExactLocalReference prevents name reuse from silently changing an
+                              operation's subject. The containing operation namespace is implicit, so a
+                              cross-namespace subject cannot be represented.
+                            properties:
+                              name:
+                                maxLength: 253
+                                minLength: 1
+                                pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                                type: string
+                              namespace:
+                                description: |-
+                                  Namespace is a rejection sentinel, not a selector. Its presence is
+                                  forbidden so ordinary API requests cannot silently prune cross-namespace
+                                  intent; the operation namespace is always authoritative.
+                                type: string
+                              uid:
+                                maxLength: 128
+                                minLength: 1
+                                type: string
+                            required:
+                            - name
+                            - uid
+                            type: object
+                            x-kubernetes-validations:
+                            - message: namespace must be omitted because references
+                                are local to the operation
+                              rule: '!has(self.namespace)'
+                          snapshotDigest:
+                            pattern: ^sha256:[0-9a-f]{64}$
+                            type: string
+                        required:
+                        - decommissionOperationRef
+                        - snapshotDigest
+                        type: object
+                      settingsJSON:
+                        maxLength: 65536
+                        minLength: 2
+                        type: string
+                      storage:
+                        description: |-
+                          StorageSpec describes each adapter-declared persistent data claim. The same
+                          size and storage class are applied independently to every persistent path.
+                        properties:
+                          reattach:
+                            description: |-
+                              Reattach explicitly selects a complete retained data set. When omitted,
+                              the controller creates data for this GameServer identity and refuses to
+                              adopt claims retained by an earlier same-name GameServer.
+                            properties:
+                              claims:
+                                items:
+                                  description: |-
+                                    RetainedDataClaimReference pins one adapter path to one exact local PVC.
+                                    The namespace is always the containing GameServer namespace.
+                                  properties:
+                                    claimRef:
+                                      description: |-
+                                        ExactLocalReference prevents name reuse from silently changing an
+                                        operation's subject. The containing operation namespace is implicit, so a
+                                        cross-namespace subject cannot be represented.
+                                      properties:
+                                        name:
+                                          maxLength: 253
+                                          minLength: 1
+                                          pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                                          type: string
+                                        namespace:
+                                          description: |-
+                                            Namespace is a rejection sentinel, not a selector. Its presence is
+                                            forbidden so ordinary API requests cannot silently prune cross-namespace
+                                            intent; the operation namespace is always authoritative.
+                                          type: string
+                                        uid:
+                                          maxLength: 128
+                                          minLength: 1
+                                          type: string
+                                      required:
+                                      - name
+                                      - uid
+                                      type: object
+                                      x-kubernetes-validations:
+                                      - message: namespace must be omitted because
+                                          references are local to the operation
+                                        rule: '!has(self.namespace)'
+                                    path:
+                                      maxLength: 63
+                                      minLength: 1
+                                      pattern: ^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$
+                                      type: string
+                                  required:
+                                  - claimRef
+                                  - path
+                                  type: object
+                                maxItems: 16
+                                minItems: 1
+                                type: array
+                                x-kubernetes-list-map-keys:
+                                - path
+                                x-kubernetes-list-type: map
+                              identity:
+                                maxLength: 63
+                                minLength: 1
+                                pattern: ^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$
+                                type: string
+                            required:
+                            - claims
+                            - identity
+                            type: object
+                          size:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          storageClassName:
+                            type: string
+                        required:
+                        - size
+                        type: object
+                    required:
+                    - compute
+                    - desiredState
+                    - game
+                    - settingsJSON
+                    - storage
+                    type: object
+                  destroy:
+                    properties:
+                      backupRef:
+                        description: |-
+                          ExactLocalReference prevents name reuse from silently changing an
+                          operation's subject. The containing operation namespace is implicit, so a
+                          cross-namespace subject cannot be represented.
+                        properties:
+                          name:
+                            maxLength: 253
+                            minLength: 1
+                            pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                            type: string
+                          namespace:
+                            description: |-
+                              Namespace is a rejection sentinel, not a selector. Its presence is
+                              forbidden so ordinary API requests cannot silently prune cross-namespace
+                              intent; the operation namespace is always authoritative.
+                            type: string
+                          uid:
+                            maxLength: 128
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        - uid
+                        type: object
+                        x-kubernetes-validations:
+                        - message: namespace must be omitted because references are
+                            local to the operation
+                          rule: '!has(self.namespace)'
+                      retainedWorld:
+                        description: |-
+                          OperationRetainedWorldSelector requires durable original identity rather than
+                          the existence or identity of a later same-name GameServer.
+                        properties:
+                          decommissionOperationRef:
+                            description: |-
+                              ExactLocalReference prevents name reuse from silently changing an
+                              operation's subject. The containing operation namespace is implicit, so a
+                              cross-namespace subject cannot be represented.
+                            properties:
+                              name:
+                                maxLength: 253
+                                minLength: 1
+                                pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                                type: string
+                              namespace:
+                                description: |-
+                                  Namespace is a rejection sentinel, not a selector. Its presence is
+                                  forbidden so ordinary API requests cannot silently prune cross-namespace
+                                  intent; the operation namespace is always authoritative.
+                                type: string
+                              uid:
+                                maxLength: 128
+                                minLength: 1
+                                type: string
+                            required:
+                            - name
+                            - uid
+                            type: object
+                            x-kubernetes-validations:
+                            - message: namespace must be omitted because references
+                                are local to the operation
+                              rule: '!has(self.namespace)'
+                          snapshotDigest:
+                            pattern: ^sha256:[0-9a-f]{64}$
+                            type: string
+                        required:
+                        - decommissionOperationRef
+                        - snapshotDigest
+                        type: object
+                    required:
+                    - backupRef
+                    type: object
+                  destroyCommand:
+                    properties:
+                      challenge:
+                        maxLength: 128
+                        minLength: 16
+                        pattern: ^[A-Za-z0-9_-]+$
+                        type: string
+                      destroyRef:
+                        description: |-
+                          ExactLocalReference prevents name reuse from silently changing an
+                          operation's subject. The containing operation namespace is implicit, so a
+                          cross-namespace subject cannot be represented.
+                        properties:
+                          name:
+                            maxLength: 253
+                            minLength: 1
+                            pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                            type: string
+                          namespace:
+                            description: |-
+                              Namespace is a rejection sentinel, not a selector. Its presence is
+                              forbidden so ordinary API requests cannot silently prune cross-namespace
+                              intent; the operation namespace is always authoritative.
+                            type: string
+                          uid:
+                            maxLength: 128
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        - uid
+                        type: object
+                        x-kubernetes-validations:
+                        - message: namespace must be omitted because references are
+                            local to the operation
+                          rule: '!has(self.namespace)'
+                      parentOperationRef:
+                        description: |-
+                          ExactLocalReference prevents name reuse from silently changing an
+                          operation's subject. The containing operation namespace is implicit, so a
+                          cross-namespace subject cannot be represented.
+                        properties:
+                          name:
+                            maxLength: 253
+                            minLength: 1
+                            pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                            type: string
+                          namespace:
+                            description: |-
+                              Namespace is a rejection sentinel, not a selector. Its presence is
+                              forbidden so ordinary API requests cannot silently prune cross-namespace
+                              intent; the operation namespace is always authoritative.
+                            type: string
+                          uid:
+                            maxLength: 128
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        - uid
+                        type: object
+                        x-kubernetes-validations:
+                        - message: namespace must be omitted because references are
+                            local to the operation
+                          rule: '!has(self.namespace)'
+                    required:
+                    - destroyRef
+                    - parentOperationRef
+                    type: object
+                  image:
+                    description: |-
+                      OperationImageInput selects an exact digest OR an adapter-approved version.
+                      No caller-supplied repository, registry, tag, command, or URL is accepted.
+                    properties:
+                      digest:
+                        pattern: ^sha256:[0-9a-f]{64}$
+                        type: string
+                      resolution:
+                        description: |-
+                          OperationImageResolution freezes the winner of concurrent version selection.
+                          The original request digest excludes this server-produced resolution, so
+                          retries return the winner rather than resolving a mutable tag again.
+                        properties:
+                          digest:
+                            pattern: ^sha256:[0-9a-f]{64}$
+                            type: string
+                          repository:
+                            maxLength: 256
+                            minLength: 1
+                            type: string
+                          resolvedAt:
+                            format: date-time
+                            type: string
+                          resolverVersion:
+                            enum:
+                            - registry-v1
+                            - digest-v1
+                            type: string
+                          tag:
+                            maxLength: 128
+                            type: string
+                        required:
+                        - digest
+                        - repository
+                        - resolvedAt
+                        - resolverVersion
+                        type: object
+                      version:
+                        maxLength: 64
+                        minLength: 1
+                        type: string
+                    required:
+                    - resolution
+                    type: object
+                    x-kubernetes-validations:
+                    - message: select exactly one digest or version
+                      rule: has(self.digest) != has(self.version)
+                  precondition:
+                    description: |-
+                      Precondition is the canonical original If-Match predicate, or "absent"
+                      for create with If-None-Match:*. It remains stable when current state changes.
+                    maxLength: 512
+                    minLength: 1
+                    pattern: ^[A-Za-z0-9_.:"-]+$
+                    type: string
+                  restore:
+                    properties:
+                      backupRef:
+                        description: |-
+                          ExactLocalReference prevents name reuse from silently changing an
+                          operation's subject. The containing operation namespace is implicit, so a
+                          cross-namespace subject cannot be represented.
+                        properties:
+                          name:
+                            maxLength: 253
+                            minLength: 1
+                            pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                            type: string
+                          namespace:
+                            description: |-
+                              Namespace is a rejection sentinel, not a selector. Its presence is
+                              forbidden so ordinary API requests cannot silently prune cross-namespace
+                              intent; the operation namespace is always authoritative.
+                            type: string
+                          uid:
+                            maxLength: 128
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        - uid
+                        type: object
+                        x-kubernetes-validations:
+                        - message: namespace must be omitted because references are
+                            local to the operation
+                          rule: '!has(self.namespace)'
+                      restartPolicy:
+                        description: |-
+                          RestartPolicy controls what happens after an operation safely stops a
+                          running GameServer. LeaveStopped is the fail-closed default.
+                        enum:
+                        - LeaveStopped
+                        - RestorePreviousState
+                        type: string
+                    required:
+                    - backupRef
+                    - restartPolicy
+                    type: object
+                  serverName:
+                    maxLength: 63
+                    pattern: ^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$
+                    type: string
+                  target:
+                    description: |-
+                      ExactGameServerReference pins both object identity and the spec generation
+                      from which a data operation was requested.
+                    properties:
+                      desiredState:
+                        description: |-
+                          DesiredState is the durable pre-operation intent at Generation. It lets a
+                          retry distinguish an originally running server from one already stopped.
+                        enum:
+                        - Running
+                        - Stopped
+                        type: string
+                      generation:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                        type: string
+                      namespace:
+                        description: |-
+                          Namespace is a rejection sentinel, not a selector. Its presence is
+                          forbidden so ordinary API requests cannot silently prune cross-namespace
+                          intent; the operation namespace is always authoritative.
+                        type: string
+                      uid:
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                    required:
+                    - desiredState
+                    - generation
+                    - name
+                    - uid
+                    type: object
+                    x-kubernetes-validations:
+                    - message: namespace must be omitted because references are local
+                        to the operation
+                      rule: '!has(self.namespace)'
+                required:
+                - precondition
+                type: object
+              requestDigest:
+                pattern: ^sha256:[0-9a-f]{64}$
+                type: string
+              version:
+                enum:
+                - v1
+                type: string
+            required:
+            - action
+            - admission
+            - keyDigest
+            - request
+            - requestDigest
+            - version
+            type: object
+            x-kubernetes-validations:
+            - message: operation admission and request are immutable
+              rule: self == oldSelf
+          status:
+            description: |-
+              ArcadeOperationStatus is maintained only by the translator. A destroy parent
+              keeps following its native child while confirm/cancel command receipts settle.
+            properties:
+              child:
+                properties:
+                  generation:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  kind:
+                    enum:
+                    - GameServer
+                    - GameBackup
+                    - GameRestore
+                    - GameDestroy
+                    type: string
+                  name:
+                    maxLength: 253
+                    minLength: 1
+                    pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace is a rejection sentinel, not a selector. Its presence is
+                      forbidden so ordinary API requests cannot silently prune cross-namespace
+                      intent; the operation namespace is always authoritative.
+                    type: string
+                  uid:
+                    maxLength: 128
+                    minLength: 1
+                    type: string
+                required:
+                - generation
+                - kind
+                - name
+                - uid
+                type: object
+                x-kubernetes-validations:
+                - message: namespace must be omitted because references are local
+                    to the operation
+                  rule: '!has(self.namespace)'
+              completedAt:
+                format: date-time
+                type: string
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                maxItems: 16
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              destroyPreview:
+                description: |-
+                  GameDestroyPreview provides a short-lived, controller-issued challenge and
+                  restore guidance before any irreversible step.
+                properties:
+                  challenge:
+                    maxLength: 128
+                    minLength: 16
+                    pattern: ^[A-Za-z0-9_-]+$
+                    type: string
+                  expiresAt:
+                    format: date-time
+                    type: string
+                  restoreGuidance:
+                    maxLength: 1024
+                    minLength: 1
+                    type: string
+                required:
+                - challenge
+                - expiresAt
+                - restoreGuidance
+                type: object
+              failure:
+                description: OperationFailure is bounded controller-authored guidance,
+                  never a raw error.
+                properties:
+                  code:
+                    enum:
+                    - invalid_request
+                    - target_changed
+                    - operation_conflict
+                    - invalid_reference
+                    - secret_unavailable
+                    - unsupported
+                    - image_unavailable
+                    - validation_failed
+                    - worker_failed
+                    - verification_failed
+                    - too_late
+                    - confirmation_expired
+                    - child_changed
+                    - api_unavailable
+                    - receipt_invalid
+                    type: string
+                  message:
+                    maxLength: 512
+                    minLength: 1
+                    type: string
+                  retryable:
+                    type: boolean
+                  suggestedAction:
+                    maxLength: 512
+                    minLength: 1
+                    type: string
+                required:
+                - code
+                - message
+                - retryable
+                - suggestedAction
+                type: object
+              observedGeneration:
+                format: int64
+                type: integer
+              phase:
+                description: |-
+                  ArcadeOperationPhase is durable status, not the lifetime of an HTTP request.
+                  Credential expiry or rotation does not cancel an already admitted receipt.
+                enum:
+                - Accepted
+                - Planning
+                - Running
+                - AwaitingConfirmation
+                - Verifying
+                - Deleting
+                - Succeeded
+                - Failed
+                - Cancelled
+                type: string
+              plan:
+                description: |-
+                  OperationPlan freezes all name resolutions before side effects. Later name
+                  reuse or Secret replacement must fail, never follow the replacement.
+                properties:
+                  backupRef:
+                    description: |-
+                      ExactLocalReference prevents name reuse from silently changing an
+                      operation's subject. The containing operation namespace is implicit, so a
+                      cross-namespace subject cannot be represented.
+                    properties:
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                        type: string
+                      namespace:
+                        description: |-
+                          Namespace is a rejection sentinel, not a selector. Its presence is
+                          forbidden so ordinary API requests cannot silently prune cross-namespace
+                          intent; the operation namespace is always authoritative.
+                        type: string
+                      uid:
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - uid
+                    type: object
+                    x-kubernetes-validations:
+                    - message: namespace must be omitted because references are local
+                        to the operation
+                      rule: '!has(self.namespace)'
+                  data:
+                    description: |-
+                      RetainedDataReference is explicit authority to reattach one complete
+                      retained data set. Identity must match every referenced claim's durable
+                      data-identity label; Claims must cover every adapter-declared path exactly.
+                    properties:
+                      claims:
+                        items:
+                          description: |-
+                            RetainedDataClaimReference pins one adapter path to one exact local PVC.
+                            The namespace is always the containing GameServer namespace.
+                          properties:
+                            claimRef:
+                              description: |-
+                                ExactLocalReference prevents name reuse from silently changing an
+                                operation's subject. The containing operation namespace is implicit, so a
+                                cross-namespace subject cannot be represented.
+                              properties:
+                                name:
+                                  maxLength: 253
+                                  minLength: 1
+                                  pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                                  type: string
+                                namespace:
+                                  description: |-
+                                    Namespace is a rejection sentinel, not a selector. Its presence is
+                                    forbidden so ordinary API requests cannot silently prune cross-namespace
+                                    intent; the operation namespace is always authoritative.
+                                  type: string
+                                uid:
+                                  maxLength: 128
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - name
+                              - uid
+                              type: object
+                              x-kubernetes-validations:
+                              - message: namespace must be omitted because references
+                                  are local to the operation
+                                rule: '!has(self.namespace)'
+                            path:
+                              maxLength: 63
+                              minLength: 1
+                              pattern: ^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$
+                              type: string
+                          required:
+                          - claimRef
+                          - path
+                          type: object
+                        maxItems: 16
+                        minItems: 1
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - path
+                        x-kubernetes-list-type: map
+                      identity:
+                        maxLength: 63
+                        minLength: 1
+                        pattern: ^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$
+                        type: string
+                    required:
+                    - claims
+                    - identity
+                    type: object
+                  destroyRef:
+                    description: |-
+                      ExactLocalReference prevents name reuse from silently changing an
+                      operation's subject. The containing operation namespace is implicit, so a
+                      cross-namespace subject cannot be represented.
+                    properties:
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                        type: string
+                      namespace:
+                        description: |-
+                          Namespace is a rejection sentinel, not a selector. Its presence is
+                          forbidden so ordinary API requests cannot silently prune cross-namespace
+                          intent; the operation namespace is always authoritative.
+                        type: string
+                      uid:
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - uid
+                    type: object
+                    x-kubernetes-validations:
+                    - message: namespace must be omitted because references are local
+                        to the operation
+                      rule: '!has(self.namespace)'
+                  repositorySecretRef:
+                    description: |-
+                      ExactSecretReference pins an immutable Secret revision. Implementations must
+                      also verify the live Secret has immutable=true before external work begins.
+                    properties:
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                        type: string
+                      namespace:
+                        description: |-
+                          Namespace is a rejection sentinel, not a selector. Its presence is
+                          forbidden so ordinary API requests cannot silently prune cross-namespace
+                          intent; the operation namespace is always authoritative.
+                        type: string
+                      resourceVersion:
+                        maxLength: 256
+                        minLength: 1
+                        type: string
+                      uid:
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - resourceVersion
+                    - uid
+                    type: object
+                    x-kubernetes-validations:
+                    - message: namespace must be omitted because references are local
+                        to the operation
+                      rule: '!has(self.namespace)'
+                  server:
+                    description: |-
+                      ExactGameServerReference pins both object identity and the spec generation
+                      from which a data operation was requested.
+                    properties:
+                      desiredState:
+                        description: |-
+                          DesiredState is the durable pre-operation intent at Generation. It lets a
+                          retry distinguish an originally running server from one already stopped.
+                        enum:
+                        - Running
+                        - Stopped
+                        type: string
+                      generation:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                        type: string
+                      namespace:
+                        description: |-
+                          Namespace is a rejection sentinel, not a selector. Its presence is
+                          forbidden so ordinary API requests cannot silently prune cross-namespace
+                          intent; the operation namespace is always authoritative.
+                        type: string
+                      uid:
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                    required:
+                    - desiredState
+                    - generation
+                    - name
+                    - uid
+                    type: object
+                    x-kubernetes-validations:
+                    - message: namespace must be omitted because references are local
+                        to the operation
+                      rule: '!has(self.namespace)'
+                  serverIntent:
+                    description: |-
+                      OperationServerIntent is a bounded, fully typed future GameServer spec.
+                      Canonical settings are stored as a string, not preserve-unknown JSON fields,
+                      so admission can prove complete receipt/plan immutability with CEL equality.
+                    properties:
+                      compute:
+                        description: ComputeSpec bounds CPU and memory assigned to
+                          the game container.
+                        properties:
+                          cpuLimit:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          cpuRequest:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          memoryLimit:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          memoryRequest:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                        required:
+                        - cpuLimit
+                        - cpuRequest
+                        - memoryLimit
+                        - memoryRequest
+                        type: object
+                      desiredState:
+                        description: DesiredState is the administrator's durable power
+                          intent.
+                        enum:
+                        - Running
+                        - Stopped
+                        type: string
+                      game:
+                        maxLength: 63
+                        pattern: ^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$
+                        type: string
+                      imageDigest:
+                        pattern: ^sha256:[0-9a-f]{64}$
+                        type: string
+                      settingsJSON:
+                        maxLength: 65536
+                        minLength: 2
+                        type: string
+                      storage:
+                        description: |-
+                          StorageSpec describes each adapter-declared persistent data claim. The same
+                          size and storage class are applied independently to every persistent path.
+                        properties:
+                          reattach:
+                            description: |-
+                              Reattach explicitly selects a complete retained data set. When omitted,
+                              the controller creates data for this GameServer identity and refuses to
+                              adopt claims retained by an earlier same-name GameServer.
+                            properties:
+                              claims:
+                                items:
+                                  description: |-
+                                    RetainedDataClaimReference pins one adapter path to one exact local PVC.
+                                    The namespace is always the containing GameServer namespace.
+                                  properties:
+                                    claimRef:
+                                      description: |-
+                                        ExactLocalReference prevents name reuse from silently changing an
+                                        operation's subject. The containing operation namespace is implicit, so a
+                                        cross-namespace subject cannot be represented.
+                                      properties:
+                                        name:
+                                          maxLength: 253
+                                          minLength: 1
+                                          pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                                          type: string
+                                        namespace:
+                                          description: |-
+                                            Namespace is a rejection sentinel, not a selector. Its presence is
+                                            forbidden so ordinary API requests cannot silently prune cross-namespace
+                                            intent; the operation namespace is always authoritative.
+                                          type: string
+                                        uid:
+                                          maxLength: 128
+                                          minLength: 1
+                                          type: string
+                                      required:
+                                      - name
+                                      - uid
+                                      type: object
+                                      x-kubernetes-validations:
+                                      - message: namespace must be omitted because
+                                          references are local to the operation
+                                        rule: '!has(self.namespace)'
+                                    path:
+                                      maxLength: 63
+                                      minLength: 1
+                                      pattern: ^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$
+                                      type: string
+                                  required:
+                                  - claimRef
+                                  - path
+                                  type: object
+                                maxItems: 16
+                                minItems: 1
+                                type: array
+                                x-kubernetes-list-map-keys:
+                                - path
+                                x-kubernetes-list-type: map
+                              identity:
+                                maxLength: 63
+                                minLength: 1
+                                pattern: ^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$
+                                type: string
+                            required:
+                            - claims
+                            - identity
+                            type: object
+                          size:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          storageClassName:
+                            type: string
+                        required:
+                        - size
+                        type: object
+                    required:
+                    - compute
+                    - desiredState
+                    - game
+                    - imageDigest
+                    - settingsJSON
+                    - storage
+                    type: object
+                type: object
+              retainedWorld:
+                properties:
+                  snapshotDigest:
+                    pattern: ^sha256:[0-9a-f]{64}$
+                    type: string
+                  target:
+                    description: |-
+                      GameDestroyTarget pins the original server identity and the complete
+                      retained-world claim set. The GameServer may already have been removed.
+                    properties:
+                      data:
+                        description: |-
+                          RetainedDataReference is explicit authority to reattach one complete
+                          retained data set. Identity must match every referenced claim's durable
+                          data-identity label; Claims must cover every adapter-declared path exactly.
+                        properties:
+                          claims:
+                            items:
+                              description: |-
+                                RetainedDataClaimReference pins one adapter path to one exact local PVC.
+                                The namespace is always the containing GameServer namespace.
+                              properties:
+                                claimRef:
+                                  description: |-
+                                    ExactLocalReference prevents name reuse from silently changing an
+                                    operation's subject. The containing operation namespace is implicit, so a
+                                    cross-namespace subject cannot be represented.
+                                  properties:
+                                    name:
+                                      maxLength: 253
+                                      minLength: 1
+                                      pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                                      type: string
+                                    namespace:
+                                      description: |-
+                                        Namespace is a rejection sentinel, not a selector. Its presence is
+                                        forbidden so ordinary API requests cannot silently prune cross-namespace
+                                        intent; the operation namespace is always authoritative.
+                                      type: string
+                                    uid:
+                                      maxLength: 128
+                                      minLength: 1
+                                      type: string
+                                  required:
+                                  - name
+                                  - uid
+                                  type: object
+                                  x-kubernetes-validations:
+                                  - message: namespace must be omitted because references
+                                      are local to the operation
+                                    rule: '!has(self.namespace)'
+                                path:
+                                  maxLength: 63
+                                  minLength: 1
+                                  pattern: ^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$
+                                  type: string
+                              required:
+                              - claimRef
+                              - path
+                              type: object
+                            maxItems: 16
+                            minItems: 1
+                            type: array
+                            x-kubernetes-list-map-keys:
+                            - path
+                            x-kubernetes-list-type: map
+                          identity:
+                            maxLength: 63
+                            minLength: 1
+                            pattern: ^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$
+                            type: string
+                        required:
+                        - claims
+                        - identity
+                        type: object
+                      game:
+                        maxLength: 63
+                        minLength: 1
+                        pattern: ^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$
+                        type: string
+                      gameServer:
+                        description: |-
+                          ExactLocalReference prevents name reuse from silently changing an
+                          operation's subject. The containing operation namespace is implicit, so a
+                          cross-namespace subject cannot be represented.
+                        properties:
+                          name:
+                            maxLength: 253
+                            minLength: 1
+                            pattern: ^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$
+                            type: string
+                          namespace:
+                            description: |-
+                              Namespace is a rejection sentinel, not a selector. Its presence is
+                              forbidden so ordinary API requests cannot silently prune cross-namespace
+                              intent; the operation namespace is always authoritative.
+                            type: string
+                          uid:
+                            maxLength: 128
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        - uid
+                        type: object
+                        x-kubernetes-validations:
+                        - message: namespace must be omitted because references are
+                            local to the operation
+                          rule: '!has(self.namespace)'
+                    required:
+                    - data
+                    - game
+                    - gameServer
+                    type: object
+                    x-kubernetes-validations:
+                    - message: retained claims must have unique names and UIDs
+                      rule: self.data.claims.all(claim, self.data.claims.filter(other,
+                        other.claimRef.name == claim.claimRef.name).size() == 1 &&
+                        self.data.claims.filter(other, other.claimRef.uid == claim.claimRef.uid).size()
+                        == 1)
+                required:
+                - snapshotDigest
+                - target
+                type: object
+              startedAt:
+                format: date-time
+                type: string
+              transitions:
+                items:
+                  description: |-
+                    OperationServerTransition is a write-ahead journal. An atomic GameServer
+                    metadata marker names this exact receipt UID and step alongside the spec
+                    patch; generation/state alone cannot attribute another actor's mutation.
+                  properties:
+                    desiredState:
+                      description: DesiredState is the administrator's durable power
+                        intent.
+                      enum:
+                      - Running
+                      - Stopped
+                      type: string
+                    fromGeneration:
+                      format: int64
+                      minimum: 1
+                      type: integer
+                    requestedAt:
+                      format: date-time
+                      type: string
+                    specDigest:
+                      pattern: ^sha256:[0-9a-f]{64}$
+                      type: string
+                    step:
+                      enum:
+                      - Apply
+                      - Stop
+                      - Start
+                      type: string
+                    toGeneration:
+                      format: int64
+                      minimum: 1
+                      type: integer
+                  required:
+                  - desiredState
+                  - fromGeneration
+                  - requestedAt
+                  - specDigest
+                  - step
+                  - toGeneration
+                  type: object
+                maxItems: 3
+                type: array
+                x-kubernetes-list-map-keys:
+                - step
+                x-kubernetes-list-type: map
+            type: object
+            x-kubernetes-validations:
+            - message: operation plan cannot be cleared or changed
+              rule: '!has(oldSelf.plan) || (has(self.plan) && self.plan == oldSelf.plan)'
+            - message: operation child cannot be cleared or changed
+              rule: '!has(oldSelf.child) || (has(self.child) && self.child == oldSelf.child)'
+            - message: retained world snapshot cannot be cleared or changed
+              rule: '!has(oldSelf.retainedWorld) || (has(self.retainedWorld) && self.retainedWorld
+                == oldSelf.retainedWorld)'
+            - message: operation journal cannot be removed or changed
+              rule: '!has(oldSelf.transitions) || (has(self.transitions) && oldSelf.transitions.all(entry,
+                self.transitions.exists(current, current == entry)))'
+            - message: terminal operation status is immutable
+              rule: '!has(oldSelf.phase) || !(oldSelf.phase in [''Succeeded'', ''Failed'',
+                ''Cancelled'']) || self == oldSelf'
+        required:
+        - spec
+        type: object
+        x-kubernetes-validations:
+        - message: operation status cannot be removed
+          rule: '!has(oldSelf.status) || has(self.status)'
+    served: true
+    storage: true
+    subresources:
+      status: {}

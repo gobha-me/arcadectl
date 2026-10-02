@@ -59,9 +59,9 @@ func TestControllerRoleBackupWorkerAuthorityIsNarrow(t *testing.T) {
 	t.Parallel()
 
 	role := loadControllerRole(t)
-	assertExactResourceVerbs(t, role, "arcade.gobha.me", "gamebackups", []string{"get", "list", "patch", "update", "watch"})
+	assertExactResourceVerbs(t, role, "arcade.gobha.me", "gamebackups", []string{"create", "get", "list", "patch", "update", "watch"})
 	assertExactResourceVerbs(t, role, "arcade.gobha.me", "gamebackups/status", []string{"get", "patch", "update"})
-	assertExactResourceVerbs(t, role, "arcade.gobha.me", "gamerestores", []string{"get", "list", "patch", "update", "watch"})
+	assertExactResourceVerbs(t, role, "arcade.gobha.me", "gamerestores", []string{"create", "get", "list", "patch", "update", "watch"})
 	assertExactResourceVerbs(t, role, "arcade.gobha.me", "gamerestores/status", []string{"get", "patch", "update"})
 	assertExactResourceVerbs(t, role, "", "secrets", []string{"get"})
 	assertExactResourceVerbs(t, role, "", "pods", []string{"get", "list", "update", "watch"})
@@ -70,6 +70,20 @@ func TestControllerRoleBackupWorkerAuthorityIsNarrow(t *testing.T) {
 	assertExactResourceVerbs(t, role, "coordination.k8s.io", "leases", []string{"create", "delete", "get", "list", "patch", "update", "watch"})
 	assertExactResourceVerbs(t, role, "rbac.authorization.k8s.io", "roles", []string{"create", "delete", "get", "list", "watch"})
 	assertExactResourceVerbs(t, role, "rbac.authorization.k8s.io", "rolebindings", []string{"create", "delete", "get", "list", "watch"})
+}
+
+func TestControllerReceiptTranslatorAuthorityIsNarrow(t *testing.T) {
+	t.Parallel()
+	role := loadControllerRole(t)
+	assertExactResourceVerbs(t, role, "arcade.gobha.me", "arcadeoperations", []string{"get", "list", "patch", "update", "watch"})
+	assertExactResourceVerbs(t, role, "arcade.gobha.me", "arcadeoperations/status", []string{"get", "patch", "update"})
+	assertExactResourceVerbs(t, role, "arcade.gobha.me", "gameservers", []string{"create", "delete", "get", "list", "patch", "update", "watch"})
+	assertExactResourceVerbs(t, role, "arcade.gobha.me", "gamedestroys", []string{"create", "get", "list", "patch", "watch"})
+	for _, rule := range role.Rules {
+		if slices.Contains(rule.Resources, "gamedestroys/status") {
+			t.Fatal("normal translator acquired dedicated destroy-controller status authority")
+		}
+	}
 }
 
 func TestControllerRoleHasNoWildcardOrRBACEscalationAuthority(t *testing.T) {

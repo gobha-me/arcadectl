@@ -21,6 +21,9 @@ func Definition() game.Definition {
 		ID:              "conformance-echo",
 		DisplayName:     "Conformance Echo Server",
 		ImageRepository: "ghcr.io/gobha-me/arcadectl-conformance-server",
+		VersionPolicy: &game.VersionPolicy{
+			Pattern: `^[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$`,
+		},
 		Endpoints: []game.Endpoint{{
 			Name:          "players",
 			Protocol:      game.ProtocolTCP,

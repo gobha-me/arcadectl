@@ -12,8 +12,8 @@ ENV GOTOOLCHAIN=local GOMAXPROCS=2 GOMEMLIMIT=1GiB GOFLAGS="-mod=readonly -p=2"
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
-COPY internal/adminauth ./internal/adminauth
-COPY internal/apiserver ./internal/apiserver
+COPY api ./api
+COPY internal ./internal
 COPY cmd/arcadectl-api ./cmd/arcadectl-api
 COPY LICENSE NOTICE ./
 RUN case "$VCS_REF" in ""|*[!0-9a-f]*) echo "VCS_REF must be a full lowercase Git SHA" >&2; exit 1 ;; esac \
@@ -22,10 +22,11 @@ RUN case "$VCS_REF" in ""|*[!0-9a-f]*) echo "VCS_REF must be a full lowercase Gi
     && case "$SOURCE_DIRTY" in true|false) ;; *) echo "SOURCE_DIRTY must be true or false" >&2; exit 1 ;; esac \
     && CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
        go build -trimpath -ldflags="-s -w -buildid=" -o /rootfs/arcadectl-api ./cmd/arcadectl-api \
-    && mkdir -p /rootfs/licenses \
+    && mkdir -p /rootfs/licenses /rootfs/etc/ssl/certs \
     && cp LICENSE NOTICE /rootfs/licenses/ \
+    && cp /etc/ssl/certs/ca-certificates.crt /rootfs/etc/ssl/certs/ca-certificates.crt \
     && chmod 0755 /rootfs/arcadectl-api \
-    && chmod 0644 /rootfs/licenses/LICENSE /rootfs/licenses/NOTICE \
+    && chmod 0644 /rootfs/licenses/LICENSE /rootfs/licenses/NOTICE /rootfs/etc/ssl/certs/ca-certificates.crt \
     && chown 65532:65532 /rootfs/arcadectl-api \
     && find /rootfs -exec touch -d "@$SOURCE_DATE_EPOCH" {} +
 FROM scratch
