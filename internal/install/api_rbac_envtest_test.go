@@ -11,6 +11,7 @@ import (
 
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -39,11 +40,16 @@ func assertAPIAdmissionAndRBAC(t *testing.T, ctx context.Context, config *rest.C
 	}
 	for _, resource := range []string{"gameservers", "gamebackups", "gamerestores", "gamedestroys"} {
 		for _, verb := range []string{"get", "list", "watch", "create", "update", "patch", "delete"} {
-			assertAPIResourceAccess(t, ctx, access, "arcade.gobha.me", resource, "", "arcadectl-system", verb, true)
+			assertAPIResourceAccess(t, ctx, access, "arcade.gobha.me", resource, "", "arcadectl-system", verb, verb == "get" || verb == "list" || verb == "watch")
 		}
 		assertAPIResourceAccess(t, ctx, access, "arcade.gobha.me", resource, "status", "arcadectl-system", "update", false)
 		assertAPIResourceAccess(t, ctx, access, "arcade.gobha.me", resource, "", "foreign", "create", false)
 	}
+	for _, verb := range []string{"get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"} {
+		assertAPIResourceAccess(t, ctx, access, "arcade.gobha.me", "arcadeoperations", "", "arcadectl-system", verb, verb == "get" || verb == "list" || verb == "watch" || verb == "create")
+		assertAPIResourceAccess(t, ctx, access, "arcade.gobha.me", "arcadeoperations", "", "foreign", verb, false)
+	}
+	assertAPIResourceAccess(t, ctx, access, "arcade.gobha.me", "arcadeoperations", "status", "arcadectl-system", "update", false)
 	for _, target := range []struct{ group, resource string }{
 		{"", "secrets"}, {"", "services"}, {"", "configmaps"}, {"", "persistentvolumeclaims"},
 		{"", "persistentvolumes"}, {"", "pods"}, {"", "serviceaccounts"}, {"", "namespaces"},
@@ -63,6 +69,28 @@ func assertAPIAdmissionAndRBAC(t *testing.T, ctx context.Context, config *rest.C
 	}
 	unsafe := destroyAdmissionUnsafeRequest("api-unsafe-refused")
 	unsafe.Annotations = map[string]string{"arcade.gobha.me/unsafe-requested-by": "system:serviceaccount:arcadectl-system:arcadectl-destroy-admin"}
+	if err := api.Create(ctx, unsafe.DeepCopy(), &client.CreateOptions{DryRun: []string{metav1.DryRunAll}}); !apierrors.IsForbidden(err) {
+		t.Fatalf("shipped API role can create a native destroy: %v", err)
+	}
+	// Independently prove the distinct unsafe identity admission boundary even
+	// if an administrator accidentally widens native write RBAC in the future.
+	// This test-only grant is not part of the shipped role.
+	probeRole := &rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: "api-native-admission-probe", Namespace: "arcadectl-system"}, Rules: []rbacv1.PolicyRule{{APIGroups: []string{"arcade.gobha.me"}, Resources: []string{"gamedestroys"}, Verbs: []string{"create"}}}}
+	probeBinding := &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: probeRole.Name, Namespace: probeRole.Namespace}, RoleRef: rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: probeRole.Name}, Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Name: "arcadectl-api", Namespace: "arcadectl-system"}}}
+	if err := admin.Create(ctx, probeRole); err != nil {
+		t.Fatal(err)
+	}
+	if err := admin.Create(ctx, probeBinding); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := admin.Delete(context.Background(), probeBinding); err != nil && !apierrors.IsNotFound(err) {
+			t.Errorf("remove test-only API native grant: %v", err)
+		}
+		if err := admin.Delete(context.Background(), probeRole); err != nil && !apierrors.IsNotFound(err) {
+			t.Errorf("remove test-only API native role: %v", err)
+		}
+	})
 	waitDestroyAdmissionDenied(t, func() error {
 		return api.Create(ctx, unsafe.DeepCopy(), &client.CreateOptions{DryRun: []string{metav1.DryRunAll}})
 	}, "distinct Arcadectl destroy admin identity")

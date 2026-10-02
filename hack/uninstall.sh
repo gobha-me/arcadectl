@@ -137,7 +137,15 @@ EOF
 }
 
 assert_safe_state() {
-  local servers unsafe_servers backups unsafe_backups restores unsafe_restores destroys unsafe_destroys jobs unsafe_jobs pods unsafe_pods leases unsafe_leases
+  local servers unsafe_servers backups unsafe_backups restores unsafe_restores destroys unsafe_destroys operations unsafe_operations api_deployment jobs unsafe_jobs pods unsafe_pods api_pods leases unsafe_leases
+  # Stop admission before removing the durable translator. A scaled-down API
+  # Deployment is not sufficient: another actor could scale it up again.
+  api_deployment=$("$kubectl_command" get deployment arcadectl-api --namespace "$namespace" \
+    --ignore-not-found --output=name)
+  if [[ -n "$api_deployment" ]]; then
+    echo "refusing uninstall because the API Deployment still exists; remove the API admission surface first" >&2
+    return 1
+  fi
   assert_admission_gate
   assert_candidate_pvc_gate
   assert_destroy_admission_policy arcadectl-retained-world-pvc-delete destroy-pvc
@@ -178,12 +186,27 @@ assert_safe_state() {
     return 1
   fi
 
+  operations=$("$kubectl_command" get arcadeoperations.arcade.gobha.me --namespace "$namespace" \
+    --output=jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.phase}{"\t"}{.metadata.generation}{"\t"}{.status.observedGeneration}{"\t"}{.metadata.deletionTimestamp}{"\t"}{range .metadata.finalizers[*]}{.}{" "}{end}{"\n"}{end}')
+  unsafe_operations=$(awk -F '\t' 'NF > 0 && (($2 != "Succeeded" && $2 != "Failed" && $2 != "Cancelled") || $3 == "" || $4 == "" || $3 != $4 || $5 != "" || $6 != "") { print }' <<<"$operations")
+  if [[ -n "$unsafe_operations" ]]; then
+    echo "refusing uninstall because every ArcadeOperation must be terminal, observed at its current generation, not deleting, and free of finalizers:" >&2
+    printf '%s\n' "$unsafe_operations" >&2
+    return 1
+  fi
+
   jobs=$("$kubectl_command" get jobs.batch --namespace "$namespace" \
     --output=jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.labels.app\.kubernetes\.io/managed-by}{"\t"}{.metadata.labels.app\.kubernetes\.io/name}{"\t"}{.metadata.labels.arcade\.gobha\.me/data-operation}{"\n"}{end}')
   unsafe_jobs=$(awk -F '\t' 'NF > 0 && ($1 ~ /^(backup|restore|destroy)-/ || ($2 == "arcadectl" && ($3 == "backup-worker" || $3 == "restore-worker" || $3 == "destroy-worker")) || $4 != "") { print }' <<<"$jobs")
   pods=$("$kubectl_command" get pods --namespace "$namespace" \
     --output=jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.labels.app\.kubernetes\.io/managed-by}{"\t"}{.metadata.labels.app\.kubernetes\.io/name}{"\t"}{.metadata.labels.arcade\.gobha\.me/data-operation}{"\t"}{.spec.serviceAccountName}{"\t"}{range .metadata.ownerReferences[*]}{.apiVersion}{"/"}{.kind}{"/"}{.name}{" "}{end}{"\n"}{end}')
   unsafe_pods=$(awk -F '\t' 'NF > 0 && ($1 ~ /^(backup|restore|destroy)-/ || ($2 == "arcadectl" && ($3 == "backup-worker" || $3 == "restore-worker" || $3 == "destroy-worker")) || $4 != "" || $5 ~ /^(backup|restore|destroy)-/ || $6 ~ /batch\/v1\/Job\/(backup|restore|destroy)-/) { print }' <<<"$pods")
+  api_pods=$(awk -F '\t' 'NF > 0 && ($5 == "arcadectl-api" || $3 == "arcadectl-api") { print }' <<<"$pods")
+  if [[ -n "$api_pods" ]]; then
+    echo "refusing uninstall because API Pods still exist; wait for the API admission surface to stop" >&2
+    printf '%s\n' "$api_pods" >&2
+    return 1
+  fi
   leases=$("$kubectl_command" get leases.coordination.k8s.io --namespace "$namespace" \
     --output=jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.labels.app\.kubernetes\.io/managed-by}{"\t"}{.metadata.labels.arcade\.gobha\.me/data-identity}{"\n"}{end}')
   unsafe_leases=$(awk -F '\t' 'NF > 0 && ($1 ~ /^data-operation-/ || ($2 == "arcadectl" && $3 != "")) { print }' <<<"$leases")

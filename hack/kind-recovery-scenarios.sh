@@ -263,9 +263,10 @@ recovery_install_repository() {
   kube create --filename "$workspace/recovery-repository.yaml" >/dev/null
   kube_bounded 190 rollout status deployment/minio --namespace "$namespace" --timeout=180s >/dev/null
   jq -cn --arg ns "$namespace" --arg run "$run_id" --arg image "$controller_image" \
+    --argjson health "$(repository_health_init_container "$recovery_io_image")" \
     '{apiVersion:"batch/v1",kind:"Job",metadata:{name:"recovery-restic-init",namespace:$ns,labels:{"arcade.gobha.me/e2e-run":$run}},
       spec:{backoffLimit:0,activeDeadlineSeconds:120,template:{metadata:{labels:{"arcade.gobha.me/e2e-run":$run}},
-        spec:{automountServiceAccountToken:false,restartPolicy:"Never",
+        spec:{automountServiceAccountToken:false,restartPolicy:"Never",initContainers:[$health],
           securityContext:{runAsNonRoot:true,runAsUser:65532,runAsGroup:65532,fsGroup:65532,seccompProfile:{type:"RuntimeDefault"}},
           containers:[{name:"init",image:$image,command:["/restic"],
             args:["--no-cache","--repo","s3:http://minio:9000/arcadectl","--password-file","/credentials/password","init"],

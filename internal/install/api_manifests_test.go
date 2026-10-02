@@ -51,12 +51,16 @@ func TestAPIRBACAndExposureAreSeparateFromController(t *testing.T) {
 	if binding.RoleRef.Kind != "Role" || binding.RoleRef.Name != "arcadectl-api" || len(binding.Subjects) != 1 || binding.Subjects[0].Name != "arcadectl-api" || binding.Subjects[0].Namespace != "arcadectl-system" || binding.Subjects[0].Kind != "ServiceAccount" {
 		t.Fatal("API binding not isolated")
 	}
-	if len(role.Rules) != 1 {
+	if len(role.Rules) != 2 {
 		t.Fatal("API role gained additional authority")
 	}
 	rule := role.Rules[0]
-	if !slices.Equal(rule.APIGroups, []string{"arcade.gobha.me"}) || !slices.Equal(rule.Resources, []string{"gameservers", "gamebackups", "gamerestores", "gamedestroys"}) || !slices.Equal(rule.Verbs, []string{"get", "list", "watch", "create", "update", "patch", "delete"}) || len(rule.ResourceNames) != 0 || len(rule.NonResourceURLs) != 0 {
+	if !slices.Equal(rule.APIGroups, []string{"arcade.gobha.me"}) || !slices.Equal(rule.Resources, []string{"gameservers", "gamebackups", "gamerestores", "gamedestroys"}) || !slices.Equal(rule.Verbs, []string{"get", "list", "watch"}) || len(rule.ResourceNames) != 0 || len(rule.NonResourceURLs) != 0 {
 		t.Fatalf("API role gained controller/Secret/status/escalation authority: %#v", rule)
+	}
+	receiptRule := role.Rules[1]
+	if !slices.Equal(receiptRule.APIGroups, []string{"arcade.gobha.me"}) || !slices.Equal(receiptRule.Resources, []string{"arcadeoperations"}) || !slices.Equal(receiptRule.Verbs, []string{"get", "list", "watch", "create"}) || len(receiptRule.ResourceNames) != 0 || len(receiptRule.NonResourceURLs) != 0 {
+		t.Fatalf("API gained mutable receipt/status authority: %#v", receiptRule)
 	}
 	service := &corev1.Service{}
 	convertObject(t, objects[3], service)

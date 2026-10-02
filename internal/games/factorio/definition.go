@@ -39,6 +39,9 @@ func Definition() game.Definition {
 		ID:              "factorio",
 		DisplayName:     "Factorio",
 		ImageRepository: "ghcr.io/gobha-me/arcadectl-factorio",
+		VersionPolicy: &game.VersionPolicy{
+			Pattern: `^[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$`,
+		},
 		Endpoints: []game.Endpoint{
 			{Name: "game", Protocol: game.ProtocolUDP, ContainerPort: 34197, Scope: game.ScopePlayer},
 			{Name: "rcon", Protocol: game.ProtocolTCP, ContainerPort: 27015, Scope: game.ScopeAdmin},

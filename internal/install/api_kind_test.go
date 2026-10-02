@@ -67,7 +67,7 @@ func TestKindAuthenticatedAdmin(t *testing.T) {
 	registryName := name + "-registry"
 	kubeconfig := filepath.Join(workspace, "kubeconfig")
 	utility := filepath.Join(workspace, "credential-admin")
-	ctx, cancel := context.WithTimeout(context.Background(), 18*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 28*time.Minute)
 	defer cancel()
 	public := func(input string, args ...string) string {
 		t.Helper()
@@ -159,11 +159,26 @@ func TestKindAuthenticatedAdmin(t *testing.T) {
 			t.Error("owned container remains after cleanup")
 		}
 	})
+	kindConfig := filepath.Join(workspace, "kind.yaml")
+	if os.WriteFile(kindConfig, []byte("kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\ncontainerdConfigPatches:\n- |-\n  [plugins.\"io.containerd.cri.v1.images\".registry]\n    config_path = \"/etc/containerd/certs.d\"\n"), 0600) != nil {
+		t.Fatal("write Kind fixture")
+	}
+	t.Log("creating isolated Kind cluster")
+	clusterArmed = true
+	public("", "go", "tool", "kind", "create", "cluster", "--name", name, "--image", apiKindNode, "--config", kindConfig, "--kubeconfig", kubeconfig, "--wait", "180s")
+	node := name + "-control-plane"
+	nodeID = public("", "docker", "inspect", "--format", "{{.Id}}", node)
+	if public("", "docker", "inspect", "--format", "{{index .Config.Labels \"io.x-k8s.kind.cluster\"}}", node) != name {
+		t.Fatal("Kind ownership mismatch")
+	}
 	t.Log("starting pinned private registry")
 	public("", "docker", "pull", apiKindRegistry)
 	registryArmed = true
 	registryID = public("", "docker", "run", "--detach", "--pull=never", "--restart=no", "--publish", "127.0.0.1::5000", "--name", registryName,
 		"--label", "arcade.gobha.me/e2e-run="+name, apiKindRegistry)
+	// Attaching a second Docker network can reassign an ephemeral published
+	// port. Attach first, then freeze the endpoint used by every image push.
+	public("", "docker", "network", "connect", "kind", registryName)
 	port := strings.TrimSpace(public("", "docker", "port", registryName, "5000/tcp"))
 	_, registryPort, err := net.SplitHostPort(port)
 	if err != nil {
@@ -192,19 +207,6 @@ func TestKindAuthenticatedAdmin(t *testing.T) {
 	if apiImage == "" {
 		t.Fatal("API image is not digest pinned")
 	}
-	kindConfig := filepath.Join(workspace, "kind.yaml")
-	if os.WriteFile(kindConfig, []byte("kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\ncontainerdConfigPatches:\n- |-\n  [plugins.\"io.containerd.cri.v1.images\".registry]\n    config_path = \"/etc/containerd/certs.d\"\n"), 0600) != nil {
-		t.Fatal("write Kind fixture")
-	}
-	t.Log("creating isolated Kind cluster")
-	clusterArmed = true
-	public("", "go", "tool", "kind", "create", "cluster", "--name", name, "--image", apiKindNode, "--config", kindConfig, "--kubeconfig", kubeconfig, "--wait", "180s")
-	node := name + "-control-plane"
-	nodeID = public("", "docker", "inspect", "--format", "{{.Id}}", node)
-	if public("", "docker", "inspect", "--format", "{{index .Config.Labels \"io.x-k8s.kind.cluster\"}}", node) != name {
-		t.Fatal("Kind ownership mismatch")
-	}
-	public("", "docker", "network", "connect", "kind", registryName)
 	hostsDirectory := "/etc/containerd/certs.d/" + registryHost
 	public("", "docker", "exec", node, "mkdir", "-p", hostsDirectory)
 	public("[host.\"http://"+registryName+":5000\"]\n  capabilities = [\"pull\", \"resolve\"]\n", "docker", "exec", "--interactive", node, "tee", hostsDirectory+"/hosts.toml")
@@ -369,6 +371,10 @@ func TestKindAuthenticatedAdmin(t *testing.T) {
 	if status, _ := self(rotated.Token); status != 401 {
 		t.Fatal("expired old credential revived")
 	}
+	runKindAPILifecycle(t, kindAPILifecycleFixture{ctx: ctx, root: root, workspace: workspace, node: node, nodeID: nodeID,
+		kubeconfig: kubeconfig, kubectl: kubectl, registryHost: registryHost, registryName: registryName,
+		apiBaseURL: strings.TrimSuffix(endpoint, "/v1/auth/self"), token: recovered.Token, httpClient: httpClient,
+		config: configuration, cluster: cluster, public: public})
 	// Check actual Pod identity remained stable and the raw token is absent from
 	// logs/projection. No Secret dump or credential file is persisted as evidence.
 	pods, err := cluster.CoreV1().Pods(adminauth.CredentialNamespace).List(ctx, metav1.ListOptions{LabelSelector: "app.kubernetes.io/name=arcadectl-api"})

@@ -17,7 +17,7 @@ is a separate backup-gated administrative operation; it is not a normal
 lifecycle path or a production-world test.
 
 The current foundation includes generated `GameServer`, `GameBackup`,
-`GameRestore`, and `GameDestroy` CRDs, a pure,
+`GameRestore`, `GameDestroy`, and `ArcadeOperation` CRDs, a pure,
 game-neutral Kubernetes resource planner, typed adapter settings rendering, and
 an idempotent controller. The controller starts and stops runtime resources
 while retaining storage, refuses to adopt conflicting resources, and cannot
@@ -37,6 +37,13 @@ isolation is currently CSI-only, and v1 backup artifacts cannot be restored by
 this worker. Destroy requires a fresh repository verification while the world
 remains cold, exact PVC UID confirmation, a separate controller identity, and
 a write-ahead deletion journal. Production deployment remains outstanding.
+
+The authenticated single-admin API admits immutable, idempotent operation
+receipts; it cannot directly mutate native resources, workloads, or PVCs.
+Controllers translate those receipts into native lifecycle and recovery intent.
+Retained-world identity survives decommission, and unsafe no-backup overrides
+remain outside the ordinary HTTP API. The CLI and integrated packaging are
+still pending.
 
 A structurally different synthetic adapter participates in conformance tests
 from the beginning. Adding another game must not require changes to the core

@@ -87,12 +87,21 @@ type Capabilities struct {
 	GracefulShutdown bool
 }
 
+// VersionPolicy is a curated adapter-owned mapping from a human-facing game
+// version to an image tag in Definition.ImageRepository. Callers can select a
+// version, but cannot select a repository or arbitrary tag.
+type VersionPolicy struct {
+	Pattern   string
+	TagPrefix string
+}
+
 // Definition is a curated, game-specific input to the game-neutral platform.
 // It deliberately cannot express arbitrary Kubernetes objects or commands.
 type Definition struct {
 	ID                   string
 	DisplayName          string
 	ImageRepository      string
+	VersionPolicy        *VersionPolicy
 	Endpoints            []Endpoint
 	PersistentPaths      []PersistentPath
 	ReadinessEndpoint    string
@@ -108,6 +117,10 @@ type Definition struct {
 // original. Catalog callers may safely inspect or modify the returned value.
 func (d Definition) Clone() Definition {
 	clone := d
+	if d.VersionPolicy != nil {
+		policy := *d.VersionPolicy
+		clone.VersionPolicy = &policy
+	}
 	clone.Endpoints = append([]Endpoint(nil), d.Endpoints...)
 	clone.PersistentPaths = append([]PersistentPath(nil), d.PersistentPaths...)
 	clone.ConfigurationTargets = append([]ConfigurationTarget(nil), d.ConfigurationTargets...)

@@ -7,18 +7,29 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
 var (
-	idPattern     = regexp.MustCompile(`^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$`)
-	namePattern   = regexp.MustCompile(`^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$`)
-	digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	idPattern             = regexp.MustCompile(`^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$`)
+	namePattern           = regexp.MustCompile(`^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$`)
+	digestPattern         = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	hostLabel             = regexp.MustCompile(`^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$`)
+	repositoryNamePattern = regexp.MustCompile(`^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$`)
+	versionTokenPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+	tagPattern            = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$`)
 )
 
-const platformMountRoot = "/arcadectl"
+const (
+	platformMountRoot = "/arcadectl"
+	maxVersionLength  = 64
+	maxVersionPattern = 256
+	maxTagPrefix      = 64
+)
 
 // Validate checks the complete adapter definition before it can enter a
 // catalog or influence a cluster mutation.
@@ -30,6 +41,9 @@ func (d Definition) Validate() error {
 		return errors.New("display name is required")
 	}
 	if err := validateRepository(d.ImageRepository); err != nil {
+		return err
+	}
+	if err := validateVersionPolicy(d.VersionPolicy); err != nil {
 		return err
 	}
 	if err := validateEndpoints(d.Endpoints, d.ReadinessEndpoint, d.ReadinessMode); err != nil {
@@ -77,10 +91,64 @@ func validateRepository(repository string) error {
 	if repository == "" || strings.TrimSpace(repository) != repository {
 		return errors.New("image repository is required and cannot contain surrounding whitespace")
 	}
-	if strings.ContainsAny(repository, "\t\r\n@") {
-		return errors.New("image repository must not contain whitespace or a digest")
+	if strings.Contains(repository, "@") {
+		return errors.New("image repository must not contain a digest")
+	}
+	if len(repository) > 255 || strings.ContainsAny(repository, "\t\r\n@?#\\") || strings.Contains(repository, "://") {
+		return errors.New("image repository must be a bounded registry host and repository name without a scheme, tag, or digest")
+	}
+	hostPort, name, found := strings.Cut(repository, "/")
+	if !found || hostPort == "" || !repositoryNamePattern.MatchString(name) {
+		return errors.New("image repository must contain a valid registry host and lowercase repository name")
+	}
+	host := hostPort
+	if strings.Contains(hostPort, ":") {
+		var port string
+		var err error
+		host, port, err = net.SplitHostPort(hostPort)
+		if err != nil || host == "" {
+			return errors.New("image repository registry port is invalid")
+		}
+		value, err := strconv.ParseUint(port, 10, 16)
+		if err != nil || value == 0 {
+			return errors.New("image repository registry port is invalid")
+		}
+	}
+	if net.ParseIP(host) == nil {
+		labels := strings.Split(host, ".")
+		for _, label := range labels {
+			if !hostLabel.MatchString(label) {
+				return errors.New("image repository registry host is invalid")
+			}
+		}
 	}
 	return nil
+}
+
+func validateVersionPolicy(policy *VersionPolicy) error {
+	if policy == nil {
+		return nil
+	}
+	compiled, err := compileVersionPattern(policy.Pattern)
+	if err != nil {
+		return errors.New("version policy pattern must be a bounded anchored regular expression")
+	}
+	if compiled.MatchString("") {
+		return errors.New("version policy pattern must be a valid non-empty anchored regular expression")
+	}
+	if len(policy.TagPrefix) > maxTagPrefix || policy.TagPrefix != "" && !tagPattern.MatchString(policy.TagPrefix) {
+		return errors.New("version policy tag prefix must use bounded OCI tag characters")
+	}
+	return nil
+}
+
+func compileVersionPattern(pattern string) (*regexp.Regexp, error) {
+	if len(pattern) < 2 || len(pattern) > maxVersionPattern || !strings.HasPrefix(pattern, "^") || !strings.HasSuffix(pattern, "$") {
+		return nil, errors.New("version pattern is not bounded and anchored")
+	}
+	// Group the adapter expression inside platform-owned anchors so an internal
+	// alternation cannot accidentally make only one branch anchored.
+	return regexp.Compile(`^(?:` + pattern[1:len(pattern)-1] + `)$`)
 }
 
 func validateEndpoints(endpoints []Endpoint, readiness string, readinessMode ReadinessMode) error {

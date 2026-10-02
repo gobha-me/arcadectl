@@ -258,7 +258,19 @@ administrator credential using the trusted-admin utility, and provisions a
 test-only TLS certificate. It proves HTTPS authentication, projected-secret
 rotation without restart, old-token rejection, expired-credential recovery
 from an unready API, private output modes, and token/verifier-free audit logs.
-It then removes only the exact task-owned cluster, registry, image tag, and
+The same owned cluster installs all five CRDs and native admission policies,
+then exercises real HTTP create/configure/start/stop/restart/update/decommission
+against the normal controller and checksum-pinned Factorio runtime. In-flight
+retry storms and equivalent integer settings converge on one receipt; conflicting
+original input is refused. Real runtime Pod identities change on restart/update,
+while retained PVC/PV UIDs and a world marker SHA remain unchanged. The retained
+world read preserves original server identity after decommission. This fixture
+uses a prebound Retain hostPath PV inside its disposable node, not a CSI claim
+or a public server endpoint; its test administrator supplies the isolated
+Service endpoint because Kind has no cloud load balancer. Native recovery's
+separate real CSI/Restic journey remains the data-operation proof; this HTTP
+lifecycle test does not claim a full HTTP backup/restore/destroy journey.
+It then removes only the exact task-owned cluster, registry, image tags, and
 private temporary files. No real-world cluster, server, or credential is used.
 
 The ordinary race suite covers malformed/duplicate headers, authorization-before-
@@ -266,5 +278,12 @@ body/handler, expiry/revocation, strict verifier parsing/serial high watermarks,
 concurrent credential CAS and ambiguous writes, bounded failed/stalled auditing,
 live capability lifetime, TLS trust and certificate readiness, and deterministic
 API manifest/RBAC shape. The real API-server envtest additionally proves ordinary
-API CR permissions, denied status/core/cluster/foreign-namespace authority, and
-the distinct-identity unsafe destroy admission boundary.
+API read-only native permissions and immutable receipt creation, denied
+status/core/cluster/foreign-namespace authority, and the distinct-identity unsafe
+destroy admission boundary. Receipt admission tests prove whole-spec immutability,
+once-set plans/children/snapshots, append-only journals, and immutable terminal
+status including whole-status removal. Controller tests inject transient reads,
+ambiguous writes, exact identity/spec conflicts, and stale native observations;
+none may manufacture completion or adopt a replacement. Uninstall tests cover
+pending receipts, lingering finalizers, API Pods/Deployment, and a second safety
+snapshot after controller quiescence.

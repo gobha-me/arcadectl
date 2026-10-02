@@ -10,4 +10,7 @@ metadata:
 rules:
 - apiGroups: [arcade.gobha.me]
   resources: [gameservers, gamebackups, gamerestores, gamedestroys]
-  verbs: [get, list, watch, create, update, patch, delete]
+  verbs: [get, list, watch]
+- apiGroups: [arcade.gobha.me]
+  resources: [arcadeoperations]
+  verbs: [get, list, watch, create]

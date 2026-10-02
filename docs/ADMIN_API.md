@@ -5,10 +5,11 @@ not the Factorio adapter. This foundation adds `arcadectl-api`, one generated
 administrator credential, typed server-side authorization, structured audit,
 and separate API RBAC. It is not a hosted or multi-user service.
 
-The only domain HTTP route in this foundation is `GET /v1/auth/self`. It returns
+The identity route is `GET /v1/auth/self`. It returns
 `version`, `principalId`, `credentialId`, and `expiresAt`; never a token, verifier,
-role list, or Kubernetes credential. Lifecycle endpoints and durable operation
-receipts are the next API issue. There is no generic Kubernetes proxy.
+role list, or Kubernetes credential. Versioned lifecycle endpoints admit durable
+`ArcadeOperation` receipts, which the normal controller translates into native
+Arcadectl resources. There is no generic Kubernetes proxy.
 
 ## Identity, trust, and exposure
 
@@ -83,8 +84,10 @@ make render-api API_IMAGE=registry.example/arcadectl-api@sha256:ACTUAL_DIGEST
 Rendering is deterministic and read-only. It does not create either Secret and
 does not install the controller, CRDs, or admission policies. Apply the resulting
 manifest only to the intended evaluation cluster. Existing controller install
-and safe uninstall workflows are unchanged; integrated packaging belongs to the
-installation milestone. Remove the API Deployment/Service/RoleBinding/Role/SA
+workflow establishes all five CRDs. Safe controller uninstall refuses an existing
+API Deployment, remaining API Pods, or unsettled operation receipts; remove the
+API admission surface first. Integrated packaging belongs to the installation
+milestone. Remove the API Deployment/Service/RoleBinding/Role/SA
 explicitly when ending an isolated evaluation, retaining administrator-owned
 credentials/TLS material unless their deletion is separately intended.
 
@@ -132,8 +135,9 @@ crash-resume mutation loop. A nonzero exit is not proof of zero cluster writes.
 
 ## Authorization and auditing
 
-The API role can read and mutate only the four main Arcadectl custom resources
-in `arcadectl-system`. It has no status-subresource authority, workload, Service,
+The API role can read the four native Arcadectl custom resources and read/create
+immutable `ArcadeOperation` receipts in `arcadectl-system`. It cannot change
+native resources or update/delete receipts. It has no status authority, workload, Service,
 ConfigMap, Secret, PVC/PV, Lease, RBAC, or cluster-scoped authority. Reconcilers
 continue to own actual Kubernetes workload/data changes. Direct custom-resource
 access remains cluster-administrator access, not an alternative tenant API.
@@ -150,6 +154,106 @@ remain installed. Even with ordinary CR write RBAC, the API service account is
 not the distinct `arcadectl-destroy-admin` identity and cannot forge its unsafe
 override. Ordinary destroy remains repository-reverified, cold, and explicitly
 confirmed, including retained worlds with original-identity evidence.
+
+## Lifecycle requests and durable results
+
+The machine-readable contract is [OpenAPI](../api/admin/v1/openapi.json).
+`make generate-openapi` generates it from the typed route/schema definitions;
+`make verify-openapi` and `make verify-generated` reject drift. All requests use
+the authenticated HTTPS boundary above, a bounded JSON object with `version:
+"v1"`, and `Content-Type: application/json`. Unknown fields, duplicate JSON
+keys, invalid encoding, excessive nesting, ambiguous conditional headers, and
+unknown query parameters are rejected. No request accepts another namespace,
+an arbitrary image repository, workload YAML, a raw storage reattachment, or
+repository credential values.
+
+| Intent | Route |
+| --- | --- |
+| Create | `POST /v1/servers` |
+| Configure | `PATCH /v1/servers/{name}` |
+| Start, stop, restart, update | `POST /v1/servers/{name}/{start,stop,restart,update}` |
+| Back up, restore, decommission | `POST /v1/servers/{name}/{backup,restore,decommission}` |
+| Preview ordinary destroy | `POST /v1/servers/{name}/destroy` |
+| Preview retained-world destroy | `POST /v1/retained-worlds/{operationID}/destroy` |
+| Confirm or cancel destroy | `POST /v1/destroy-operations/{operationID}/{confirm,cancel}` |
+
+Each mutation requires an `Idempotency-Key` containing 1–128 ASCII letters,
+digits, dots, underscores, colons, or hyphens. Keep the original request, key,
+and conditional header until its outcome is known. The stable administrator
+identity, namespace, and complete key determine the receipt name; credential
+rotation does not change retry identity. A matching retry returns the original
+receipt even after the server changes or an image version's tag moves. Reusing
+the key for a different original request or precondition returns a conflict.
+Concurrent matching requests cannot create multiple native operations.
+
+Creation requires `If-None-Match: *`. Other server mutations require the exact
+strong `ETag` from `GET /v1/servers/{name}`. Retained-world and destroy commands
+require their own exact ETags; server ETags are not interchangeable with them.
+These bind the original object UID and generation or original retained-world
+snapshot. A replacement with the same name is never implicitly adopted.
+
+Creation supplies adapter name, desired state, compute quantities, storage,
+settings, and exactly one of `image.digest` or `image.version`. Settings,
+network endpoints, resource bounds, and storage are validated through the
+installed adapter. Endpoints are adapter-owned, not arbitrary caller ports.
+A supported version is resolved only in the adapter-curated public repository
+over bounded HTTPS, then frozen to its verified digest and exact tag provenance.
+There is no mutable-tag workload fallback. Unknown versions and unavailable
+registries fail without admitting an unresolved image; explicit digests remain
+available for approved immutable images. Updating follows the same policy.
+
+Backup accepts a repository Secret **name**, not credentials. The translator
+binds its exact metadata UID/resourceVersion once before creating the native
+backup. Existing worker checks enforce the immutable Secret and repository
+contract. Restore and normal destroy select an exact verified backup name/UID
+and use its frozen repository provenance, never a later same-name Secret.
+
+Successful admission returns an operation receipt with its ID and polling URL;
+it does not assert that the server is Ready or data work has finished. Poll
+`GET /v1/operations/{operationID}` for durable phase, observed generation, exact
+child, and bounded failure guidance. List receipts with `GET /v1/operations`.
+Read servers with `GET /v1/servers` or `GET /v1/servers/{name}`; native data status
+is available through `GET /v1/{backups,restores,destroys}/{name}`. Read projections
+omit repository Secret references, receipt admission hashes, and raw worker
+condition messages. Credentials belong in neither settings nor idempotency keys.
+
+An HTTP timeout or a slow/blocked child is not cancellation. Already admitted
+work persists through API restart, credential rotation, and credential expiry.
+Retry an uncertain create with the **same** key, request, and precondition; a
+`commit_unknown` response includes the deterministic operation ID for readback.
+Do not substitute a new key simply because a response was lost. Transient
+Kubernetes unavailability requeues reconciliation without inventing completion.
+Slow runtime convergence retains its fence and provides nonterminal guidance.
+
+The translator records exact plans and write-ahead transitions before effects.
+Runtime actions share the retained-world data-operation fence with backup,
+restore, and destroy. Controllers continue to own workload/PVC changes; API
+RBAC cannot bypass them. Native data-operation children keep their own journals
+and recovery contracts. Waiting does not release a fence or roll back effects.
+
+## Decommission and deliberate destruction
+
+Decommission removes only the exact GameServer object after durably recording
+its original UID, adapter, data identity, and complete claim UID snapshot. It
+retains the world and records a snapshot digest. `GET
+/v1/retained-worlds/{operationID}` reads that succeeded decommission receipt and
+returns its original-identity evidence and ETag. A new create may explicitly
+reference that receipt and snapshot digest to reattach the exact retained world;
+it cannot supply an arbitrary PVC list.
+
+Destroy first creates a native preview, not a PVC deletion. Confirmation names
+the exact native destroy child and current challenge and uses the parent
+receipt's ETag. Cancellation is a separate admitted command and succeeds only
+when the native operation actually reaches its cancellable terminal state; it
+cannot undo a started deletion. Follow the parent receipt until its real result.
+
+Retained-world destruction requires the succeeded decommission receipt and its
+unchanged snapshot, plus an exact verified leave-stopped backup for the original
+server and claims. Normal destroy re-verifies the repository and keeps the world
+cold from backup through deletion. If that evidence is unavailable, reattach the
+world and take a fresh leave-stopped backup; there is no ordinary API bypass.
+The unsafe no-backup override remains available only through the distinct
+Kubernetes admin identity and existing admission/audit contract, not this API.
 
 Audit emits JSON lines to stdout with generated request IDs, stable principal
 and non-secret credential IDs, fixed action/method/route-template/namespace,
