@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	adminv1 "github.com/gobha-me/arcadectl/api/admin/v1"
 	"github.com/gobha-me/arcadectl/internal/adminauth"
 )
 
@@ -28,12 +29,7 @@ type httpCredentialProbe struct {
 	client   *http.Client
 }
 
-type selfResponse struct {
-	Version      string `json:"version"`
-	PrincipalID  string `json:"principalId"`
-	CredentialID string `json:"credentialId"`
-	ExpiresAt    string `json:"expiresAt"`
-}
+type selfResponse = adminv1.Self
 
 func newHTTPCredentialProbe(endpoint, certificatePath, serverName string) (*httpCredentialProbe, error) {
 	parsed, err := url.Parse(endpoint)
@@ -80,7 +76,7 @@ func (probe *httpCredentialProbe) Verify(ctx context.Context, credential adminau
 	}
 	response, err := parseSelfResponse(body)
 	if err != nil || response.Version != "v1" || response.PrincipalID != adminauth.AdminPrincipalID ||
-		response.CredentialID != credential.CredentialID {
+		response.CredentialID != credential.CredentialID || response.Namespace != adminauth.CredentialNamespace {
 		return errActivationIncomplete
 	}
 	expiresAt, err := time.Parse(time.RFC3339Nano, response.ExpiresAt)
@@ -127,7 +123,7 @@ func parseSelfResponse(contents []byte) (selfResponse, error) {
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return selfResponse{}, errActivationIncomplete
 	}
-	if response.Version == "" || response.PrincipalID == "" || response.CredentialID == "" || response.ExpiresAt == "" {
+	if response.Version == "" || response.PrincipalID == "" || response.CredentialID == "" || response.ExpiresAt == "" || response.Namespace == "" {
 		return selfResponse{}, errActivationIncomplete
 	}
 	return response, nil

@@ -77,11 +77,31 @@ func serverOutput(input *arcadev1.GameServer) adminv1.Server {
 	}
 	return adminv1.Server{Version: "v1", Name: input.Name, UID: string(input.UID), Generation: input.Generation, Game: input.Spec.Game, ImageDigest: input.Spec.ImageDigest, DesiredState: string(input.Spec.DesiredState), Compute: computeOutput(input.Spec.Compute), Storage: storageOutput(input.Spec.Storage), Settings: input.Spec.Settings.Raw, Phase: phaseOutput(string(input.Status.Phase)), ObservedGeneration: input.Status.ObservedGeneration, Conditions: conditionOutput(input.Status.Conditions), Endpoints: endpoints}
 }
-func previewOutput(input *arcadev1.GameDestroyPreview) *adminv1.DestroyPreview {
-	if input == nil || !challengeSyntax.MatchString(input.Challenge) {
+func previewOutput(input *arcadev1.GameDestroyPreview, namespace string, target *arcadev1.GameDestroyTarget, backup *arcadev1.ExactLocalReference) *adminv1.DestroyPreview {
+	if input == nil || !challengeSyntax.MatchString(input.Challenge) || !namespaceID.MatchString(namespace) || target == nil || backup == nil || !validPreviewReference(target.GameServer) || !validPreviewReference(*backup) || !operationName.MatchString(target.Game) || !operationName.MatchString(target.Data.Identity) || len(target.Data.Claims) == 0 || len(target.Data.Claims) > 16 || input.ExpiresAt.IsZero() {
 		return nil
 	}
-	return &adminv1.DestroyPreview{Challenge: input.Challenge, ExpiresAt: input.ExpiresAt.UTC().Format(time.RFC3339Nano), RestoreGuidance: "Retain the verified backup and repository credentials; restore into isolated candidate storage before deleting any other world."}
+	projection := adminv1.DestroyTarget{Namespace: namespace, OriginalServer: adminv1.ExactReference{Name: target.GameServer.Name, UID: target.GameServer.UID}, Game: target.Game, DataIdentity: target.Data.Identity, Claims: make([]adminv1.RetainedClaim, 0, len(target.Data.Claims))}
+	paths, names, uids := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	for _, claim := range target.Data.Claims {
+		if !operationName.MatchString(claim.Path) || !validPreviewReference(claim.ClaimRef) || paths[claim.Path] || names[claim.ClaimRef.Name] || uids[claim.ClaimRef.UID] {
+			return nil
+		}
+		paths[claim.Path], names[claim.ClaimRef.Name], uids[claim.ClaimRef.UID] = true, true, true
+		projection.Claims = append(projection.Claims, adminv1.RetainedClaim{Path: claim.Path, ClaimRef: adminv1.ExactReference{Name: claim.ClaimRef.Name, UID: claim.ClaimRef.UID}})
+	}
+	return &adminv1.DestroyPreview{Target: projection, BackupRef: adminv1.ExactReference{Name: backup.Name, UID: backup.UID}, Challenge: input.Challenge, ExpiresAt: input.ExpiresAt.UTC().Format(time.RFC3339Nano), RestoreGuidance: "Retain the verified backup and repository credentials; restore into isolated candidate storage before deleting any other world."}
+}
+
+func validPreviewReference(ref arcadev1.ExactLocalReference) bool {
+	return ref.Namespace == nil && len(validation.IsDNS1123Subdomain(ref.Name)) == 0 && exactUID.MatchString(ref.UID)
+}
+
+func operationPreviewOutput(input *arcadev1.ArcadeOperation) *adminv1.DestroyPreview {
+	if input.Spec.Action != arcadev1.OperationWorldDestroyPreview || input.Status.Plan == nil || input.Status.RetainedWorld == nil {
+		return nil
+	}
+	return previewOutput(input.Status.DestroyPreview, input.Namespace, &input.Status.RetainedWorld.Target, input.Status.Plan.BackupRef)
 }
 func failureOutput(input *arcadev1.OperationFailure) *adminv1.Failure {
 	if input == nil {
@@ -113,7 +133,7 @@ func failureOutput(input *arcadev1.OperationFailure) *adminv1.Failure {
 	return &adminv1.Failure{Code: code, Retryable: input.Retryable, Message: message, SuggestedAction: guidance}
 }
 func operationOutput(input *arcadev1.ArcadeOperation) adminv1.Operation {
-	output := adminv1.Operation{Version: "v1", OperationID: input.Name, UID: string(input.UID), Generation: input.Generation, Action: string(input.Spec.Action), Phase: phaseOutput(string(input.Status.Phase)), ObservedGeneration: input.Status.ObservedGeneration, StartedAt: timeOutput(input.Status.StartedAt), CompletedAt: timeOutput(input.Status.CompletedAt), Failure: failureOutput(input.Status.Failure), DestroyPreview: previewOutput(input.Status.DestroyPreview), PollURL: "/v1/operations/" + input.Name}
+	output := adminv1.Operation{Version: "v1", OperationID: input.Name, UID: string(input.UID), Generation: input.Generation, Action: string(input.Spec.Action), Phase: phaseOutput(string(input.Status.Phase)), ObservedGeneration: input.Status.ObservedGeneration, StartedAt: timeOutput(input.Status.StartedAt), CompletedAt: timeOutput(input.Status.CompletedAt), Failure: failureOutput(input.Status.Failure), DestroyPreview: operationPreviewOutput(input), PollURL: "/v1/operations/" + input.Name}
 	if input.Status.Phase == "" {
 		output.Phase = "Accepted"
 	}
@@ -245,7 +265,10 @@ func (api *operationAPI) read(w http.ResponseWriter, r *http.Request) {
 				api.readError(w, err)
 				return
 			}
-			output = adminv1.NativeOperation{Kind: "GameDestroy", Phase: phaseOutput(string(value.Status.Phase)), ObservedGeneration: value.Status.ObservedGeneration, CompletedAt: timeOutput(value.Status.CompletedAt), Conditions: conditionOutput(value.Status.Conditions), DestroyPreview: previewOutput(value.Status.Preview)}
+			output = adminv1.NativeOperation{Kind: "GameDestroy", Phase: phaseOutput(string(value.Status.Phase)), ObservedGeneration: value.Status.ObservedGeneration, CompletedAt: timeOutput(value.Status.CompletedAt), Conditions: conditionOutput(value.Status.Conditions)}
+			if value.Spec.Mode == arcadev1.DestroyModeVerifiedBackup {
+				output.DestroyPreview = previewOutput(value.Status.Preview, value.Namespace, &value.Spec.Target, value.Spec.BackupRef)
+			}
 		}
 		output.Version = "v1"
 		output.Name = object.GetName()

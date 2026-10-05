@@ -31,8 +31,8 @@ func TestTrustedProbeAcceptsNewAndRejectsOldWithoutProxy(t *testing.T) {
 		switch request.Header.Get("Authorization") {
 		case "Bearer " + generated.Token:
 			writer.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprintf(writer, `{"version":"v1","principalId":"admin","credentialId":%q,"expiresAt":%q}`,
-				generated.Bundle.CredentialID, generated.Bundle.ExpiresAt.Format(time.RFC3339Nano))
+			_, _ = fmt.Fprintf(writer, `{"version":"v1","principalId":"admin","credentialId":%q,"expiresAt":%q,"namespace":%q}`,
+				generated.Bundle.CredentialID, generated.Bundle.ExpiresAt.Format(time.RFC3339Nano), adminauth.CredentialNamespace)
 		case "Bearer " + old:
 			writer.WriteHeader(http.StatusUnauthorized)
 		default:
@@ -73,6 +73,7 @@ func TestProbeDoesNotFollowRedirectOrAcceptMalformedSelf(t *testing.T) {
 	}
 
 	for _, body := range []string{
+		`{"version":"v1","principalId":"admin","credentialId":"x","expiresAt":"2026-10-02T00:00:00Z"}`,
 		`{"version":"v1","version":"v1","principalId":"admin","credentialId":"x","expiresAt":"2026-10-02T00:00:00Z"}`,
 		`{"version":"v1","principalId":"admin","credentialId":"x","expiresAt":"2026-10-02T00:00:00Z","roles":[]}`,
 		`{"version":"v1","principalId":"admin","credentialId":"x"} {}`,
@@ -100,6 +101,25 @@ func TestProbeURLAndCAAreStrict(t *testing.T) {
 	}
 	if _, err := newHTTPCredentialProbe("https://api.example/v1/auth/self", invalidCA, ""); err == nil {
 		t.Fatal("accepted invalid CA")
+	}
+}
+
+func TestProbeRejectsAnotherInstallationNamespace(t *testing.T) {
+	generated, _ := adminauth.GenerateCredential(time.Now().UTC(), time.Hour)
+	credential := adminauth.ClientCredential{Version: "v1", CredentialID: generated.Bundle.CredentialID,
+		Serial: generated.Bundle.Serial, ExpiresAt: generated.Bundle.ExpiresAt, Token: generated.Token}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(writer, `{"version":"v1","principalId":"admin","credentialId":%q,"expiresAt":%q,"namespace":"another-installation"}`,
+			credential.CredentialID, credential.ExpiresAt.Format(time.RFC3339Nano))
+	}))
+	defer server.Close()
+	probe, err := newHTTPCredentialProbe(server.URL+"/v1/auth/self", writeServerCA(t, server), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probe.Verify(context.Background(), credential, "old-token") == nil {
+		t.Fatal("credential activation accepted another installation namespace")
 	}
 }
 

@@ -67,6 +67,7 @@ func TestKindAuthenticatedAdmin(t *testing.T) {
 	registryName := name + "-registry"
 	kubeconfig := filepath.Join(workspace, "kubeconfig")
 	utility := filepath.Join(workspace, "credential-admin")
+	ordinaryCLI := filepath.Join(workspace, "arcadectl")
 	ctx, cancel := context.WithTimeout(context.Background(), 28*time.Minute)
 	defer cancel()
 	public := func(input string, args ...string) string {
@@ -90,6 +91,8 @@ func TestKindAuthenticatedAdmin(t *testing.T) {
 	// Build the trusted-admin utility before starting any heavy Docker build.
 	t.Log("building trusted-admin utility")
 	public("", "go", "build", "-p", "2", "-o", utility, "./cmd/arcadectl-admin-credential")
+	t.Log("building ordinary API-only CLI")
+	public("", "go", "build", "-p", "1", "-o", ordinaryCLI, "./cmd/arcadectl")
 	sha := public("", "git", "rev-parse", "HEAD")
 	epoch := public("", "git", "show", "-s", "--format=%ct", "HEAD")
 	dirty := public("", "git", "status", "--porcelain") != ""
@@ -371,10 +374,34 @@ func TestKindAuthenticatedAdmin(t *testing.T) {
 	if status, _ := self(rotated.Token); status != 401 {
 		t.Fatal("expired old credential revived")
 	}
+	cliConfig, cliState := filepath.Join(workspace, "cli-config"), filepath.Join(workspace, "cli-state")
+	for _, directory := range []string{cliConfig, cliState} {
+		if os.Mkdir(directory, 0700) != nil {
+			t.Fatal("private CLI fixture unavailable")
+		}
+	}
+	runCLI := func(args ...string) []byte {
+		t.Helper()
+		command := newCommand(ctx, append([]string{ordinaryCLI, "--output", "json", "--timeout", "3m"}, args...)...)
+		// No bearer or kubeconfig is provided to the ordinary CLI. These point
+		// only at private metadata and journal directories in this test fixture.
+		command.Env = []string{"XDG_CONFIG_HOME=" + cliConfig, "XDG_STATE_HOME=" + cliState,
+			"GOMAXPROCS=2", "GOMEMLIMIT=1GiB"}
+		stdout, stderr := &privateOutputCapture{}, &privateOutputCapture{}
+		command.Stdout, command.Stderr = stdout, stderr
+		if command.Run() != nil || stdout.truncated || stderr.truncated {
+			t.Fatal("ordinary CLI fixture failed; private output withheld")
+		}
+		credentialOutputs = append(credentialOutputs, stdout.contents, stderr.contents)
+		return stdout.contents
+	}
+	t.Log("proving ordinary CLI login through actual TLS API")
+	runCLI("login", "isolated", "--api", strings.TrimSuffix(endpoint, "/v1/auth/self"), "--ca-file", caFile,
+		"--credential-file", recoveredPath, "--tls-server-name", "arcadectl-api.arcadectl-system.svc")
 	runKindAPILifecycle(t, kindAPILifecycleFixture{ctx: ctx, root: root, workspace: workspace, node: node, nodeID: nodeID,
 		kubeconfig: kubeconfig, kubectl: kubectl, registryHost: registryHost, registryName: registryName,
 		apiBaseURL: strings.TrimSuffix(endpoint, "/v1/auth/self"), token: recovered.Token, httpClient: httpClient,
-		config: configuration, cluster: cluster, public: public})
+		config: configuration, cluster: cluster, public: public, runCLI: runCLI})
 	// Check actual Pod identity remained stable and the raw token is absent from
 	// logs/projection. No Secret dump or credential file is persisted as evidence.
 	pods, err := cluster.CoreV1().Pods(adminauth.CredentialNamespace).List(ctx, metav1.ListOptions{LabelSelector: "app.kubernetes.io/name=arcadectl-api"})

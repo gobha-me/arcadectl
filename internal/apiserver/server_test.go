@@ -317,7 +317,7 @@ func TestSelfAndReadinessContainNoSecrets(t *testing.T) {
 	writer := httptest.NewRecorder()
 	server.ServeHTTP(writer, authorizedRequest(http.MethodGet, "/v1/auth/self"))
 	var body map[string]any
-	if json.Unmarshal(writer.Body.Bytes(), &body) != nil || len(body) != 4 || body["version"] != "v1" || body["principalId"] != "admin" || body["credentialId"] != auth.principal.CredentialID || body["expiresAt"] != auth.principal.ExpiresAt.Format(time.RFC3339Nano) {
+	if json.Unmarshal(writer.Body.Bytes(), &body) != nil || len(body) != 5 || body["version"] != "v1" || body["namespace"] != "arcadectl-system" || body["principalId"] != "admin" || body["credentialId"] != auth.principal.CredentialID || body["expiresAt"] != auth.principal.ExpiresAt.Format(time.RFC3339Nano) {
 		t.Fatalf("invalid self response: %s", writer.Body)
 	}
 	if writer.Header().Get("Cache-Control") != "no-store" {
