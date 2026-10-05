@@ -30,7 +30,7 @@ render-api:
 	@bash ./hack/render-api.sh "$(API_IMAGE)"
 
 test-envtest:
-	go test -tags=envtest -p 1 -timeout=5m ./api/v1alpha1 ./internal/controller ./internal/install
+	go test -tags=envtest -p 1 -timeout=5m ./api/v1alpha1 ./internal/controller ./internal/install ./internal/installcontract
 
 test-kind-api:
 	GOMAXPROCS=2 GOMEMLIMIT=1GiB go test -tags=kindapi -p 1 -timeout=35m -v ./internal/install -run '^TestKindAuthenticatedAdmin$$' -count=1

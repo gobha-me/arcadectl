@@ -136,3 +136,40 @@ The observation is not atomic across Kubernetes collections, an admission
 denial proof, or a lock. The unfinished engine must still prove runtime-owned
 templates, stop API admission and controller Pods, repeat the safety barrier,
 and preserve worlds and recovery credentials through upgrade/rollback/uninstall.
+
+## Signed live-resource contracts
+
+The internal mutation contract checks whole objects against sealed package
+templates plus narrowly reviewed Kubernetes defaults. Unknown fields are refused
+before typed conversion; nested CRD schema shape is also compared without
+discarding unknown keys. Typed quantities compare by numeric value. RBAC rules,
+subjects and role references, API Service routing, Deployment containers,
+worker images, and admission specifications remain part of the signed contract.
+Matching dry-run and live webhook output does not authorize an unsigned change.
+
+Only original UID/resource-version inventory can authorize an update. Candidates
+copy no arbitrary live fields: they preserve validated single-family Service
+allocations and bounded Deployment revision bookkeeping. Paused variants exist
+only for the two controller Deployments, not as a substitute for deleting API
+admission and proving that its actual Pods and endpoints are gone. Namespace
+dynamic annotations must equal the exact sealed public journal observation.
+
+Before upgrade/rollback, each CRD must have the unchanged signed schema and
+None conversion, one served/storage `v1alpha1`, exactly that stored version,
+accepted original names, and healthy nonduplicated establishment conditions.
+Any present aggregate/condition observed generation must be current; an absent
+feature-gated observed-generation field does not invalidate older profiles.
+Deleting/migrating/nonstructural CRDs and healthy-object metadata finalizers
+are refused. This first supported transition performs no schema conversion or
+storage migration; future such transitions need an explicit reviewed plan.
+
+The isolated Kubernetes 1.37 API-server gate independently checks all 38 public
+resources through create, dry-run update, original UID/RV update and readback,
+including the durable Namespace bootstrap. The normal envtest CI target includes
+this gate. Synthetic predecessor/current/rollback tests restore complete prior
+Pod templates, including API namespace configuration removal and paired
+controller/worker image rollback. These are not genuine predecessor-binary or
+full package-lifecycle certification; Kubernetes 1.35.8 runtime proof remains
+pending. Mutation-intent journaling, exact pending nonce correlation, private
+credential/TLS resume, actual Service/EndpointSlice/Pod ownership and activation,
+admission behavior, quiescence, and lifecycle CI remain engine responsibilities.

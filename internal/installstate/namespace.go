@@ -60,6 +60,16 @@ func (s *Snapshot) ResourceVersion() string {
 	return s.namespace.ResourceVersion
 }
 
+// Bytes returns a defensive copy of the validated public journal encoding.
+// It lets the mutation engine bind a full Namespace GET to this exact sealed
+// observation instead of exempting arbitrary live annotation values.
+func (s *Snapshot) Bytes() []byte {
+	if s == nil {
+		return nil
+	}
+	return bytes.Clone(s.body)
+}
+
 func New(namespaces coreclient.NamespaceInterface, plans ...*installrender.Plan) (*Store, error) {
 	if namespaces == nil || reflect.ValueOf(namespaces).Kind() == reflect.Pointer && reflect.ValueOf(namespaces).IsNil() || len(plans) < 1 || !plans[0].IsTrusted() {
 		return nil, ErrInvalid
