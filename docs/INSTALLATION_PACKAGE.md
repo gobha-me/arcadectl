@@ -99,3 +99,40 @@ retained objects cannot be journaled for deletion. This machinery does not prove
 live workload safety: the engine must still quiesce admission/controllers,
 repeat complete safety observations, prove actual policy denials, and preserve
 retained worlds and recovery credentials.
+
+## Authoritative retaining-uninstall observations
+
+The internal observer reads all pages of five domain-record collections, Jobs,
+Pods, Leases, PVCs, Secret metadata, and admission policies/bindings without
+selectors or cache-only resource versions. Every collection needs a nonempty,
+consistent resource version and a final page; an expired/failed page, repeated
+continuation token, or malformed response discards the whole observation.
+
+Secret and recursive-owner reads negotiate only Kubernetes partial metadata.
+The transport rejects full-object fallback responses before client-go decoding,
+then strips annotations, labels, managed fields, and other unnecessary metadata
+before response logging. Private last-applied Secret annotations do not become
+safety evidence. Server errors and warnings are not reflected into diagnostics.
+
+Recursive owners are resolved through uncached exact-version discovery, with
+known resource names/scopes checked independently. Original inventoried UIDs
+are required for cluster-scoped retained anchors; unknown, replaced, deleting,
+cyclic, contradictory, or out-of-scope owners are refused. The original
+Namespace identity, journal document, and resource version must be unchanged
+before and after all reads.
+
+Bounds include a five-minute observation deadline, 30-second HTTP request
+timeouts, 4 MiB per response, 8 MiB per collection, 32 MiB aggregate list bytes,
+32 MiB recursive evidence, 256 pages per collection, 10,000 objects/nodes,
+128 owner references per object, and 64 owner edges per path. Exceeding a bound
+requires explicit administrator investigation; it is not empty/safe evidence.
+
+The collection/aggregate byte budgets count serialized retained evidence after
+transport metadata sanitation, not cumulative network traffic. Object-count,
+page-count, per-response, recursive-evidence, and deadline bounds also apply.
+
+These unit and TLS HTTP tests do not certify a live cluster package lifecycle.
+The observation is not atomic across Kubernetes collections, an admission
+denial proof, or a lock. The unfinished engine must still prove runtime-owned
+templates, stop API admission and controller Pods, repeat the safety barrier,
+and preserve worlds and recovery credentials through upgrade/rollback/uninstall.
