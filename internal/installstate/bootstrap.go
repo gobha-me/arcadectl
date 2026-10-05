@@ -21,7 +21,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	coreclient "k8s.io/client-go/kubernetes/typed/core/v1"
 )
 
 // BootstrapReceipt is public identity evidence kept in private, durable local
@@ -127,7 +126,7 @@ func privateError(err error) error {
 // the saved nonce and complete reviewed namespace metadata. It never removes a
 // namespace, retries a create, or authorizes runtime resources. A caller must
 // complete cluster/prerequisite/foreign-resource preflight BEFORE calling it.
-func (r *BootstrapReceipt) EnsureNamespace(ctx context.Context, namespaces coreclient.NamespaceInterface) (*Snapshot, error) {
+func (r *BootstrapReceipt) EnsureNamespace(ctx context.Context, namespaces NamespaceAccess) (*Snapshot, error) {
 	if r == nil || r.store == nil || !r.plan.IsTrusted() || namespaces == nil || reflect.ValueOf(namespaces).Kind() == reflect.Pointer && reflect.ValueOf(namespaces).IsNil() {
 		return nil, ErrInvalid
 	}

@@ -14,7 +14,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	coreclient "k8s.io/client-go/kubernetes/typed/core/v1"
 )
 
 // Anchor must come from durable original-identity evidence, not a fresh lookup
@@ -26,8 +25,17 @@ type Anchor struct {
 }
 
 type Store struct {
-	namespaces coreclient.NamespaceInterface
+	namespaces NamespaceAccess
 	plans      []*installrender.Plan
+}
+
+// NamespaceAccess is deliberately narrow. Production installers must supply a
+// single-attempt writer, including for journal CAS and bootstrap creation: the
+// ordinary typed client may retry requests internally on Retry-After.
+type NamespaceAccess interface {
+	Get(context.Context, string, metav1.GetOptions) (*corev1.Namespace, error)
+	Create(context.Context, *corev1.Namespace, metav1.CreateOptions) (*corev1.Namespace, error)
+	Update(context.Context, *corev1.Namespace, metav1.UpdateOptions) (*corev1.Namespace, error)
 }
 
 // Snapshot is a sealed uncached observation. Accessors copy all mutable data.
@@ -70,7 +78,7 @@ func (s *Snapshot) Bytes() []byte {
 	return bytes.Clone(s.body)
 }
 
-func New(namespaces coreclient.NamespaceInterface, plans ...*installrender.Plan) (*Store, error) {
+func New(namespaces NamespaceAccess, plans ...*installrender.Plan) (*Store, error) {
 	if namespaces == nil || reflect.ValueOf(namespaces).Kind() == reflect.Pointer && reflect.ValueOf(namespaces).IsNil() || len(plans) < 1 || !plans[0].IsTrusted() {
 		return nil, ErrInvalid
 	}

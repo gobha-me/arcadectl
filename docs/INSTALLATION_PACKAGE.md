@@ -170,6 +170,58 @@ this gate. Synthetic predecessor/current/rollback tests restore complete prior
 Pod templates, including API namespace configuration removal and paired
 controller/worker image rollback. These are not genuine predecessor-binary or
 full package-lifecycle certification; Kubernetes 1.35.8 runtime proof remains
-pending. Mutation-intent journaling, exact pending nonce correlation, private
-credential/TLS resume, actual Service/EndpointSlice/Pod ownership and activation,
+pending. Private credential/TLS resume, actual Service/EndpointSlice/Pod ownership and activation,
 admission behavior, quiescence, and lifecycle CI remain engine responsibilities.
+
+## Journal-before-effect resource writes
+
+The internal administrator effect layer now executes signed public-resource
+creates/updates and original-UID/RV foreground deletes. It confirms the exact
+Namespace journal and full signed Namespace shape, independently checks dry-run
+admission, saves the public intent, then sends at most one real mutation request.
+It never adopts an existing object by name or labels. Updates preserve original
+UID/RV and only the reviewed server assignments. Namespace bootstrap and journal
+CAS use the same single-attempt HTTP provider, rather than the typed client's
+internal Retry-After retry behavior.
+
+The provider uses verified HTTPS, HTTP/1.1, non-replayable JSON write bodies and
+an inner per-request attempt guard. Redirects, raw server errors/warnings and
+unknown resource mappings are refused. Responses are bounded to 1 MiB,
+64 JSON nesting levels and 200,000 tokens; duplicates are rejected and integers
+are preserved. Writes request strict field validation. External auth plugins and
+custom base transports are unsupported. File-backed certificate/key/CA/token
+inputs are read as bounded protected snapshots; no background credential-file
+rotation can reflect private reload errors. The source kubeconfig is not changed.
+
+Every Create also prepares a protected, durable local receipt before the effect,
+then pins its acknowledged original UID before readback/settlement. The original
+call may pin a lost response's immediately correlated signed readback instead.
+Explicit recovery requires the exact receipt bound to Namespace UID,
+installation ID, object address, package, template hash and saved nonce. A copied
+nonce on a replacement UID cannot authorize adoption. An interrupted Create
+whose UID was never durably pinned remains unresolved, even if a later object
+looks correct: manual original-identity investigation is required. Keep these
+receipts with the protected bootstrap evidence; never regenerate them on resume.
+
+Recovery observes and settles only; it does not repeat dry-run or real writes.
+Accepted foreground deletion is not absence. Deleting objects, replacements,
+unchanged before-state, unreadable evidence and journal races retain pending
+intent. Recovery also enforces the original stage/package/action contract:
+quiescence may delete API admission and pause the original controllers;
+application installs the target's ready templates; uninstall only deletes
+non-retained runtime inventory. Namespace, CRDs, admission policies, credentials
+and world claims are not deleted by this primitive.
+
+Unit and TLS HTTP tests count mutation attempts under Retry-After and a retrying
+wrapper, exercise lost acknowledgements/readbacks/settlement, and refuse UID,
+nonce, shape, receipt and journal substitution. The isolated Kubernetes 1.37
+API-server gate covers all 38 public-resource journaled creates, a genuinely lost
+Create acknowledgement, unavailable-readback recovery, and original-UID/RV
+update through the production provider. These API-server tests run no Pods and
+do not prove a full installation, upgrade, rollback or retaining uninstall.
+
+This is not a user-facing installer or permission/safety proof. Lifecycle
+orchestration must still establish prerequisites, CRD status/discovery,
+behavioral admission denials, owner/GC retention closure, real API/controller
+quiescence, credential/TLS activation, repeated safety barriers and recovery
+guidance before issuing effects. Full binary lifecycle CI remains unfinished.
