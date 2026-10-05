@@ -64,6 +64,7 @@ func fixturePlanProfile(t *testing.T, namespace, profile string) *installrender.
 
 type fixtureAccess struct {
 	t               *testing.T
+	namespace       string
 	client          *fake.Clientset
 	objects         map[installstate.Key]*unstructured.Unstructured
 	writes, dryRuns int
@@ -102,7 +103,7 @@ func (a *fixtureAccess) mutation(ctx context.Context, action installstate.Action
 		return o.DeepCopy(), nil
 	}
 	a.writes++
-	n, err := a.client.CoreV1().Namespaces().Get(ctx, "isolated-install", metav1.GetOptions{})
+	n, err := a.client.CoreV1().Namespaces().Get(ctx, a.namespace, metav1.GetOptions{})
 	if err != nil {
 		a.t.Fatal(err)
 	}
@@ -159,8 +160,12 @@ type fixture struct {
 }
 
 func newFixture(t *testing.T, installed bool) *fixture {
+	return newFixtureWithPlans(t, installed, fixturePlan(t))
+}
+
+func newFixtureWithPlans(t *testing.T, installed bool, plans ...*installrender.Plan) *fixture {
 	t.Helper()
-	f := &fixture{plan: fixturePlan(t)}
+	f := &fixture{plan: plans[0]}
 	c, err := installcontract.New(f.plan)
 	if err != nil {
 		t.Fatal(err)
@@ -227,8 +232,8 @@ func newFixture(t *testing.T, installed bool) *fixture {
 		}
 		return true, candidate.DeepCopy(), nil
 	})
-	f.access = &fixtureAccess{t: t, client: client, objects: objects}
-	f.store, err = installstate.New(client.CoreV1().Namespaces(), f.plan)
+	f.access = &fixtureAccess{t: t, namespace: f.plan.Namespace(), client: client, objects: objects}
+	f.store, err = installstate.New(client.CoreV1().Namespaces(), plans...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +246,7 @@ func newFixture(t *testing.T, installed bool) *fixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = files.Close() })
-	f.engine, err = NewWithAccess(f.access, f.store, files, f.plan)
+	f.engine, err = NewWithAccess(f.access, f.store, files, plans...)
 	if err != nil {
 		t.Fatal(err)
 	}

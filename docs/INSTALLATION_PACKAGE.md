@@ -378,3 +378,55 @@ bounded single-worker fuzz target exercises the pre-parser guard. These are
 protocol/activation proofs with fixture Kubernetes topology, not real-kubelet
 forwarding or full installer lifecycle certification; the new isolated binary
 CI gate must still prove those before issue #27 is complete.
+
+## Ordered, resumable lifecycle coordinator
+
+The internal coordinator now connects sealed journal transitions to the actual
+public effect and private Secret workflows. Each `Step` performs at most one
+resource effect or one stage transition. A pending step performs observation-only
+recovery and returns without falling through into the next mutation. Missing
+original create-UID evidence never permits replay or name/nonce-only adoption.
+
+Fresh install orders all five CRDs, all six policies, all six bindings,
+non-workload identities/RBAC/Service, protected credential exports and the two
+private Secrets, then both controllers and the API last. Existing target-ready
+entries are skipped only after their original live shapes have been checked.
+The coordinator does not infer dependency ordering from YAML file order.
+
+Upgrade/rollback/uninstall preserve the active package while quiescing: remove
+original API admission first, prove API descendants/endpoints absent, pause
+both original controllers, then prove complete runtime absence and cold-data/GC
+safety. Upgrade and rollback restore complete target templates and recreate
+the API with a new durable original UID. Retaining uninstall removes runtime
+Deployments/Service, bindings before roles, and service accounts last; it never
+deletes a PVC, retained CRD, policy/binding, Namespace or Secret. Recovery after
+settled controller removal proves authoritative absence rather than recreating
+or adopting a controller. Same-package reinstall keeps retained credential UIDs
+and never generates replacement tokens.
+
+Completion rechecks CRD availability, admission effectiveness, controller
+evidence, authenticated target activation, every target-ready inventory hash
+and live shape, current CRD storage/conditions and original private Secret UIDs.
+Uninstall instead proves exact retained inventory and absence of all runtime
+addresses. Prerequisites are checked before every non-pending step so direct
+resume does not bypass preflight. The old sealed snapshot and requested new
+mode/verified target plan are explicitly separate during operation preflight.
+An interrupted operation cannot silently change mode/target or automatically
+roll back: supported rollback begins only from a completed installation.
+
+The coordinator currently requires a trusted internal proof-provider seam for
+permissions/prerequisites, behavioral admission, full quiescence/cold-safety,
+controller descendant evidence and forwarded authentication. There is no
+permissive production provider, shell-status fallback or user-configurable
+callback. The closed production provider, administrator installer command,
+retained-claim recovery output and full isolated package/binary lifecycle CI
+are still required; this coordinator is not a usable certified installer yet.
+
+Tests exercise the real journal CAS/effect/private-file/Secret machinery with
+fixture Kubernetes/proof providers. They cover ordered install, retaining
+uninstall/reinstall, exact signed predecessor upgrade/whole-template rollback,
+proof failures and redaction, fresh completion barriers, no-replay recovery,
+recovery after one/both controller removals and retained-only verification,
+and same-name replacement refusal. These fixtures do not certify real admission
+behavior, kubelet forwarding, preservation of running world bytes or executed
+predecessor images. Those remain mandatory runtime gates for issue #27.
