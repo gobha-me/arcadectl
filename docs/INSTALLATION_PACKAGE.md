@@ -321,6 +321,60 @@ with fake keys and private test files. They prove authentication and refusal
 behavior over a package-private owned test connection; Kubernetes topology is
 fixture evidence, not a running Pod. The separate isolated Kubernetes 1.37 gate
 proves native admitted Pod defaults, not workload execution. Direct activation
-requires Pod-network reachability. A safe original-Pod outside-cluster forwarding
-route, installer CLI, behavioral admission/quiescence barriers and full fresh,
-supported-predecessor upgrade/rollback/retain-uninstall binary CI remain pending.
+requires Pod-network reachability. The internal native forwarding route below
+does not require that reachability. Installer CLI, behavioral admission/quiescence
+barriers and full fresh, supported-predecessor upgrade/rollback/retain-uninstall
+binary CI remain pending.
+
+## Bounded original-Pod native forwarding
+
+Forwarded activation uses the same serving, credential-file, retained-Secret,
+peer-certificate and authenticated-response barriers as direct activation. It
+opens only the fixed original Pod's `portforward` subresource and port 8443,
+after an additional uncached original-UID Pod read. Kubernetes offers no UID
+precondition on this subresource: whole serving identity is reobserved after
+opening, before inner TLS/bearer transmission, and after authentication. There
+is no local listener, arbitrary caller URL/port, reconnect, Pod replacement
+fallback or direct-route fallback.
+
+The cluster connection uses frozen static bearer, basic or client-certificate
+authentication with verified HTTPS and HTTP/1.1. Configured impersonation,
+custom transports/wrappers/dialers and explicit proxies are unsupported on
+this native route; it fails before forwarding rather than dropping their
+authority or routing behavior. The raw connection is direct, not an
+environment-proxy route. The installer must check this capability before any
+installation effects. There is one POST upgrade attempt, no redirects or
+retrying transport. Upgrade-header parsing has an 8 KiB pre-parser budget and
+30-second/context deadline. Exact native protocol, upgrade headers and no HTTP
+body framing are required. Rejected bodies are never consumed or reflected.
+Prefetched frame bytes remain in the same bounded header reader.
+
+Only the pinned SPDY frame codec is used, not its connection/queue/debug manager.
+Before decoder allocation, a wire guard limits DATA payloads to 64 KiB, controls
+to 4 KiB, the incoming session to 256 frames/1 MiB, and outgoing wire bytes to
+1 MiB. It permits only the two locally opened streams: error ID 1 and data ID 3.
+Their sole acknowledgements have empty headers; decoded header count/fields
+are additionally capped at 8/256 bytes. Unsolicited streams, extra headers,
+duplicate/unopened acknowledgements, nonempty error-stream data, invalid
+flags/lengths, resets and GOAWAY terminate with a fixed redacted failure.
+Bounded native PINGs are echoed; bounded settings/window controls do not create
+streams or queues. This is the reviewed Kubernetes native profile, not a
+general-purpose SPDY implementation.
+
+One reader and one fixed 32 KiB writer bridge an internal `net.Pipe`; blocking
+provides backpressure without DATA queues. Acknowledgement waits are at most
+five seconds and cancellation-aware. The connection lives only for the bounded
+activation context. Abort first hard-closes the actual socket (including beneath
+TLS), then closes both pipe ends; callers join all owned workers. No protocol
+cleanup write, TLS close-notify or SDK acknowledgement waiter can hold abort.
+
+Tests interoperate with the stock native server connection and a real
+authenticated HTTPS API over an owned test route, proving both TLS layers and
+static auth modes. Negative tests cover original-Pod replacement, malformed
+upgrade headers, redirects/errors, resource drift, frame/header amplification,
+wire/sequence limits, stalled headers, missing acknowledgements, established
+blocked pumps and blocked protocol writes, with joined-worker evidence. A
+bounded single-worker fuzz target exercises the pre-parser guard. These are
+protocol/activation proofs with fixture Kubernetes topology, not real-kubelet
+forwarding or full installer lifecycle certification; the new isolated binary
+CI gate must still prove those before issue #27 is complete.

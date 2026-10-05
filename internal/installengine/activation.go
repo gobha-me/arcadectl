@@ -21,9 +21,8 @@ import (
 var ErrActivation = errors.New("original installation API authenticated activation is unproved")
 
 // Activation checks actual HTTPS self identity, rather than faking an old token
-// or accepting a user-provided URL. Direct verification requires Pod-network
-// reachability. A bounded original-Pod port-forward route remains a separate
-// integration requirement for outside-cluster installers.
+// or accepting a user-provided URL. Direct and native-forward verification use
+// the same original identity, TLS and authenticated-response barriers.
 type Activation struct {
 	engine  *Engine
 	serving ServingAccess
@@ -88,7 +87,23 @@ func (a *Activation) binding(ctx context.Context, s *installstate.Snapshot, opts
 // proved connection and after authentication. A changed/unreadable route or
 // retained credential remains unproved, never a substituted success.
 func (a *Activation) VerifyDirect(ctx context.Context, s *installstate.Snapshot, opts ActivationOptions) error {
-	if a == nil || a.engine == nil || ctx == nil || a.dial == nil {
+	if a == nil {
+		return ErrActivation
+	}
+	return a.verify(ctx, s, opts, a.dial)
+}
+
+// VerifyForwarded opens only the sealed original Pod's fixed 8443 subresource.
+// It exposes no listener, caller URL/port, reconnect or replacement fallback.
+func (a *Activation) VerifyForwarded(ctx context.Context, s *installstate.Snapshot, opts ActivationOptions, provider *HTTPAccess) error {
+	if provider == nil || provider.native == nil {
+		return ErrActivation
+	}
+	return a.verify(ctx, s, opts, provider.forwardPod)
+}
+
+func (a *Activation) verify(ctx context.Context, s *installstate.Snapshot, opts ActivationOptions, dial func(context.Context, *Serving) (net.Conn, error)) error {
+	if a == nil || a.engine == nil || ctx == nil || dial == nil {
 		return ErrActivation
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
@@ -106,7 +121,9 @@ func (a *Activation) VerifyDirect(ctx context.Context, s *installstate.Snapshot,
 		if network != "tcp" || address != net.JoinHostPort(before.address, "8443") {
 			return nil, ErrActivation
 		}
-		conn, err := a.dial(dialCtx, before)
+		// Own the connection through verification, not the HTTP transport's
+		// detached/cancellable connection-acquisition context.
+		conn, err := dial(ctx, before)
 		if err != nil || conn == nil {
 			if conn != nil {
 				_ = conn.Close()
