@@ -36,6 +36,35 @@ func accessObject() (installstate.Key, *unstructured.Unstructured) {
 	return key, o
 }
 
+func TestHTTPCreateRejectionsPreserveDefiniteClassificationWithoutRawErrors(t *testing.T) {
+	for _, code := range []int{400, 401, 403, 404, 405, 409, 413, 415, 422, 429} {
+		t.Run(http.StatusText(code), func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(code)
+				_, _ = io.WriteString(w, "PRIVATE-REJECTION-CANARY")
+			}))
+			defer server.Close()
+			a, err := NewHTTPAccess(serverConfig(server))
+			if err != nil {
+				t.Fatal(err)
+			}
+			key, obj := accessObject()
+			_, err = a.Create(context.Background(), key, obj, false)
+			if !installstate.CreateResponseRejected(err) || ambiguousCreateResponse(err) || strings.Contains(err.Error(), "CANARY") {
+				t.Fatal("public Create lost definite response classification")
+			}
+			_, err = a.Namespaces().Create(context.Background(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: key.Namespace}}, metav1.CreateOptions{})
+			if !installstate.CreateResponseRejected(err) || strings.Contains(err.Error(), "CANARY") {
+				t.Fatal("bootstrap Create lost definite response classification")
+			}
+			_, err = a.PrivateSecrets().Create(context.Background(), &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "arcadectl-api-tls", Namespace: key.Namespace}}, false)
+			if !installstate.CreateResponseRejected(err) || ambiguousCreateResponse(err) || strings.Contains(err.Error(), "CANARY") {
+				t.Fatal("private Create lost definite response classification")
+			}
+		})
+	}
+}
+
 func TestHTTPMutationsAndNamespaceCASNeverRetryRetryAfter(t *testing.T) {
 	for _, code := range []int{429, 503} {
 		for _, method := range []string{"create", "update", "delete", "namespace-create", "namespace-update"} {
@@ -81,7 +110,11 @@ func TestHTTPMutationsAndNamespaceCASNeverRetryRetryAfter(t *testing.T) {
 				case "namespace-update":
 					_, err = a.Namespaces().Update(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "isolated-install", UID: "original", ResourceVersion: "42"}}, metav1.UpdateOptions{})
 				}
-				if !errors.Is(err, ErrRead) || strings.Contains(err.Error(), "CANARY") || requests.Load() != 1 {
+				classified := errors.Is(err, ErrRead)
+				if code == 429 {
+					classified = apierrors.IsTooManyRequests(err)
+				}
+				if !classified || strings.Contains(err.Error(), "CANARY") || requests.Load() != 1 {
 					t.Fatalf("mutation attempted %d times: %v", requests.Load(), err)
 				}
 			})

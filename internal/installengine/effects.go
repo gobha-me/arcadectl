@@ -256,7 +256,11 @@ func (e *Engine) Apply(ctx context.Context, s *installstate.Snapshot, key instal
 	if err == nil && (ack == nil || !effectMatches(t, p, ack)) {
 		return intent, ErrOutcomeUnknown
 	}
-	return e.recover(ctx, intent, ack, err == nil, err != nil)
+	return e.recover(ctx, intent, ack, err == nil, ambiguousCreateResponse(err))
+}
+
+func ambiguousCreateResponse(err error) bool {
+	return err != nil && !installstate.CreateResponseRejected(err) && !errors.Is(err, ErrOwnership) && !errors.Is(err, ErrInvalid) && !errors.Is(err, ErrConcurrent)
 }
 
 func effectMatches(t *installcontract.Template, p *installstate.Pending, live *unstructured.Unstructured) bool {

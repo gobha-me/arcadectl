@@ -6,15 +6,18 @@
 package installengine
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
 	"testing"
 	"time"
 
+	"github.com/gobha-me/arcadectl/internal/adminauth"
 	"github.com/gobha-me/arcadectl/internal/installrender"
 	"github.com/gobha-me/arcadectl/internal/installstate"
 	"github.com/gobha-me/arcadectl/internal/privatefs"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
@@ -26,6 +29,32 @@ type lostResponseAccess struct {
 	failRead       bool
 	responseKey    installstate.Key
 	responseWrites int
+}
+
+type lostPrivateReadback struct {
+	PrivateSecretAccess
+	writes   int
+	failRead bool
+}
+
+func (a *lostPrivateReadback) Get(ctx context.Context, namespace, name string) (*corev1.Secret, error) {
+	if a.failRead && name == adminauth.CredentialSecretName {
+		a.failRead = false
+		return nil, ErrRead
+	}
+	return a.PrivateSecretAccess.Get(ctx, namespace, name)
+}
+func (a *lostPrivateReadback) Create(ctx context.Context, s *corev1.Secret, dry bool) (*corev1.Secret, error) {
+	result, err := a.PrivateSecretAccess.Create(ctx, s, dry)
+	if !dry && err == nil {
+		a.writes++
+		if s.Name == adminauth.CredentialSecretName {
+			a.failRead = true
+		} else {
+			return nil, ErrRead
+		}
+	}
+	return result, err
 }
 
 func (a *lostResponseAccess) Get(ctx context.Context, k installstate.Key) (*unstructured.Unstructured, error) {
@@ -51,7 +80,7 @@ func (a *lostResponseAccess) Create(ctx context.Context, k installstate.Key, o *
 	return result, err
 }
 
-// This proves actual journal CAS, real public writes, signed default checks and
+// This proves actual journal CAS, real public/private writes, signed default checks and
 // lost-response and unavailable-readback recovery against a fresh isolated API
 // server. It runs no Pods, credential activation, actual predecessor binaries
 // or lifecycle uninstall.
@@ -122,6 +151,43 @@ func TestEnvtestJournaledResourceEffects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	now := time.Now().UTC()
+	opts := fixtureTLS(t, plan.Namespace(), now)
+	credentials, err := engine.PrepareCredentials(ctx, s, opts)
+	if err != nil {
+		t.Fatal("real private candidate preparation: ", err)
+	}
+	private := &lostPrivateReadback{PrivateSecretAccess: access.PrivateSecrets()}
+	secrets, err := NewSecretWorkflow(engine, private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{adminauth.CredentialSecretName, "arcadectl-api-tls"} {
+		s, err = secrets.Create(ctx, s, credentials, name, now)
+		if name == adminauth.CredentialSecretName {
+			if !errors.Is(err, ErrOutcomeUnknown) || s == nil || s.Document().Pending == nil {
+				t.Fatal("real private lost readback not retained")
+			}
+			credentials, err = engine.LoadCredentials(ctx, s, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s, err = secrets.Recover(ctx, s, credentials, now)
+		}
+		if err != nil {
+			t.Fatal("real private effect recovery: ", err)
+		}
+	}
+	if private.writes != 2 {
+		t.Fatal("real private Create replayed")
+	}
+	if err := secrets.VerifyRetained(ctx, s, opts.CAFile, now); err != nil {
+		t.Fatal("real retained original Secret verification: ", err)
+	}
+	client, err := adminauth.ParseClientCredential(credentials.admin.PrivateBytes())
+	if err != nil || bytes.Contains(s.Bytes(), []byte(client.Token)) || bytes.Contains(s.Bytes(), []byte(adminauth.TokenDigest(client.Token))) || bytes.Contains(s.Bytes(), credentials.document.Key) {
+		t.Fatal("private material entered public journal")
+	}
 	for _, r := range plan.Resources() {
 		o := r.Object
 		if o.GetKind() == "Namespace" {
@@ -145,8 +211,8 @@ func TestEnvtestJournaledResourceEffects(t *testing.T) {
 	if lost.responseWrites != 1 {
 		t.Fatal("lost real Create response path not exercised exactly once")
 	}
-	if len(s.Document().Resources) != 38 || s.Document().Pending != nil {
-		t.Fatal("public inventory incomplete")
+	if len(s.Document().Resources) != 40 || s.Document().Pending != nil {
+		t.Fatal("public/private original inventory incomplete")
 	}
 	uid := lost.key
 	before, err := access.Get(ctx, uid)

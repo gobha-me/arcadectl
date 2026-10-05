@@ -192,10 +192,24 @@ func addressPart(s string) bool {
 }
 
 func (a *HTTPAccess) request(ctx context.Context, method string, key installstate.Key, body any, dry bool) (*unstructured.Unstructured, error) {
+	return a.requestBound(ctx, method, key, body, dry, false)
+}
+
+func (a *HTTPAccess) privateRequest(ctx context.Context, method string, key installstate.Key, body any, dry bool) (*unstructured.Unstructured, error) {
+	if method != http.MethodGet && method != http.MethodPost {
+		return nil, ErrInvalid
+	}
+	return a.requestBound(ctx, method, key, body, dry, true)
+}
+
+func (a *HTTPAccess) requestBound(ctx context.Context, method string, key installstate.Key, body any, dry, private bool) (*unstructured.Unstructured, error) {
 	if a == nil || a.client == nil || a.base == nil || ctx == nil {
 		return nil, ErrInvalid
 	}
 	path, err := resourcePath(key, method == http.MethodPost)
+	if private {
+		path, err = privateSecretPath(key, method == http.MethodPost)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -244,8 +258,22 @@ func (a *HTTPAccess) request(ctx context.Context, method string, key installstat
 			return nil, apierrors.NewNotFound(gr, key.Name)
 		case 409:
 			return nil, apierrors.NewConflict(gr, key.Name, ErrConcurrent)
-		case 401, 403:
-			return nil, ErrOwnership
+		case 400:
+			return nil, apierrors.NewBadRequest("installation API request rejected")
+		case 401:
+			return nil, apierrors.NewUnauthorized("installation API request rejected")
+		case 403:
+			return nil, apierrors.NewForbidden(gr, key.Name, ErrOwnership)
+		case 405:
+			return nil, apierrors.NewMethodNotSupported(gr, method)
+		case 413:
+			return nil, apierrors.NewRequestEntityTooLargeError("installation API request rejected")
+		case 415:
+			return nil, &apierrors.StatusError{ErrStatus: metav1.Status{Status: metav1.StatusFailure, Code: 415, Reason: metav1.StatusReasonUnsupportedMediaType, Message: "installation API request rejected"}}
+		case 422:
+			return nil, apierrors.NewInvalid(schema.GroupKind{Kind: key.Kind}, key.Name, nil)
+		case 429:
+			return nil, apierrors.NewTooManyRequests("installation API request rejected", 0)
 		default:
 			return nil, ErrRead
 		}

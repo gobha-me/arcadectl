@@ -78,6 +78,9 @@ func LoadBootstrap(store *privatefs.Store, name string, plan *installrender.Plan
 	if err != nil {
 		return nil, err
 	}
+	if err := store.ConfirmDurable(name, identity); err != nil {
+		return nil, privateError(err)
+	}
 	return &BootstrapReceipt{store: store, name: name, identity: identity, plan: plan, document: d}, nil
 }
 
@@ -121,9 +124,18 @@ func privateError(err error) error {
 	return ErrOwnership
 }
 
+// CreateResponseRejected recognizes fixed API responses that prove this Create
+// was rejected. A matching object discovered afterward is not its effect.
+// Transport errors and unreadable success responses remain ambiguous.
+func CreateResponseRejected(err error) bool {
+	return apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) || apierrors.IsInvalid(err) || apierrors.IsBadRequest(err) || apierrors.IsAlreadyExists(err) || apierrors.IsConflict(err) || apierrors.IsNotFound(err) || apierrors.IsTooManyRequests(err) || apierrors.IsMethodNotSupported(err) || apierrors.IsRequestEntityTooLargeError(err) || apierrors.IsUnsupportedMediaType(err)
+}
+
 // EnsureNamespace sends at most one Create, pins its exact UID durably, then
-// binds the namespace CAS journal. A lost create response is confirmed only by
-// the saved nonce and complete reviewed namespace metadata. It never removes a
+// binds the namespace CAS journal. Only the original invocation may correlate
+// a genuinely lost response using immediate reviewed nonce-bound readback.
+// Restart requires a durably pinned UID; an empty attempted receipt remains
+// unresolved even when a same-named object looks correct. It never removes a
 // namespace, retries a create, or authorizes runtime resources. A caller must
 // complete cluster/prerequisite/foreign-resource preflight BEFORE calling it.
 func (r *BootstrapReceipt) EnsureNamespace(ctx context.Context, namespaces NamespaceAccess) (*Snapshot, error) {
@@ -150,6 +162,12 @@ func (r *BootstrapReceipt) EnsureNamespace(ctx context.Context, namespaces Names
 	if d != r.document {
 		return nil, ErrConflict
 	}
+	if err := r.store.ConfirmDurable(r.name, identity); err != nil {
+		return nil, privateError(err)
+	}
+	if d.CreateAttempted && d.NamespaceUID == "" {
+		return nil, ErrOutcomeUnknown
+	}
 	want, templateDigest, err := bootstrapNamespace(r.plan, d.InstallationID)
 	if err != nil {
 		return nil, err
@@ -164,7 +182,8 @@ func (r *BootstrapReceipt) EnsureNamespace(ctx context.Context, namespaces Names
 		}
 		// Persist the attempt before the call. A process interruption after this
 		// point cannot distinguish an unsent request from a delayed server write,
-		// so explicit resume may correlate it but must never replay Create.
+		// so explicit resume without a pinned UID must neither replay Create
+		// nor establish ownership from a copied public nonce.
 		d.CreateAttempted = true
 		candidate, encodeErr := encodeBootstrap(d, r.plan)
 		if encodeErr != nil {
@@ -177,12 +196,31 @@ func (r *BootstrapReceipt) EnsureNamespace(ctx context.Context, namespaces Names
 		r.document, r.identity = d, identity
 		live, err = namespaces.Create(ctx, want, metav1.CreateOptions{})
 		if err != nil {
-			if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) || apierrors.IsInvalid(err) {
+			if CreateResponseRejected(err) {
 				return nil, ErrOwnership
 			}
 			live, err = namespaces.Get(ctx, d.Namespace, metav1.GetOptions{})
 			if err != nil {
 				return nil, ErrOutcomeUnknown
+			}
+			if !matchesBootstrapNamespace(live, want, r.plan, d) {
+				return nil, ErrOwnership
+			}
+			if r.pinUID(&d, live.UID) != nil {
+				return nil, ErrOutcomeUnknown
+			}
+		} else {
+			// Pin any known ACK identity before accepting shape. A rejected
+			// ACK cannot leave an empty receipt that adopts a replacement later.
+			if live == nil || live.UID == "" {
+				return nil, ErrOutcomeUnknown
+			}
+			unbound := d
+			if r.pinUID(&d, live.UID) != nil {
+				return nil, ErrOutcomeUnknown
+			}
+			if !matchesBootstrapNamespace(live, want, r.plan, unbound) {
+				return nil, ErrOwnership
 			}
 		}
 	} else if err != nil {
@@ -191,17 +229,8 @@ func (r *BootstrapReceipt) EnsureNamespace(ctx context.Context, namespaces Names
 	if !matchesBootstrapNamespace(live, want, r.plan, d) {
 		return nil, ErrOwnership
 	}
-	if d.NamespaceUID == "" {
-		d.NamespaceUID = live.UID
-		candidate, err := encodeBootstrap(d, r.plan)
-		if err != nil {
-			return nil, err
-		}
-		identity, err = r.store.AtomicWrite(r.name, candidate, &r.identity)
-		if err != nil {
-			return nil, privateError(err)
-		}
-		r.document, r.identity = d, identity
+	if err := r.store.ConfirmDurable(r.name, r.identity); err != nil {
+		return nil, privateError(err)
 	}
 	anchor := Anchor{d.Namespace, d.NamespaceUID, d.InstallationID}
 	store, err := New(namespaces, r.plan)
@@ -213,6 +242,24 @@ func (r *BootstrapReceipt) EnsureNamespace(ctx context.Context, namespaces Names
 	}
 	initial := Document{Version: Version, InstallationID: d.InstallationID, Namespace: d.Namespace, NamespaceUID: d.NamespaceUID, ProfileID: d.ProfileID, Revision: 1, Mode: Install, Stage: Preparing, TargetPackage: d.PackageSHA256, Resources: []Resource{{Key: Key{"v1", "Namespace", "", d.Namespace}, UID: d.NamespaceUID, TemplateSHA256: templateDigest, Retained: true, Phase: installrender.Anchors}}}
 	return store.Bind(ctx, anchor, initial)
+}
+
+func (r *BootstrapReceipt) pinUID(d *bootstrapDocument, uid types.UID) error {
+	if d == nil || uid == "" || d.NamespaceUID != "" {
+		return ErrInvalid
+	}
+	next := *d
+	next.NamespaceUID = uid
+	body, err := encodeBootstrap(next, r.plan)
+	if err != nil {
+		return err
+	}
+	identity, err := r.store.AtomicWrite(r.name, body, &r.identity)
+	if err != nil {
+		return err
+	}
+	*d, r.document, r.identity = next, next, identity
+	return nil
 }
 
 func bootstrapNamespace(plan *installrender.Plan, id string) (*corev1.Namespace, string, error) {

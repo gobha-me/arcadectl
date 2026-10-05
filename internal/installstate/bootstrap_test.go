@@ -10,7 +10,21 @@ import (
 	"testing"
 
 	"github.com/gobha-me/arcadectl/internal/privatefs"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
+
+type faultBootstrapAccess struct {
+	NamespaceAccess
+	afterCreate func(*corev1.Namespace, error) (*corev1.Namespace, error)
+}
+
+func (a faultBootstrapAccess) Create(ctx context.Context, n *corev1.Namespace, opts metav1.CreateOptions) (*corev1.Namespace, error) {
+	created, err := a.NamespaceAccess.Create(ctx, n, opts)
+	return a.afterCreate(created, err)
+}
 
 func privateStore(t *testing.T) *privatefs.Store {
 	t.Helper()
@@ -112,6 +126,7 @@ func TestBootstrapRejectsForeignNamespaceReplacementAndLocalChanges(t *testing.T
 			} else {
 				attempted := receipt.document
 				attempted.CreateAttempted = true
+				attempted.NamespaceUID = "namespace-uid"
 				body, err := encodeBootstrap(attempted, plan)
 				if err != nil {
 					t.Fatal(err)
@@ -183,6 +198,88 @@ func TestBootstrapInterruptedBindCanResumeWithoutNewCandidate(t *testing.T) {
 	snapshot, err := loaded.EnsureNamespace(context.Background(), namespaces)
 	if err != nil || snapshot.Anchor().InstallationID != receipt.document.InstallationID || server.creates != 1 || server.updates != 2 {
 		t.Fatal("resume changed nonce or replayed namespace creation")
+	}
+}
+
+func TestBootstrapACKIdentityAndUnknownResumeNeverAdoptCopiedNonce(t *testing.T) {
+	plan := testPlan(t)
+	for _, scenario := range []string{"ack-shape", "ack-journal", "pin-unpublished", "nil-ack", "empty-ack-uid", "invalid-ack-uid", "lost-ack-unreadable", "definite-conflict"} {
+		t.Run(scenario, func(t *testing.T) {
+			base := t.TempDir()
+			if err := os.Chmod(base, 0700); err != nil {
+				t.Fatal(err)
+			}
+			storage, err := privatefs.Open(base, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer storage.Close()
+			receipt, err := PrepareBootstrap(storage, "installation.json", plan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := &namespaceServer{}
+			namespaces := server.client().CoreV1().Namespaces()
+			fault := faultBootstrapAccess{NamespaceAccess: namespaces, afterCreate: func(ack *corev1.Namespace, err error) (*corev1.Namespace, error) {
+				if err != nil {
+					t.Fatal(err)
+				}
+				switch scenario {
+				case "ack-shape":
+					ack.Labels["foreign"] = "unreviewed"
+				case "ack-journal":
+					ack.Annotations[Annotation] = "foreign"
+				case "pin-unpublished":
+					if err := os.Chmod(base, 0755); err != nil {
+						t.Fatal(err)
+					}
+				case "nil-ack":
+					return nil, nil
+				case "empty-ack-uid":
+					ack.UID = ""
+				case "invalid-ack-uid":
+					ack.UID = "?"
+				case "lost-ack-unreadable":
+					server.failGet = true
+					return nil, errors.New("lost response")
+				case "definite-conflict":
+					server.live.UID = "foreign-copied-nonce"
+					return nil, apierrors.NewConflict(schema.GroupResource{Resource: "namespaces"}, ack.Name, errors.New("fixed conflict"))
+				}
+				return ack, nil
+			}}
+			_, err = receipt.EnsureNamespace(context.Background(), fault)
+			want := ErrOutcomeUnknown
+			if scenario == "ack-shape" || scenario == "ack-journal" || scenario == "definite-conflict" {
+				want = ErrOwnership
+			}
+			if !errors.Is(err, want) || server.creates != 1 || server.updates != 0 {
+				t.Fatalf("unproved bootstrap settled: %v", err)
+			}
+			if err := os.Chmod(base, 0700); err != nil {
+				t.Fatal(err)
+			}
+			server.failGet = false
+			server.live.UID = "foreign-copied-nonce"
+			loaded, err := LoadBootstrap(storage, "installation.json", plan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want = ErrOutcomeUnknown
+			if scenario == "ack-shape" || scenario == "ack-journal" {
+				want = ErrOwnership
+				if loaded.document.NamespaceUID != "namespace-uid" {
+					t.Fatal("rejected ACK lost its original UID")
+				}
+			} else if loaded.document.NamespaceUID != "" {
+				t.Fatal("unproved original UID was pinned")
+			}
+			for _, resumed := range []*BootstrapReceipt{receipt, loaded} {
+				if _, err := resumed.EnsureNamespace(context.Background(), namespaces); !errors.Is(err, want) || server.creates != 1 || server.updates != 0 {
+					t.Fatalf("copied-nonce replacement adopted or effect replayed: %v", err)
+				}
+			}
+		})
 	}
 }
 

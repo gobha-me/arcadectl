@@ -57,6 +57,9 @@ func (e *Engine) saveCreateUID(d installstate.Document, uid types.UID) error {
 		return ErrOutcomeUnknown
 	}
 	if bytes.Equal(old, body) {
+		if e.files.ConfirmDurable(name, identity) != nil {
+			return ErrOutcomeUnknown
+		}
 		return nil
 	}
 	empty, err := receiptBody(d, "")
@@ -89,8 +92,12 @@ func (e *Engine) loadCreateUID(d installstate.Document) (types.UID, error) {
 	if d.Pending == nil || d.Pending.Action != installstate.Create {
 		return "", ErrInvalid
 	}
-	body, _, err := e.files.Read("create-"+d.Pending.CreateNonce+".json", 4096)
+	name := "create-" + d.Pending.CreateNonce + ".json"
+	body, identity, err := e.files.Read(name, 4096)
 	if err != nil {
+		return "", ErrOutcomeUnknown
+	}
+	if e.files.ConfirmDurable(name, identity) != nil {
 		return "", ErrOutcomeUnknown
 	}
 	var r createReceipt

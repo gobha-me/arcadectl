@@ -318,6 +318,46 @@ func TestLostCreateResponseIsCorrelatedButNeverReplayed(t *testing.T) {
 	}
 }
 
+func definitiveCreateErrors() []error {
+	gr := schema.GroupResource{Resource: "reviewed"}
+	return []error{
+		apierrors.NewAlreadyExists(gr, "reviewed"),
+		apierrors.NewConflict(gr, "reviewed", ErrConcurrent),
+		apierrors.NewForbidden(gr, "reviewed", ErrOwnership),
+		apierrors.NewUnauthorized("fixed rejection"),
+		apierrors.NewInvalid(schema.GroupKind{Kind: "ServiceAccount"}, "reviewed", nil),
+		apierrors.NewBadRequest("fixed rejection"),
+		apierrors.NewNotFound(gr, "reviewed"),
+		apierrors.NewTooManyRequests("fixed rejection", 0),
+		apierrors.NewMethodNotSupported(gr, "create"),
+		apierrors.NewRequestEntityTooLargeError("fixed rejection"),
+		&apierrors.StatusError{ErrStatus: metav1.Status{Status: metav1.StatusFailure, Code: 415, Reason: metav1.StatusReasonUnsupportedMediaType, Message: "fixed rejection"}},
+		ErrOwnership, ErrInvalid, ErrConcurrent,
+	}
+}
+
+func TestDefiniteCreateRejectionNeverAdoptsRacedCopiedNonce(t *testing.T) {
+	for _, rejection := range definitiveCreateErrors() {
+		t.Run(rejection.Error(), func(t *testing.T) {
+			f := newFixture(t, false)
+			f.access.write = func(_ installstate.Action, k installstate.Key, o *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+				foreign := o.DeepCopy()
+				foreign.SetUID("foreign-copied-nonce")
+				foreign.SetResourceVersion("100")
+				f.access.objects[k] = foreign
+				return nil, rejection
+			}
+			s, err := f.engine.Apply(context.Background(), f.snapshot, f.key, f.plan.Digest(), false)
+			if !errors.Is(err, ErrOutcomeUnknown) || s.Document().Pending == nil || len(s.Document().Resources) != 1 {
+				t.Fatal("definitely rejected Create adopted a raced object")
+			}
+			if _, err := f.engine.Recover(context.Background(), s); !errors.Is(err, ErrOutcomeUnknown) || f.access.writes != 1 || f.access.dryRuns != 1 {
+				t.Fatal("restart adopted or replayed rejected Create")
+			}
+		})
+	}
+}
+
 func TestReadbackMustMatchOriginalNonceUIDAndSignedShape(t *testing.T) {
 	for _, scenario := range []string{"nonce", "shape", "ack-uid", "read-failure", "namespace-race"} {
 		t.Run(scenario, func(t *testing.T) {

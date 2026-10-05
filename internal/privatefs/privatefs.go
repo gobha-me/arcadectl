@@ -199,6 +199,64 @@ func (s *Store) CreateExclusive(name string, b []byte) (FileIdentity, error) {
 	return s.AtomicWrite(name, b, nil)
 }
 
+// ConfirmDurable reestablishes file/directory persistence for an exact protected
+// observation without rewriting contents or substituting its inode. In
+// particular, a visible file left after an uncertain prior directory fsync is
+// not automatically durable enough to authorize a resumed external effect.
+func (s *Store) ConfirmDurable(name string, expected FileIdentity) error {
+	if s == nil {
+		return ErrUnsafe
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.valid() || !safeName(name) {
+		return ErrUnsafe
+	}
+	_, id, err := readAt(s.fd, name, MaxFileBytes, Private)
+	if err != nil {
+		return err
+	}
+	if id != expected {
+		return ErrChanged
+	}
+	fd, err := unix.Openat(s.fd, name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return ErrUnsafe
+	}
+	file := os.NewFile(uintptr(fd), "private-file")
+	defer file.Close()
+	var stat unix.Stat_t
+	if unix.Fstat(fd, &stat) != nil || !privateStat(&stat) || uint64(stat.Dev) != expected.device || stat.Ino != expected.inode {
+		return ErrChanged
+	}
+	if stat.Size < 0 || stat.Size > MaxFileBytes {
+		return ErrChanged
+	}
+	body, err := io.ReadAll(io.LimitReader(file, MaxFileBytes+1))
+	var after unix.Stat_t
+	if err != nil || int64(len(body)) > MaxFileBytes || unix.Fstat(fd, &after) != nil {
+		return ErrUnsafe
+	}
+	stat.Atim = after.Atim
+	if stat != after || sha256.Sum256(body) != expected.digest {
+		return ErrChanged
+	}
+	if s.syncFile(file) != nil || s.syncDir(s.fd) != nil {
+		return ErrDurability
+	}
+	if !s.valid() {
+		return ErrUnsafe
+	}
+	_, id, err = readAt(s.fd, name, MaxFileBytes, Private)
+	if err != nil {
+		return err
+	}
+	if id != expected {
+		return ErrChanged
+	}
+	return nil
+}
+
 // Hold a cooperative Lock for read/modify/write sequences. nil means create-
 // only; replacement requires observed identity. Post-rename failure is
 // durability-unconfirmed, never proof that nothing changed.

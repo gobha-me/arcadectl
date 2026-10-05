@@ -87,9 +87,12 @@ keys, or private filesystem paths.
 
 A private durable receipt records installation identity and the create attempt
 before namespace creation. Only its exact nonce and reviewed namespace metadata
-can confirm a lost response. An attempted unconfirmed creation is never replayed,
-even if a read currently returns NotFound. Its original UID is durably pinned
-before binding the cluster journal. Namespace replacement, ownership drift,
+can confirm a genuinely lost response only during the original invocation. An
+attempted unconfirmed creation is never replayed, even if a read currently
+returns NotFound. Restart without a durably pinned original UID remains
+unresolved even when a later same-named object has a copied nonce. Known Create
+acknowledgement UIDs are pinned before shape acceptance and before binding the
+cluster journal. Namespace replacement, ownership drift,
 weakened Pod security, or a concurrent revision causes refusal.
 
 Journal updates use one original-UID/resource-version-controlled write. A lost
@@ -170,7 +173,7 @@ this gate. Synthetic predecessor/current/rollback tests restore complete prior
 Pod templates, including API namespace configuration removal and paired
 controller/worker image rollback. These are not genuine predecessor-binary or
 full package-lifecycle certification; Kubernetes 1.35.8 runtime proof remains
-pending. Private credential/TLS resume, actual Service/EndpointSlice/Pod ownership and activation,
+pending. Actual Service/EndpointSlice/Pod ownership and credential/TLS activation,
 admission behavior, quiescence, and lifecycle CI remain engine responsibilities.
 
 ## Journal-before-effect resource writes
@@ -202,6 +205,10 @@ nonce on a replacement UID cannot authorize adoption. An interrupted Create
 whose UID was never durably pinned remains unresolved, even if a later object
 looks correct: manual original-identity investigation is required. Keep these
 receipts with the protected bootstrap evidence; never regenerate them on resume.
+Definitively rejected Creates cannot establish ownership from a later matching
+readback. Fixed, sanitized HTTP rejection classifications remain distinct from
+genuinely ambiguous transport/response loss for public resources, bootstrap and
+private Secrets; a raced object with copied nonce/shape is not adopted.
 
 Recovery observes and settles only; it does not repeat dry-run or real writes.
 Accepted foreground deletion is not absence. Deleting objects, replacements,
@@ -215,8 +222,8 @@ and world claims are not deleted by this primitive.
 Unit and TLS HTTP tests count mutation attempts under Retry-After and a retrying
 wrapper, exercise lost acknowledgements/readbacks/settlement, and refuse UID,
 nonce, shape, receipt and journal substitution. The isolated Kubernetes 1.37
-API-server gate covers all 38 public-resource journaled creates, a genuinely lost
-Create acknowledgement, unavailable-readback recovery, and original-UID/RV
+API-server gate covers all 38 public-resource journaled creates plus two private
+Secret creates, a genuinely lost Create acknowledgement, unavailable-readback recovery, and original-UID/RV
 update through the production provider. These API-server tests run no Pods and
 do not prove a full installation, upgrade, rollback or retaining uninstall.
 
@@ -225,3 +232,43 @@ orchestration must still establish prerequisites, CRD status/discovery,
 behavioral admission denials, owner/GC retention closure, real API/controller
 quiescence, credential/TLS activation, repeated safety barriers and recovery
 guidance before issuing effects. Full binary lifecycle CI remains unfinished.
+
+## Private administrator and TLS candidates
+
+The internal fresh-install Secret workflow prepares one protected canonical
+candidate envelope before any Secret effect. It binds the original Namespace
+UID, installation ID, target package and two distinct saved create nonces.
+The administrator candidate uses the existing credential format, principal,
+serial and verifier rules. Resume reloads that exact candidate; it never
+regenerates a token, overwrites foreign output or adopts an existing Secret.
+TLS remains an explicit prerequisite supplied through bounded protected files,
+not inline package values or automatic CA provisioning. The pair must match,
+chain to the supplied CA, be currently valid for server authentication and name
+`arcadectl-api.<installation-namespace>.svc`.
+
+Private client JSON and CA outputs are saved before the real effect. A separate
+bounded, redacted HTTPS path permits only the two reviewed Secret names and
+supports GET and Create, not replacement, rotation or deletion. Independent
+dry-run admission must preserve complete metadata, type and private contents.
+The Namespace intent/inventory records only original Secret UIDs and public
+nonces; Secret template hashes remain empty. Tokens, token digests and TLS keys
+never enter this public journal. Diagnostic formatting of candidate envelopes
+is redacted for pointer/value forms and every formatting verb.
+
+The same single-attempt, acknowledged-UID receipt and no-replay recovery rules
+apply to private Creates. Resume also reconfirms exact protected inode/content,
+file fsync and directory fsync before trusting visible candidate files, existing
+exports or original-UID receipts. Visibility after uncertain publication is not
+proof of durability. Changed private contents, replaced files, weakened directory
+protection or unconfirmed persistence refuse further authority.
+
+Retained-credential verification reads the original inventoried Secret UIDs
+without rewriting them. It permits valid administrator rotation in the existing
+format; it does not require the expired initial candidate to remain usable.
+The Kubernetes 1.37 API-server gate now creates all 40 resources, recovers a
+private unavailable readback without replay, correlates a genuinely lost private
+Create acknowledgement, checks retained Secret identity and verifies absence of
+private material in the journal. It runs no Pods: authenticated activation,
+genuine predecessor-binary upgrade/rollback and retaining-uninstall lifecycle
+certification are still pending. This internal workflow is not a released
+installer CLI or an authorization/safety proof for those operations.
