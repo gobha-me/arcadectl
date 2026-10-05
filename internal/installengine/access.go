@@ -213,6 +213,16 @@ func (a *HTTPAccess) requestBound(ctx context.Context, method string, key instal
 	if err != nil {
 		return nil, err
 	}
+	return a.requestAt(ctx, method, key, body, dry, path, nil)
+}
+
+// requestAt is private: every caller derives a fixed reviewed route, never a
+// path supplied by a journal/object. Serving routes expose read-only mappings.
+func (a *HTTPAccess) requestAt(ctx context.Context, method string, key installstate.Key, body any, dry bool, path string, extra url.Values) (*unstructured.Unstructured, error) {
+	if a == nil || a.client == nil || a.base == nil || ctx == nil {
+		return nil, ErrInvalid
+	}
+	var err error
 	var encoded []byte
 	if body != nil {
 		encoded, err = json.Marshal(body)
@@ -223,6 +233,9 @@ func (a *HTTPAccess) requestBound(ctx context.Context, method string, key instal
 	u := *a.base
 	u.Path = strings.TrimRight(u.Path, "/") + path
 	query := url.Values{}
+	for name, values := range extra {
+		query[name] = append([]string(nil), values...)
+	}
 	if dry {
 		query.Set("dryRun", "All")
 	}

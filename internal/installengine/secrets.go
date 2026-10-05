@@ -207,45 +207,61 @@ func matchesPrivateSecret(live, want *corev1.Secret, uid types.UID, requireUID b
 // allowing legitimate administrator token rotation without adopting a new UID.
 // It never loads original candidate token bytes, writes or rotates a Secret.
 func (w *SecretWorkflow) VerifyRetained(ctx context.Context, s *installstate.Snapshot, caFile string, now time.Time) error {
+	_, _, err := w.retained(ctx, s, caFile, now)
+	return err
+}
+
+// retained binds returned private bytes and CA identity to the very reads
+// checked against the original inventory. Do not validate then independently
+// reopen a Secret to obtain authentication material.
+func (w *SecretWorkflow) retained(ctx context.Context, s *installstate.Snapshot, caFile string, now time.Time) (objects map[string]*corev1.Secret, caID privatefs.FileIdentity, err error) {
+	defer func() {
+		if err != nil {
+			objects = nil
+			caID = privatefs.FileIdentity{}
+		}
+	}()
 	if w == nil || w.engine == nil {
-		return ErrInvalid
+		return nil, caID, ErrInvalid
 	}
 	fresh, err := w.engine.current(ctx, s)
 	if err != nil {
-		return err
+		return nil, caID, err
 	}
 	d := fresh.Document()
 	if d.Pending != nil {
-		return ErrInvalid
+		return nil, caID, ErrInvalid
 	}
-	ca, _, err := privatefs.ReadAbsolute(caFile, 65536, privatefs.TrustedPublic)
+	ca, caID, err := privatefs.ReadAbsolute(caFile, 65536, privatefs.TrustedPublic)
 	if err != nil {
-		return ErrCredentials
+		return nil, caID, ErrCredentials
 	}
+	objects = make(map[string]*corev1.Secret, 2)
 	for _, name := range []string{adminauth.CredentialSecretName, "arcadectl-api-tls"} {
 		key := secretKey(d.Namespace, name)
 		index := slices.IndexFunc(d.Resources, func(r installstate.Resource) bool { return r.Key == key })
 		if index < 0 || !d.Resources[index].Retained || d.Resources[index].TemplateSHA256 != "" {
-			return ErrOwnership
+			return nil, caID, ErrOwnership
 		}
 		live, err := w.access.Get(ctx, d.Namespace, name)
 		if err != nil || !safePrivateMetadata(live, d.Resources[index].UID, true) || len(live.Annotations) != 1 || !nonceID.MatchString(live.Annotations[installstate.MutationAnnotation]) {
-			return ErrOwnership
+			return nil, caID, ErrOwnership
 		}
 		if name == adminauth.CredentialSecretName {
 			if string(live.Type) != adminauth.CredentialSecretType || !reflect.DeepEqual(live.Labels, adminauth.ManagedSecretLabels()) || len(live.Data) != 2 {
-				return ErrCredentials
+				return nil, caID, ErrCredentials
 			}
 			bundle, err := adminauth.ParseVerifierBundle(live.Data[adminauth.VerifierSecretKey])
 			if err != nil || !bundle.ExpiresAt.After(now) || !adminauth.TokenMatchesBundle(string(live.Data[adminauth.TokenSecretKey]), bundle) {
-				return ErrCredentials
+				return nil, caID, ErrCredentials
 			}
 		} else if live.Type != corev1.SecretTypeTLS || len(live.Labels) != 0 || len(live.Data) != 2 || validateTLS(live.Data[corev1.TLSCertKey], live.Data[corev1.TLSPrivateKeyKey], ca, d.Namespace, now) != nil {
-			return ErrCredentials
+			return nil, caID, ErrCredentials
 		}
+		objects[name] = live.DeepCopy()
 	}
 	if _, err := w.engine.current(ctx, fresh); err != nil {
-		return ErrConcurrent
+		return nil, caID, ErrConcurrent
 	}
-	return nil
+	return objects, caID, nil
 }

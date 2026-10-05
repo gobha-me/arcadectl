@@ -173,8 +173,9 @@ this gate. Synthetic predecessor/current/rollback tests restore complete prior
 Pod templates, including API namespace configuration removal and paired
 controller/worker image rollback. These are not genuine predecessor-binary or
 full package-lifecycle certification; Kubernetes 1.35.8 runtime proof remains
-pending. Actual Service/EndpointSlice/Pod ownership and credential/TLS activation,
-admission behavior, quiescence, and lifecycle CI remain engine responsibilities.
+pending. Original serving-identity checks and direct HTTPS activation are
+implemented below; full runtime activation, admission behavior, quiescence and
+lifecycle CI remain engine responsibilities.
 
 ## Journal-before-effect resource writes
 
@@ -224,8 +225,10 @@ wrapper, exercise lost acknowledgements/readbacks/settlement, and refuse UID,
 nonce, shape, receipt and journal substitution. The isolated Kubernetes 1.37
 API-server gate covers all 38 public-resource journaled creates plus two private
 Secret creates, a genuinely lost Create acknowledgement, unavailable-readback recovery, and original-UID/RV
-update through the production provider. These API-server tests run no Pods and
-do not prove a full installation, upgrade, rollback or retaining uninstall.
+update through the production provider. The gate also manually creates a
+ReplicaSet and Pod with ServiceAccount admission enabled to check native Pod
+defaults and token projection. No kubelet or workload binary runs; this does
+not prove a full installation, upgrade, rollback or retaining uninstall.
 
 This is not a user-facing installer or permission/safety proof. Lifecycle
 orchestration must still establish prerequisites, CRD status/discovery,
@@ -268,7 +271,56 @@ format; it does not require the expired initial candidate to remain usable.
 The Kubernetes 1.37 API-server gate now creates all 40 resources, recovers a
 private unavailable readback without replay, correlates a genuinely lost private
 Create acknowledgement, checks retained Secret identity and verifies absence of
-private material in the journal. It runs no Pods: authenticated activation,
-genuine predecessor-binary upgrade/rollback and retaining-uninstall lifecycle
-certification are still pending. This internal workflow is not a released
-installer CLI or an authorization/safety proof for those operations.
+private material in the journal. Native admission checks create a Pod object,
+but execute no workload binary: genuine predecessor-binary upgrade/rollback
+and retaining-uninstall lifecycle certification are still pending. This
+internal workflow is not a released installer CLI or an authorization/safety
+proof for those operations.
+
+## Original serving identity and direct authenticated activation
+
+The internal read-only serving observer binds the original inventoried Service,
+API Deployment and ServiceAccount to their signed target contracts. Complete,
+unfiltered EndpointSlice pagination must have one consistent list version and
+no repeated names, UIDs or continuation tokens. Reads are limited to 32 pages,
+1,000 objects, 4 MiB aggregate and one minute; individual responses retain the
+provider's strict 1 MiB JSON budget. There is no general Pod/ReplicaSet mutation
+mapping or metadata-to-full-Secret fallback.
+
+The sole ready endpoint must refer to the exact original Pod UID. Its sole
+controller owner must be the original ReplicaSet owned by the inventoried API
+Deployment. ReplicaSet selectors and templates, Pod metadata and the full
+admitted PodSpec must match the signed workload. Only reviewed native fields
+are normalized: scheduler node assignment, default service links, consistent
+deprecated ServiceAccount alias, default priority/preemption, two default
+NoExecute tolerations and the exact standard projected ServiceAccount token
+volume/mount. Additional containers, environment, security settings, projection
+sources, annotations or altered owners are refused. Readiness and observed
+generations must be current. Original Namespace/journal barriers surround the
+reads; these observations are not a distributed lock or atomic cluster snapshot.
+
+Direct activation derives its HTTPS destination only from this proved Pod IP
+and fixed port 8443. It uses the fixed service DNS SAN, validates current
+administrator/TLS bytes from the same original-UID Secret reads, and binds the
+client constructor's protected credential/CA snapshot reads to exact file
+identities. In addition to normal CA/SAN validation, the TLS handshake pins
+the peer leaf to the validated original TLS Secret before HTTP authorization.
+An A-to-B-to-A file rewrite or a stale same-CA/SAN certificate cannot launder
+unbound authentication material through outer before/after checks.
+
+The actual HTTPS `/v1/auth/self` response must identify the stable administrator
+and original installation namespace. Full route and file/Secret identities are
+reobserved after dialing, before TLS/bearer transmission, and after successful
+authentication. Activation writes or rotates nothing and does not mark an
+installation installed. Changed ownership, readiness, workload shape, resource
+versions, protected files or peer certificate leave activation unproved with
+fixed, redacted errors.
+
+Tests use the real API boundary, file-backed verifier, TLS server and client
+with fake keys and private test files. They prove authentication and refusal
+behavior over a package-private owned test connection; Kubernetes topology is
+fixture evidence, not a running Pod. The separate isolated Kubernetes 1.37 gate
+proves native admitted Pod defaults, not workload execution. Direct activation
+requires Pod-network reachability. A safe original-Pod outside-cluster forwarding
+route, installer CLI, behavioral admission/quiescence barriers and full fresh,
+supported-predecessor upgrade/rollback/retain-uninstall binary CI remain pending.

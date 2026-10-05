@@ -17,8 +17,12 @@ import (
 	"github.com/gobha-me/arcadectl/internal/installrender"
 	"github.com/gobha-me/arcadectl/internal/installstate"
 	"github.com/gobha-me/arcadectl/internal/privatefs"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
@@ -82,10 +86,14 @@ func (a *lostResponseAccess) Create(ctx context.Context, k installstate.Key, o *
 
 // This proves actual journal CAS, real public/private writes, signed default checks and
 // lost-response and unavailable-readback recovery against a fresh isolated API
-// server. It runs no Pods, credential activation, actual predecessor binaries
-// or lifecycle uninstall.
+// server. A manually created RS/Pod also checks native admission defaults; no
+// kubelet, workload binary, runtime activation or lifecycle uninstall runs.
 func TestEnvtestJournaledResourceEffects(t *testing.T) {
 	environment := &envtest.Environment{DownloadBinaryAssets: true, DownloadBinaryAssetsVersion: "1.37.0", DownloadBinaryAssetsIndexURL: "https://raw.githubusercontent.com/kubernetes-sigs/controller-tools/1031496fc98a4f51010c3bdfdeb57b5d67bea7bd/envtest-releases.yaml", BinaryAssetsDirectory: t.TempDir(), ControlPlaneStartTimeout: 90 * time.Second, ControlPlaneStopTimeout: 30 * time.Second}
+	// The stock envtest disables ServiceAccount admission. This gate must
+	// exercise the actual runtime Pod token projection/defaults instead.
+	environment.ControlPlane.APIServer = &envtest.APIServer{}
+	environment.ControlPlane.APIServer.Configure().Set("disable-admission-plugins", "")
 	config, err := environment.Start()
 	if err != nil {
 		t.Fatal(err)
@@ -213,6 +221,39 @@ func TestEnvtestJournaledResourceEffects(t *testing.T) {
 	}
 	if len(s.Document().Resources) != 40 || s.Document().Pending != nil {
 		t.Fatal("public/private original inventory incomplete")
+	}
+	// No kubelet or workload binary runs here. A manually created ReplicaSet
+	// and Pod prove native API admission against the independently checked
+	// signed template, not Ready, authenticated activation or a lifecycle.
+	deploymentObject, err := access.Get(ctx, installstate.Key{APIVersion: "apps/v1", Kind: "Deployment", Namespace: plan.Namespace(), Name: "arcadectl-api"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deployment appsv1.Deployment
+	if decodeServing(deploymentObject, &deployment) != nil {
+		t.Fatal("native Deployment decoding")
+	}
+	kube, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := deployment.Spec.Template.DeepCopy()
+	const hash = "bcdfg23456"
+	template.Labels[appsv1.DefaultDeploymentUniqueLabelKey] = hash
+	selector := deployment.Spec.Selector.DeepCopy()
+	selector.MatchLabels[appsv1.DefaultDeploymentUniqueLabelKey] = hash
+	rs, err := kube.AppsV1().ReplicaSets(plan.Namespace()).Create(ctx, &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Name: deployment.Name + "-" + hash, Namespace: plan.Namespace(), Labels: template.Labels, OwnerReferences: fixtureOwner("apps/v1", "Deployment", deployment.Name, deployment.UID)}, Spec: appsv1.ReplicaSetSpec{Replicas: ptr.To[int32](1), Selector: selector, Template: *template}}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatal("native ReplicaSet admission", err)
+	}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{GenerateName: rs.Name + "-", Namespace: plan.Namespace(), Labels: rs.Spec.Template.Labels, Annotations: rs.Spec.Template.Annotations, OwnerReferences: fixtureOwner("apps/v1", "ReplicaSet", rs.Name, rs.UID)}, Spec: *rs.Spec.Template.Spec.DeepCopy()}
+	pod.Spec.NodeName = "test-only-node"
+	pod, err = kube.CoreV1().Pods(plan.Namespace()).Create(ctx, pod, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatal("native Pod admission", err)
+	}
+	if !validServingPodTemplate(pod, rs) {
+		t.Fatal("native admitted Pod differs from reviewed serving defaults")
 	}
 	uid := lost.key
 	before, err := access.Get(ctx, uid)

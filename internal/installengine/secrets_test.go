@@ -34,6 +34,11 @@ import (
 )
 
 func fixtureTLS(t *testing.T, namespace string, now time.Time) CredentialOptions {
+	opts, _, _ := fixtureTLSWithIssuer(t, namespace, now)
+	return opts
+}
+
+func fixtureTLSWithIssuer(t *testing.T, namespace string, now time.Time) (CredentialOptions, *x509.Certificate, *ecdsa.PrivateKey) {
 	t.Helper()
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -67,7 +72,7 @@ func fixtureTLS(t *testing.T, namespace string, now time.Time) CredentialOptions
 			t.Fatal("private fixture file")
 		}
 	}
-	return opts
+	return opts, ca, caKey
 }
 
 type fakePrivateSecrets struct {

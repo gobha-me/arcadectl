@@ -124,6 +124,19 @@ func (t *Template) Phase() installrender.Phase {
 	return t.resource.Phase
 }
 
+// PodTemplate returns a defensive copy of the signed, independently defaulted
+// Deployment template. It grants no Pod mutation or live ownership authority.
+func (t *Template) PodTemplate() (*corev1.PodTemplateSpec, error) {
+	if t == nil {
+		return nil, ErrInvalid
+	}
+	d, ok := t.expected.(*appsv1.Deployment)
+	if !ok || d == nil {
+		return nil, ErrInvalid
+	}
+	return d.Spec.Template.DeepCopy(), nil
+}
+
 // Candidate produces only reviewed raw desired fields plus a public mutation
 // nonce. The engine must journal that exact nonce BEFORE sending this object.
 // Namespace creation belongs exclusively to the durable bootstrap workflow.
