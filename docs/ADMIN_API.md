@@ -6,10 +6,14 @@ administrator credential, typed server-side authorization, structured audit,
 and separate API RBAC. It is not a hosted or multi-user service.
 
 The identity route is `GET /v1/auth/self`. It returns
-`version`, `principalId`, `credentialId`, and `expiresAt`; never a token, verifier,
+`version`, `principalId`, `credentialId`, `expiresAt`, and `namespace`; never a token, verifier,
 role list, or Kubernetes credential. Versioned lifecycle endpoints admit durable
 `ArcadeOperation` receipts, which the normal controller translates into native
 Arcadectl resources. There is no generic Kubernetes proxy.
+The CLI and trusted credential probe require this five-field identity contract;
+deploy the matching API rather than an older four-field build. The namespace
+binds saved CLI contexts to the one managed installation, not to user-supplied
+per-request namespaces.
 
 ## Identity, trust, and exposure
 

@@ -270,6 +270,11 @@ or a public server endpoint; its test administrator supplies the isolated
 Service endpoint because Kind has no cloud load balancer. Native recovery's
 separate real CSI/Restic journey remains the data-operation proof; this HTTP
 lifecycle test does not claim a full HTTP backup/restore/destroy journey.
+The same fixture builds the ordinary `arcadectl` binary, logs in using only a
+private credential path and explicit CA, and proves status, start admission,
+exact receipt waiting, and stopped completion against those actual controllers.
+Its private stdout/stderr join the token/verifier-canary scan. No second cluster
+or direct Kubernetes mutation authority is given to the CLI.
 It then removes only the exact task-owned cluster, registry, image tags, and
 private temporary files. No real-world cluster, server, or credential is used.
 
@@ -287,3 +292,16 @@ ambiguous writes, exact identity/spec conflicts, and stale native observations;
 none may manufacture completion or adopt a replacement. Uninstall tests cover
 pending receipts, lingering finalizers, API Pods/Deployment, and a second safety
 snapshot after controller quiescence.
+
+The CLI race suite separately covers every ordinary lifecycle route against the
+real TLS API handler with a receipt-only fake store. It publishes controller
+outcomes explicitly; it does not claim workload execution. It tests terminal
+failure and fresh intents, definitive rejection and explicit resolve, active and
+stale-terminal timeout, stable-principal credential rotation, receipt/child UID
+replacement, cancellation that loses to completed deletion, private metadata,
+and redaction. Linux pseudo-terminal tests require exact challenge input and
+visible inventory, refuse pipes, and prove prompt expiry. Saved-attempt tests
+cover crash/replay boundaries, frozen bytes/ETags, missing admitted receipts,
+fresh destructive replay, and changed contexts. A dependency guard proves the
+ordinary CLI cannot import Kubernetes mutation clients/controllers. Generated
+offline help/completions have a drift gate.

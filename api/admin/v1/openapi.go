@@ -15,12 +15,11 @@ import (
 // settings schemas come from the curated catalog, never caller input.
 func OpenAPI() ([]byte, error) {
 	components := map[string]any{}
-	types := []any{Compute{}, Storage{}, Image{}, ExactReference{}, RetainedSelector{}, CreateRequest{}, ConfigureRequest{}, EmptyRequest{}, UpdateRequest{}, BackupRequest{}, RestoreRequest{}, DestroyRequest{}, ConfirmRequest{}, CancelRequest{}, Error{}, Condition{}, Endpoint{}, Server{}, ServerList{}, OperationChild{}, Failure{}, DestroyPreview{}, Operation{}, OperationList{}, RetainedClaim{}, RetainedWorld{}, NativeOperation{}}
+	types := []any{Self{}, Compute{}, Storage{}, Image{}, ExactReference{}, RetainedSelector{}, CreateRequest{}, ConfigureRequest{}, EmptyRequest{}, UpdateRequest{}, BackupRequest{}, RestoreRequest{}, DestroyRequest{}, ConfirmRequest{}, CancelRequest{}, Error{}, Condition{}, Endpoint{}, Server{}, ServerList{}, OperationChild{}, Failure{}, DestroyTarget{}, DestroyPreview{}, Operation{}, OperationList{}, RetainedClaim{}, RetainedWorld{}, NativeOperation{}}
 	for _, value := range types {
 		typ := reflect.TypeOf(value)
 		components[typ.Name()] = schema(typ, "")
 	}
-	components["Self"] = map[string]any{"type": "object", "additionalProperties": false, "required": []string{"version", "principalId", "credentialId", "expiresAt"}, "properties": map[string]any{"version": map[string]any{"type": "string", "enum": []string{"v1"}}, "principalId": map[string]any{"type": "string", "maxLength": 64}, "credentialId": map[string]any{"type": "string", "maxLength": 64}, "expiresAt": map[string]any{"type": "string", "format": "date-time"}}}
 	gameCatalog, err := catalog.Builtins()
 	if err != nil {
 		return nil, err
@@ -144,10 +143,14 @@ func schema(typ reflect.Type, field string) map[string]any {
 		if typ == reflect.TypeOf("") {
 			result["enum"] = []string{"v1"}
 		}
-	case "name", "game", "operationID", "path", "dataIdentity":
+	case "name", "game", "operationID", "path", "dataIdentity", "namespace":
 		result["maxLength"] = 63
 		result["minLength"] = 1
 		result["pattern"] = "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$"
+	case "principalId", "credentialId":
+		result["maxLength"] = 64
+		result["minLength"] = 1
+		result["pattern"] = "^[A-Za-z0-9_.-]+$"
 	case "uid", "operationUID":
 		result["maxLength"] = 128
 		result["minLength"] = 1

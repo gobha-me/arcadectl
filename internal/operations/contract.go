@@ -7,20 +7,18 @@
 package operations
 
 import (
-	"bytes"
 	"crypto/sha256"
-	"encoding/base32"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	arcade "github.com/gobha-me/arcadectl/api/v1alpha1"
+	"github.com/gobha-me/arcadectl/internal/canonicaljson"
+	"github.com/gobha-me/arcadectl/internal/receiptid"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -30,129 +28,18 @@ var ErrInvalid = errors.New("invalid operation request")
 
 var (
 	digestPattern   = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	keyPattern      = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 	identityPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 )
 
-const MaxJSONBytes = 65536
+const MaxJSONBytes = canonicaljson.MaxBytes
 
-// CanonicalJSON rejects duplicate keys recursively and preserves exact numeric
-// values without float64 rounding. Equivalent number spellings canonicalize to
-// the same bounded exact representation. Integers retain integer JSON syntax
-// so adapter decoders with typed integer fields can consume them. Depth is bounded.
+// CanonicalJSON preserves the original operations error contract.
 func CanonicalJSON(input []byte) ([]byte, error) {
-	if len(input) == 0 || len(input) > MaxJSONBytes || !utf8.Valid(input) {
-		return nil, ErrInvalid
-	}
-	decoder := json.NewDecoder(bytes.NewReader(input))
-	decoder.UseNumber()
-	value, err := decodeValue(decoder, 0)
+	value, err := canonicaljson.CanonicalJSON(input)
 	if err != nil {
 		return nil, ErrInvalid
 	}
-	if _, err := decoder.Token(); err != io.EOF {
-		return nil, ErrInvalid
-	}
-	output, err := json.Marshal(value)
-	if err != nil || len(output) > MaxJSONBytes {
-		return nil, ErrInvalid
-	}
-	return output, nil
-}
-
-func decodeValue(decoder *json.Decoder, depth int) (any, error) {
-	if depth > 32 {
-		return nil, ErrInvalid
-	}
-	token, err := decoder.Token()
-	if err != nil {
-		return nil, ErrInvalid
-	}
-	switch value := token.(type) {
-	case json.Delim:
-		switch value {
-		case '{':
-			object := make(map[string]any)
-			for decoder.More() {
-				key, err := decoder.Token()
-				name, ok := key.(string)
-				if err != nil || !ok {
-					return nil, ErrInvalid
-				}
-				if _, exists := object[name]; exists {
-					return nil, ErrInvalid
-				}
-				child, err := decodeValue(decoder, depth+1)
-				if err != nil {
-					return nil, err
-				}
-				object[name] = child
-			}
-			end, err := decoder.Token()
-			if err != nil || end != json.Delim('}') {
-				return nil, ErrInvalid
-			}
-			return object, nil
-		case '[':
-			array := make([]any, 0)
-			for decoder.More() {
-				child, err := decodeValue(decoder, depth+1)
-				if err != nil {
-					return nil, err
-				}
-				array = append(array, child)
-			}
-			end, err := decoder.Token()
-			if err != nil || end != json.Delim(']') {
-				return nil, ErrInvalid
-			}
-			return array, nil
-		}
-		return nil, ErrInvalid
-	case json.Number:
-		return canonicalNumber(string(value))
-	case string, bool, nil:
-		return value, nil
-	default:
-		return nil, ErrInvalid
-	}
-}
-
-func canonicalNumber(number string) (json.Number, error) {
-	if len(number) > 128 {
-		return "", ErrInvalid
-	}
-	negative := strings.HasPrefix(number, "-")
-	if negative {
-		number = number[1:]
-	}
-	mantissa, exponentText, hasExponent := strings.Cut(strings.ToLower(number), "e")
-	exponent := 0
-	if hasExponent {
-		parsed, err := strconv.Atoi(exponentText)
-		if err != nil || parsed < -4096 || parsed > 4096 {
-			return "", ErrInvalid
-		}
-		exponent = parsed
-	}
-	whole, fraction, _ := strings.Cut(mantissa, ".")
-	coefficient := strings.TrimLeft(whole+fraction, "0")
-	if coefficient == "" {
-		return json.Number("0"), nil
-	}
-	exponent -= len(fraction)
-	trimmed := strings.TrimRight(coefficient, "0")
-	exponent += len(coefficient) - len(trimmed)
-	coefficient = trimmed
-	if negative {
-		coefficient = "-" + coefficient
-	}
-	if exponent > 0 {
-		coefficient += strings.Repeat("0", exponent)
-	} else if exponent < 0 {
-		coefficient += "e" + strconv.Itoa(exponent)
-	}
-	return json.Number(coefficient), nil
+	return value, nil
 }
 
 func hashBytes(value []byte) string {
@@ -161,10 +48,11 @@ func hashBytes(value []byte) string {
 }
 
 func KeyDigest(namespace, principal, key string) (string, error) {
-	if len(validation.IsDNS1123Label(namespace)) != 0 || !identityPattern.MatchString(principal) || !keyPattern.MatchString(key) {
+	value, err := receiptid.KeyDigest(namespace, principal, key)
+	if err != nil {
 		return "", ErrInvalid
 	}
-	return hashBytes([]byte("arcadectl/idempotency/v1\x00" + namespace + "\x00" + principal + "\x00" + key)), nil
+	return value, nil
 }
 
 func ReceiptName(namespace, principal, key string) (string, error) {
@@ -176,14 +64,11 @@ func ReceiptName(namespace, principal, key string) (string, error) {
 }
 
 func NameForKeyDigest(digest string) (string, error) {
-	if !digestPattern.MatchString(digest) {
-		return "", ErrInvalid
-	}
-	decoded, err := hex.DecodeString(strings.TrimPrefix(digest, "sha256:"))
+	value, err := receiptid.NameForKeyDigest(digest)
 	if err != nil {
 		return "", ErrInvalid
 	}
-	return "ao-" + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(decoded)), nil
+	return value, nil
 }
 
 // RequestDigest covers the original typed input and original precondition, not

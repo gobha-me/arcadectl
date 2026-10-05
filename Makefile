@@ -1,4 +1,4 @@
-.PHONY: generate generate-openapi render-api render-controller test-envtest test-kind-api test-kind-factorio test-kind-lifecycle test-kind-recovery verify-generated verify-openapi verify-runtime-assets
+.PHONY: generate generate-openapi generate-cli verify-cli render-api render-controller test-envtest test-kind-api test-kind-factorio test-kind-lifecycle test-kind-recovery verify-generated verify-openapi verify-runtime-assets
 
 CANONICAL_CONTROLLER_IMAGE := ghcr.io/gobha-me/arcadectl-controller@sha256:0000000000000000000000000000000000000000000000000000000000000000
 
@@ -7,6 +7,13 @@ generate:
 	go tool controller-gen rbac:roleName=arcadectl-controller paths=./internal/controller/... output:rbac:artifacts:config=config/rbac
 	./hack/generate-install.sh $(CANONICAL_CONTROLLER_IMAGE)
 	$(MAKE) generate-openapi
+	$(MAKE) generate-cli
+
+generate-cli:
+	GOMAXPROCS=2 GOMEMLIMIT=1GiB go run ./cmd/arcadectl-cli-docs
+
+verify-cli:
+	GOMAXPROCS=2 GOMEMLIMIT=1GiB go run ./cmd/arcadectl-cli-docs --check
 
 generate-openapi:
 	GOMAXPROCS=2 GOMEMLIMIT=1GiB bash ./hack/generate-openapi.sh

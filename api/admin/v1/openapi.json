@@ -412,6 +412,28 @@
       "DestroyPreview": {
         "additionalProperties": false,
         "properties": {
+          "backupRef": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "maxLength": 253,
+                "minLength": 1,
+                "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+                "type": "string"
+              },
+              "uid": {
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "uid"
+            ],
+            "type": "object"
+          },
           "challenge": {
             "maxLength": 128,
             "minLength": 16,
@@ -426,9 +448,106 @@
           "restoreGuidance": {
             "maxLength": 512,
             "type": "string"
+          },
+          "target": {
+            "additionalProperties": false,
+            "properties": {
+              "claims": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "claimRef": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "name": {
+                          "maxLength": 253,
+                          "minLength": 1,
+                          "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+                          "type": "string"
+                        },
+                        "uid": {
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "pattern": "^[A-Za-z0-9_.-]+$",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "uid"
+                      ],
+                      "type": "object"
+                    },
+                    "path": {
+                      "maxLength": 63,
+                      "minLength": 1,
+                      "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "claimRef"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 16,
+                "type": "array"
+              },
+              "dataIdentity": {
+                "maxLength": 63,
+                "minLength": 1,
+                "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+                "type": "string"
+              },
+              "game": {
+                "maxLength": 63,
+                "minLength": 1,
+                "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+                "type": "string"
+              },
+              "namespace": {
+                "maxLength": 63,
+                "minLength": 1,
+                "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+                "type": "string"
+              },
+              "originalServer": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "maxLength": 253,
+                    "minLength": 1,
+                    "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+                    "type": "string"
+                  },
+                  "uid": {
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "pattern": "^[A-Za-z0-9_.-]+$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "uid"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "namespace",
+              "originalServer",
+              "game",
+              "dataIdentity",
+              "claims"
+            ],
+            "type": "object"
           }
         },
         "required": [
+          "target",
+          "backupRef",
           "challenge",
           "expiresAt",
           "restoreGuidance"
@@ -471,6 +590,101 @@
         "required": [
           "version",
           "backupRef"
+        ],
+        "type": "object"
+      },
+      "DestroyTarget": {
+        "additionalProperties": false,
+        "properties": {
+          "claims": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "claimRef": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "name": {
+                      "maxLength": 253,
+                      "minLength": 1,
+                      "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+                      "type": "string"
+                    },
+                    "uid": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "pattern": "^[A-Za-z0-9_.-]+$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "uid"
+                  ],
+                  "type": "object"
+                },
+                "path": {
+                  "maxLength": 63,
+                  "minLength": 1,
+                  "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "claimRef"
+              ],
+              "type": "object"
+            },
+            "maxItems": 16,
+            "type": "array"
+          },
+          "dataIdentity": {
+            "maxLength": 63,
+            "minLength": 1,
+            "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "game": {
+            "maxLength": 63,
+            "minLength": 1,
+            "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "namespace": {
+            "maxLength": 63,
+            "minLength": 1,
+            "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "originalServer": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "maxLength": 253,
+                "minLength": 1,
+                "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+                "type": "string"
+              },
+              "uid": {
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.-]+$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "uid"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "namespace",
+          "originalServer",
+          "game",
+          "dataIdentity",
+          "claims"
         ],
         "type": "object"
       },
@@ -695,6 +909,28 @@
           "destroyPreview": {
             "additionalProperties": false,
             "properties": {
+              "backupRef": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "maxLength": 253,
+                    "minLength": 1,
+                    "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+                    "type": "string"
+                  },
+                  "uid": {
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "pattern": "^[A-Za-z0-9_.-]+$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "uid"
+                ],
+                "type": "object"
+              },
               "challenge": {
                 "maxLength": 128,
                 "minLength": 16,
@@ -709,9 +945,106 @@
               "restoreGuidance": {
                 "maxLength": 512,
                 "type": "string"
+              },
+              "target": {
+                "additionalProperties": false,
+                "properties": {
+                  "claims": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "claimRef": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "name": {
+                              "maxLength": 253,
+                              "minLength": 1,
+                              "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+                              "type": "string"
+                            },
+                            "uid": {
+                              "maxLength": 128,
+                              "minLength": 1,
+                              "pattern": "^[A-Za-z0-9_.-]+$",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "uid"
+                          ],
+                          "type": "object"
+                        },
+                        "path": {
+                          "maxLength": 63,
+                          "minLength": 1,
+                          "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "path",
+                        "claimRef"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 16,
+                    "type": "array"
+                  },
+                  "dataIdentity": {
+                    "maxLength": 63,
+                    "minLength": 1,
+                    "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+                    "type": "string"
+                  },
+                  "game": {
+                    "maxLength": 63,
+                    "minLength": 1,
+                    "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+                    "type": "string"
+                  },
+                  "namespace": {
+                    "maxLength": 63,
+                    "minLength": 1,
+                    "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+                    "type": "string"
+                  },
+                  "originalServer": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "name": {
+                        "maxLength": 253,
+                        "minLength": 1,
+                        "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+                        "type": "string"
+                      },
+                      "uid": {
+                        "maxLength": 128,
+                        "minLength": 1,
+                        "pattern": "^[A-Za-z0-9_.-]+$",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "uid"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "namespace",
+                  "originalServer",
+                  "game",
+                  "dataIdentity",
+                  "claims"
+                ],
+                "type": "object"
               }
             },
             "required": [
+              "target",
+              "backupRef",
               "challenge",
               "expiresAt",
               "restoreGuidance"
@@ -813,6 +1146,28 @@
           "destroyPreview": {
             "additionalProperties": false,
             "properties": {
+              "backupRef": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "maxLength": 253,
+                    "minLength": 1,
+                    "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+                    "type": "string"
+                  },
+                  "uid": {
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "pattern": "^[A-Za-z0-9_.-]+$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "uid"
+                ],
+                "type": "object"
+              },
               "challenge": {
                 "maxLength": 128,
                 "minLength": 16,
@@ -827,9 +1182,106 @@
               "restoreGuidance": {
                 "maxLength": 512,
                 "type": "string"
+              },
+              "target": {
+                "additionalProperties": false,
+                "properties": {
+                  "claims": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "claimRef": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "name": {
+                              "maxLength": 253,
+                              "minLength": 1,
+                              "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+                              "type": "string"
+                            },
+                            "uid": {
+                              "maxLength": 128,
+                              "minLength": 1,
+                              "pattern": "^[A-Za-z0-9_.-]+$",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "uid"
+                          ],
+                          "type": "object"
+                        },
+                        "path": {
+                          "maxLength": 63,
+                          "minLength": 1,
+                          "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "path",
+                        "claimRef"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 16,
+                    "type": "array"
+                  },
+                  "dataIdentity": {
+                    "maxLength": 63,
+                    "minLength": 1,
+                    "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+                    "type": "string"
+                  },
+                  "game": {
+                    "maxLength": 63,
+                    "minLength": 1,
+                    "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+                    "type": "string"
+                  },
+                  "namespace": {
+                    "maxLength": 63,
+                    "minLength": 1,
+                    "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+                    "type": "string"
+                  },
+                  "originalServer": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "name": {
+                        "maxLength": 253,
+                        "minLength": 1,
+                        "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+                        "type": "string"
+                      },
+                      "uid": {
+                        "maxLength": 128,
+                        "minLength": 1,
+                        "pattern": "^[A-Za-z0-9_.-]+$",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "uid"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "namespace",
+                  "originalServer",
+                  "game",
+                  "dataIdentity",
+                  "claims"
+                ],
+                "type": "object"
               }
             },
             "required": [
+              "target",
+              "backupRef",
               "challenge",
               "expiresAt",
               "restoreGuidance"
@@ -999,6 +1451,28 @@
                 "destroyPreview": {
                   "additionalProperties": false,
                   "properties": {
+                    "backupRef": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "name": {
+                          "maxLength": 253,
+                          "minLength": 1,
+                          "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+                          "type": "string"
+                        },
+                        "uid": {
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "pattern": "^[A-Za-z0-9_.-]+$",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "uid"
+                      ],
+                      "type": "object"
+                    },
                     "challenge": {
                       "maxLength": 128,
                       "minLength": 16,
@@ -1013,9 +1487,106 @@
                     "restoreGuidance": {
                       "maxLength": 512,
                       "type": "string"
+                    },
+                    "target": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "claims": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "claimRef": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "name": {
+                                    "maxLength": 253,
+                                    "minLength": 1,
+                                    "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+                                    "type": "string"
+                                  },
+                                  "uid": {
+                                    "maxLength": 128,
+                                    "minLength": 1,
+                                    "pattern": "^[A-Za-z0-9_.-]+$",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "uid"
+                                ],
+                                "type": "object"
+                              },
+                              "path": {
+                                "maxLength": 63,
+                                "minLength": 1,
+                                "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "claimRef"
+                            ],
+                            "type": "object"
+                          },
+                          "maxItems": 16,
+                          "type": "array"
+                        },
+                        "dataIdentity": {
+                          "maxLength": 63,
+                          "minLength": 1,
+                          "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+                          "type": "string"
+                        },
+                        "game": {
+                          "maxLength": 63,
+                          "minLength": 1,
+                          "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+                          "type": "string"
+                        },
+                        "namespace": {
+                          "maxLength": 63,
+                          "minLength": 1,
+                          "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+                          "type": "string"
+                        },
+                        "originalServer": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "name": {
+                              "maxLength": 253,
+                              "minLength": 1,
+                              "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$",
+                              "type": "string"
+                            },
+                            "uid": {
+                              "maxLength": 128,
+                              "minLength": 1,
+                              "pattern": "^[A-Za-z0-9_.-]+$",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "uid"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "namespace",
+                        "originalServer",
+                        "game",
+                        "dataIdentity",
+                        "claims"
+                      ],
+                      "type": "object"
                     }
                   },
                   "required": [
+                    "target",
+                    "backupRef",
                     "challenge",
                     "expiresAt",
                     "restoreGuidance"
@@ -1363,20 +1934,32 @@
         "properties": {
           "credentialId": {
             "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.-]+$",
             "type": "string"
           },
           "expiresAt": {
             "format": "date-time",
+            "maxLength": 512,
+            "type": "string"
+          },
+          "namespace": {
+            "maxLength": 63,
+            "minLength": 1,
+            "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
             "type": "string"
           },
           "principalId": {
             "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.-]+$",
             "type": "string"
           },
           "version": {
             "enum": [
               "v1"
             ],
+            "maxLength": 512,
             "type": "string"
           }
         },
@@ -1384,7 +1967,8 @@
           "version",
           "principalId",
           "credentialId",
-          "expiresAt"
+          "expiresAt",
+          "namespace"
         ],
         "type": "object"
       },

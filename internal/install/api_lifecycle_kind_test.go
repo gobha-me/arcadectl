@@ -48,6 +48,7 @@ type kindAPILifecycleFixture struct {
 	config                                             *rest.Config
 	cluster                                            kubernetes.Interface
 	public                                             func(string, ...string) string
+	runCLI                                             func(...string) []byte
 }
 
 type kindAPIResult struct {
@@ -532,6 +533,31 @@ func runKindAPILifecycle(t *testing.T, f kindAPILifecycleFixture) {
 	}
 	mutate("POST", "stop", empty)
 	verifyBytes(false, true)
+	t.Log("proving CLI status, admission, exact wait, and stop against real Factorio controllers")
+	var cliServer adminv1.Server
+	if json.Unmarshal(f.runCLI("server", "status", name), &cliServer) != nil || cliServer.UID != serverUID || cliServer.Phase != "Stopped" {
+		t.Fatal("CLI status lost current server identity")
+	}
+	var admission struct {
+		AttemptID   string            `json:"attemptID"`
+		OperationID string            `json:"operationID"`
+		Operation   adminv1.Operation `json:"operation"`
+	}
+	if json.Unmarshal(f.runCLI("server", "start", name, "--no-wait"), &admission) != nil || admission.AttemptID == "" || admission.OperationID == "" || admission.Operation.UID == "" {
+		t.Fatal("CLI admission lost exact recovery identities")
+	}
+	started := waitOperation(admission.OperationID)
+	runtimePod(digestB)
+	var cliWait adminv1.Operation
+	if json.Unmarshal(f.runCLI("operation", "wait", admission.OperationID), &cliWait) != nil || cliWait.UID != started.UID || cliWait.Phase != "Succeeded" {
+		t.Fatal("CLI wait lost exact terminal receipt")
+	}
+	var cliStop adminv1.Operation
+	if json.Unmarshal(f.runCLI("server", "stop", name), &cliStop) != nil || cliStop.Phase != "Succeeded" || cliStop.Action != "server.stop" || cliStop.CompletedAt == "" {
+		t.Fatal("CLI stopped before durable completion")
+	}
+	verifyBytes(false, true)
+	const cliReceipts = 2
 	decommission := mutate("POST", "decommission", empty)
 	missing := request("GET", "/v1/servers/"+name, "", "", nil)
 	if missing.err || missing.status != 404 {
@@ -547,7 +573,7 @@ func runKindAPILifecycle(t *testing.T, f kindAPILifecycleFixture) {
 		t.Fatal("lifecycle left a native server or duplicate child")
 	}
 	operations := &arcadev1.ArcadeOperationList{}
-	if admin.List(f.ctx, operations, client.InNamespace(namespace)) != nil || len(operations.Items) != sequence+1 {
+	if admin.List(f.ctx, operations, client.InNamespace(namespace)) != nil || len(operations.Items) != sequence+1+cliReceipts {
 		t.Fatal("HTTP retries created duplicate durable receipts")
 	}
 	for _, operation := range operations.Items {
@@ -557,7 +583,7 @@ func runKindAPILifecycle(t *testing.T, f kindAPILifecycleFixture) {
 	}
 	waitKindAPI(t, f.ctx, func() bool {
 		current := &arcadev1.ArcadeOperationList{}
-		if admin.List(f.ctx, current, client.InNamespace(namespace)) != nil || len(current.Items) != sequence+1 {
+		if admin.List(f.ctx, current, client.InNamespace(namespace)) != nil || len(current.Items) != sequence+1+cliReceipts {
 			t.Fatal("operation cleanup inventory unavailable or changed")
 		}
 		for _, operation := range current.Items {

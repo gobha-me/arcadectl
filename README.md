@@ -42,8 +42,9 @@ The authenticated single-admin API admits immutable, idempotent operation
 receipts; it cannot directly mutate native resources, workloads, or PVCs.
 Controllers translate those receipts into native lifecycle and recovery intent.
 Retained-world identity survives decommission, and unsafe no-backup overrides
-remain outside the ordinary HTTP API. The CLI and integrated packaging are
-still pending.
+remain outside the ordinary HTTP API. The [single-admin CLI](docs/CLI.md) uses
+only that authenticated boundary, with durable exact-request recovery and
+interactive, backup-gated destruction. Integrated packaging is still pending.
 
 A structurally different synthetic adapter participates in conformance tests
 from the beginning. Adding another game must not require changes to the core
@@ -63,6 +64,7 @@ See [the architecture](docs/ARCHITECTURE.md), [the lifecycle contract](docs/LIFE
 [the backup and restore contract](docs/BACKUP_RESTORE.md),
 [the destroy contract](docs/DESTROY.md),
 [the authenticated admin boundary](docs/ADMIN_API.md),
+[the administrator CLI](docs/CLI.md),
 [isolated lifecycle testing](docs/TESTING.md), [install and uninstall](docs/INSTALL.md),
 [the salvage ledger](docs/SALVAGE_LEDGER.md), and [the security policy](SECURITY.md).
 

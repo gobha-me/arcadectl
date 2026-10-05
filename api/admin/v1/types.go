@@ -9,6 +9,15 @@ import "encoding/json"
 
 const Version = "v1"
 
+// Self binds a verified client context to the stable administrator and namespace.
+type Self struct {
+	Version      string `json:"version"`
+	PrincipalID  string `json:"principalId"`
+	CredentialID string `json:"credentialId"`
+	ExpiresAt    string `json:"expiresAt"`
+	Namespace    string `json:"namespace"`
+}
+
 type Compute struct {
 	CPURequest    string `json:"cpuRequest"`
 	CPULimit      string `json:"cpuLimit"`
@@ -130,9 +139,20 @@ type Failure struct {
 	SuggestedAction string `json:"suggestedAction"`
 }
 type DestroyPreview struct {
-	Challenge       string `json:"challenge"`
-	ExpiresAt       string `json:"expiresAt"`
-	RestoreGuidance string `json:"restoreGuidance"`
+	Target          DestroyTarget  `json:"target"`
+	BackupRef       ExactReference `json:"backupRef"`
+	Challenge       string         `json:"challenge"`
+	ExpiresAt       string         `json:"expiresAt"`
+	RestoreGuidance string         `json:"restoreGuidance"`
+}
+
+// DestroyTarget is derived from immutable original identity evidence, never live names.
+type DestroyTarget struct {
+	Namespace      string          `json:"namespace"`
+	OriginalServer ExactReference  `json:"originalServer"`
+	Game           string          `json:"game"`
+	DataIdentity   string          `json:"dataIdentity"`
+	Claims         []RetainedClaim `json:"claims"`
 }
 type Operation struct {
 	Version            string          `json:"version"`

@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	adminv1 "github.com/gobha-me/arcadectl/api/admin/v1"
 	"github.com/gobha-me/arcadectl/internal/adminauth"
 )
 
@@ -313,12 +314,7 @@ func (server *Server) HealthHandler() http.Handler {
 func (server *Server) self(writer http.ResponseWriter, request *http.Request) {
 	principal := request.Context().Value(requestStateKey{}).(*requestState).principal
 	writer.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(writer).Encode(struct {
-		Version      string `json:"version"`
-		PrincipalID  string `json:"principalId"`
-		CredentialID string `json:"credentialId"`
-		ExpiresAt    string `json:"expiresAt"`
-	}{"v1", principal.ID, principal.CredentialID, principal.ExpiresAt.UTC().Format(time.RFC3339Nano)})
+	_ = json.NewEncoder(writer).Encode(adminv1.Self{Version: "v1", PrincipalID: principal.ID, CredentialID: principal.CredentialID, ExpiresAt: principal.ExpiresAt.UTC().Format(time.RFC3339Nano), Namespace: server.namespace})
 }
 
 func writeError(writer http.ResponseWriter, status int, code string) {
