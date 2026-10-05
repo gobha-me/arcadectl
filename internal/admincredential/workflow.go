@@ -1,7 +1,9 @@
 // Copyright 2026 gobha-me
 // SPDX-License-Identifier: Apache-2.0
 
-package main
+// Package admincredential implements the trusted single-install administrator
+// credential workflow. It is not an ordinary API client or namespace selector.
+package admincredential
 
 import (
 	"context"
@@ -17,6 +19,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -26,14 +29,14 @@ const (
 )
 
 var (
-	errInvalidManagedSecret = errors.New("managed credential Secret is invalid")
-	errCredentialConflict   = errors.New("credential mutation conflict")
-	errMutationUnconfirmed  = errors.New("credential mutation outcome is unconfirmed; private output retained")
-	errActivationIncomplete = errors.New("credential committed but activation is incomplete; private output retained")
-	errTopologyUnavailable  = errors.New("the API does not have exactly one settled serving replica")
+	ErrInvalidManagedSecret = errors.New("managed credential Secret is invalid")
+	ErrCredentialConflict   = errors.New("credential mutation conflict")
+	ErrMutationUnconfirmed  = errors.New("credential mutation outcome is unconfirmed; private output retained")
+	ErrActivationIncomplete = errors.New("credential committed but activation is incomplete; private output retained")
+	ErrTopologyUnavailable  = errors.New("the API does not have exactly one settled serving replica")
 )
 
-type clusterAccess interface {
+type ClusterAccess interface {
 	GetSecret(context.Context) (*corev1.Secret, error)
 	CreateSecret(context.Context, *corev1.Secret) (*corev1.Secret, error)
 	UpdateSecret(context.Context, *corev1.Secret) (*corev1.Secret, error)
@@ -41,31 +44,34 @@ type clusterAccess interface {
 	ListEndpointSlices(context.Context) (*discoveryv1.EndpointSliceList, error)
 }
 
-type clientGoAccess struct{ client kubernetes.Interface }
+type clientGoAccess struct {
+	client    kubernetes.Interface
+	namespace string
+}
 
 func (access clientGoAccess) GetSecret(ctx context.Context) (*corev1.Secret, error) {
-	return access.client.CoreV1().Secrets(adminauth.CredentialNamespace).Get(ctx, adminauth.CredentialSecretName, metav1.GetOptions{})
+	return access.client.CoreV1().Secrets(access.namespace).Get(ctx, adminauth.CredentialSecretName, metav1.GetOptions{})
 }
 
 func (access clientGoAccess) CreateSecret(ctx context.Context, secret *corev1.Secret) (*corev1.Secret, error) {
-	return access.client.CoreV1().Secrets(adminauth.CredentialNamespace).Create(ctx, secret, metav1.CreateOptions{})
+	return access.client.CoreV1().Secrets(access.namespace).Create(ctx, secret, metav1.CreateOptions{})
 }
 
 func (access clientGoAccess) UpdateSecret(ctx context.Context, secret *corev1.Secret) (*corev1.Secret, error) {
-	return access.client.CoreV1().Secrets(adminauth.CredentialNamespace).Update(ctx, secret, metav1.UpdateOptions{})
+	return access.client.CoreV1().Secrets(access.namespace).Update(ctx, secret, metav1.UpdateOptions{})
 }
 
 func (access clientGoAccess) GetDeployment(ctx context.Context) (*appsv1.Deployment, error) {
-	return access.client.AppsV1().Deployments(adminauth.CredentialNamespace).Get(ctx, apiDeploymentName, metav1.GetOptions{})
+	return access.client.AppsV1().Deployments(access.namespace).Get(ctx, apiDeploymentName, metav1.GetOptions{})
 }
 
 func (access clientGoAccess) ListEndpointSlices(ctx context.Context) (*discoveryv1.EndpointSliceList, error) {
-	return access.client.DiscoveryV1().EndpointSlices(adminauth.CredentialNamespace).List(ctx, metav1.ListOptions{
+	return access.client.DiscoveryV1().EndpointSlices(access.namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: discoveryv1.LabelServiceName + "=" + apiServiceName,
 	})
 }
 
-type credentialProbe interface {
+type Probe interface {
 	Verify(context.Context, adminauth.ClientCredential, string) error
 }
 
@@ -74,10 +80,15 @@ type apiPodIdentity struct {
 	address string
 }
 
-func initializeCredential(ctx context.Context, cluster clusterAccess, outputPath string, now time.Time, lifetime time.Duration) error {
+func (w *Workflow) Initialize(ctx context.Context, options InitializeOptions) error {
+	if w == nil || nilValue(w.cluster) || len(validation.IsDNS1123Label(w.namespace)) != 0 {
+		return ErrInvalidConfiguration
+	}
+	cluster, namespace := w.cluster, w.namespace
+	outputPath, now, lifetime := options.OutputPath, options.Now, options.Lifetime
 	credential, err := adminauth.GenerateCredential(now, lifetime)
 	if err != nil {
-		return errInvalidManagedSecret
+		return ErrInvalidManagedSecret
 	}
 	private := adminauth.ClientCredential{
 		Version: adminauth.ClientCredentialVersion, CredentialID: credential.Bundle.CredentialID,
@@ -85,48 +96,59 @@ func initializeCredential(ctx context.Context, cluster clusterAccess, outputPath
 	}
 	privateJSON, err := adminauth.MarshalClientCredential(private)
 	if err != nil || writePrivateFile(outputPath, privateJSON) != nil {
-		return errPrivateOutput
+		return ErrPrivateOutput
 	}
-	secret, err := secretForCredential(credential)
+	secret, err := secretForCredential(credential, namespace)
 	if err != nil {
-		return errInvalidManagedSecret
+		return ErrInvalidManagedSecret
 	}
 	created, createErr := cluster.CreateSecret(ctx, secret)
 	if createErr != nil {
 		if definiteMutationFailure(createErr) {
-			return errCredentialConflict
+			return ErrCredentialConflict
 		}
-		if observed, getErr := cluster.GetSecret(ctx); getErr == nil && secretMatchesCandidate(observed, credential, "", "") {
+		if observed, getErr := cluster.GetSecret(ctx); getErr == nil && secretMatchesCandidate(observed, credential, "", "", namespace) {
 			return nil
 		}
-		return errMutationUnconfirmed
+		return ErrMutationUnconfirmed
 	}
-	if !secretMatchesCandidate(created, credential, "", "") || created.UID == "" || created.ResourceVersion == "" {
-		return errMutationUnconfirmed
+	if !secretMatchesCandidate(created, credential, "", "", namespace) || created.UID == "" || created.ResourceVersion == "" {
+		return ErrMutationUnconfirmed
 	}
 	observed, err := cluster.GetSecret(ctx)
-	if err != nil || !secretMatchesCandidate(observed, credential, string(created.UID), "") {
-		return errMutationUnconfirmed
+	if err != nil || !secretMatchesCandidate(observed, credential, string(created.UID), "", namespace) {
+		return ErrMutationUnconfirmed
 	}
 	return nil
 }
 
-func rotateCredential(ctx context.Context, cluster clusterAccess, probe credentialProbe, outputPath string, now time.Time, lifetime, pollInterval time.Duration) error {
+func (w *Workflow) Rotate(ctx context.Context, probe Probe, options RotateOptions) error {
+	if w == nil || nilValue(w.cluster) || len(validation.IsDNS1123Label(w.namespace)) != 0 {
+		return ErrInvalidConfiguration
+	}
+	cluster, namespace := w.cluster, w.namespace
+	outputPath, now, lifetime, pollInterval := options.OutputPath, options.Now, options.Lifetime, options.PollInterval
+	if nilValue(probe) || pollInterval <= 0 {
+		return ErrInvalidConfiguration
+	}
+	if scoped, ok := probe.(interface{ Namespace() string }); ok && scoped.Namespace() != namespace {
+		return ErrInvalidConfiguration
+	}
 	current, err := cluster.GetSecret(ctx)
 	if err != nil {
-		return errInvalidManagedSecret
+		return ErrInvalidManagedSecret
 	}
-	oldBundle, oldToken, err := validateManagedSecret(current)
+	oldBundle, oldToken, err := validateManagedSecret(current, namespace)
 	if err != nil || current.UID == "" || current.ResourceVersion == "" || oldBundle.Serial == math.MaxUint64 {
-		return errInvalidManagedSecret
+		return ErrInvalidManagedSecret
 	}
-	identity, err := requirePreMutationTopology(ctx, cluster)
+	identity, err := requirePreMutationTopology(ctx, cluster, namespace)
 	if err != nil {
 		return err
 	}
 	generated, err := adminauth.GenerateCredential(now, lifetime)
 	if err != nil {
-		return errInvalidManagedSecret
+		return ErrInvalidManagedSecret
 	}
 	generated.Bundle.Serial = oldBundle.Serial + 1
 	private := adminauth.ClientCredential{
@@ -136,11 +158,11 @@ func rotateCredential(ctx context.Context, cluster clusterAccess, probe credenti
 	}
 	privateJSON, err := adminauth.MarshalClientCredential(private)
 	if err != nil || writePrivateFile(outputPath, privateJSON) != nil {
-		return errPrivateOutput
+		return ErrPrivateOutput
 	}
-	generatedSecret, err := secretForCredential(generated)
+	generatedSecret, err := secretForCredential(generated, namespace)
 	if err != nil {
-		return errInvalidManagedSecret
+		return ErrInvalidManagedSecret
 	}
 	candidate := current.DeepCopy()
 	candidate.Type = generatedSecret.Type
@@ -149,42 +171,42 @@ func rotateCredential(ctx context.Context, cluster clusterAccess, probe credenti
 	updated, updateErr := cluster.UpdateSecret(ctx, candidate)
 	if updateErr != nil {
 		if definiteMutationFailure(updateErr) {
-			return errCredentialConflict
+			return ErrCredentialConflict
 		}
 		observed, getErr := cluster.GetSecret(ctx)
-		if getErr != nil || !secretMatchesCandidate(observed, generated, string(current.UID), "") {
-			return errMutationUnconfirmed
+		if getErr != nil || !secretMatchesCandidate(observed, generated, string(current.UID), "", namespace) {
+			return ErrMutationUnconfirmed
 		}
 		updated = observed
 	}
-	if !secretMatchesCandidate(updated, generated, string(current.UID), "") || updated.ResourceVersion == "" {
-		return errMutationUnconfirmed
+	if !secretMatchesCandidate(updated, generated, string(current.UID), "", namespace) || updated.ResourceVersion == "" {
+		return ErrMutationUnconfirmed
 	}
 	observed, err := cluster.GetSecret(ctx)
-	if err != nil || !secretMatchesCandidate(observed, generated, string(current.UID), "") {
-		return errMutationUnconfirmed
+	if err != nil || !secretMatchesCandidate(observed, generated, string(current.UID), "", namespace) {
+		return ErrMutationUnconfirmed
 	}
-	if waitForActivation(ctx, cluster, probe, private, generated, oldToken, identity, pollInterval) != nil {
-		return errActivationIncomplete
+	if waitForActivation(ctx, cluster, probe, private, generated, oldToken, identity, pollInterval, namespace) != nil {
+		return ErrActivationIncomplete
 	}
 	return nil
 }
 
-func waitForActivation(ctx context.Context, cluster clusterAccess, probe credentialProbe, credential adminauth.ClientCredential, candidate adminauth.Credential, oldToken string, identity apiPodIdentity, pollInterval time.Duration) error {
+func waitForActivation(ctx context.Context, cluster ClusterAccess, probe Probe, credential adminauth.ClientCredential, candidate adminauth.Credential, oldToken string, identity apiPodIdentity, pollInterval time.Duration, namespace string) error {
 	if probe == nil || pollInterval <= 0 || credential.PriorSecretUID == "" ||
 		credential.CredentialID != candidate.Bundle.CredentialID || credential.Serial != candidate.Bundle.Serial ||
 		!credential.ExpiresAt.Equal(candidate.Bundle.ExpiresAt) || credential.Token != candidate.Token {
-		return errActivationIncomplete
+		return ErrActivationIncomplete
 	}
 	for {
-		if requireActivatedTopology(ctx, cluster, identity) == nil && probe.Verify(ctx, credential, oldToken) == nil {
+		if requireActivatedTopology(ctx, cluster, identity, namespace) == nil && probe.Verify(ctx, credential, oldToken) == nil {
 			// The HTTPS probe can observe this candidate while a concurrent CAS
 			// rotation has already replaced the Secret but has not propagated to the
 			// Pod yet. Completion therefore linearizes only after an exact candidate
 			// readback and a fresh check of the same serving Pod identity.
 			observed, err := cluster.GetSecret(ctx)
-			if err == nil && secretMatchesCandidate(observed, candidate, credential.PriorSecretUID, "") &&
-				requireActivatedTopology(ctx, cluster, identity) == nil {
+			if err == nil && secretMatchesCandidate(observed, candidate, credential.PriorSecretUID, "", namespace) &&
+				requireActivatedTopology(ctx, cluster, identity, namespace) == nil {
 				return nil
 			}
 		}
@@ -194,20 +216,20 @@ func waitForActivation(ctx context.Context, cluster clusterAccess, probe credent
 			if !timer.Stop() {
 				<-timer.C
 			}
-			return errActivationIncomplete
+			return ErrActivationIncomplete
 		case <-timer.C:
 		}
 	}
 }
 
-func secretForCredential(credential adminauth.Credential) (*corev1.Secret, error) {
+func secretForCredential(credential adminauth.Credential, namespace string) (*corev1.Secret, error) {
 	bundle, err := adminauth.MarshalVerifierBundle(credential.Bundle)
 	if err != nil {
 		return nil, err
 	}
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: adminauth.CredentialSecretName, Namespace: adminauth.CredentialNamespace,
+			Name: adminauth.CredentialSecretName, Namespace: namespace,
 			Labels: adminauth.ManagedSecretLabels(),
 		},
 		Type: corev1.SecretType(adminauth.CredentialSecretType),
@@ -215,31 +237,31 @@ func secretForCredential(credential adminauth.Credential) (*corev1.Secret, error
 	}, nil
 }
 
-func validateManagedSecret(secret *corev1.Secret) (adminauth.VerifierBundle, string, error) {
-	if secret == nil || secret.Name != adminauth.CredentialSecretName || secret.Namespace != adminauth.CredentialNamespace ||
+func validateManagedSecret(secret *corev1.Secret, namespace string) (adminauth.VerifierBundle, string, error) {
+	if secret == nil || secret.Name != adminauth.CredentialSecretName || secret.Namespace != namespace ||
 		secret.Type != corev1.SecretType(adminauth.CredentialSecretType) || secret.DeletionTimestamp != nil ||
 		!reflect.DeepEqual(secret.Labels, adminauth.ManagedSecretLabels()) || len(secret.Data) != 2 {
-		return adminauth.VerifierBundle{}, "", errInvalidManagedSecret
+		return adminauth.VerifierBundle{}, "", ErrInvalidManagedSecret
 	}
 	if secret.Immutable != nil && *secret.Immutable {
-		return adminauth.VerifierBundle{}, "", errInvalidManagedSecret
+		return adminauth.VerifierBundle{}, "", ErrInvalidManagedSecret
 	}
 	bundleBytes, hasBundle := secret.Data[adminauth.VerifierSecretKey]
 	tokenBytes, hasToken := secret.Data[adminauth.TokenSecretKey]
 	if !hasBundle || !hasToken {
-		return adminauth.VerifierBundle{}, "", errInvalidManagedSecret
+		return adminauth.VerifierBundle{}, "", ErrInvalidManagedSecret
 	}
 	bundle, err := adminauth.ParseVerifierBundle(bundleBytes)
 	token := string(tokenBytes)
 	if err != nil || !adminauth.TokenMatchesBundle(token, bundle) {
-		return adminauth.VerifierBundle{}, "", errInvalidManagedSecret
+		return adminauth.VerifierBundle{}, "", ErrInvalidManagedSecret
 	}
 	return bundle, token, nil
 }
 
-func secretMatchesCandidate(secret *corev1.Secret, credential adminauth.Credential, requiredUID, requiredResourceVersion string) bool {
-	bundle, token, err := validateManagedSecret(secret)
-	if err != nil || token != credential.Token || bundle != credential.Bundle {
+func secretMatchesCandidate(secret *corev1.Secret, credential adminauth.Credential, requiredUID, requiredResourceVersion, namespace string) bool {
+	bundle, token, err := validateManagedSecret(secret, namespace)
+	if err != nil || secret.UID == "" || secret.ResourceVersion == "" || token != credential.Token || bundle != credential.Bundle {
 		return false
 	}
 	if requiredUID != "" && string(secret.UID) != requiredUID {
@@ -253,79 +275,91 @@ func definiteMutationFailure(err error) bool {
 		apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) || apierrors.IsNotFound(err)
 }
 
-func requirePreMutationTopology(ctx context.Context, cluster clusterAccess) (apiPodIdentity, error) {
+func requirePreMutationTopology(ctx context.Context, cluster ClusterAccess, namespace string) (apiPodIdentity, error) {
 	deployment, err := cluster.GetDeployment(ctx)
-	if err != nil || deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 1 ||
+	if err != nil || deployment == nil || deployment.DeletionTimestamp != nil || deployment.Namespace != namespace || deployment.Name != apiDeploymentName || deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 1 ||
 		deployment.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType ||
 		deployment.Status.ObservedGeneration < deployment.Generation || deployment.Status.Replicas != 1 ||
 		deployment.Status.UpdatedReplicas != 1 ||
 		(deployment.Status.TerminatingReplicas != nil && *deployment.Status.TerminatingReplicas != 0) {
-		return apiPodIdentity{}, errTopologyUnavailable
+		return apiPodIdentity{}, ErrTopologyUnavailable
 	}
 	slices, err := cluster.ListEndpointSlices(ctx)
 	if err != nil {
-		return apiPodIdentity{}, errTopologyUnavailable
+		return apiPodIdentity{}, ErrTopologyUnavailable
 	}
 	identities := make([]apiPodIdentity, 0, 1)
+	if slices == nil {
+		return apiPodIdentity{}, ErrTopologyUnavailable
+	}
 	for sliceIndex := range slices.Items {
+		if slices.Items[sliceIndex].DeletionTimestamp != nil || slices.Items[sliceIndex].Namespace != namespace || slices.Items[sliceIndex].Labels[discoveryv1.LabelServiceName] != apiServiceName {
+			return apiPodIdentity{}, ErrTopologyUnavailable
+		}
 		for endpointIndex := range slices.Items[sliceIndex].Endpoints {
 			endpoint := &slices.Items[sliceIndex].Endpoints[endpointIndex]
 			if endpoint.Conditions.Terminating != nil && *endpoint.Conditions.Terminating {
 				if (endpoint.Conditions.Ready == nil || *endpoint.Conditions.Ready) &&
 					(endpoint.Conditions.Serving == nil || *endpoint.Conditions.Serving) {
-					return apiPodIdentity{}, errTopologyUnavailable
+					return apiPodIdentity{}, ErrTopologyUnavailable
 				}
 				continue
 			}
 			if len(endpoint.Addresses) != 1 || endpoint.TargetRef == nil || endpoint.TargetRef.Kind != "Pod" ||
-				endpoint.TargetRef.Namespace != adminauth.CredentialNamespace || endpoint.TargetRef.Name == "" || endpoint.TargetRef.UID == "" {
-				return apiPodIdentity{}, errTopologyUnavailable
+				endpoint.TargetRef.Namespace != namespace || endpoint.TargetRef.Name == "" || endpoint.TargetRef.UID == "" {
+				return apiPodIdentity{}, ErrTopologyUnavailable
 			}
 			identities = append(identities, apiPodIdentity{uid: endpoint.TargetRef.UID, address: endpoint.Addresses[0]})
 		}
 	}
 	if len(identities) != 1 {
-		return apiPodIdentity{}, errTopologyUnavailable
+		return apiPodIdentity{}, ErrTopologyUnavailable
 	}
 	return identities[0], nil
 }
 
-func requireActivatedTopology(ctx context.Context, cluster clusterAccess, expected apiPodIdentity) error {
+func requireActivatedTopology(ctx context.Context, cluster ClusterAccess, expected apiPodIdentity, namespace string) error {
 	deployment, err := cluster.GetDeployment(ctx)
-	if err != nil || deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 1 ||
+	if err != nil || deployment == nil || deployment.DeletionTimestamp != nil || deployment.Namespace != namespace || deployment.Name != apiDeploymentName || deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 1 ||
 		deployment.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType ||
 		deployment.Status.ObservedGeneration < deployment.Generation || deployment.Status.Replicas != 1 ||
 		deployment.Status.UpdatedReplicas != 1 || deployment.Status.ReadyReplicas != 1 ||
 		deployment.Status.AvailableReplicas != 1 || deployment.Status.UnavailableReplicas != 0 ||
 		(deployment.Status.TerminatingReplicas != nil && *deployment.Status.TerminatingReplicas != 0) {
-		return errTopologyUnavailable
+		return ErrTopologyUnavailable
 	}
 	slices, err := cluster.ListEndpointSlices(ctx)
 	if err != nil {
-		return errTopologyUnavailable
+		return ErrTopologyUnavailable
 	}
 	identities := make([]apiPodIdentity, 0, 1)
+	if slices == nil {
+		return ErrTopologyUnavailable
+	}
 	for sliceIndex := range slices.Items {
+		if slices.Items[sliceIndex].DeletionTimestamp != nil || slices.Items[sliceIndex].Namespace != namespace || slices.Items[sliceIndex].Labels[discoveryv1.LabelServiceName] != apiServiceName {
+			return ErrTopologyUnavailable
+		}
 		for endpointIndex := range slices.Items[sliceIndex].Endpoints {
 			endpoint := &slices.Items[sliceIndex].Endpoints[endpointIndex]
 			if endpoint.Conditions.Terminating != nil && *endpoint.Conditions.Terminating {
 				if (endpoint.Conditions.Ready == nil || *endpoint.Conditions.Ready) &&
 					(endpoint.Conditions.Serving == nil || *endpoint.Conditions.Serving) {
-					return errTopologyUnavailable
+					return ErrTopologyUnavailable
 				}
 				continue
 			}
 			if len(endpoint.Addresses) != 1 || endpoint.TargetRef == nil || endpoint.TargetRef.Kind != "Pod" ||
-				endpoint.TargetRef.Namespace != adminauth.CredentialNamespace || endpoint.TargetRef.Name == "" || endpoint.TargetRef.UID == "" ||
+				endpoint.TargetRef.Namespace != namespace || endpoint.TargetRef.Name == "" || endpoint.TargetRef.UID == "" ||
 				(endpoint.Conditions.Ready != nil && !*endpoint.Conditions.Ready) ||
 				(endpoint.Conditions.Serving != nil && !*endpoint.Conditions.Serving) {
-				return errTopologyUnavailable
+				return ErrTopologyUnavailable
 			}
 			identities = append(identities, apiPodIdentity{uid: endpoint.TargetRef.UID, address: endpoint.Addresses[0]})
 		}
 	}
 	if len(identities) != 1 || identities[0] != expected {
-		return errTopologyUnavailable
+		return ErrTopologyUnavailable
 	}
 	return nil
 }

@@ -1,7 +1,7 @@
 // Copyright 2026 gobha-me
 // SPDX-License-Identifier: Apache-2.0
 
-package main
+package admincredential
 
 import (
 	"bytes"
@@ -14,36 +14,48 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
-	"strings"
 	"time"
 
 	adminv1 "github.com/gobha-me/arcadectl/api/admin/v1"
 	"github.com/gobha-me/arcadectl/internal/adminauth"
+	"github.com/gobha-me/arcadectl/internal/privatefs"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 const maxProbeResponseBytes = 2048
 
-type httpCredentialProbe struct {
-	endpoint string
-	client   *http.Client
+type HTTPSProbe struct {
+	endpoint  string
+	client    *http.Client
+	namespace string
 }
 
 type selfResponse = adminv1.Self
 
-func newHTTPCredentialProbe(endpoint, certificatePath, serverName string) (*httpCredentialProbe, error) {
+func (probe *HTTPSProbe) Namespace() string {
+	if probe == nil {
+		return ""
+	}
+	return probe.namespace
+}
+
+func NewHTTPSProbe(options ProbeOptions) (*HTTPSProbe, error) {
+	if len(validation.IsDNS1123Label(options.Namespace)) != 0 {
+		return nil, ErrInvalidConfiguration
+	}
+	endpoint, certificatePath, serverName := options.Endpoint, options.CAFile, options.TLSServerName
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
 		parsed.Path != "/v1/auth/self" {
-		return nil, errActivationIncomplete
+		return nil, ErrActivationIncomplete
 	}
 	certificate, err := readBoundedPublicFile(certificatePath, 1024*1024)
 	if err != nil {
-		return nil, errActivationIncomplete
+		return nil, ErrActivationIncomplete
 	}
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM(certificate) {
-		return nil, errActivationIncomplete
+		return nil, ErrActivationIncomplete
 	}
 	if serverName == "" {
 		serverName = parsed.Hostname()
@@ -57,8 +69,9 @@ func newHTTPCredentialProbe(endpoint, certificatePath, serverName string) (*http
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 15 * time.Second,
 	}
-	return &httpCredentialProbe{
-		endpoint: parsed.String(),
+	return &HTTPSProbe{
+		endpoint:  parsed.String(),
+		namespace: options.Namespace,
 		client: &http.Client{
 			Transport:     transport,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -66,65 +79,67 @@ func newHTTPCredentialProbe(endpoint, certificatePath, serverName string) (*http
 	}, nil
 }
 
-func (probe *httpCredentialProbe) Verify(ctx context.Context, credential adminauth.ClientCredential, oldToken string) error {
-	if probe == nil || probe.client == nil || credential.Token == "" || oldToken == "" || credential.Token == oldToken {
-		return errActivationIncomplete
+func (probe *HTTPSProbe) Verify(ctx context.Context, credential adminauth.ClientCredential, oldToken string) error {
+	if probe == nil || probe.client == nil || len(validation.IsDNS1123Label(probe.namespace)) != 0 || credential.Token == "" || oldToken == "" || credential.Token == oldToken {
+		return ErrActivationIncomplete
 	}
 	status, body, err := probe.request(ctx, credential.Token)
 	if err != nil || status != http.StatusOK {
-		return errActivationIncomplete
+		return ErrActivationIncomplete
 	}
 	response, err := parseSelfResponse(body)
 	if err != nil || response.Version != "v1" || response.PrincipalID != adminauth.AdminPrincipalID ||
-		response.CredentialID != credential.CredentialID || response.Namespace != adminauth.CredentialNamespace {
-		return errActivationIncomplete
+		response.CredentialID != credential.CredentialID || response.Namespace != probe.namespace {
+		return ErrActivationIncomplete
 	}
 	expiresAt, err := time.Parse(time.RFC3339Nano, response.ExpiresAt)
 	if err != nil || expiresAt.Location() != time.UTC || !expiresAt.Equal(credential.ExpiresAt) {
-		return errActivationIncomplete
+		return ErrActivationIncomplete
 	}
 	status, _, err = probe.request(ctx, oldToken)
 	if err != nil || status != http.StatusUnauthorized {
-		return errActivationIncomplete
+		return ErrActivationIncomplete
 	}
 	return nil
 }
 
-func (probe *httpCredentialProbe) request(ctx context.Context, token string) (int, []byte, error) {
+func (probe *HTTPSProbe) request(ctx context.Context, token string) (int, []byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, probe.endpoint, nil)
 	if err != nil {
-		return 0, nil, errActivationIncomplete
+		return 0, nil, ErrActivationIncomplete
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Accept", "application/json")
 	response, err := probe.client.Do(request)
 	if err != nil {
-		return 0, nil, errActivationIncomplete
+		return 0, nil, ErrActivationIncomplete
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxProbeResponseBytes+1))
 	if err != nil || len(body) > maxProbeResponseBytes {
-		return 0, nil, errActivationIncomplete
+		return 0, nil, ErrActivationIncomplete
 	}
 	return response.StatusCode, body, nil
 }
 
 func parseSelfResponse(contents []byte) (selfResponse, error) {
 	if len(contents) == 0 || len(contents) > maxProbeResponseBytes || duplicateTopLevelKey(contents) {
-		return selfResponse{}, errActivationIncomplete
+		return selfResponse{}, ErrActivationIncomplete
 	}
 	decoder := json.NewDecoder(bytes.NewReader(contents))
 	decoder.DisallowUnknownFields()
 	var response selfResponse
 	if err := decoder.Decode(&response); err != nil {
-		return selfResponse{}, errActivationIncomplete
+		return selfResponse{}, ErrActivationIncomplete
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return selfResponse{}, errActivationIncomplete
+		return selfResponse{}, ErrActivationIncomplete
 	}
 	if response.Version == "" || response.PrincipalID == "" || response.CredentialID == "" || response.ExpiresAt == "" || response.Namespace == "" {
-		return selfResponse{}, errActivationIncomplete
+		return selfResponse{}, ErrActivationIncomplete
 	}
 	return response, nil
 }
@@ -156,17 +171,15 @@ func duplicateTopLevelKey(contents []byte) bool {
 }
 
 func readBoundedPublicFile(path string, maximum int64) ([]byte, error) {
-	if strings.TrimSpace(path) == "" {
-		return nil, errActivationIncomplete
-	}
-	file, err := os.Open(path)
+	contents, _, err := privatefs.ReadAbsolute(path, maximum, privatefs.TrustedPublic)
 	if err != nil {
-		return nil, errActivationIncomplete
-	}
-	defer file.Close()
-	contents, err := io.ReadAll(io.LimitReader(file, maximum+1))
-	if err != nil || int64(len(contents)) > maximum {
-		return nil, errActivationIncomplete
+		return nil, ErrActivationIncomplete
 	}
 	return contents, nil
+}
+
+func (probe *HTTPSProbe) Close() {
+	if probe != nil && probe.client != nil {
+		probe.client.CloseIdleConnections()
+	}
 }

@@ -1,10 +1,9 @@
 // Copyright 2026 gobha-me
 // SPDX-License-Identifier: Apache-2.0
 
-package main
+package admincredential
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -136,10 +135,10 @@ type fakeProbe struct {
 func (probe *fakeProbe) Verify(_ context.Context, credential adminauth.ClientCredential, oldToken string) error {
 	probe.called++
 	if oldToken != probe.wantOld || credential.Token == "" || credential.Token == oldToken {
-		return errActivationIncomplete
+		return ErrActivationIncomplete
 	}
 	if probe.called <= probe.failures {
-		return errActivationIncomplete
+		return ErrActivationIncomplete
 	}
 	if probe.after != nil {
 		probe.after()
@@ -157,7 +156,7 @@ func TestPrivateFileExclusiveAndTrustedParent(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("private file mode = %v, %v", info.Mode(), err)
 	}
-	if err := writePrivateFile(path, []byte("replacement")); !errors.Is(err, errPrivateOutput) {
+	if err := writePrivateFile(path, []byte("replacement")); !errors.Is(err, ErrPrivateOutput) {
 		t.Fatalf("replacement error = %v", err)
 	}
 	contents, _ := os.ReadFile(path)
@@ -168,15 +167,8 @@ func TestPrivateFileExclusiveAndTrustedParent(t *testing.T) {
 	if err := os.Mkdir(unsafeParent, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := writePrivateFile(filepath.Join(unsafeParent, "credential"), []byte("private")); !errors.Is(err, errPrivateOutput) {
+	if err := writePrivateFile(filepath.Join(unsafeParent, "credential"), []byte("private")); !errors.Is(err, ErrPrivateOutput) {
 		t.Fatalf("unsafe parent error = %v", err)
-	}
-}
-
-func TestCommandDefaultsToThirtyDayCredential(t *testing.T) {
-	options, err := parseOptions([]string{"init", "--output", "/private/credential.json"})
-	if err != nil || options.lifetime != 30*24*time.Hour {
-		t.Fatalf("default lifetime = %v, %v", options.lifetime, err)
 	}
 }
 
@@ -184,7 +176,7 @@ func TestInitializeCredentialConfirmsAmbiguousCommitAndRetainsUnknown(t *testing
 	now := time.Date(2026, 10, 2, 3, 0, 0, 0, time.UTC)
 	committed := &fakeCluster{createErr: errors.New("transport failed"), commitOnCreateError: true}
 	path := filepath.Join(privateTestDirectory(t), "credential.json")
-	if err := initializeCredential(context.Background(), committed, path, now, time.Hour); err != nil {
+	if err := testInitializeCredential(context.Background(), committed, path, now, time.Hour); err != nil {
 		t.Fatalf("confirmed ambiguous create = %v", err)
 	}
 	privateContents, err := os.ReadFile(path)
@@ -198,7 +190,7 @@ func TestInitializeCredentialConfirmsAmbiguousCommitAndRetainsUnknown(t *testing
 
 	unknown := &fakeCluster{createErr: errors.New("transport failed")}
 	unknownPath := filepath.Join(privateTestDirectory(t), "credential.json")
-	if err := initializeCredential(context.Background(), unknown, unknownPath, now, time.Hour); !errors.Is(err, errMutationUnconfirmed) {
+	if err := testInitializeCredential(context.Background(), unknown, unknownPath, now, time.Hour); !errors.Is(err, ErrMutationUnconfirmed) {
 		t.Fatalf("unknown create = %v", err)
 	}
 	if _, err := os.Stat(unknownPath); err != nil {
@@ -207,7 +199,7 @@ func TestInitializeCredentialConfirmsAmbiguousCommitAndRetainsUnknown(t *testing
 
 	conflict := &fakeCluster{createErr: apierrors.NewAlreadyExists(schema.GroupResource{Resource: "secrets"}, adminauth.CredentialSecretName)}
 	conflictPath := filepath.Join(privateTestDirectory(t), "credential.json")
-	if err := initializeCredential(context.Background(), conflict, conflictPath, now, time.Hour); !errors.Is(err, errCredentialConflict) {
+	if err := testInitializeCredential(context.Background(), conflict, conflictPath, now, time.Hour); !errors.Is(err, ErrCredentialConflict) {
 		t.Fatalf("create conflict = %v", err)
 	}
 	if _, err := os.Stat(conflictPath); err != nil {
@@ -226,7 +218,7 @@ func TestConcurrentInitializationCreatesOnlyOneSecret(t *testing.T) {
 	for range 2 {
 		path := filepath.Join(privateTestDirectory(t), "credential.json")
 		go func() {
-			results <- result{err: initializeCredential(context.Background(), cluster, path, now, time.Hour), path: path}
+			results <- result{err: testInitializeCredential(context.Background(), cluster, path, now, time.Hour), path: path}
 		}()
 	}
 	var successes, conflicts int
@@ -235,7 +227,7 @@ func TestConcurrentInitializationCreatesOnlyOneSecret(t *testing.T) {
 		switch {
 		case outcome.err == nil:
 			successes++
-		case errors.Is(outcome.err, errCredentialConflict):
+		case errors.Is(outcome.err, ErrCredentialConflict):
 			conflicts++
 			if _, err := os.Stat(outcome.path); err != nil {
 				t.Fatalf("loser output was removed: %v", err)
@@ -252,13 +244,13 @@ func TestConcurrentInitializationCreatesOnlyOneSecret(t *testing.T) {
 func TestRotateCredentialCASAllowsExpiredCurrentAndProbes(t *testing.T) {
 	now := time.Date(2026, 10, 2, 4, 0, 0, 0, time.UTC)
 	old, _ := adminauth.GenerateCredential(now.Add(-2*time.Hour), time.Hour)
-	secret, _ := secretForCredential(old)
+	secret, _ := testSecretForCredential(old)
 	secret.UID = "secret-uid"
 	secret.ResourceVersion = "1"
 	cluster := readyCluster(secret)
 	probe := &fakeProbe{wantOld: old.Token}
 	path := filepath.Join(privateTestDirectory(t), "credential.json")
-	if err := rotateCredential(boundedTestContext(t), cluster, probe, path, now, time.Hour, time.Millisecond); err != nil {
+	if err := testRotateCredential(boundedTestContext(t), cluster, probe, path, now, time.Hour, time.Millisecond); err != nil {
 		t.Fatal(err)
 	}
 	if cluster.updateCalls != 1 || probe.called != 1 {
@@ -269,7 +261,7 @@ func TestRotateCredentialCASAllowsExpiredCurrentAndProbes(t *testing.T) {
 	if err != nil || private.Serial != 2 || private.PriorSecretUID != "secret-uid" || private.PriorResourceVersion != "1" {
 		t.Fatalf("rotation file = %#v, %v", private, err)
 	}
-	bundle, token, err := validateManagedSecret(cluster.secret)
+	bundle, token, err := testValidateManagedSecret(cluster.secret)
 	if err != nil || bundle.Serial != 2 || token != private.Token || token == old.Token {
 		t.Fatalf("rotated Secret = %#v token-match=%v err=%v", bundle, token == private.Token, err)
 	}
@@ -278,12 +270,12 @@ func TestRotateCredentialCASAllowsExpiredCurrentAndProbes(t *testing.T) {
 func TestRotateCredentialNeverRetriesConflictOrDeletesAmbiguity(t *testing.T) {
 	now := time.Date(2026, 10, 2, 4, 0, 0, 0, time.UTC)
 	old, _ := adminauth.GenerateCredential(now, time.Hour)
-	secret, _ := secretForCredential(old)
+	secret, _ := testSecretForCredential(old)
 	secret.UID, secret.ResourceVersion = "secret-uid", "1"
 	cluster := readyCluster(secret)
 	cluster.updateErr = apierrors.NewConflict(schema.GroupResource{Resource: "secrets"}, adminauth.CredentialSecretName, errors.New("canary-secret-value"))
 	path := filepath.Join(privateTestDirectory(t), "credential.json")
-	if err := rotateCredential(boundedTestContext(t), cluster, &fakeProbe{}, path, now, time.Hour, time.Millisecond); !errors.Is(err, errCredentialConflict) {
+	if err := testRotateCredential(boundedTestContext(t), cluster, &fakeProbe{}, path, now, time.Hour, time.Millisecond); !errors.Is(err, ErrCredentialConflict) {
 		t.Fatalf("rotation conflict = %v", err)
 	}
 	if cluster.updateCalls != 1 {
@@ -296,23 +288,18 @@ func TestRotateCredentialNeverRetriesConflictOrDeletesAmbiguity(t *testing.T) {
 	cluster = readyCluster(secret)
 	cluster.updateErr = errors.New("canary-token-transport")
 	path = filepath.Join(privateTestDirectory(t), "credential.json")
-	if err := rotateCredential(boundedTestContext(t), cluster, &fakeProbe{}, path, now, time.Hour, time.Millisecond); !errors.Is(err, errMutationUnconfirmed) {
+	if err := testRotateCredential(boundedTestContext(t), cluster, &fakeProbe{}, path, now, time.Hour, time.Millisecond); !errors.Is(err, ErrMutationUnconfirmed) {
 		t.Fatalf("ambiguous rotation = %v", err)
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("ambiguous file removed: %v", err)
-	}
-	var output bytes.Buffer
-	writeFixedFailure(&output, cluster.updateErr)
-	if bytes.Contains(output.Bytes(), []byte("canary")) {
-		t.Fatalf("raw error leaked: %q", output.String())
 	}
 }
 
 func TestConcurrentRotationsUseOneCASWithoutLoserRetry(t *testing.T) {
 	now := time.Date(2026, 10, 2, 4, 0, 0, 0, time.UTC)
 	old, _ := adminauth.GenerateCredential(now, time.Hour)
-	secret, _ := secretForCredential(old)
+	secret, _ := testSecretForCredential(old)
 	secret.UID, secret.ResourceVersion = "secret-uid", "1"
 	base := readyCluster(secret)
 	cluster := &concurrentCluster{fakeCluster: base, release: make(chan struct{})}
@@ -325,7 +312,7 @@ func TestConcurrentRotationsUseOneCASWithoutLoserRetry(t *testing.T) {
 	for range 2 {
 		path := filepath.Join(privateTestDirectory(t), "credential.json")
 		go func() {
-			results <- result{err: rotateCredential(ctx, cluster, &fakeProbe{wantOld: old.Token}, path, now, time.Hour, time.Millisecond), path: path}
+			results <- result{err: testRotateCredential(ctx, cluster, &fakeProbe{wantOld: old.Token}, path, now, time.Hour, time.Millisecond), path: path}
 		}()
 	}
 	var successes, conflicts int
@@ -337,7 +324,7 @@ func TestConcurrentRotationsUseOneCASWithoutLoserRetry(t *testing.T) {
 			if _, err := os.Stat(outcome.path); err != nil {
 				t.Fatalf("winner credential missing: %v", err)
 			}
-		case errors.Is(outcome.err, errCredentialConflict):
+		case errors.Is(outcome.err, ErrCredentialConflict):
 			conflicts++
 			if _, err := os.Stat(outcome.path); err != nil {
 				t.Fatalf("loser credential was removed: %v", err)
@@ -354,13 +341,13 @@ func TestConcurrentRotationsUseOneCASWithoutLoserRetry(t *testing.T) {
 func TestRotationRequiresExactSingleServingEndpointBeforeOutput(t *testing.T) {
 	now := time.Date(2026, 10, 2, 4, 0, 0, 0, time.UTC)
 	old, _ := adminauth.GenerateCredential(now, time.Hour)
-	secret, _ := secretForCredential(old)
+	secret, _ := testSecretForCredential(old)
 	secret.UID, secret.ResourceVersion = "secret-uid", "1"
 	cluster := readyCluster(secret)
 	cluster.slices.Items[0].Endpoints = append(cluster.slices.Items[0].Endpoints,
 		discoveryv1.Endpoint{Addresses: []string{"10.0.0.2"}, Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(true)}})
 	path := filepath.Join(privateTestDirectory(t), "credential.json")
-	if err := rotateCredential(boundedTestContext(t), cluster, &fakeProbe{}, path, now, time.Hour, time.Millisecond); !errors.Is(err, errTopologyUnavailable) {
+	if err := testRotateCredential(boundedTestContext(t), cluster, &fakeProbe{}, path, now, time.Hour, time.Millisecond); !errors.Is(err, ErrTopologyUnavailable) {
 		t.Fatalf("topology error = %v", err)
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
@@ -371,12 +358,12 @@ func TestRotationRequiresExactSingleServingEndpointBeforeOutput(t *testing.T) {
 func TestActivationPollingWaitsForProjectionAndHonorsContext(t *testing.T) {
 	now := time.Date(2026, 10, 2, 4, 0, 0, 0, time.UTC)
 	old, _ := adminauth.GenerateCredential(now, time.Hour)
-	secret, _ := secretForCredential(old)
+	secret, _ := testSecretForCredential(old)
 	secret.UID, secret.ResourceVersion = "secret-uid", "1"
 	cluster := readyCluster(secret)
 	current, _ := adminauth.GenerateCredential(now, 2*time.Hour)
 	current.Bundle.Serial = 2
-	candidateSecret, _ := secretForCredential(current)
+	candidateSecret, _ := testSecretForCredential(current)
 	candidateSecret.UID, candidateSecret.ResourceVersion = "secret-uid", "2"
 	cluster.secret = candidateSecret
 	private := adminauth.ClientCredential{
@@ -384,17 +371,17 @@ func TestActivationPollingWaitsForProjectionAndHonorsContext(t *testing.T) {
 		Serial: 2, ExpiresAt: current.Bundle.ExpiresAt, Token: current.Token, PriorSecretUID: "secret-uid", PriorResourceVersion: "1",
 	}
 	probe := &fakeProbe{wantOld: old.Token, failures: 2}
-	identity, err := requirePreMutationTopology(context.Background(), cluster)
+	identity, err := testRequirePreMutationTopology(context.Background(), cluster)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := waitForActivation(context.Background(), cluster, probe, private, current, old.Token, identity, time.Microsecond); err != nil || probe.called != 3 {
+	if err := testWaitForActivation(context.Background(), cluster, probe, private, current, old.Token, identity, time.Microsecond); err != nil || probe.called != 3 {
 		t.Fatalf("poll result=%v calls=%d", err, probe.called)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
 	defer cancel()
-	probe = &fakeProbe{wantOld: old.Token, err: errActivationIncomplete}
-	if err := waitForActivation(ctx, cluster, probe, private, current, old.Token, identity, time.Millisecond); !errors.Is(err, errActivationIncomplete) {
+	probe = &fakeProbe{wantOld: old.Token, err: ErrActivationIncomplete}
+	if err := testWaitForActivation(ctx, cluster, probe, private, current, old.Token, identity, time.Millisecond); !errors.Is(err, ErrActivationIncomplete) {
 		t.Fatalf("timeout result=%v", err)
 	}
 	if probe.called == 0 {
@@ -413,7 +400,7 @@ func TestActivationRejectsCandidateOrEndpointSupersededDuringProbe(t *testing.T)
 			mutate: func(cluster *fakeCluster) {
 				next, _ := adminauth.GenerateCredential(now, 2*time.Hour)
 				next.Bundle.Serial = 3
-				nextSecret, _ := secretForCredential(next)
+				nextSecret, _ := testSecretForCredential(next)
 				nextSecret.UID, nextSecret.ResourceVersion = "secret-uid", "3"
 				cluster.mu.Lock()
 				cluster.secret = nextSecret
@@ -426,10 +413,16 @@ func TestActivationRejectsCandidateOrEndpointSupersededDuringProbe(t *testing.T)
 				cluster.slices.Items[0].Endpoints[0].TargetRef.UID = "replacement-pod-uid"
 			},
 		},
+		{
+			name: "replacement endpoint address",
+			mutate: func(cluster *fakeCluster) {
+				cluster.slices.Items[0].Endpoints[0].Addresses[0] = "10.0.0.99"
+			},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			old, _ := adminauth.GenerateCredential(now, time.Hour)
-			secret, _ := secretForCredential(old)
+			secret, _ := testSecretForCredential(old)
 			secret.UID, secret.ResourceVersion = "secret-uid", "1"
 			cluster := readyCluster(secret)
 			var once sync.Once
@@ -437,8 +430,8 @@ func TestActivationRejectsCandidateOrEndpointSupersededDuringProbe(t *testing.T)
 			path := filepath.Join(privateTestDirectory(t), "credential.json")
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 			defer cancel()
-			err := rotateCredential(ctx, cluster, probe, path, now, time.Hour, time.Millisecond)
-			if !errors.Is(err, errActivationIncomplete) || cluster.updateCalls != 1 || probe.called == 0 {
+			err := testRotateCredential(ctx, cluster, probe, path, now, time.Hour, time.Millisecond)
+			if !errors.Is(err, ErrActivationIncomplete) || cluster.updateCalls != 1 || probe.called == 0 {
 				t.Fatalf("rotation result=%v updates=%d probes=%d", err, cluster.updateCalls, probe.called)
 			}
 			if _, err := os.Stat(path); err != nil {
@@ -450,7 +443,7 @@ func TestActivationRejectsCandidateOrEndpointSupersededDuringProbe(t *testing.T)
 
 func TestExpiredCredentialTopologyAllowsRecoveryButNotActivation(t *testing.T) {
 	credential, _ := adminauth.GenerateCredential(time.Now().UTC().Add(-2*time.Hour), time.Hour)
-	secret, _ := secretForCredential(credential)
+	secret, _ := testSecretForCredential(credential)
 	secret.UID, secret.ResourceVersion = "secret-uid", "1"
 	cluster := readyCluster(secret)
 	cluster.deployment.Status.ReadyReplicas = 0
@@ -460,31 +453,31 @@ func TestExpiredCredentialTopologyAllowsRecoveryButNotActivation(t *testing.T) {
 	serving := false
 	cluster.slices.Items[0].Endpoints[0].Conditions.Ready = &ready
 	cluster.slices.Items[0].Endpoints[0].Conditions.Serving = &serving
-	identity, err := requirePreMutationTopology(context.Background(), cluster)
+	identity, err := testRequirePreMutationTopology(context.Background(), cluster)
 	if err != nil || identity.uid != "api-pod-uid" || identity.address != "10.0.0.1" {
 		t.Fatalf("expired pre-mutation topology = %#v, %v", identity, err)
 	}
-	if err := requireActivatedTopology(context.Background(), cluster, identity); !errors.Is(err, errTopologyUnavailable) {
+	if err := requireActivatedTopology(context.Background(), cluster, identity, adminauth.CredentialNamespace); !errors.Is(err, ErrTopologyUnavailable) {
 		t.Fatalf("unready topology activated = %v", err)
 	}
 	cluster.deployment.Status.ReadyReplicas = 1
 	cluster.deployment.Status.AvailableReplicas = 1
 	cluster.deployment.Status.UnavailableReplicas = 0
 	ready, serving = true, true
-	if err := requireActivatedTopology(context.Background(), cluster, identity); err != nil {
+	if err := requireActivatedTopology(context.Background(), cluster, identity, adminauth.CredentialNamespace); err != nil {
 		t.Fatalf("recovered topology = %v", err)
 	}
 	cluster.slices.Items[0].Endpoints[0].TargetRef.UID = "replacement-pod-uid"
-	if err := requireActivatedTopology(context.Background(), cluster, identity); !errors.Is(err, errTopologyUnavailable) {
+	if err := requireActivatedTopology(context.Background(), cluster, identity, adminauth.CredentialNamespace); !errors.Is(err, ErrTopologyUnavailable) {
 		t.Fatalf("replacement Pod activated = %v", err)
 	}
 }
 
 func TestManagedSecretValidationIsExact(t *testing.T) {
 	credential, _ := adminauth.GenerateCredential(time.Now().UTC(), time.Hour)
-	secret, _ := secretForCredential(credential)
+	secret, _ := testSecretForCredential(credential)
 	secret.UID, secret.ResourceVersion = "uid", "1"
-	if _, _, err := validateManagedSecret(secret); err != nil {
+	if _, _, err := testValidateManagedSecret(secret); err != nil {
 		t.Fatal(err)
 	}
 	for name, mutate := range map[string]func(*corev1.Secret){
@@ -496,7 +489,7 @@ func TestManagedSecretValidationIsExact(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			changed := secret.DeepCopy()
 			mutate(changed)
-			if _, _, err := validateManagedSecret(changed); !errors.Is(err, errInvalidManagedSecret) {
+			if _, _, err := testValidateManagedSecret(changed); !errors.Is(err, ErrInvalidManagedSecret) {
 				t.Fatalf("invalid Secret error = %v", err)
 			}
 		})
@@ -513,6 +506,7 @@ func readyCluster(secret *corev1.Secret) *fakeCluster {
 			Status:     appsv1.DeploymentStatus{ObservedGeneration: 2, Replicas: 1, UpdatedReplicas: 1, ReadyReplicas: 1, AvailableReplicas: 1},
 		},
 		slices: &discoveryv1.EndpointSliceList{Items: []discoveryv1.EndpointSlice{{
+			ObjectMeta: metav1.ObjectMeta{Name: "arcadectl-api-endpoints", Namespace: adminauth.CredentialNamespace, Labels: map[string]string{discoveryv1.LabelServiceName: apiServiceName}},
 			Endpoints: []discoveryv1.Endpoint{{
 				Addresses: []string{"10.0.0.1"}, Conditions: discoveryv1.EndpointConditions{Ready: &ready},
 				TargetRef: &corev1.ObjectReference{Kind: "Pod", Namespace: adminauth.CredentialNamespace, Name: "arcadectl-api-pod", UID: "api-pod-uid"},
@@ -523,14 +517,25 @@ func readyCluster(secret *corev1.Secret) *fakeCluster {
 
 func TestSecretCandidateComparisonRequiresExactRevision(t *testing.T) {
 	credential, _ := adminauth.GenerateCredential(time.Now().UTC(), time.Hour)
-	secret, _ := secretForCredential(credential)
+	secret, _ := testSecretForCredential(credential)
 	secret.UID, secret.ResourceVersion = "uid", "2"
-	if !secretMatchesCandidate(secret, credential, "uid", "2") || secretMatchesCandidate(secret, credential, "other", "2") ||
-		secretMatchesCandidate(secret, credential, "uid", "3") {
+	if !testSecretMatchesCandidate(secret, credential, "uid", "2") || testSecretMatchesCandidate(secret, credential, "other", "2") ||
+		testSecretMatchesCandidate(secret, credential, "uid", "3") {
 		t.Fatal("candidate identity comparison is not exact")
 	}
 	if !reflect.DeepEqual(secret.Labels, adminauth.ManagedSecretLabels()) {
 		t.Fatal("candidate labels changed")
+	}
+	for _, missing := range []string{"UID", "RV"} {
+		changed := secret.DeepCopy()
+		if missing == "UID" {
+			changed.UID = ""
+		} else {
+			changed.ResourceVersion = ""
+		}
+		if testSecretMatchesCandidate(changed, credential, "", "") {
+			t.Fatal("incomplete readback identity accepted")
+		}
 	}
 }
 
