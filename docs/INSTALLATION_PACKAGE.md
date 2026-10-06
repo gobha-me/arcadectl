@@ -733,9 +733,75 @@ barriers and malicious wrappers. Fresh-process non-loopback proxy tests cover
 both sealed safety and recovery observer reads. Isolated native API-server
 tests use the same closed actor transport and actual operation authorization
 on both declared profiles, but do not manufacture policy status or claim the
-full factory/provider is certified there. Durable inert fixture ownership,
-non-binding storage, whole named accepted shapes, cleanup/recovery and complete
-lifecycle checkpoint composition remain separate unfinished requirements.
+full factory/provider is certified there. The durable state/fence and native
+storage-candidate evidence below are additional foundations; actual fixture
+effects, whole named accepted shapes, cleanup/recovery and complete lifecycle
+checkpoint composition remain separate unfinished requirements.
+
+### Durable inert-fixture intent and installer fence
+
+A private fixed-catalog WAL binds its exact original sealed namespace journal
+and resource version to one random run and ten reviewed recipe slots: three
+suspended Jobs and their gated worker Pods, one plain gated Pod, retained/plain
+synthetic PVCs and an already-cancelled GameDestroy. This is identity/state
+bookkeeping, **not permission, fixture construction or native effect proof**.
+No raw objects, credentials, private paths or caller-selected recipes are stored.
+Fixtures are not inserted into ordinary installation inventory or its pending
+effect; those remain restricted to signed package resources.
+
+Protected exclusive creation, fsynced compare-and-swap updates, file-identity
+checks and one cooperative WAL lock enforce the state sequence. A CREATE-attempt
+intent must be durable before a future persistent request. Its acknowledgement
+UID may be pinned only by the same in-process attempt capability, never by
+resuming an unknown attempt or finding a matching name/nonce. Acknowledged UIDs
+cannot be replaced. Cleanup records the observed canonical positive resource
+version, cannot reset for replay and requires worker Pod absence before Job
+deletion. Strict canonical decoding and original-journal resume comparison also
+reject contradictory owner states, UID gaps/duplicates, foreign journal/package/
+namespace data and extras.
+
+Any active WAL fences ordinary public/private effects, lifecycle transitions
+and pending installer recovery before even an injected proof provider runs.
+Malformed, unreadable and terminal-but-unretired files also block. The future
+closed provider must independently observe original identity, whole allowed
+shape and actual absence, archive evidence and retire the exact active file.
+No retirement or persistent fixture transport is supplied yet; a terminal WAL
+alone cannot bypass those missing proofs. Cooperative local locking and these
+temporal checks are not an atomic cluster lock or fresh behavioral evidence.
+
+### Native non-binding storage-candidate evidence
+
+The existing isolated native-authentication Kind test additionally checks a
+synthetic storage recipe on both exact declared Kubernetes profiles. It never
+reads an external kubeconfig or uses real worlds/shared storage. An empty
+storage class alone prevents dynamic default-class provisioning, **not static
+or prebound volume binding**; selectors alone do not close prebinding either.
+
+The candidate explicitly sets `pv.kubernetes.io/bind-completed: yes`, leaves
+`spec.volumeName` empty and fixes the empty storage class. The pinned
+[1.35.8 PV controller](https://github.com/kubernetes/kubernetes/blob/v1.35.8/pkg/controller/volume/persistentvolume/pv_controller.go)
+and [1.37.0 PV controller](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/controller/volume/persistentvolume/pv_controller.go)
+route that synthetic shape to `ClaimLost` without binding or provisioning.
+**Never set this annotation on a real claim or treat it as ownership evidence.**
+
+Actual running controllers must bind a separate positive-control claim while
+plain/retained inert claims converge to `Lost`. Matching available/prebound
+static PVs exist before those claims. Explicit PVC/PV update events and a
+40-second observation window exercise both controller directions and more than
+two declared-profile default binder sync periods. Throughout, original claim
+UIDs, desired specs and retained labels stay fixed; available/prebound PV specs
+stay unchanged and the complete owned-cluster PV set gains no unexpected PV.
+The retained `Lost` claim must still yield the exact signed administrator DELETE
+denial and an unchanged whole raw reread. Exact acknowledged-UID/fresh-RV cleanup
+uses the original dedicated destroy account for the retained synthetic claim,
+then waits for actual claim/PV absence. Test PVs use `Retain`; no fixture Pod
+mounts their host paths or creates/writes those paths.
+
+This certifies a test-owned candidate on these two standard controller profiles,
+not arbitrary external provisioners, production fixture adoption/cleanup,
+physical CSI behavior or complete installer lifecycle. Production fixture
+transport and whole-result checking must use the durable original-identity
+provider; the native test does not bypass that requirement.
 
 ### Named dry-run transport and native operation evidence
 

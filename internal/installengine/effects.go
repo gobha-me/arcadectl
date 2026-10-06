@@ -79,6 +79,9 @@ func (e *Engine) current(ctx context.Context, s *installstate.Snapshot) (*instal
 	if e == nil || s == nil || ctx == nil {
 		return nil, ErrInvalid
 	}
+	if err := e.fixtureFence(s); err != nil {
+		return nil, err
+	}
 	fresh, err := e.journal.Load(ctx, s.Anchor())
 	if err != nil {
 		return nil, ErrOwnership

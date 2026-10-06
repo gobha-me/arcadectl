@@ -471,8 +471,14 @@ func TestMissingCreateUIDEvidenceAndUnavailablePrivateStorageFailClosed(t *testi
 		f := newFixture(t, false)
 		_ = f.engine.files.Close()
 		s, err := f.engine.Apply(context.Background(), f.snapshot, f.key, f.plan.Digest(), false)
-		if !errors.Is(err, ErrOutcomeUnknown) || s.Document().Pending == nil || f.access.writes != 0 {
-			t.Fatal("effect sent without durable private storage")
+		// The fixture fence now needs safe private storage before even journal
+		// intent. Unreadability must refuse earlier, not create a pending effect.
+		if err != ErrFixtures || s != nil || f.access.writes != 0 || f.nsUpdates != 0 {
+			t.Fatal("unavailable private storage permitted an effect or journal intent")
+		}
+		fresh, err := f.store.Load(context.Background(), f.snapshot.Anchor())
+		if err != nil || fresh.ResourceVersion() != f.snapshot.ResourceVersion() || !bytes.Equal(fresh.Bytes(), f.snapshot.Bytes()) {
+			t.Fatal("private-storage refusal changed the original journal")
 		}
 	})
 }

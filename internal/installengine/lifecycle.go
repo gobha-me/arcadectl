@@ -116,6 +116,9 @@ func (l *Lifecycle) original(ctx context.Context, s *installstate.Snapshot) (*in
 	if l == nil || ctx == nil || s == nil {
 		return nil, ErrInvalid
 	}
+	if err := l.engine.fixtureFence(s); err != nil {
+		return nil, err
+	}
 	fresh, err := l.engine.journal.Load(ctx, s.Anchor())
 	if err != nil {
 		return nil, ErrOwnership
