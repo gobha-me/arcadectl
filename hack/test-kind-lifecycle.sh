@@ -1168,6 +1168,7 @@ EOF
   say "creating stopped Factorio server and binding retained world"
   begin_transition create-stopped
   kube apply --filename "$workspace/factorio-server.yaml" >/dev/null
+  wait_present persistentvolumeclaim "$claim_name" 120
   kube_bounded 130 wait persistentvolumeclaim/"$claim_name" --namespace "$namespace" --for=jsonpath='{.status.phase}'=Bound --timeout=120s >/dev/null
   wait_server "$server_name" Stopped RuntimeStopped 120
   assert_runtime_absent "$server_name"
@@ -1420,6 +1421,7 @@ EOF
 
 say "creating stopped server and retained storage"
 kube apply --filename "$workspace/server.yaml" >/dev/null
+wait_present persistentvolumeclaim "$claim_name" 90
 kube_bounded 100 wait persistentvolumeclaim/"$claim_name" --namespace "$namespace" --for=jsonpath='{.status.phase}'=Bound --timeout=90s >/dev/null
 wait_server "$server_name" Stopped RuntimeStopped 90
 assert_runtime_absent "$server_name"
