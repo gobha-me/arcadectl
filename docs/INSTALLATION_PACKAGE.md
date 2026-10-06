@@ -801,9 +801,33 @@ references/data identity, distinct from the retained fixture. It has no
 confirmation, backup/repository references, status or deletion journal. That
 object alone cannot establish changed-spec unsafe UPDATE behavior: cancellation
 cannot be cleared, and the other target/mode/reference fields are immutable.
-A future closed, durably journaled synthetic-preview path must separately
-justify a valid dry-run-only spec change. CRD/CEL or RBAC rejection is not
-substitute evidence for the signed unsafe admission policy.
+A private pure recipe and separate whole-result validator now describe only
+the original slot's `Cancelled` status with its run-derived challenge, fixed
+already-expired preview and fixture-only guidance. The ordinary validator still
+rejects every GameDestroy status. This component permits no status write and
+never persists a confirmation. Its exact status fieldset is schema-derived,
+not yet certified on either native profile. The destroy controller must remain
+independently cold: terminal cancellation alone does not prevent finalizer or
+worker/lease cleanup effects.
+
+An optional protected receipt preserves exact canonical legacy v1 bytes when
+absent. Seed intent requires all ten native original acknowledgements; while
+attempted, every entry transition, including cleanup, is blocked. Separate
+instance-local send/ACK capabilities cannot revive on reload, and ACK requires
+consumed send capability plus a distinct canonical result RV. Receipt changes
+cannot accompany entry changes or reset/reseed; an acknowledged receipt remains
+immutable throughout otherwise-valid original UID/RV cleanup. Document/body
+drift and protected-file replacement also fail closed. These are state-machine
+primitives, not status transport, reliable native ACK, recovery settlement or
+cleanup authorization. The active WAL fence remains in effect.
+
+A future closed status transport must consume those capabilities around a
+single original-actor request, pin reliable UID/RV evidence before post-request
+refusals, and certify exact whole returned/live shapes on both native profiles.
+It must separately justify the schema-valid dry-run-only confirmation change
+and prove paired administrator acceptance/controller policy denial. CRD/CEL,
+RBAC or status-subresource acceptance is not substitute evidence for the signed
+unsafe admission policy, which matches the main resource rather than `/status`.
 
 The disposable native test now uses the same engine's original direct transport,
 sealed actor/policy witnesses and private ledger-bound wire for whole-validated

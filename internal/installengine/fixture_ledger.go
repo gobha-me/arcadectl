@@ -68,13 +68,14 @@ type fixtureEntry struct {
 // fixture provider. Its private transitions are consumed only by that future
 // closed provider after independent original-identity/shape/absence proofs.
 type fixtureLedgerDocument struct {
-	Version                string          `json:"version"`
-	Recipe                 string          `json:"recipe"`
-	Revision               uint64          `json:"revision"`
-	RunID                  string          `json:"runId"`
-	Journal                json.RawMessage `json:"journal"`
-	JournalResourceVersion string          `json:"journalResourceVersion"`
-	Entries                []fixtureEntry  `json:"entries"`
+	Version                string                     `json:"version"`
+	Recipe                 string                     `json:"recipe"`
+	Revision               uint64                     `json:"revision"`
+	RunID                  string                     `json:"runId"`
+	Journal                json.RawMessage            `json:"journal"`
+	JournalResourceVersion string                     `json:"journalResourceVersion"`
+	Entries                []fixtureEntry             `json:"entries"`
+	DestroySeed            *fixtureDestroySeedReceipt `json:"destroySeed,omitempty"`
 }
 
 func fixtureLedgerName(s *installstate.Snapshot) string {
@@ -175,6 +176,9 @@ func (e *Engine) validateFixtureLedger(d fixtureLedgerDocument) error {
 	if pending > 1 || deleting && createPending {
 		return ErrFixtures
 	}
+	if !validFixtureDestroySeedDocument(d) {
+		return ErrFixtures
+	}
 	return nil
 }
 
@@ -217,6 +221,12 @@ func (e *Engine) decodeFixtureLedger(body []byte) (fixtureLedgerDocument, error)
 func validFixtureTransition(before, after fixtureLedgerDocument) bool {
 	if after.Revision != before.Revision+1 || after.Version != before.Version || after.Recipe != before.Recipe || after.RunID != before.RunID || after.JournalResourceVersion != before.JournalResourceVersion || !bytes.Equal(after.Journal, before.Journal) || len(before.Entries) != len(fixtureCatalog) || len(after.Entries) != len(before.Entries) {
 		return false
+	}
+	if !reflect.DeepEqual(before.DestroySeed, after.DestroySeed) {
+		return reflect.DeepEqual(before.Entries, after.Entries) && validFixtureDestroySeedTransition(before, after)
+	}
+	if before.DestroySeed != nil && before.DestroySeed.State != fixtureDestroySeedAcknowledged {
+		return false // unknown status effect blocks EVERY ordinary entry transition
 	}
 	changed := -1
 	for i, old := range before.Entries {
@@ -281,8 +291,10 @@ type fixtureLedger struct {
 	identity   privatefs.FileIdentity
 	body       []byte
 	document   fixtureLedgerDocument
-	ackSlot    int // instance-local attempt capability; NEVER restored by load
-	effectSlot int // single-send capability shared by ALL clients of this ledger
+	ackSlot    int  // instance-local attempt capability; NEVER restored by load
+	effectSlot int  // single-send capability shared by ALL clients of this ledger
+	seedAck    bool // separate SAME-attempt capability; NEVER restored by load
+	seedEffect bool // consumed before status transport; never permission by itself
 }
 
 func (e *Engine) prepareFixtureLedger(ctx context.Context, s *installstate.Snapshot) (*fixtureLedger, error) {
@@ -368,8 +380,16 @@ func (f *fixtureLedger) nextDocument() (fixtureLedgerDocument, error) {
 }
 
 func (f *fixtureLedger) advance(next fixtureLedgerDocument) error {
-	if f == nil || f.engine == nil || f.lock == nil || !validFixtureTransition(f.document, next) {
+	if f == nil || f.engine == nil || f.lock == nil {
 		return ErrFixtures
+	}
+	current, err := f.engine.decodeFixtureLedger(f.body)
+	if err != nil || !reflect.DeepEqual(current, f.document) || !validFixtureTransition(current, next) {
+		return ErrFixtures
+	}
+	seedChanged := !reflect.DeepEqual(f.document.DestroySeed, next.DestroySeed)
+	if seedChanged && (f.document.DestroySeed == nil && (f.ackSlot != -1 || f.effectSlot != -1) || f.document.DestroySeed != nil && (!f.seedAck || f.seedEffect)) {
+		return ErrFixtures // no ACK before send, after uncertainty or after restart
 	}
 	changed := -1
 	for i, entry := range f.document.Entries {
@@ -398,6 +418,12 @@ func (f *fixtureLedger) advance(next fixtureLedgerDocument) error {
 		return ErrFixtures
 	}
 	f.identity, f.body, f.document = identity, body, d
+	if seedChanged {
+		f.seedAck, f.seedEffect = false, false
+		if next.DestroySeed.State == fixtureDestroySeedAttempted {
+			f.seedAck, f.seedEffect = true, true
+		}
+	}
 	if changed >= 0 {
 		f.ackSlot = -1
 		f.effectSlot = -1
@@ -417,5 +443,6 @@ func (f *fixtureLedger) close() error {
 	}
 	err := f.lock.Close()
 	f.lock = nil
+	f.seedAck, f.seedEffect = false, false
 	return err
 }
