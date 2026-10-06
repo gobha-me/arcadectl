@@ -62,7 +62,7 @@ func (v *lifecycleFixture) Check(ctx context.Context, request LifecycleCheck) er
 			if rank == 0 && (r == nil || tmpl.CheckCRD(v.f.access.objects[key], r.UID, tmpl) != nil) {
 				return ErrLifecycle
 			}
-		case AdmissionEffective:
+		case AdmissionConfigured, AdmissionEffective:
 			if (rank == 1 || rank == 2) && r == nil {
 				return ErrLifecycle
 			}
@@ -86,6 +86,90 @@ func (v *lifecycleFixture) Check(ctx context.Context, request LifecycleCheck) er
 		}
 	}
 	return ctx.Err()
+}
+
+func TestLifecycleSignedServiceAccountsPrecedeBehavioralAdmission(t *testing.T) {
+	for _, gate := range []Checkpoint{AdmissionConfigured, AdmissionEffective} {
+		t.Run(fmt.Sprint(gate), func(t *testing.T) {
+			v := newLifecycleFixture(t)
+			v.fail = gate
+			s := v.f.snapshot
+			refused := false
+			for i := 0; i < 100; i++ {
+				next, err := v.l.Step(context.Background(), s, v.opts)
+				s = next
+				if err != nil {
+					if !errors.Is(err, ErrLifecycle) {
+						t.Fatal(err)
+					}
+					refused = true
+					break
+				}
+			}
+			if !refused || s.Document().Pending != nil {
+				t.Fatal("admission barrier did not stop before an effect")
+			}
+			accounts := 0
+			for _, r := range s.Document().Resources {
+				if r.Key.Kind == "ServiceAccount" {
+					accounts++
+				} else if r.Key.Kind != "Namespace" && installRank(r.Key) >= 3 {
+					t.Fatal("RBAC/service/workload authority preceded behavioral proof")
+				}
+			}
+			wanted := 0
+			if gate == AdmissionEffective {
+				for _, resource := range v.f.plan.Resources() {
+					if resource.Object.GetKind() == "ServiceAccount" {
+						wanted++
+					}
+				}
+			}
+			if accounts != wanted {
+				t.Fatal("configured/effective barriers did not bound identity-only effects")
+			}
+		})
+	}
+}
+
+func TestLifecycleServiceAccountResumeDoesNotSkipBehavioralBarrier(t *testing.T) {
+	v := newLifecycleFixture(t)
+	v.probe = func(request LifecycleCheck) error {
+		if request.Checkpoint == AdmissionEffective {
+			for _, resource := range request.Target.Resources() {
+				if resource.Object.GetKind() == "ServiceAccount" {
+					if r, _ := v.f.engine.inventory(request.Snapshot.Document(), resourceKey(resource)); r == nil {
+						return ErrLifecycle
+					}
+				}
+			}
+		}
+		return nil
+	}
+	s := v.f.snapshot
+	for i := 0; i < 100; i++ {
+		s = v.step(t, s)
+		accounts := 0
+		for _, r := range s.Document().Resources {
+			if r.Key.Kind == "ServiceAccount" {
+				accounts++
+			}
+		}
+		if accounts == 1 {
+			break
+		}
+	}
+	// A new coordinator over the same original sealed journal resumes the
+	// partially created identities; it neither recreates one nor bypasses proof.
+	l, err := NewLifecycleWithChecks(v.f.engine, v.l.secrets, v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.l = l
+	s = v.finish(t, s)
+	if !s.Document().Installed || !slices.Contains(v.checks, AdmissionConfigured) || !slices.Contains(v.checks, AdmissionEffective) {
+		t.Fatal("resumed install skipped one admission obligation")
+	}
 }
 
 func newLifecycleFixture(t *testing.T) *lifecycleFixture {

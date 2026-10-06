@@ -477,9 +477,55 @@ This is not a complete `LifecycleChecks` provider or runtime certification.
 Behavioral admission, complete cold/quiescence evidence, actual controller
 readiness, native real-kubelet authentication, administrator installer command,
 recovery output and fresh/upgrade/rollback/uninstall binary CI remain required.
-Native Pod behavioral probes also require an existing original ServiceAccount:
-the coordinator integration must order that non-executable signed dependency
-before the probes, while still gating RBAC and workload activation on admission
-effectiveness. CREATE probe coverage does not certify DELETE/UPDATE branches;
+Native Pod behavioral probes also require an existing original ServiceAccount.
+Fresh install and retaining reinstall now put the signed ServiceAccounts first
+within the non-executable dependency rank, behind `AdmissionConfigured` (every
+original signed policy/binding and current healthy type-checking). RBAC, Service,
+credentials and workloads remain behind behavioral admission effectiveness.
+Resuming after one ServiceAccount does not bypass either admission barrier.
+CREATE probe coverage does not certify DELETE/UPDATE branches;
 real lifecycle CI and any applicable live-claim proof must cover those explicitly
 without adding PVC deletion authority to ordinary retaining uninstall.
+
+## Closed native CREATE admission proof
+
+`ClusterAdmission.VerifyConfigured` observes all twelve original policies and
+bindings against their recorded signed templates, including mixed active/target
+inventory during a transition. It requires current policy generation/type-check
+status without warnings and refuses missing, replaced, drifted or unhealthy
+objects. Configuration alone does not prove behavioral enforcement.
+
+`VerifyCreateProbes` surrounds six fixed positive/negative dry-run CREATE pairs
+with repeated original configuration and journal checks. It requires the
+inventoried `arcadectl-controller` ServiceAccount's original UID/signed shape
+and unchanged resource version before and after the probes; a default, foreign,
+missing or recreated account is not substituted. Probe names use fresh bounded
+random nonces. Positive worker Pods have one scheduling gate, no authorization
+marker or owner, no credential volume/environment, no token automount and the
+signed digest-pinned controller image. PVC probes explicitly use an empty
+storage class so they cannot request provisioning. Fictional GameDestroy
+references have no confirmation and all requests are `dryRun=All`.
+
+Positive responses must preserve the entire independently specified object,
+including native initial status, generated metadata, the exact installer field
+ownership tree and profile-certified defaults. Sidecars, node assignment,
+volumes, annotations, spec/status drift and null-versus-absent structural changes
+are refused. Returned metadata is never ownership or desired-shape authority.
+Negative responses count only when the inner transport sees the exact native
+422 Status for the fixed policy, binding, resource/name and signed validation.
+It classifies before stripping raw errors below SDK wrappers. Generic denial,
+another cause, an unexpected acceptance, duplicate/malformed/unbounded JSON,
+redirect or retry is not evidence. All public errors remain fixed and redacted.
+
+Both exact Kubernetes profiles run the six native pairs with ServiceAccount
+admission enabled and verify zero persistent Pod, PVC or GameDestroy effects.
+Fixture integration and fault-injection tests exercise original identity/race
+barriers, full accepted-shape refusal, no replay and raw-error redaction. These
+API-server fixtures have no kubelet or policy-status controller and are not
+full runtime lifecycle certification. The partial CREATE proof is deliberately
+not a complete `LifecycleChecks.AdmissionEffective` implementation.
+
+Final uninstall still needs an explicit dependency-retention contract: live Pod
+probes cannot run after removal of every ServiceAccount. Pending that decision,
+the proof fails closed at a missing original account; it never silently retains,
+recreates or adopts a substitute, or downgrades to configuration-only evidence.

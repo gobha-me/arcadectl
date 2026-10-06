@@ -47,6 +47,12 @@ const (
 	// TargetAuthenticated uses original-Pod native forwarding and the protected
 	// credential/CA files to run Activation.VerifyForwarded, not a health GET.
 	TargetAuthenticated
+	// AdmissionConfigured proves all original signed policies/bindings and
+	// current healthy type-checking, but NOT behavior. Install may create only
+	// its signed ServiceAccounts behind this barrier, providing the original
+	// non-executable identity needed by native Pod behavioral probes. RBAC,
+	// Service, Secrets and workloads still require AdmissionEffective.
+	AdmissionConfigured
 )
 
 // LifecycleChecks is an internal proof-provider seam. It MUST NOT be populated
@@ -268,6 +274,12 @@ func (l *Lifecycle) ordered(d installstate.Document) []installstate.Key {
 		if diff := installRank(a) - installRank(b); diff != 0 {
 			return diff
 		}
+		if installRank(a) == 3 && (a.Kind == "ServiceAccount") != (b.Kind == "ServiceAccount") {
+			if a.Kind == "ServiceAccount" {
+				return -1
+			}
+			return 1
+		}
 		if a.Kind != b.Kind {
 			return bytes.Compare([]byte(a.Kind), []byte(b.Kind))
 		}
@@ -452,7 +464,11 @@ func (l *Lifecycle) apply(ctx context.Context, s *installstate.Snapshot, opts Li
 			}
 		}
 		if rank >= 3 {
-			if err := l.check(ctx, AdmissionEffective, s, opts); err != nil {
+			gate := AdmissionEffective
+			if d.Mode == installstate.Install && key.Kind == "ServiceAccount" {
+				gate = AdmissionConfigured // fresh AND retaining reinstall
+			}
+			if err := l.check(ctx, gate, s, opts); err != nil {
 				return s, err
 			}
 		}

@@ -64,6 +64,9 @@ func (t attemptTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	copyResponse.Header = http.Header{}
 	copyResponse.Header.Set("Content-Type", response.Header.Get("Content-Type"))
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		if probe, ok := r.Context().Value(probeCaptureKey{}).(*probeCapture); ok {
+			probe.classify(r, response)
+		}
 		if response.Body != nil {
 			_ = response.Body.Close()
 		}
