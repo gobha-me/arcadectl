@@ -4,7 +4,6 @@
 package installengine
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -14,6 +13,7 @@ import (
 	"github.com/gobha-me/arcadectl/internal/installstate"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	strictjson "sigs.k8s.io/json"
 )
 
 // PrivateSecretAccess is separate from public resource/metadata observation.
@@ -51,10 +51,9 @@ func decodePrivateSecret(o *unstructured.Unstructured, err error) (*corev1.Secre
 	if err != nil {
 		return nil, ErrRead
 	}
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.DisallowUnknownFields()
 	s := &corev1.Secret{}
-	if decoder.Decode(s) != nil {
+	strictErrors, err := strictjson.UnmarshalStrict(body, s)
+	if err != nil || len(strictErrors) != 0 {
 		return nil, ErrRead
 	}
 	return s, nil

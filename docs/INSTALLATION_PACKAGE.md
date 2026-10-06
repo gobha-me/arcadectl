@@ -376,8 +376,46 @@ wire/sequence limits, stalled headers, missing acknowledgements, established
 blocked pumps and blocked protocol writes, with joined-worker evidence. A
 bounded single-worker fuzz target exercises the pre-parser guard. These are
 protocol/activation proofs with fixture Kubernetes topology, not real-kubelet
-forwarding or full installer lifecycle certification; the new isolated binary
-CI gate must still prove those before issue #27 is complete.
+forwarding or full installer lifecycle certification. The separate closed
+target-authentication gate below covers actual kubelet forwarding; the full
+isolated binary lifecycle gate remains required before issue #27 is complete.
+
+### Closed authenticated-target checkpoint
+
+`ClusterTargetAuthenticated` implements only `TargetAuthenticated`. Its
+constructor binds the engine to its same frozen, native-capable `HTTPAccess`;
+callers cannot substitute serving, Secret, URL, dial, port or reconnect providers.
+It requires a settled Verifying journal, the exact registered target plan and
+operation mode, and repeats original Namespace/journal barriers around forwarded
+activation. Success is read-only authenticated identity evidence, not a completed
+installation or a claim that the other lifecycle checkpoints passed.
+
+Current retained Secret UIDs, resource versions, protected client/CA files and
+TLS leaf identity remain authoritative. A valid same-Secret-UID administrator
+rotation and a supported changed-package upgrade/rollback do not reload the
+original bootstrap candidate. Stale client files and replacement Secrets fail
+before forwarding. Private typed Secret decoding is case-sensitive and rejects
+unknown fields and differently cased aliases, including nested metadata fields.
+
+`make test-kind-install-auth` runs both exact checksum-pinned supported patches,
+1.35.8 then 1.37.0, in disposable clusters. Signed test-package effects and the
+private credential workflow establish original resource identities; real
+controller-manager/kubelet observations supply Deployment, ReplicaSet, Pod and
+EndpointSlice readiness. The gate then uses the closed provider's fixed original
+Pod port-forward and real authenticated HTTPS, not a kubectl forward or injected
+dial. Public journal bytes and resource version must remain unchanged.
+
+The fixture deliberately constructs lifecycle stages and omits controller
+Deployments. Its package signing key is test-only. This proves the authentication
+component against actual kubelets, **not** a fresh installer CLI journey, genuine
+predecessor binary upgrade/rollback, controller reconciliation, admission fixture
+bootstrap, or retaining uninstall. Those full lifecycle gates remain mandatory.
+Only test-owned node/registry containers and image tags are removed, with exact
+identity/label checks and verified absence. Private output is not an artifact.
+Profiles are serialized; Go children use two processors and a 1 GiB soft heap
+limit, the owned Kind node is limited to 3 GiB/two CPUs, and its registry to
+128 MiB/half a CPU. These do not hard-limit the shared Docker daemon or BuildKit;
+shared-pod runs still require memory monitoring and no concurrent builds.
 
 ## Ordered, resumable lifecycle coordinator
 
@@ -475,7 +513,7 @@ stream to bounded task-owned files instead of allocating archive-sized buffers.
 
 This is not a complete `LifecycleChecks` provider or runtime certification.
 Behavioral admission, complete cold/quiescence evidence, actual controller
-readiness, native real-kubelet authentication, administrator installer command,
+readiness, integration of all closed checkpoints, administrator installer command,
 recovery output and fresh/upgrade/rollback/uninstall binary CI remain required.
 Native Pod behavioral probes also require an existing original ServiceAccount.
 Fresh install and retaining reinstall now put the signed ServiceAccounts first
@@ -755,5 +793,5 @@ the scheduled controller Pod shapes and distinguish unready/old executable
 sets from seeded target-ready topology; scheduling and Ready counters are
 explicit test-admin inputs. They do not certify a real scheduler, kubelet,
 controller-manager, leader acquisition or successful reconciliation. The
-complete provider, remaining admission branches, authenticated activation,
+complete provider, remaining admission branches, authenticated-target integration,
 installer/recovery command and actual binary lifecycle CI remain required.

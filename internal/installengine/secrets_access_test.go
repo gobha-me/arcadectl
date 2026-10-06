@@ -50,7 +50,7 @@ func TestPrivateSecretTransportIsScopedSingleAttemptAndSuppressesServerErrors(t 
 }
 
 func TestPrivateSecretDecoderRejectsUnknownAndDuplicateFields(t *testing.T) {
-	for _, scenario := range []string{"valid", "unknown", "duplicate", "wrong-name", "wrong-kind"} {
+	for _, scenario := range []string{"valid", "unknown", "duplicate", "wrong-name", "wrong-kind", "metadata-uid-alias", "data-alias", "type-alias", "immutable-alias"} {
 		t.Run(scenario, func(t *testing.T) {
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
@@ -66,6 +66,14 @@ func TestPrivateSecretDecoderRejectsUnknownAndDuplicateFields(t *testing.T) {
 					body["metadata"].(map[string]any)["name"] = "foreign"
 				case "wrong-kind":
 					body["kind"] = "ConfigMap"
+				case "metadata-uid-alias":
+					body["metadata"].(map[string]any)["UID"] = "PRIVATE-CANARY"
+				case "data-alias":
+					body["Data"] = map[string]any{"tls.crt": "UFJJVkFURS1DQU5BUlk="}
+				case "type-alias":
+					body["Type"] = "PRIVATE-CANARY"
+				case "immutable-alias":
+					body["Immutable"] = true
 				}
 				_ = json.NewEncoder(w).Encode(body)
 			}))

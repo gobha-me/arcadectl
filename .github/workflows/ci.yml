@@ -13,6 +13,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  kind-install-auth:
+    name: Kind installer native authentication
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Prove closed native authentication on both supported kubelets
+        run: make test-kind-install-auth
+
   kind-api:
     name: Kind authenticated admin API
     runs-on: ubuntu-24.04
@@ -57,7 +72,10 @@ jobs:
   go-and-policy:
     name: Go and policy
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 45
+    env:
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 1GiB
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -75,9 +93,9 @@ jobs:
       - name: Verify pinned runtime assets
         run: make verify-runtime-assets
       - name: Vet
-        run: go vet ./...
+        run: go vet -p 1 ./...
       - name: Test with race detector
-        run: go test -race ./...
+        run: go test -race -p 1 -timeout=15m ./...
       - name: Test API-server lifecycle transitions
         run: make test-envtest
       - name: Build reproducible controller image

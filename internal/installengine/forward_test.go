@@ -27,7 +27,7 @@ import (
 
 // Test-only stock server proves wire compatibility independently of our frame
 // state machine. Production imports only its bounded codec, not this manager.
-func nativeForwardFixture(t *testing.T, x *servingFixture, mode string, onUpgrade func()) (*HTTPAccess, *atomic.Int32) {
+func nativeForwardFixture(t *testing.T, x *servingFixture, mode string, onUpgrade func(), readHandlers ...func(http.ResponseWriter, *http.Request) bool) (*HTTPAccess, *atomic.Int32) {
 	t.Helper()
 	posts := &atomic.Int32{}
 	var mu sync.Mutex
@@ -50,6 +50,11 @@ func nativeForwardFixture(t *testing.T, x *servingFixture, mode string, onUpgrad
 		default:
 			if r.Header.Get("Authorization") != "Bearer "+fakeKubeToken {
 				t.Error("frozen cluster authentication lost")
+			}
+		}
+		for _, read := range readHandlers {
+			if r.Method == http.MethodGet && read(w, r) {
+				return
 			}
 		}
 		if r.Method == http.MethodGet && r.URL.Path == podPath {
