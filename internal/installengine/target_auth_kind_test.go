@@ -318,6 +318,7 @@ func TestKindTargetAuthenticatedNativeKubelet(t *testing.T) {
 				t.Fatal("actual native authenticated target proof: ", err)
 			}
 			proveKindAdmissionFixtureStorage(t, ctx, config, s.Anchor(), plan)
+			proveKindAdmissionFixtureRecipes(t, ctx, config, engine, s, plan)
 			after, err := store.Load(ctx, s.Anchor())
 			if err != nil || !bytes.Equal(after.Bytes(), s.Bytes()) || after.ResourceVersion() != s.ResourceVersion() {
 				t.Fatal("native authentication changed the original journal")

@@ -25,7 +25,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Prove native authentication and inert storage on both profiles
+      - name: Prove native authentication and inert fixtures on both profiles
         run: make test-kind-install-auth
 
   kind-api:

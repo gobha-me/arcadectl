@@ -734,7 +734,7 @@ both sealed safety and recovery observer reads. Isolated native API-server
 tests use the same closed actor transport and actual operation authorization
 on both declared profiles, but do not manufacture policy status or claim the
 full factory/provider is certified there. The durable state/fence and native
-storage-candidate evidence below are additional foundations; actual fixture
+storage-candidate evidence below are additional foundations; production fixture
 effects, whole named accepted shapes, cleanup/recovery and complete lifecycle
 checkpoint composition remain separate unfinished requirements.
 
@@ -768,6 +768,55 @@ shape and actual absence, archive evidence and retire the exact active file.
 No retirement or persistent fixture transport is supplied yet; a terminal WAL
 alone cannot bypass those missing proofs. Cooperative local locking and these
 temporal checks are not an atomic cluster lock or fresh behavioral evidence.
+
+### Closed inert-fixture recipes
+
+A separate private pure constructor derives every object from that canonical
+WAL, its registered signed target plan and a fixed slot. It accepts no caller
+objects, images, account names, fragments or addresses. Returned objects are
+defensive constructions, not configuration stored for later effects. Worker
+Pods reuse the restricted signed-image defaults with one scheduling gate, no
+token automount, mounts, environment, sidecars or node assignment. Their Job
+UID must already be durably acknowledged; a missing or unknown create outcome
+cannot supply an owner by matching a live name.
+
+Jobs have both suspension and zero parallelism, with an explicit manual selector
+matching only their unique template label. Separately created probe Pods omit
+that label and have a **non-controlling** original Job UID owner reference.
+Matching controlling children can be deleted during suspension; mismatching
+controlling children can have ownership released. The pinned
+[1.35.8 Job controller](https://github.com/kubernetes/kubernetes/blob/v1.35.8/pkg/controller/job/job_controller.go)
+and [1.37.0 Job controller](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/controller/job/job_controller.go)
+must instead leave this recipe intact. The disposable native test requires
+real controller-observed suspension and unchanged manual Pod ownership/specs
+through a thirty-second window, no node assignment or extra probe Pods, and
+both dry-run/persistent specs equal to the closed constructor. A plain Pod has
+a separate gate and no worker label or owner. PVCs use the non-binding synthetic
+recipe described below.
+
+The GameDestroy fixture is born `cancelRequested: true`, has the original
+destroy-admin audit annotation and entirely fictional run-derived target
+references/data identity, distinct from the retained fixture. It has no
+confirmation, backup/repository references, status or deletion journal. That
+object alone cannot establish changed-spec unsafe UPDATE behavior: cancellation
+cannot be cleared, and the other target/mode/reference fields are immutable.
+A future closed, durably journaled synthetic-preview path must separately
+justify a valid dry-run-only spec change. CRD/CEL or RBAC rejection is not
+substitute evidence for the signed unsafe admission policy.
+
+These recipes and their normal-SDK disposable test are not production fixture
+permission, guarded effects, whole metadata/status validation, observation-only
+recovery or WAL retirement. Test cleanup uses acknowledged original UID/fresh
+RV preconditions and actual absence, and skips a Job when its worker's absence
+is unproved; exact owned-cluster teardown remains an independent fallback.
+The already-cancelled synthetic leaf uses background deletion only within that
+fresh exclusively owned cluster, with no finalizers/owners or observed
+application/runtime descendants and no deployed application controller.
+Those limited collection checks are not universal GC closure or production
+cleanup authorization. The observed foreground deletion timeout is not treated
+as proof of a specific discovery or permission failure.
+The active test WAL remains fenced even after test cleanup. No ordinary effect
+or cold/runtime proof ignores its fixtures or considers this run complete.
 
 ### Native non-binding storage-candidate evidence
 
