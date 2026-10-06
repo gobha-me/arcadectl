@@ -16,29 +16,48 @@ import (
 	"github.com/gobha-me/arcadectl/internal/installrender"
 	"github.com/gobha-me/arcadectl/internal/installstate"
 	batchv1 "k8s.io/api/batch/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 )
 
-// Certification of the pure fixed recipes against real native controllers,
-// ONLY within targetKindFixture's original disposable cluster. SDK effects and
-// test WAL instrumentation are not the missing production guarded transport,
-// whole-result validator, cleanup recovery or WAL retirement implementation.
+// Certification of private transport and fixed recipes against native actors/
+// controllers, ONLY within targetKindFixture's original disposable cluster.
+// Test-owned desired-shape/leaf checks are not a complete production permission
+// provider, whole-result validator, cleanup recovery or WAL retirement.
 func proveKindAdmissionFixtureRecipes(t *testing.T, parent context.Context, config *rest.Config, engine *Engine, s *installstate.Snapshot, plan *installrender.Plan) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(parent, 4*time.Minute)
 	defer cancel()
+	access, ok := engine.access.(*HTTPAccess)
+	if !ok {
+		t.Fatal("original native direct transport unavailable")
+	}
+	admission, err := NewClusterAdmission(engine, access)
+	if err != nil {
+		t.Fatal("original native admission unavailable")
+	}
+	request := LifecycleCheck{Checkpoint: AdmissionEffective, Snapshot: s, Mode: installstate.Install, Target: plan, Options: LifecycleOptions{Now: time.Now().UTC()}}
+	var actors *admissionActors
+	if wait.PollUntilContextTimeout(ctx, 200*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
+		var err error
+		actors, err = admission.newActors(ctx, request, existingScopedImpersonation)
+		return err == nil, nil // only pre-effect observations while native policies converge
+	}) != nil {
+		t.Fatal("original native actor/policy witnesses unavailable")
+	}
 	ledger, err := engine.prepareFixtureLedger(ctx, s)
 	if err != nil {
 		t.Fatal("owned native recipe ledger unavailable")
 	}
 	defer ledger.close()
+	wire, err := actors.fixtures(ctx, ledger)
+	if err != nil {
+		t.Fatal("original native fixture wire unavailable")
+	}
 	admin, err := dynamic.NewForConfig(config)
 	if err != nil {
 		t.Fatal("owned recipe client unavailable")
@@ -53,7 +72,7 @@ func proveKindAdmissionFixtureRecipes(t *testing.T, parent context.Context, conf
 		}
 		return client
 	}
-	destroyAdmin, destroyController := actor(destroyAdministratorActor.account()), actor(destroyControllerActor.account())
+	destroyAdmin := actor(destroyAdministratorActor.account()) // SDK dry runs only
 	resource := func(client dynamic.Interface, slot int) dynamic.ResourceInterface {
 		key := ledger.document.Entries[slot].Key
 		gv, err := schema.ParseGroupVersion(key.APIVersion)
@@ -66,43 +85,55 @@ func proveKindAdmissionFixtureRecipes(t *testing.T, parent context.Context, conf
 		}
 		return client.Resource(gv.WithResource(plural)).Namespace(key.Namespace)
 	}
-	type original struct {
-		slot int
-		uid  types.UID
-	}
-	var originals []original
 	cleanup := func() {
 		t.Helper()
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cleanupCancel()
-		// Reverse recipe order removes every acknowledged Pod before its Job.
-		// No name/nonce discovery supplies a missing CREATE acknowledgement.
-		absent := make([]bool, len(fixtureCatalog))
-		for i := len(originals) - 1; i >= 0; i-- {
-			original := originals[i]
-			if fixtureCatalog[original.slot].kind == "Job" && !absent[original.slot+1] {
+		// Enumerate original durable ACKs even after post-ACK refusal. Unknown
+		// CREATE blocks all transitions; only the enclosing exact-owned Kind
+		// teardown may drain that disposable cluster. No SDK/name adoption.
+		for _, entry := range ledger.document.Entries {
+			if entry.State == fixtureCreateAttempted {
+				t.Error("unknown native CREATE remains fenced; requiring exact owned-cluster teardown")
+				return
+			}
+		}
+		for slot := len(fixtureCatalog) - 1; slot >= 0; slot-- {
+			entry := ledger.document.Entries[slot]
+			key := entry.Key
+			if key.Kind == "Job" && ledger.document.Entries[slot+1].State != fixtureAbsent {
 				t.Error("refusing Job cleanup without its original worker's actual absence")
 				continue
 			}
-			var client dynamic.Interface = admin
-			if original.slot == fixtureRetainedPVC {
-				client = destroyController // fixed original role, not a live label
+			live, absent, err := wire.get(cleanupCtx, slot)
+			if err != nil {
+				t.Error("original native cleanup observation refused")
+				return
 			}
-			address := resource(client, original.slot)
-			key := ledger.document.Entries[original.slot].Key
-			live, err := address.Get(cleanupCtx, key.Name, metav1.GetOptions{})
-			if apierrors.IsNotFound(err) {
-				absent[original.slot] = true
+			if entry.State == fixturePlanned {
+				if !absent {
+					t.Error("uncreated fixture address occupied; refusing adoption/cleanup")
+					return
+				}
+				next, _ := ledger.nextDocument()
+				next.Entries[slot].State = fixtureAbsent
+				if ledger.advance(next) != nil {
+					t.Error("planned native address absence durability refused")
+					return
+				}
 				continue
 			}
-			if err != nil || live.GetUID() != original.uid || !fixtureRV(live.GetResourceVersion()) {
+			if entry.State != fixtureOriginal || absent || live == nil || live.GetUID() != entry.OriginalUID || !fixtureRV(live.GetResourceVersion()) {
 				t.Error("refusing replaced/unproved native recipe cleanup")
-				continue
+				return // no fresh intent can repair an externally missing original
 			}
-			uid, rv := original.uid, live.GetResourceVersion()
-			foreground := metav1.DeletePropagationForeground
-			options := metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &rv}, PropagationPolicy: &foreground}
-			if original.slot == fixtureCancelledDestroy {
+			want, err := ledger.object(slot)
+			if err != nil || !reflect.DeepEqual(live.Object["spec"], want.Object["spec"]) || !reflect.DeepEqual(live.GetLabels(), want.GetLabels()) || !reflect.DeepEqual(live.GetAnnotations(), want.GetAnnotations()) || !reflect.DeepEqual(live.GetOwnerReferences(), want.GetOwnerReferences()) {
+				t.Error("refusing altered/executable/binding native fixture cleanup")
+				return // reliable ACK identity is not inert-shape permission
+			}
+			uid := entry.OriginalUID
+			if slot == fixtureCancelledDestroy {
 				// This already-cancelled synthetic leaf never created workers,
 				// leases or data. Its controller is not deployed in this owned
 				// test cluster. Prove that invariant rather than introducing a
@@ -137,38 +168,38 @@ func proveKindAdmissionFixtureRecipes(t *testing.T, parent context.Context, conf
 					t.Error("refusing unproved cancelled synthetic leaf cleanup")
 					continue
 				}
-				background := metav1.DeletePropagationBackground
-				options.PropagationPolicy = &background
 			}
-			if key.Kind == "Pod" {
-				// Exact disposable scheduling-gated, unassigned Pods have no
-				// running process to drain. Do not confuse their default thirty-
-				// second deletion grace with failed actual-absence evidence.
-				zero := int64(0)
-				options.GracePeriodSeconds = &zero
+			next, _ := ledger.nextDocument()
+			next.Entries[slot].State, next.Entries[slot].DeleteResourceVersion = fixtureDeleteAttempted, live.GetResourceVersion()
+			if ledger.advance(next) != nil {
+				t.Error("native cleanup intent durability refused")
+				return
 			}
-			if address.Delete(cleanupCtx, key.Name, options) != nil {
-				t.Errorf("original native recipe%d deletion refused", original.slot)
-				continue
+			deleteErr := wire.delete(cleanupCtx, slot)
+			if deleteErr != nil && deleteErr != ErrOutcomeUnknown {
+				t.Errorf("original native recipe%d deletion refused", slot)
+				return
 			}
 			if wait.PollUntilContextTimeout(cleanupCtx, 100*time.Millisecond, 15*time.Second, true, func(ctx context.Context) (bool, error) {
-				live, err := address.Get(ctx, key.Name, metav1.GetOptions{})
-				if apierrors.IsNotFound(err) {
-					return true, nil
-				}
-				if err != nil || live.GetUID() != original.uid {
+				live, absent, err := wire.get(ctx, slot)
+				if err != nil || !absent && live.GetUID() != uid {
 					return false, ErrOwnership
 				}
-				return false, nil
+				return absent, nil
 			}) != nil {
-				t.Errorf("original native recipe%d actual absence unproved", original.slot)
-			} else {
-				absent[original.slot] = true
+				t.Errorf("original native recipe%d actual absence unproved", slot)
+				return // never replay an uncertain/stale-RV DELETE or add another intent
+			}
+			next, _ = ledger.nextDocument()
+			next.Entries[slot].State = fixtureAbsent
+			if ledger.advance(next) != nil {
+				t.Error("native original absence durability refused")
+				return
 			}
 		}
 	}
-	// Cleanup runs on every outcome, independently of the closed ledger. The
-	// enclosing owned Kind teardown is still required. This active WAL is NOT
+	// Cleanup consumes original ledger identity/intent on every outcome. The
+	// enclosing exact owned Kind teardown is still required. This active WAL is NOT
 	// retired by the test or treated as safe for ordinary installer effects.
 	defer cleanup()
 	var expected []*unstructured.Unstructured
@@ -181,7 +212,7 @@ func proveKindAdmissionFixtureRecipes(t *testing.T, parent context.Context, conf
 		if slot == fixtureCancelledDestroy {
 			address = resource(destroyAdmin, slot)
 		}
-		if _, err := address.Get(ctx, o.GetName(), metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		if _, absent, err := wire.get(ctx, slot); err != nil || !absent {
 			t.Fatal("fresh exact recipe address absence unproved")
 		}
 		dry, err := address.Create(ctx, o.DeepCopy(), metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}, FieldManager: "arcadectl-installer", FieldValidation: "Strict"})
@@ -199,15 +230,9 @@ func proveKindAdmissionFixtureRecipes(t *testing.T, parent context.Context, conf
 		if ledger.advance(next) != nil {
 			t.Fatal("native recipe intent durability unavailable")
 		}
-		live, err := address.Create(ctx, o, metav1.CreateOptions{FieldManager: "arcadectl-installer", FieldValidation: "Strict"})
-		if err != nil || live == nil || !receiptUID.MatchString(string(live.GetUID())) {
+		live, err := wire.create(ctx, slot) // reliable UID pinned BEFORE any post-ACK check
+		if err != nil || live == nil || !nativeFixtureUID(string(live.GetUID())) || ledger.document.Entries[slot].OriginalUID != live.GetUID() {
 			t.Fatalf("native recipe%d create unacknowledged: %v", slot, err)
-		}
-		originals = append(originals, original{slot: slot, uid: live.GetUID()}) // pin BEFORE validating shape
-		next, _ = ledger.nextDocument()
-		next.Entries[slot].State, next.Entries[slot].OriginalUID = fixtureOriginal, live.GetUID()
-		if ledger.advance(next) != nil {
-			t.Fatal("native recipe acknowledgement durability unavailable")
 		}
 		// Compare both native specs to the closed constructor, never promote a
 		// returned dry-run/live spec to desired configuration. Persistent whole
@@ -216,11 +241,14 @@ func proveKindAdmissionFixtureRecipes(t *testing.T, parent context.Context, conf
 			t.Fatalf("native recipe%d acknowledgement desired shape drifted; closed=%v native=%v", slot, o.Object["spec"], live.Object["spec"])
 		}
 		expected = append(expected, live.DeepCopy())
+		if captureNativeFixtureShape(ledger, slot, "ack", live) != nil {
+			t.Fatal("private synthetic ACK shape capture refused")
+		}
 	}
 	check := func(ctx context.Context, requireSuspended bool) error {
 		for slot, want := range expected {
-			live, err := resource(admin, slot).Get(ctx, want.GetName(), metav1.GetOptions{})
-			if err != nil || live.GetUID() != want.GetUID() || live.GetDeletionTimestamp() != nil || !reflect.DeepEqual(live.Object["spec"], want.Object["spec"]) || !reflect.DeepEqual(live.GetLabels(), want.GetLabels()) || !reflect.DeepEqual(live.GetAnnotations(), want.GetAnnotations()) || !reflect.DeepEqual(live.GetOwnerReferences(), want.GetOwnerReferences()) {
+			live, absent, err := wire.get(ctx, slot)
+			if err != nil || absent || live.GetUID() != want.GetUID() || live.GetDeletionTimestamp() != nil || !reflect.DeepEqual(live.Object["spec"], want.Object["spec"]) || !reflect.DeepEqual(live.GetLabels(), want.GetLabels()) || !reflect.DeepEqual(live.GetAnnotations(), want.GetAnnotations()) || !reflect.DeepEqual(live.GetOwnerReferences(), want.GetOwnerReferences()) {
 				return ErrOwnership
 			}
 			if live.GetKind() == "Job" {
@@ -287,9 +315,15 @@ func proveKindAdmissionFixtureRecipes(t *testing.T, parent context.Context, conf
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
+	for slot := range fixtureCatalog {
+		live, absent, err := wire.get(ctx, slot)
+		if err != nil || absent || captureNativeFixtureShape(ledger, slot, "live", live) != nil {
+			t.Fatal("private synthetic live shape capture refused")
+		}
+	}
 	fresh, err := engine.journal.Load(ctx, s.Anchor())
 	if err != nil || !bytes.Equal(fresh.Bytes(), s.Bytes()) || fresh.ResourceVersion() != s.ResourceVersion() || engine.fixtureFence(s) != ErrFixtures {
 		t.Fatal("native recipe proof changed journal or silently retired its fence")
 	}
-	t.Log("all ten fixed recipes accepted; actual Job controller suspended, manual gated Pod owners/specs unchanged for30s; WAL remains fenced")
+	t.Log("all ten fixed recipes accepted through private native wire; actual Job controller suspended, manual gated Pod owners/specs unchanged for30s; original ledger cleanup requires actual absence; WAL remains fenced")
 }

@@ -215,7 +215,7 @@ func TestKindTargetAuthenticatedNativeKubelet(t *testing.T) {
 			plan := fixturePlanImages(t, "isolated-install", profile.id, installpackage.Images{
 				Controller: "registry.example/controller@sha256:" + strings.Repeat("a", 64), API: apiImage,
 			})
-			access, err := NewHTTPAccess(config)
+			access, err := NewDirectHTTPAccess(config)
 			if err != nil {
 				t.Fatal(err)
 			}

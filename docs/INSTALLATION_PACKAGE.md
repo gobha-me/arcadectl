@@ -765,8 +765,9 @@ and pending installer recovery before even an injected proof provider runs.
 Malformed, unreadable and terminal-but-unretired files also block. The future
 closed provider must independently observe original identity, whole allowed
 shape and actual absence, archive evidence and retire the exact active file.
-No retirement or persistent fixture transport is supplied yet; a terminal WAL
-alone cannot bypass those missing proofs. Cooperative local locking and these
+The private transport below supplies once-only fixture effects, but no public
+provider or retirement path exists; a terminal WAL alone cannot bypass those
+missing proofs. Cooperative local locking and these
 temporal checks are not an atomic cluster lock or fresh behavioral evidence.
 
 ### Closed inert-fixture recipes
@@ -804,11 +805,16 @@ A future closed, durably journaled synthetic-preview path must separately
 justify a valid dry-run-only spec change. CRD/CEL or RBAC rejection is not
 substitute evidence for the signed unsafe admission policy.
 
-These recipes and their normal-SDK disposable test are not production fixture
-permission, guarded effects, whole metadata/status validation, observation-only
-recovery or WAL retirement. Test cleanup uses acknowledged original UID/fresh
-RV preconditions and actual absence, and skips a Job when its worker's absence
-is unproved; exact owned-cluster teardown remains an independent fallback.
+The disposable native test now uses the same engine's original direct transport,
+sealed actor/policy witnesses and private ledger-bound wire for persistent
+CREATE/GET/DELETE on both exact profiles. The normal SDK supplies only desired-
+shape dry runs and limited test-owned descendant observations. These tests are
+not production fixture permission, whole metadata/status validation,
+observation-only recovery or WAL retirement. Test cleanup enumerates durable
+acknowledgements even after post-ACK refusal, uses original UID/fresh RV
+preconditions and requires actual absence. Unknown CREATE blocks cleanup
+transitions and no Job is removed before its worker's absence is proved;
+exact owned-cluster teardown remains an independent fallback.
 The already-cancelled synthetic leaf uses background deletion only within that
 fresh exclusively owned cluster, with no finalizers/owners or observed
 application/runtime descendants and no deployed application controller.
@@ -850,9 +856,16 @@ This is a private transport component with fake-credential HTTPS regression
 tests, **not a production permission boundary or full provider**. No public
 entrypoint invokes it. Complete cold/runtime absence, whole dry-run validation
 before CREATE, accepted/live metadata/status/descendant validation before
-cleanup, native transport certification and WAL retirement remain necessary.
-Native recipe evidence above uses the normal SDK and does not certify this
-transport or these missing production checks.
+cleanup and WAL retirement remain necessary. Native recipe evidence above
+certifies this private transport in an exclusively owned test cluster, not
+those missing production checks or the complete installation lifecycle.
+
+A test-only, off-by-default diagnostic can privately capture the fixed synthetic
+fixtures' native metadata/status after original UID and desired-shape checks.
+It requires an existing protected directory, creates private files without
+overwrite and excludes executable specs, credentials and general observations.
+The captures are not uploaded as CI artifacts, are not fixture authority and
+do not substitute for production whole-result validators.
 
 ### Native non-binding storage-candidate evidence
 
