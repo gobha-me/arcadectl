@@ -148,6 +148,9 @@ func (a *HTTPAccess) probeOperation(ctx context.Context, operation admissionProb
 	if err != nil {
 		return nil, err
 	}
+	if a.actor != nil && !a.actor.allows(key, operation) {
+		return nil, ErrInvalid
+	}
 	method, successCode := http.MethodPost, http.StatusCreated
 	query := "dryRun=All&fieldManager=arcadectl-installer&fieldValidation=Strict"
 	var payload any = object.Object
@@ -206,7 +209,11 @@ func (a *HTTPAccess) probeOperation(ctx context.Context, operation admissionProb
 		}
 		capture.expected = expected
 	}
-	ctx = context.WithValue(ctx, attemptKey{}, &requestAttempt{method: method, probe: capture})
+	attempt := &requestAttempt{method: method, probe: capture}
+	if a.actor != nil {
+		attempt.actor = &actorRequestCapture{identity: *a.actor, method: method, url: u.String(), body: body}
+	}
+	ctx = context.WithValue(ctx, attemptKey{}, attempt)
 	request, err := http.NewRequestWithContext(ctx, method, u.String(), bytes.NewReader(body))
 	if err != nil {
 		return nil, ErrInvalid

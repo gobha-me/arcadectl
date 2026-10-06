@@ -35,7 +35,6 @@ func (a *HTTPAccess) proofRequest(ctx context.Context, method, path string, body
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	ctx = logr.NewContext(ctx, logr.Discard())
-	ctx = context.WithValue(ctx, attemptKey{}, &requestAttempt{method: method})
 	var encoded []byte
 	var err error
 	if body != nil {
@@ -50,6 +49,15 @@ func (a *HTTPAccess) proofRequest(ctx context.Context, method, path string, body
 	if method == http.MethodPost {
 		u.RawQuery = "fieldManager=arcadectl-installer&fieldValidation=Strict"
 	}
+	attempt := &requestAttempt{method: method}
+	if a.actor != nil {
+		review, ok := body.(*authv1.SelfSubjectAccessReview)
+		if method != http.MethodPost || path != "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews" || !ok || !a.actor.allowsReview(review) {
+			return nil, ErrInvalid
+		}
+		attempt.actor = &actorRequestCapture{identity: *a.actor, method: method, url: u.String(), body: encoded}
+	}
+	ctx = context.WithValue(ctx, attemptKey{}, attempt)
 	r, err := http.NewRequestWithContext(ctx, method, u.String(), bytes.NewReader(encoded))
 	if err != nil {
 		return nil, ErrInvalid

@@ -50,6 +50,66 @@ func probePolicyName(t *testing.T, plan *installrender.Plan, stem string) string
 	return ""
 }
 
+func TestAdmissionUnsafeProbeAcceptedShapeClosedBranch(t *testing.T) {
+	plan := fixturePlan(t)
+	_, expected, _, err := admissionCreateProbe(plan, probePolicyName(t, plan, "arcadectl-destroy-unsafe-admin"), "arcadectl-controller", "arcadectl-probe-0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	valid := probeResultFixture(t, expected, now)
+	if !validAdmissionProbeResult(expected, valid, now, now.Add(time.Second)) {
+		t.Fatal("closed unsafe accepted shape refused")
+	}
+	for _, change := range []func(*unstructured.Unstructured){
+		func(o *unstructured.Unstructured) { o.SetAnnotations(nil) },
+		func(o *unstructured.Unstructured) {
+			o.SetAnnotations(map[string]string{"arcade.gobha.me/unsafe-requested-by": "foreign"})
+		},
+		func(o *unstructured.Unstructured) {
+			a := o.GetAnnotations()
+			a["foreign"] = "injected"
+			o.SetAnnotations(a)
+		},
+		func(o *unstructured.Unstructured) {
+			_ = unstructured.SetNestedField(o.Object, nil, "spec", "backupRef")
+		},
+		func(o *unstructured.Unstructured) {
+			_ = unstructured.SetNestedField(o.Object, nil, "spec", "repositorySecretRef")
+		},
+		func(o *unstructured.Unstructured) {
+			_ = unstructured.SetNestedField(o.Object, "foreign", "spec", "mode")
+		},
+	} {
+		bad := expected.DeepCopy()
+		change(bad)
+		if admissionProbeFieldset(bad) != nil || validAdmissionProbeResult(bad, probeResultFixture(t, bad, now), now, now.Add(time.Second)) {
+			t.Fatal("unsigned unsafe fieldset admitted")
+		}
+	}
+	for _, change := range []func(*unstructured.Unstructured){
+		func(o *unstructured.Unstructured) {
+			o.SetAnnotations(map[string]string{"arcade.gobha.me/unsafe-requested-by": "foreign"})
+		},
+		func(o *unstructured.Unstructured) {
+			_ = unstructured.SetNestedField(o.Object, "injected", "spec", "unsafeReason")
+		},
+		func(o *unstructured.Unstructured) { o.SetResourceVersion("17") },
+		func(o *unstructured.Unstructured) { o.Object["status"] = map[string]any{} },
+		func(o *unstructured.Unstructured) {
+			fields := o.GetManagedFields()
+			fields[0].FieldsV1 = &metav1.FieldsV1{Raw: []byte(`{"f:spec":{"f:backupRef":{}}}`)}
+			o.SetManagedFields(fields)
+		},
+	} {
+		result := valid.DeepCopy()
+		change(result)
+		if validAdmissionProbeResult(expected, result, now, now.Add(time.Second)) {
+			t.Fatal("altered unsafe accepted shape admitted")
+		}
+	}
+}
+
 func TestAdmissionProbeAcceptedShapeRejectsMutationsAndMalformedMetadata(t *testing.T) {
 	plan := fixturePlan(t)
 	now := time.Now().UTC()

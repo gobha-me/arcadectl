@@ -692,6 +692,51 @@ completion. Fixed HTTPS fixtures test the production observer/provider and
 fault barriers; they do not certify native policy evaluation, real storage,
 kubelet behavior or a complete binary installation lifecycle.
 
+### Closed original software actor access
+
+The private admission factory consumes an explicitly selected existing-admin-
+impersonation mode. There is no default mode, TokenRequest, credential fallback,
+new permission grant or additional human Kubernetes account. The factory checks
+the exact namespace/journal, registered package, all original signed accounts
+and RBAC objects, and all twelve original healthy policies/bindings before and
+after constructing its three fixed software clients. Missing, replaced or
+drifted access is not adopted. Mixed-package access uses the original recorded
+signed templates. The admin's existing impersonation right is reviewed against
+each exact namespace/account name; it is not guessed from discovery verbs.
+
+Actor credentials and TLS come only from the administrator's already-frozen
+configuration. `NewDirectHTTPAccess` explicitly selects direct routing, rejects
+caller proxy/dial callbacks and bypasses environment proxies. Observer clients
+inherit that same explicit routing; callback-free frozen source configuration
+is not passed directly to an environment-proxy-defaulting observer. The CLI's
+read-only inspection uses this direct constructor. Actor derivation refuses
+pre-existing impersonation, transport/routing wrappers or credential plugins.
+
+Only ordinary-controller Pod/PVC UPDATE and PVC CREATE, destroy-controller Pod/
+GameDestroy UPDATE and PVC DELETE, and destroy-admin GameDestroy CREATE/UPDATE
+are exposed. Each operation first requires the actor's own exact operation SSAR,
+not administrator permission. Pod subresources remain administrator probes:
+the runtime actors do not gain those privileges. The factory repeats original
+access/policy/journal witnesses around authorization and dry-run requests.
+Negative policy/binding/message triples must belong to the witnessed signed
+protection set. RBAC 403, a foreign policy or unsigned message is not evidence.
+
+The inner actor wire guard pins the administrator authentication and the exact
+single service-account impersonation header, method, URL and body. Groups,
+UID/extra impersonation headers, aliases/duplicates, authentication replacement,
+context loss and operation/body changes are refused before transmission.
+Generic persistent Access methods and general read/discovery requests cannot
+use these actor clients. All errors remain fixed and redacted.
+
+HTTPS fixtures cover the complete factory's original-identity/permission/race
+barriers and malicious wrappers. Fresh-process non-loopback proxy tests cover
+both sealed safety and recovery observer reads. Isolated native API-server
+tests use the same closed actor transport and actual operation authorization
+on both declared profiles, but do not manufacture policy status or claim the
+full factory/provider is certified there. Durable inert fixture ownership,
+non-binding storage, whole named accepted shapes, cleanup/recovery and complete
+lifecycle checkpoint composition remain separate unfinished requirements.
+
 ### Named dry-run transport and native operation evidence
 
 The private admission transport also has a closed operation set: named PUT for
@@ -725,14 +770,20 @@ non-world PVC DELETE acceptance, and unsafe-destroy spec/audit-identity denials.
 Every operation rereads and compares the entire unchanged persistent fixture.
 Worker Pods have actual original Job owners, one scheduling gate and no token
 automount. Their test-owned Jobs are suspended with parallelism zero; PVCs use
-an empty storage class. Distinct-identity unsafe fixtures are test-only native
-clients, not production impersonation or credential fallback.
+an empty storage class. The same closed actor wire transport additionally
+certifies correct/wrong-actor worker gate authorization, ordinary-controller
+restore-candidate CREATE and cold-marker change/removal, dedicated-controller
+retained-PVC dry-run DELETE, and distinct-admin unsafe CREATE/UPDATE with paired
+audit/spec denials. Unsafe CREATE has an independently closed native fieldset
+for its exact audit annotation and no backup/repository references. Setup remains
+test-owned; no fixture is a real world or evidence of production cleanup.
 
 This is API-server transport evidence, not an installer fixture lifecycle or
 complete `AdmissionEffective` implementation. Production temporary-fixture
-ownership/recovery/cleanup, whole named-result validation, operation-specific
-authorization checks and unchanged original policy/account/journal witnesses
-remain required. The prerequisite contract does not silently gain PVC DELETE,
+ownership/recovery/cleanup and whole named-result validation remain required.
+The private factory's operation-specific authorization and unchanged original
+policy/account/journal witnesses do not substitute for that fixture lifecycle.
+The prerequisite contract does not silently gain administrator PVC DELETE,
 additional UPDATE or Pod subresource privileges. No scheduler, kubelet, real
 world destruction or binary installation lifecycle is certified here.
 

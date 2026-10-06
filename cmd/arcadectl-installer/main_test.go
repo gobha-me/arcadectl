@@ -12,7 +12,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,14 +54,11 @@ func TestStaticConfigurationUsesOnlyExplicitContextAndNoEnvironmentRouting(t *te
 	t.Setenv("HTTPS_PROXY", "http://PRIVATE-CANARY.invalid")
 	t.Setenv("SSL_CERT_FILE", "PRIVATE-CANARY")
 	c, err := loadStaticConfig(o)
-	if err != nil || c == nil || c.Host != "https://cluster.example" || c.BearerToken != "PRIVATE-CANARY" || c.ExecProvider != nil || c.AuthProvider != nil || c.Proxy == nil {
+	if err != nil || c == nil || c.Host != "https://cluster.example" || c.BearerToken != "PRIVATE-CANARY" || c.ExecProvider != nil || c.AuthProvider != nil || c.Proxy != nil {
 		t.Fatal("explicit static configuration not preserved")
 	}
-	u, _ := url.Parse(c.Host)
-	proxy, err := c.Proxy(&http.Request{URL: u})
-	if err != nil || proxy != nil {
-		t.Fatal("environment routing admitted")
-	}
+	// The installer explicitly selects NewDirectHTTPAccess at the connection
+	// boundary. No arbitrary routing callback is carried in its input config.
 }
 
 func TestStaticConfigurationRefusesAmbiguousOrImplicitInputs(t *testing.T) {
@@ -213,7 +209,7 @@ func TestSelectedReferenceFilesRemainProtectedBeforeAnySDKOpen(t *testing.T) {
 			if err != nil {
 				t.Fatal("reference must reach protected snapshot boundary")
 			}
-			if access, err := installengine.NewHTTPAccess(c); err == nil || access != nil || strings.Contains(err.Error(), "PRIVATE-CANARY") {
+			if access, err := installengine.NewDirectHTTPAccess(c); err == nil || access != nil || strings.Contains(err.Error(), "PRIVATE-CANARY") {
 				t.Fatal("unsafe token reference admitted")
 			}
 		})
@@ -236,7 +232,7 @@ func TestProtectedStaticTokenFileIsFrozenBeforeTransport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if access, err := installengine.NewHTTPAccess(c); err != nil || access == nil {
+	if access, err := installengine.NewDirectHTTPAccess(c); err != nil || access == nil {
 		t.Fatal("protected static reference rejected", err)
 	}
 }

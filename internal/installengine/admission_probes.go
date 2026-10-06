@@ -171,6 +171,9 @@ func validAdmissionProbeResult(expected, result *unstructured.Unstructured, star
 		return false
 	}
 	fieldset := admissionProbeFieldset(expected)
+	if fieldset == nil {
+		return false
+	}
 	var actualFields map[string]any
 	if strictErrors, err := strictjson.UnmarshalStrict(field.FieldsV1.Raw, &actualFields); err != nil || len(strictErrors) != 0 || !reflect.DeepEqual(actualFields, fieldset) {
 		return false
@@ -252,8 +255,39 @@ func admissionProbeFieldset(expected *unstructured.Unstructured) map[string]any 
 		result["f:spec"] = spec
 	case "GameDestroy":
 		spec := f(".", "cancelRequested", "mode")
-		spec["f:backupRef"] = f(".", "name", "uid")
-		spec["f:repositorySecretRef"] = f(".", "name", "resourceVersion", "uid")
+		mode, found, err := unstructured.NestedString(expected.Object, "spec", "mode")
+		if err != nil || !found {
+			return nil
+		}
+		switch mode {
+		case "VerifiedBackup":
+			if len(expected.GetAnnotations()) != 0 {
+				return nil
+			}
+			spec["f:backupRef"] = f(".", "name", "uid")
+			spec["f:repositorySecretRef"] = f(".", "name", "resourceVersion", "uid")
+		case "UnsafeNoBackup":
+			const audit = "arcade.gobha.me/unsafe-requested-by"
+			annotations := expected.GetAnnotations()
+			if len(annotations) != 1 || annotations[audit] != "system:serviceaccount:"+expected.GetNamespace()+":arcadectl-destroy-admin" {
+				return nil
+			}
+			if _, present, _ := unstructured.NestedFieldNoCopy(expected.Object, "spec", "backupRef"); present {
+				return nil
+			}
+			if _, present, _ := unstructured.NestedFieldNoCopy(expected.Object, "spec", "repositorySecretRef"); present {
+				return nil
+			}
+			spec["f:unsafeReason"] = f()
+			meta, _ := result["f:metadata"].(map[string]any)
+			if meta == nil {
+				meta = map[string]any{}
+				result["f:metadata"] = meta
+			}
+			meta["f:annotations"] = f(".", audit)
+		default:
+			return nil
+		}
 		target := f(".", "game")
 		target["f:gameServer"] = f(".", "name", "uid")
 		data := f(".", "identity")

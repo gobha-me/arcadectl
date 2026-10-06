@@ -43,6 +43,10 @@ type recoveryFixture struct {
 // setup only; report collection permits GETs for the original Namespace/PVCs
 // and no other request. This is not a complete installer lifecycle proof.
 func newRecoveryFixture(t *testing.T) *recoveryFixture {
+	return newRecoveryFixtureRouting(t, false)
+}
+
+func newRecoveryFixtureRouting(t *testing.T, direct bool) *recoveryFixture {
 	t.Helper()
 	plan := fixturePlan(t)
 	privateDir := t.TempDir()
@@ -124,7 +128,11 @@ func newRecoveryFixture(t *testing.T) *recoveryFixture {
 		}
 	}))
 	t.Cleanup(server.Close)
-	access, err := NewHTTPAccess(serverConfig(server))
+	constructor := NewHTTPAccess
+	if direct {
+		constructor = NewDirectHTTPAccess
+	}
+	access, err := constructor(serverConfig(server))
 	if err != nil {
 		t.Fatal(err)
 	}

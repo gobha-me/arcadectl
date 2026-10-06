@@ -21,6 +21,10 @@ import (
 )
 
 func TestSafetyObservationUsesFrozenMutationIdentityAndExactJournal(t *testing.T) {
+	testSafetyObservation(t, false)
+}
+
+func testSafetyObservation(t *testing.T, direct bool) {
 	f := newFixture(t, false)
 	ns, err := f.access.client.CoreV1().Namespaces().Get(context.Background(), f.plan.Namespace(), metav1.GetOptions{})
 	if err != nil {
@@ -107,9 +111,21 @@ func TestSafetyObservationUsesFrozenMutationIdentityAndExactJournal(t *testing.T
 		t.Fatal(err)
 	}
 	config.BearerTokenFile = tokenFile
-	access, err := NewHTTPAccess(config)
+	constructor := NewHTTPAccess
+	if direct {
+		constructor = NewDirectHTTPAccess
+	}
+	access, err := constructor(config)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if direct {
+		calls := instrumentDirectObserver(t, access)
+		t.Cleanup(func() {
+			if calls.Load() == 0 {
+				t.Error("direct safety observer skipped actual non-loopback reads")
+			}
+		})
 	}
 	// These source changes must affect neither mutation nor read identity.
 	config.Host, config.BearerToken = "https://foreign.invalid", "changed-fake-token"

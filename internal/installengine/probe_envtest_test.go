@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gobha-me/arcadectl/internal/installrender"
+	"github.com/gobha-me/arcadectl/internal/installstate"
 	admissionv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -59,7 +60,7 @@ func TestEnvtestNativeAdmissionProbeDeclaredProfiles(t *testing.T) {
 			})
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 			defer cancel()
-			access, err := NewHTTPAccess(config)
+			access, err := NewDirectHTTPAccess(config)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -167,6 +168,29 @@ func TestEnvtestNativeAdmissionProbeDeclaredProfiles(t *testing.T) {
 // constitute a completed AdmissionEffective/lifecycle proof.
 func proveNativeNamedAdmissionProbes(t *testing.T, ctx context.Context, plan *installrender.Plan, access *HTTPAccess, custom dynamic.Interface, config *rest.Config, policies map[string]*admissionv1.ValidatingAdmissionPolicy, bindings map[string]string) {
 	t.Helper()
+	// Native wire/actor authorization evidence only. envtest has no policy
+	// status controller, so this does NOT manufacture configured status or
+	// claim newActors' complete original-inventory admission proof.
+	actorClient := func(actor admissionActor) *HTTPAccess {
+		t.Helper()
+		key := installstate.Key{APIVersion: "v1", Kind: "ServiceAccount", Namespace: plan.Namespace(), Name: actor.account()}
+		permission, err := publicPermission(key, "get")
+		if err != nil {
+			t.Fatal(err)
+		}
+		permission.spec.ResourceAttributes.Verb = "impersonate"
+		if access.authorize(ctx, permission.spec) != nil {
+			t.Fatal("native admin lacks exact actor impersonation right")
+		}
+		client, err := access.actorClient(actor, plan.Namespace())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return client
+	}
+	ordinaryAccess := actorClient(ordinaryControllerActor)
+	destroyAccess := actorClient(destroyControllerActor)
+	adminAccess := actorClient(destroyAdministratorActor)
 	policyName := func(stem string) string {
 		t.Helper()
 		found := ""
@@ -203,6 +227,12 @@ func proveNativeNamedAdmissionProbes(t *testing.T, ctx context.Context, plan *in
 	}
 	check := func(name string, a *HTTPAccess, op admissionProbeOperation, original, desired *unstructured.Unstructured, policy string, index int) {
 		t.Helper()
+		if a.actor != nil {
+			permission, err := actorPermission(resourceKeyFromObject(desired), op)
+			if err != nil || a.authorize(ctx, permission.spec) != nil {
+				t.Fatal("native actor lacks exact operation authority", name)
+			}
+		}
 		binding, message := "", ""
 		if policy != "" {
 			binding = bindings[policy]
@@ -251,6 +281,28 @@ func proveNativeNamedAdmissionProbes(t *testing.T, ctx context.Context, plan *in
 			t.Fatalf("owned native %s dry-run changed original fixture: %v", name, err)
 		}
 	}
+	checkCreate := func(name string, a *HTTPAccess, desired *unstructured.Unstructured, policy string, index int) {
+		t.Helper()
+		permission, err := actorPermission(resourceKeyFromObject(desired), probeCreateOperation)
+		if err != nil || a.authorize(ctx, permission.spec) != nil {
+			t.Fatal("native actor lacks collection CREATE authority", name)
+		}
+		binding, message := "", ""
+		if policy != "" {
+			binding, message = bindings[policy], policies[policy].Spec.Validations[index].Message
+		}
+		start := time.Now().UTC()
+		result, err := a.probeCreate(ctx, desired, policy, binding, message)
+		if err != nil || policy != "" && result != nil || policy == "" && !validAdmissionProbeResult(desired, result, start, time.Now().UTC()) {
+			// All input/output here is a fixed public fixture in our disposable
+			// API server, never cluster credentials or a production response.
+			encoded, _ := json.Marshal(result)
+			t.Fatalf("native actor CREATE evidence refused %s: %v; public shape %s", name, err, encoded)
+		}
+		if _, err := clientFor(desired).Get(ctx, desired.GetName(), metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+			t.Fatal("native actor CREATE persisted", name)
+		}
+	}
 	for _, worker := range []string{"backup", "restore", "destroy"} {
 		policy := policyName("arcadectl-" + worker + "-worker-gate")
 		positive, _, _, err := admissionCreateProbe(plan, policy, "arcadectl-controller", "arcadectl-probe-0123456789abcdef0123456789abcdef")
@@ -286,6 +338,15 @@ func proveNativeNamedAdmissionProbes(t *testing.T, ctx context.Context, plan *in
 		changed = live.DeepCopy()
 		changed.SetAnnotations(map[string]string{"arcade.gobha.me/" + worker + "-pod-authorized": "foreign-uid"})
 		check(worker+" UID marker update", access, probeUpdateOperation, live, changed, policy, 3)
+		correct, wrong := ordinaryAccess, destroyAccess
+		if worker == "destroy" {
+			correct, wrong = destroyAccess, ordinaryAccess
+		}
+		changed = live.DeepCopy()
+		unstructured.RemoveNestedField(changed.Object, "spec", "schedulingGates")
+		changed.SetAnnotations(map[string]string{"arcade.gobha.me/" + worker + "-pod-authorized": string(live.GetUID())})
+		check(worker+" original actor gate authorization", correct, probeUpdateOperation, live, changed, "", 0)
+		check(worker+" wrong actor gate authorization", wrong, probeUpdateOperation, live, changed, policy, 3)
 		check(worker+" ephemeral subresource", access, probeEphemeralOperation, live, live.DeepCopy(), policy, 0)
 		check(worker+" resize subresource", access, probeResizeOperation, live, live.DeepCopy(), policy, 0)
 	}
@@ -302,6 +363,11 @@ func proveNativeNamedAdmissionProbes(t *testing.T, ctx context.Context, plan *in
 	pl := create(plain)
 	check("plain ephemeral", access, probeEphemeralOperation, pl, pl.DeepCopy(), "", 0)
 	check("plain resize", access, probeResizeOperation, pl, pl.DeepCopy(), "", 0)
+	_, candidate, _, err := admissionCreateProbe(plan, policyName("arcadectl-restore-candidate-pvc-create"), "arcadectl-controller", "arcadectl-probe-0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkCreate("ordinary restore candidate", ordinaryAccess, candidate, "", 0)
 
 	retained, _, _, err := admissionCreateProbe(plan, policyName("arcadectl-retained-world-pvc-delete"), "arcadectl-controller", "arcadectl-probe-0123456789abcdef0123456789abcdef")
 	if err != nil {
@@ -319,7 +385,9 @@ func proveNativeNamedAdmissionProbes(t *testing.T, ctx context.Context, plan *in
 	changed = claim.DeepCopy()
 	changed.SetAnnotations(map[string]string{"arcade.gobha.me/cold-backup-uid": "foreign-backup"})
 	check("retained marker change", access, probeUpdateOperation, claim, changed, policy, 1)
+	check("ordinary retained marker change", ordinaryAccess, probeUpdateOperation, claim, changed, "", 0)
 	check("retained DELETE", access, probeDeletePVCOperation, claim, claim.DeepCopy(), policy, 2)
+	check("dedicated retained DELETE", destroyAccess, probeDeletePVCOperation, claim, claim.DeepCopy(), "", 0)
 	// Seed a native old marker using the actual signed ordinary-controller
 	// RBAC, solely in this fixture. Removing an existing marker is a distinct
 	// oldObject branch from trying to forge a new one.
@@ -336,6 +404,7 @@ func proveNativeNamedAdmissionProbes(t *testing.T, ctx context.Context, plan *in
 	cleared := marked.DeepCopy()
 	cleared.SetAnnotations(nil)
 	check("retained marker removal", access, probeUpdateOperation, marked, cleared, policy, 1)
+	check("ordinary retained marker removal", ordinaryAccess, probeUpdateOperation, marked, cleared, "", 0)
 	plainClaim := retained.DeepCopy()
 	plainClaim.SetName("arcadectl-probe-plain-claim")
 	plainClaim.SetLabels(nil)
@@ -391,24 +460,22 @@ func proveNativeNamedAdmissionProbes(t *testing.T, ctx context.Context, plan *in
 	_ = unstructured.SetNestedField(unsafe.Object, "UnsafeNoBackup", "spec", "mode")
 	_ = unstructured.SetNestedField(unsafe.Object, "owned native admission fixture", "spec", "unsafeReason")
 	unsafe.SetAnnotations(map[string]string{"arcade.gobha.me/unsafe-requested-by": "system:serviceaccount:" + plan.Namespace() + ":arcadectl-destroy-admin"})
-	// Distinct identities are test-owned native clients only. No production
-	// probe introduces impersonation, an admin token or permission fallback.
+	// Typed setup stays test-owned. Closed actor clients use the production
+	// wire guard; no TokenRequest, extra grant or identity fallback is added.
 	adminConfig := rest.CopyConfig(config)
 	adminConfig.Impersonate = rest.ImpersonationConfig{UserName: "system:serviceaccount:" + plan.Namespace() + ":arcadectl-destroy-admin"}
-	adminAccess, err := NewHTTPAccess(adminConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
 	adminCustom, err := dynamic.NewForConfig(adminConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	unsafe.SetUID("")
-	unsafe.SetResourceVersion("")
-	unsafe.SetManagedFields(nil)
-	unsafe.SetCreationTimestamp(metav1.Time{})
-	unsafe.SetGeneration(0)
+	for _, field := range []string{"uid", "resourceVersion", "managedFields", "creationTimestamp", "generation"} {
+		unstructured.RemoveNestedField(unsafe.Object, "metadata", field)
+	}
 	unsafe.SetName("arcadectl-probe-unsafe")
+	checkCreate("distinct unsafe admin CREATE", adminAccess, unsafe, "", 0)
+	badAudit := unsafe.DeepCopy()
+	badAudit.SetAnnotations(map[string]string{"arcade.gobha.me/unsafe-requested-by": "foreign-admin"})
+	checkCreate("distinct unsafe malformed audit CREATE", adminAccess, badAudit, policyName("arcadectl-destroy-unsafe-admin"), 1)
 	u, err := adminCustom.Resource(schema.GroupVersionResource{Group: "arcade.gobha.me", Version: "v1alpha1", Resource: "gamedestroys"}).Namespace(plan.Namespace()).Create(ctx, unsafe, metav1.CreateOptions{})
 	if err != nil {
 		t.Fatal("owned unsafe fixture create:", err)
@@ -417,16 +484,11 @@ func proveNativeNamedAdmissionProbes(t *testing.T, ctx context.Context, plan *in
 	// Exercise the intended VAP UPDATE branch with a valid mutable spec
 	// field on an already-unsafe object, using the destroy controller's
 	// metadata-only exception rather than a mode-changing false positive.
-	controllerConfig := rest.CopyConfig(config)
-	controllerConfig.Impersonate = rest.ImpersonationConfig{UserName: "system:serviceaccount:" + plan.Namespace() + ":arcadectl-destroy-controller"}
-	controllerAccess, err := NewHTTPAccess(controllerConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
-	check("unsafe controller unchanged update", controllerAccess, probeUpdateOperation, u, u.DeepCopy(), "", 0)
+	check("unsafe controller unchanged update", destroyAccess, probeUpdateOperation, u, u.DeepCopy(), "", 0)
 	changed = u.DeepCopy()
 	_ = unstructured.SetNestedField(changed.Object, true, "spec", "cancelRequested")
-	check("unsafe controller spec update", controllerAccess, probeUpdateOperation, u, changed, policyName("arcadectl-destroy-unsafe-admin"), 0)
+	check("unsafe controller spec update", destroyAccess, probeUpdateOperation, u, changed, policyName("arcadectl-destroy-unsafe-admin"), 0)
+	check("unsafe admin mutable spec update", adminAccess, probeUpdateOperation, u, changed, "", 0)
 	changed = u.DeepCopy()
 	changed.SetAnnotations(map[string]string{"arcade.gobha.me/unsafe-requested-by": "foreign-admin"})
 	check("unsafe audit identity update", adminAccess, probeUpdateOperation, u, changed, policyName("arcadectl-destroy-unsafe-admin"), 1)

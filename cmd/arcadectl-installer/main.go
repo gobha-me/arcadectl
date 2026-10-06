@@ -12,7 +12,6 @@ import (
 	"errors"
 	"flag"
 	"io"
-	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
@@ -164,7 +163,7 @@ func loadReporter(o options) (*installengine.RecoveryReporter, *installstate.Boo
 	if err != nil {
 		return nil, nil, nil, errInputs
 	}
-	access, err := installengine.NewHTTPAccess(configuration)
+	access, err := installengine.NewDirectHTTPAccess(configuration)
 	if err != nil {
 		return nil, nil, nil, errInputs
 	}
@@ -198,7 +197,7 @@ func loadReporter(o options) (*installengine.RecoveryReporter, *installstate.Boo
 // Parse a bounded protected snapshot and construct static REST configuration
 // directly. No SDK loader/converter may open reference files, invoke plugins,
 // select defaults, strip URL parts, merge environment or persist credentials.
-// NewHTTPAccess freezes the remaining selected absolute file references using
+// NewDirectHTTPAccess freezes the remaining selected absolute references using
 // protected reads BEFORE constructing the actual HTTP transport.
 func loadStaticConfig(o options) (*rest.Config, error) {
 	body, _, err := privatefs.ReadAbsolute(o.kubeconfig, 1024*1024, privatefs.Private)
@@ -300,5 +299,5 @@ func loadStaticConfig(o options) (*rest.Config, error) {
 	return &rest.Config{Host: cluster.Server, Username: auth.Username, Password: auth.Password, BearerToken: auth.Token, BearerTokenFile: auth.TokenFile,
 		TLSClientConfig: rest.TLSClientConfig{ServerName: cluster.TLSServerName, CAFile: cluster.CertificateAuthority, CAData: cluster.CertificateAuthorityData,
 			CertFile: auth.ClientCertificate, CertData: auth.ClientCertificateData, KeyFile: auth.ClientKey, KeyData: auth.ClientKeyData},
-		DisableCompression: cluster.DisableCompression, Proxy: func(*http.Request) (*url.URL, error) { return nil, nil }}, nil
+		DisableCompression: cluster.DisableCompression}, nil
 }

@@ -47,6 +47,12 @@ type HTTPAccess struct {
 	// Private frozen read-client configuration shares this access's exact
 	// cluster/static identity, never the caller's rotating files or plugins.
 	frozen *rest.Config
+	// direct records explicitly selected no-environment-proxy routing. The
+	// caller's configuration has no callbacks; only our constructor adds one.
+	direct bool
+	// actor is set only by the closed admission factory. Its wire guard rejects
+	// ordinary Access methods; only bound dry-run probes and actor SSARs pass.
+	actor *actorWireIdentity
 }
 
 type attemptKey struct{}
@@ -54,6 +60,7 @@ type requestAttempt struct {
 	used   atomic.Bool
 	method string
 	probe  *probeCapture
+	actor  *actorRequestCapture
 }
 type attemptTransport struct{ next http.RoundTripper }
 
@@ -93,6 +100,20 @@ func (t attemptTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 func NewHTTPAccess(config *rest.Config) (*HTTPAccess, error) {
+	return newHTTPAccess(config, false)
+}
+
+// NewDirectHTTPAccess explicitly selects direct cluster routing without an
+// environment proxy. It rejects caller routing callbacks rather than replacing
+// them. Admission actor derivation requires this same original routing mode.
+func NewDirectHTTPAccess(config *rest.Config) (*HTTPAccess, error) {
+	if config == nil || config.Proxy != nil || config.Dial != nil {
+		return nil, ErrInvalid
+	}
+	return newHTTPAccess(config, true)
+}
+
+func newHTTPAccess(config *rest.Config, direct bool) (*HTTPAccess, error) {
 	// External credential plugins may print secrets or log raw refresh errors;
 	// v1 deliberately supports static client certificates/bearer credentials.
 	if config == nil || config.ExecProvider != nil || config.AuthProvider != nil || config.Transport != nil {
@@ -119,6 +140,9 @@ func NewHTTPAccess(config *rest.Config) (*HTTPAccess, error) {
 	}
 	frozen := rest.CopyConfig(c)
 	native := nativeTransport(c)
+	if direct {
+		c.Proxy = func(*http.Request) (*url.URL, error) { return nil, nil }
+	}
 	previous := c.WrapTransport
 	c.WrapTransport = func(base http.RoundTripper) http.RoundTripper {
 		// Place the guard below any supplied wrapper or auth-refresh transport.
@@ -133,7 +157,21 @@ func NewHTTPAccess(config *rest.Config) (*HTTPAccess, error) {
 		return nil, ErrInvalid
 	}
 	h.CheckRedirect = func(*http.Request, []*http.Request) error { return ErrRead }
-	return &HTTPAccess{client: h, base: u, native: native, frozen: frozen}, nil
+	return &HTTPAccess{client: h, base: u, native: native, frozen: frozen, direct: direct}, nil
+}
+
+// Observer clients must inherit explicit direct routing too. Keep the source
+// snapshot callback-free for actor provenance; derive only our fixed no-proxy
+// callback for trusted read clients, never a credential or identity fallback.
+func (a *HTTPAccess) readConfig() *rest.Config {
+	if a == nil || a.frozen == nil {
+		return nil
+	}
+	c := rest.CopyConfig(a.frozen)
+	if a.direct {
+		c.Proxy = func(*http.Request) (*url.URL, error) { return nil, nil }
+	}
+	return c
 }
 
 // File-backed credentials are protected, bounded snapshots, never background

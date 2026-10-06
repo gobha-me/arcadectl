@@ -26,7 +26,7 @@ func (p *ClusterPrerequisites) observe(ctx context.Context, request LifecycleChe
 	if _, err := p.permissions(request); err != nil || p.original(ctx, request.Snapshot) != nil {
 		return nil, ErrPrerequisites
 	}
-	observer, err := installobserve.New(p.access.frozen, p.engine.journal, request.Target)
+	observer, err := installobserve.New(p.access.readConfig(), p.engine.journal, request.Target)
 	if err != nil {
 		return nil, ErrPrerequisites
 	}

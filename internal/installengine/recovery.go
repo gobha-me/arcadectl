@@ -105,7 +105,7 @@ func (r *RecoveryReporter) Collect(ctx context.Context, receipt *installstate.Bo
 		return nil, ErrRecovery
 	}
 	plan := r.engine.plans[s.Document().TargetPackage]
-	observer, err := installobserve.New(r.access.frozen, r.engine.journal, plan)
+	observer, err := installobserve.New(r.access.readConfig(), r.engine.journal, plan)
 	if err != nil {
 		return nil, ErrRecovery
 	}
