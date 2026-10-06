@@ -26,8 +26,9 @@ import (
 
 // Certification of private transport and fixed recipes against native actors/
 // controllers, ONLY within targetKindFixture's original disposable cluster.
-// Test-owned desired-shape/leaf checks are not a complete production permission
-// provider, whole-result validator, cleanup recovery or WAL retirement.
+// Whole-result validation is private shape evidence, not a complete production
+// permission provider, cleanup recovery or WAL retirement. Leaf/descendant
+// checks additionally rely on this exclusively owned application-cold cluster.
 func proveKindAdmissionFixtureRecipes(t *testing.T, parent context.Context, config *rest.Config, engine *Engine, s *installstate.Snapshot, plan *installrender.Plan) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(parent, 4*time.Minute)
@@ -127,9 +128,8 @@ func proveKindAdmissionFixtureRecipes(t *testing.T, parent context.Context, conf
 				t.Error("refusing replaced/unproved native recipe cleanup")
 				return // no fresh intent can repair an externally missing original
 			}
-			want, err := ledger.object(slot)
-			if err != nil || !reflect.DeepEqual(live.Object["spec"], want.Object["spec"]) || !reflect.DeepEqual(live.GetLabels(), want.GetLabels()) || !reflect.DeepEqual(live.GetAnnotations(), want.GetAnnotations()) || !reflect.DeepEqual(live.GetOwnerReferences(), want.GetOwnerReferences()) {
-				t.Error("refusing altered/executable/binding native fixture cleanup")
+			if ledger.validateResult(slot, fixtureStableResult, live, time.Now().UTC()) != nil {
+				t.Error("refusing unproved whole native fixture shape before cleanup")
 				return // reliable ACK identity is not inert-shape permission
 			}
 			uid := entry.OriginalUID
@@ -219,8 +219,8 @@ func proveKindAdmissionFixtureRecipes(t *testing.T, parent context.Context, conf
 		if err != nil || dry == nil || dry.GetResourceVersion() != "" {
 			t.Fatalf("native closed recipe%d dry-run rejected: %v", slot, err)
 		}
-		if !reflect.DeepEqual(dry.Object["spec"], o.Object["spec"]) || !reflect.DeepEqual(dry.GetLabels(), o.GetLabels()) || !reflect.DeepEqual(dry.GetAnnotations(), o.GetAnnotations()) || !reflect.DeepEqual(dry.GetOwnerReferences(), o.GetOwnerReferences()) {
-			t.Fatalf("native recipe%d dry-run changed closed shape; closed=%v native=%v", slot, o.Object["spec"], dry.Object["spec"])
+		if ledger.validateResult(slot, fixtureDryRunResult, dry, time.Now().UTC()) != nil {
+			t.Fatalf("native recipe%d whole dry-run shape refused before CREATE", slot)
 		}
 		next, err := ledger.nextDocument()
 		if err != nil {
@@ -234,11 +234,10 @@ func proveKindAdmissionFixtureRecipes(t *testing.T, parent context.Context, conf
 		if err != nil || live == nil || !nativeFixtureUID(string(live.GetUID())) || ledger.document.Entries[slot].OriginalUID != live.GetUID() {
 			t.Fatalf("native recipe%d create unacknowledged: %v", slot, err)
 		}
-		// Compare both native specs to the closed constructor, never promote a
-		// returned dry-run/live spec to desired configuration. Persistent whole
-		// metadata/status validators remain a separate obligation.
-		if !reflect.DeepEqual(dry.Object["spec"], o.Object["spec"]) || !reflect.DeepEqual(live.Object["spec"], o.Object["spec"]) || !reflect.DeepEqual(live.GetLabels(), o.GetLabels()) || !reflect.DeepEqual(live.GetAnnotations(), o.GetAnnotations()) || !reflect.DeepEqual(live.GetOwnerReferences(), o.GetOwnerReferences()) {
-			t.Fatalf("native recipe%d acknowledgement desired shape drifted; closed=%v native=%v", slot, o.Object["spec"], live.Object["spec"])
+		// Original UID is already durable before whole result acceptance. Never
+		// promote returned configuration or a dry-run UID into ownership.
+		if ledger.validateResult(slot, fixtureAcknowledgedResult, live, time.Now().UTC()) != nil {
+			t.Fatalf("native recipe%d whole acknowledgement shape refused", slot)
 		}
 		expected = append(expected, live.DeepCopy())
 		if captureNativeFixtureShape(ledger, slot, "ack", live) != nil {
@@ -264,9 +263,21 @@ func proveKindAdmissionFixtureRecipes(t *testing.T, parent context.Context, conf
 						}
 					}
 					if !observed {
+						if ledger.validateResult(slot, fixtureAcknowledgedResult, live, time.Now().UTC()) != nil {
+							return ErrOwnership
+						}
 						return ErrRead
 					}
 				}
+			}
+			if live.GetKind() == "PersistentVolumeClaim" {
+				phase, _, _ := unstructured.NestedString(live.Object, "status", "phase")
+				if phase == "Pending" && ledger.validateResult(slot, fixtureAcknowledgedResult, live, time.Now().UTC()) == nil {
+					return ErrRead // bounded native Pending→Lost convergence only
+				}
+			}
+			if ledger.validateResult(slot, fixtureStableResult, live, time.Now().UTC()) != nil {
+				return ErrOwnership
 			}
 			if live.GetKind() == "Pod" {
 				for _, field := range []string{"nodeName", "volumes", "initContainers", "ephemeralContainers"} {
@@ -317,7 +328,7 @@ func proveKindAdmissionFixtureRecipes(t *testing.T, parent context.Context, conf
 	}
 	for slot := range fixtureCatalog {
 		live, absent, err := wire.get(ctx, slot)
-		if err != nil || absent || captureNativeFixtureShape(ledger, slot, "live", live) != nil {
+		if err != nil || absent || ledger.validateResult(slot, fixtureStableResult, live, time.Now().UTC()) != nil || captureNativeFixtureShape(ledger, slot, "live", live) != nil {
 			t.Fatal("private synthetic live shape capture refused")
 		}
 	}
@@ -325,5 +336,5 @@ func proveKindAdmissionFixtureRecipes(t *testing.T, parent context.Context, conf
 	if err != nil || !bytes.Equal(fresh.Bytes(), s.Bytes()) || fresh.ResourceVersion() != s.ResourceVersion() || engine.fixtureFence(s) != ErrFixtures {
 		t.Fatal("native recipe proof changed journal or silently retired its fence")
 	}
-	t.Log("all ten fixed recipes accepted through private native wire; actual Job controller suspended, manual gated Pod owners/specs unchanged for30s; original ledger cleanup requires actual absence; WAL remains fenced")
+	t.Log("all ten fixed recipes passed whole dry-run/ACK/stable validation through private native wire; actual Job controller suspended, manual gated Pod owners/specs unchanged for30s; original ledger cleanup requires actual absence; WAL remains fenced")
 }

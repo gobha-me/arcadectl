@@ -809,8 +809,9 @@ The disposable native test now uses the same engine's original direct transport,
 sealed actor/policy witnesses and private ledger-bound wire for persistent
 CREATE/GET/DELETE on both exact profiles. The normal SDK supplies only desired-
 shape dry runs and limited test-owned descendant observations. These tests are
-not production fixture permission, whole metadata/status validation,
-observation-only recovery or WAL retirement. Test cleanup enumerates durable
+not production fixture permission, observation-only recovery or WAL retirement.
+The private whole-result validator below checks dry-run, ACK and stable bodies.
+Test cleanup enumerates durable
 acknowledgements even after post-ACK refusal, uses original UID/fresh RV
 preconditions and requires actual absence. Unknown CREATE blocks cleanup
 transitions and no Job is removed before its worker's absence is proved;
@@ -854,9 +855,9 @@ resends after a lost response, post-witness refusal, client rebuild or restart.
 
 This is a private transport component with fake-credential HTTPS regression
 tests, **not a production permission boundary or full provider**. No public
-entrypoint invokes it. Complete cold/runtime absence, whole dry-run validation
-before CREATE, accepted/live metadata/status/descendant validation before
-cleanup and WAL retirement remain necessary. Native recipe evidence above
+entrypoint invokes it. Complete cold/runtime absence, guarded dry-run transport,
+integration of whole-result/descendant checks before effects, observation-only
+recovery and WAL retirement remain necessary. Native recipe evidence above
 certifies this private transport in an exclusively owned test cluster, not
 those missing production checks or the complete installation lifecycle.
 
@@ -865,7 +866,46 @@ fixtures' native metadata/status after original UID and desired-shape checks.
 It requires an existing protected directory, creates private files without
 overwrite and excludes executable specs, credentials and general observations.
 The captures are not uploaded as CI artifacts, are not fixture authority and
-do not substitute for production whole-result validators.
+do not substitute for whole-result validation or complete provider authority.
+
+### Closed whole-fixture result validation
+
+A private pure validator derives desired configuration only from the fixed-slot
+recipe and registered signed plan. Dry-run bodies require a Planned slot, a
+native generated UUID and no RV; that UUID never supplies durable ownership.
+ACK and stable-live bodies require an Original slot, its durably acknowledged
+UUID and canonical positive RV. Pending effects cannot be repaired by a body.
+
+Strict typed decoding plus exact raw top-level/spec/metadata/status equality
+reject extra/null/zero fields, altered owners/gates, execution and volume binding.
+Only fixed installer fieldsets and status-correlated native controller
+bookkeeping are allowed. Job ACK status is empty; stable status is suspended-
+only with zero ready/terminating counts and no terminated Pod UIDs. Synthetic
+PVC status is initially Pending and stably Lost, with the exact protection
+finalizer. Pods remain gated Pending/BestEffort. GameDestroy has **absent**
+status only at this application-controller-cold checkpoint, not an arbitrary
+Cancelled runtime status.
+
+Timestamps require canonical UTC seconds, bounded nonzero RFC3339 years and
+the observation ceiling. Old original times remain valid after protected
+ledger reload. Manager strings and canonical RVs are shape bookkeeping, not
+actor identity or freshness. The provider must separately prove uncached wire
+observations, current original journal/access/policy/cold barriers and complete
+descendants. This validator changes no WAL, restores no send capability and
+retires no fence; it grants no cleanup or complete-provider authority.
+
+The native test applies these checks before CREATE, after durable ACK, throughout
+bounded convergence/stability and before original UID/RV cleanup intent. Ordinary
+race regressions cover both profiles/all slots/phases, mutated fields and times,
+replacement rejection, absent-vs-null status, pending deletion and protected
+reload without capability revival.
+
+Private opt-in activation diagnostics record only the first fixed refusal stage
+of the SAME attempt: serving reads versus fingerprint drift and credential-
+binding reads versus drift. No errors/bodies/identities/credentials are retained.
+Public errors and TLS/bearer/fingerprint/connection guards remain unchanged; no
+authentication retry is added. These diagnostics cannot retroactively explain
+an earlier refusal without captured stage evidence.
 
 ### Native non-binding storage-candidate evidence
 
