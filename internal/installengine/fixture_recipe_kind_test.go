@@ -63,29 +63,6 @@ func proveKindAdmissionFixtureRecipes(t *testing.T, parent context.Context, conf
 	if err != nil {
 		t.Fatal("owned recipe client unavailable")
 	}
-	actor := func(account string) dynamic.Interface {
-		t.Helper()
-		c := rest.CopyConfig(config)
-		c.Impersonate = rest.ImpersonationConfig{UserName: "system:serviceaccount:" + plan.Namespace() + ":" + account}
-		client, err := dynamic.NewForConfig(c)
-		if err != nil {
-			t.Fatal("original recipe actor unavailable")
-		}
-		return client
-	}
-	destroyAdmin := actor(destroyAdministratorActor.account()) // SDK dry runs only
-	resource := func(client dynamic.Interface, slot int) dynamic.ResourceInterface {
-		key := ledger.document.Entries[slot].Key
-		gv, err := schema.ParseGroupVersion(key.APIVersion)
-		if err != nil {
-			t.Fatal("fixed recipe group unavailable")
-		}
-		plural := map[string]string{"Job": "jobs", "Pod": "pods", "PersistentVolumeClaim": "persistentvolumeclaims", "GameDestroy": "gamedestroys"}[key.Kind]
-		if plural == "" {
-			t.Fatal("fixed recipe route unavailable")
-		}
-		return client.Resource(gv.WithResource(plural)).Namespace(key.Namespace)
-	}
 	cleanup := func() {
 		t.Helper()
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -204,23 +181,19 @@ func proveKindAdmissionFixtureRecipes(t *testing.T, parent context.Context, conf
 	defer cleanup()
 	var expected []*unstructured.Unstructured
 	for slot := range fixtureCatalog {
-		o, err := ledger.object(slot)
-		if err != nil {
-			t.Fatalf("native fixed recipe%d unavailable", slot)
-		}
-		address := resource(admin, slot)
-		if slot == fixtureCancelledDestroy {
-			address = resource(destroyAdmin, slot)
-		}
 		if _, absent, err := wire.get(ctx, slot); err != nil || !absent {
 			t.Fatal("fresh exact recipe address absence unproved")
 		}
-		dry, err := address.Create(ctx, o.DeepCopy(), metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}, FieldManager: "arcadectl-installer", FieldValidation: "Strict"})
+		before := bytes.Clone(ledger.body)
+		dry, err := wire.dryRun(ctx, slot)
 		if err != nil || dry == nil || dry.GetResourceVersion() != "" {
-			t.Fatalf("native closed recipe%d dry-run rejected: %v", slot, err)
+			t.Fatalf("native closed recipe%d dry-run refused", slot)
 		}
-		if ledger.validateResult(slot, fixtureDryRunResult, dry, time.Now().UTC()) != nil {
-			t.Fatalf("native recipe%d whole dry-run shape refused before CREATE", slot)
+		if !bytes.Equal(before, ledger.body) || ledger.document.Entries[slot].OriginalUID != "" || ledger.ackSlot != -1 || ledger.effectSlot != -1 {
+			t.Fatal("native preview changed durable ownership or effect capability")
+		}
+		if _, absent, err := wire.get(ctx, slot); err != nil || !absent {
+			t.Fatal("native preview persisted a fixture")
 		}
 		next, err := ledger.nextDocument()
 		if err != nil {

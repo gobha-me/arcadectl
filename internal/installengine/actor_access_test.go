@@ -56,6 +56,13 @@ func newActorFixture(t *testing.T) *actorFixture {
 	if !stopped {
 		t.Fatal("fixture did not reach full admission barrier")
 	}
+	return newActorFixtureAtCheckpoint(t, v, s)
+}
+
+// Only tests with a genuine lifecycle checkpoint may use this constructor.
+// HTTP clients, actors, witnesses and authorization are still constructed fresh.
+func newActorFixtureAtCheckpoint(t *testing.T, v *lifecycleFixture, s *installstate.Snapshot) *actorFixture {
+	t.Helper()
 	namespace, err := v.f.access.client.CoreV1().Namespaces().Get(context.Background(), s.Anchor().Namespace, metav1.GetOptions{})
 	if err != nil {
 		t.Fatal(err)

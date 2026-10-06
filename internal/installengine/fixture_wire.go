@@ -39,6 +39,15 @@ type fixtureWire struct {
 	clients map[admissionActor]*HTTPAccess
 }
 
+type fixtureRequest uint8
+
+const (
+	fixtureGetRequest fixtureRequest = iota + 1
+	fixtureCreateRequest
+	fixtureDeleteRequest
+	fixtureDryRunRequest
+)
+
 func (actors *admissionActors) fixtures(ctx context.Context, ledger *fixtureLedger) (*fixtureWire, error) {
 	if actors == nil || actors.admission == nil || actors.admission.prerequisites == nil || ledger == nil || ledger.engine == nil || ledger.engine != actors.admission.prerequisites.engine {
 		return nil, ErrFixtures
@@ -182,7 +191,7 @@ func (w *fixtureWire) get(ctx context.Context, slot int) (*unstructured.Unstruct
 	if err != nil {
 		return nil, false, err
 	}
-	capture, err := w.request(ctx, slot, http.MethodGet)
+	capture, err := w.request(ctx, slot, fixtureGetRequest)
 	if err != nil || w.current(ctx) != nil {
 		return nil, false, ErrFixtures
 	}
@@ -197,6 +206,41 @@ func (w *fixtureWire) get(ctx context.Context, slot int) (*unstructured.Unstruct
 		return nil, false, ErrFixtures
 	}
 	return capture.result.DeepCopy(), false, nil
+}
+
+// Preview only the next original Planned recipe, never a pending/cleanup slot.
+// Whole-shape validation and unchanged original witnesses precede acceptance.
+// This sends once, never records the preview UID or changes the WAL/capability,
+// and does not authorize the separate durable CREATE intent or any cleanup.
+func (w *fixtureWire) dryRun(ctx context.Context, slot int) (*unstructured.Unstructured, error) {
+	if w == nil || w.ledger == nil {
+		return nil, ErrFixtures
+	}
+	w.ledger.wireMu.Lock()
+	defer w.ledger.wireMu.Unlock()
+	if !w.ledger.dryRunReady(slot) {
+		return nil, ErrFixtures
+	}
+	if _, _, err := w.prepare(ctx, slot, "create"); err != nil || !w.ledger.dryRunReady(slot) {
+		return nil, ErrFixtures
+	}
+	capture, err := w.request(ctx, slot, fixtureDryRunRequest)
+	if err != nil || capture == nil || capture.result == nil || capture.uid != "" || w.current(ctx) != nil || !w.ledger.dryRunReady(slot) || w.ledger.validateResult(slot, fixtureDryRunResult, capture.result, time.Now().UTC()) != nil {
+		return nil, ErrFixtures
+	}
+	return capture.result.DeepCopy(), nil
+}
+
+func (f *fixtureLedger) dryRunReady(slot int) bool {
+	if f == nil || slot < 0 || slot >= len(fixtureCatalog) || len(f.document.Entries) != len(fixtureCatalog) || f.ackSlot != -1 || f.effectSlot != -1 || f.document.Entries[slot].State != fixturePlanned {
+		return false
+	}
+	next, err := f.nextDocument()
+	if err != nil {
+		return false
+	}
+	next.Entries[slot].State = fixtureCreateAttempted
+	return validFixtureTransition(f.document, next)
 }
 
 // Only the SAME instance's newly durable intent may send ONCE. Rebuilding this
@@ -228,7 +272,7 @@ func (w *fixtureWire) create(ctx context.Context, slot int) (*unstructured.Unstr
 		return nil, err
 	}
 	defer func() { f.ackSlot = -1 }()
-	capture, requestErr := w.request(ctx, slot, http.MethodPost)
+	capture, requestErr := w.request(ctx, slot, fixtureCreateRequest)
 	if capture == nil || capture.uid == "" {
 		return nil, ErrOutcomeUnknown
 	}
@@ -264,7 +308,7 @@ func (w *fixtureWire) delete(ctx context.Context, slot int) error {
 	if entry.State != fixtureDeleteAttempted || f.effectSlot != slot || entry.OriginalUID == "" || !fixtureRV(entry.DeleteResourceVersion) {
 		return ErrFixtures
 	}
-	_, err = w.request(ctx, slot, http.MethodDelete)
+	_, err = w.request(ctx, slot, fixtureDeleteRequest)
 	if err != nil || w.current(ctx) != nil {
 		return ErrOutcomeUnknown
 	}
@@ -316,6 +360,7 @@ type fixtureCapture struct {
 	result            *unstructured.Unstructured
 	uid               types.UID
 	notFound, success bool
+	dryRun            bool
 }
 
 func (c *fixtureCapture) guard(r *http.Request) bool {
@@ -396,15 +441,16 @@ func (c *fixtureCapture) capture(response *http.Response) {
 		return
 	}
 	c.result, c.success = o, true
-	if c.method == http.MethodPost {
+	if c.method == http.MethodPost && !c.dryRun {
 		c.uid = o.GetUID()
 	}
 }
 
 // Called only with ledger.wireMu held by the closed operations above. It has no
-// caller-selected key, actor or payload, and consumes the shared send capability
-// immediately before Do. Even an accidental new caller cannot select PUT/PATCH.
-func (w *fixtureWire) request(ctx context.Context, slot int, method string) (*fixtureCapture, error) {
+// caller-selected key, actor or payload. Persistent effects consume the shared
+// send capability immediately before Do; preview never consumes or grants one.
+// Even an accidental new caller cannot select PUT/PATCH or a non-dry preview.
+func (w *fixtureWire) request(ctx context.Context, slot int, operation fixtureRequest) (*fixtureCapture, error) {
 	if ctx == nil || w == nil || w.ledger == nil || w.actors == nil || w.actors.admission == nil || w.actors.admission.prerequisites == nil || w.actors.admission.prerequisites.access == nil || w.actors.admission.prerequisites.access.frozen == nil || slot < 0 || slot >= len(fixtureCatalog) || len(w.ledger.document.Entries) != len(fixtureCatalog) {
 		return nil, ErrFixtures
 	}
@@ -412,13 +458,17 @@ func (w *fixtureWire) request(ctx context.Context, slot int, method string) (*fi
 	entry := f.document.Entries[slot]
 	key := entry.Key
 	var payload any
-	verb := ""
-	switch method {
-	case http.MethodGet:
-		verb = "get"
-	case http.MethodPost:
-		verb = "create"
-		if entry.State != fixtureCreateAttempted || f.ackSlot != slot || f.effectSlot != slot {
+	verb, method := "", ""
+	switch operation {
+	case fixtureGetRequest:
+		verb, method = "get", http.MethodGet
+	case fixtureCreateRequest, fixtureDryRunRequest:
+		verb, method = "create", http.MethodPost
+		if operation == fixtureDryRunRequest {
+			if !f.dryRunReady(slot) {
+				return nil, ErrFixtures
+			}
+		} else if entry.State != fixtureCreateAttempted || f.ackSlot != slot || f.effectSlot != slot {
 			return nil, ErrFixtures
 		}
 		o, err := f.object(slot)
@@ -426,8 +476,8 @@ func (w *fixtureWire) request(ctx context.Context, slot int, method string) (*fi
 			return nil, ErrFixtures
 		}
 		payload = o.Object
-	case http.MethodDelete:
-		verb = "delete"
+	case fixtureDeleteRequest:
+		verb, method = "delete", http.MethodDelete
 		if f.effectSlot != slot {
 			return nil, ErrFixtures
 		}
@@ -470,8 +520,11 @@ func (w *fixtureWire) request(ctx context.Context, slot int, method string) (*fi
 	u.RawQuery = ""
 	if method == http.MethodPost {
 		u.RawQuery = "fieldManager=arcadectl-installer&fieldValidation=Strict"
+		if operation == fixtureDryRunRequest {
+			u.RawQuery = "dryRun=All&" + u.RawQuery
+		}
 	}
-	capture := &fixtureCapture{identity: identity, method: method, url: u.String(), body: body, key: key}
+	capture := &fixtureCapture{identity: identity, method: method, url: u.String(), body: body, key: key, dryRun: operation == fixtureDryRunRequest}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	ctx = logr.NewContext(ctx, logr.Discard())
@@ -483,7 +536,7 @@ func (w *fixtureWire) request(ctx context.Context, slot int, method string) (*fi
 	r.GetBody = nil
 	r.Header.Set("Accept", "application/json")
 	r.Header.Set("Content-Type", "application/json")
-	if method != http.MethodGet {
+	if operation == fixtureCreateRequest || operation == fixtureDeleteRequest {
 		f.effectSlot = -1
 	} // consumed before any possible wire attempt
 	response, err := a.client.Do(r)

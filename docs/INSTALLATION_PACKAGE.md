@@ -806,9 +806,9 @@ justify a valid dry-run-only spec change. CRD/CEL or RBAC rejection is not
 substitute evidence for the signed unsafe admission policy.
 
 The disposable native test now uses the same engine's original direct transport,
-sealed actor/policy witnesses and private ledger-bound wire for persistent
-CREATE/GET/DELETE on both exact profiles. The normal SDK supplies only desired-
-shape dry runs and limited test-owned descendant observations. These tests are
+sealed actor/policy witnesses and private ledger-bound wire for whole-validated
+dry-run CREATE and persistent CREATE/GET/DELETE on both exact profiles. The
+normal SDK supplies only limited test-owned descendant observations. These tests are
 not production fixture permission, observation-only recovery or WAL retirement.
 The private whole-result validator below checks dry-run, ACK and stable bodies.
 Test cleanup enumerates durable
@@ -834,6 +834,16 @@ close serially. Loading a ledger or rebuilding a client cannot recreate a send
 capability. GET observes the fixed address without adopting unknown CREATE UIDs,
 resetting attempts or converting DELETE acknowledgements into absence.
 
+The closed preview operation derives the next Planned recipe and original
+CREATE actor, checks original witnesses/discovery/exact CREATE SSAR, and sends
+one guarded POST with exactly `dryRun=All`, the fixed installer field manager
+and Strict validation. It refuses pending effects, cleanup, skipped slots and
+leftover ACK/send capabilities. A complete strict reply must pass whole dry-run
+shape validation and unchanged original witnesses before a copy is returned.
+Preview UIDs never become acknowledgements; neither acceptance nor refusal
+changes the protected WAL, restores a capability or authorizes persistent
+CREATE. Native tests observe exact-address absence before and after preview.
+
 Routes, objects and software actors are derived from the ten fixed slots.
 The original administrator creates ordinary inert fixtures; the original
 destroy-admin creates the born-cancelled GameDestroy; retained synthetic PVC
@@ -855,8 +865,8 @@ resends after a lost response, post-witness refusal, client rebuild or restart.
 
 This is a private transport component with fake-credential HTTPS regression
 tests, **not a production permission boundary or full provider**. No public
-entrypoint invokes it. Complete cold/runtime absence, guarded dry-run transport,
-integration of whole-result/descendant checks before effects, observation-only
+entrypoint invokes it. Complete cold/runtime absence, integration of whole-
+result/descendant checks before effects, observation-only
 recovery and WAL retirement remain necessary. Native recipe evidence above
 certifies this private transport in an exclusively owned test cluster, not
 those missing production checks or the complete installation lifecycle.

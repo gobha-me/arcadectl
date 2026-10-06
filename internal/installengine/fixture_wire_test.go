@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	authv1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,14 +29,20 @@ type fixtureWireTest struct {
 	wire                    *fixtureWire
 	objects                 map[int]*unstructured.Unstructured
 	creates, deletes, reads int
+	previews                int
 	reply                   func(http.ResponseWriter, *unstructured.Unstructured)
 	deleteReply             func(http.ResponseWriter)
 	afterEffect             func()
+	afterPreview            func()
 }
 
 func newFixtureWireTest(t *testing.T) *fixtureWireTest {
 	t.Helper()
-	a := newActorFixture(t)
+	return newFixtureWireTestAtActor(t, newActorFixture(t))
+}
+
+func newFixtureWireTestAtActor(t *testing.T, a *actorFixture) *fixtureWireTest {
+	t.Helper()
 	actors, err := a.admission.newActors(context.Background(), a.request, existingScopedImpersonation)
 	if err != nil {
 		t.Fatal(err)
@@ -131,22 +138,43 @@ func newFixtureWireTest(t *testing.T) *fixtureWireTest {
 			if r.Header.Get("Impersonate-User") != username {
 				t.Error("fixture used wrong software identity")
 			}
-			if r.Method != http.MethodPost && r.URL.RawQuery != "" || r.Method == http.MethodPost && r.URL.RawQuery != "fieldManager=arcadectl-installer&fieldValidation=Strict" {
+			preview := r.Method == http.MethodPost && r.URL.RawQuery == "dryRun=All&fieldManager=arcadectl-installer&fieldValidation=Strict"
+			if r.Method != http.MethodPost && r.URL.RawQuery != "" || r.Method == http.MethodPost && !preview && r.URL.RawQuery != "fieldManager=arcadectl-installer&fieldValidation=Strict" {
 				t.Error("fixture query escaped fixed bounds")
 			}
 			switch r.Method {
 			case http.MethodPost:
-				f.creates++
 				w.Header().Set("X-Private-Canary", "PRIVATE-HEADER-CANARY")
 				body, identity, err := ledger.engine.files.Read(ledger.name, fixtureLedgerMaxBytes)
-				if err != nil || identity != ledger.identity || !bytes.Equal(body, ledger.body) || entry.State != fixtureCreateAttempted || ledger.effectSlot != -1 {
-					t.Error("wire preceded durable CREATE intent/capability consumption")
+				if err != nil || identity != ledger.identity || !bytes.Equal(body, ledger.body) {
+					t.Error("wire used unproved original WAL")
 				}
 				want, err := ledger.object(slot)
 				wantBody, _ := json.Marshal(want.Object)
 				gotBody, _ := json.Marshal(object.Object)
 				if err != nil || !bytes.Equal(wantBody, gotBody) {
 					t.Error("caller recipe reached wire")
+				}
+				if preview {
+					f.previews++
+					if !ledger.dryRunReady(slot) {
+						t.Error("preview escaped Planned/no-pending state")
+					}
+					object = *fixtureResultExample(t, ledger, slot, fixtureDryRunResult, time.Now().UTC().Truncate(time.Second).Add(-3*time.Second))
+					if f.afterPreview != nil {
+						f.afterPreview()
+					}
+					if f.reply != nil {
+						f.reply(w, &object)
+					} else {
+						w.WriteHeader(201)
+						_ = json.NewEncoder(w).Encode(object.Object)
+					}
+					return true // no persistent object, WAL or send capability
+				}
+				f.creates++
+				if entry.State != fixtureCreateAttempted || ledger.effectSlot != -1 {
+					t.Error("wire preceded durable CREATE intent/capability consumption")
 				}
 				object.SetUID(types.UID(fmt.Sprintf("10000000-0000-4000-8000-%012d", slot+1)))
 				object.SetResourceVersion("101")
@@ -380,6 +408,11 @@ func TestFixtureWireUnknownCreateNeverAdoptsOrReplays(t *testing.T) {
 			if _, err := rebuilt.create(context.Background(), 0); err != ErrFixtures {
 				t.Fatal("rebuilt client replayed", err)
 			}
+			for _, slot := range []int{0, fixtureRestoreJob} {
+				if _, err := rebuilt.dryRun(t.Context(), slot); err != ErrFixtures || f.previews != 0 {
+					t.Fatal("preview bypassed unknown CREATE", err)
+				}
+			}
 			if err := ledger.close(); err != nil {
 				t.Fatal(err)
 			}
@@ -394,6 +427,9 @@ func TestFixtureWireUnknownCreateNeverAdoptsOrReplays(t *testing.T) {
 			}
 			if _, err := restarted.create(context.Background(), 0); err != ErrFixtures || f.creates != 1 {
 				t.Fatal("restart replayed", err)
+			}
+			if _, err := restarted.dryRun(t.Context(), fixtureRestoreJob); err != ErrFixtures || f.previews != 0 {
+				t.Fatal("reloaded unknown CREATE previewed", err)
 			}
 		})
 	}
@@ -518,6 +554,9 @@ func TestFixtureWireUnknownDeleteCannotReplayAcrossClientsOrRestart(t *testing.T
 			if err != nil || restarted.delete(ctx, 0) != ErrFixtures || f.deletes != 1 {
 				t.Fatal("loaded client replayed uncertain DELETE", err)
 			}
+			if _, err := restarted.dryRun(ctx, fixtureRestoreJob); err != ErrFixtures || f.previews != 0 {
+				t.Fatal("reloaded unknown DELETE previewed", err)
+			}
 			if _, missing, err := restarted.get(ctx, 0); err != nil || !missing {
 				t.Fatal("absence read after unknown DELETE", err)
 			}
@@ -598,25 +637,25 @@ func TestFixtureWireRefusesRedirectAndRedactsErrorResponse(t *testing.T) {
 func TestFixtureWireClosedRequestRejectsMisuseBeforeAnyHTTP(t *testing.T) {
 	f := newFixtureWireTest(t)
 	ctx := context.Background()
-	for _, method := range []string{http.MethodPut, http.MethodPatch, http.MethodHead, http.MethodPost, http.MethodDelete, "foreign"} {
-		if _, err := f.wire.request(ctx, 0, method); err != ErrFixtures {
+	for _, operation := range []fixtureRequest{0, fixtureCreateRequest, fixtureDeleteRequest, 255} {
+		if _, err := f.wire.request(ctx, 0, operation); err != ErrFixtures {
 			t.Fatal("request without fixed method/intent accepted", err)
 		}
 	}
 	for _, slot := range []int{-1, len(fixtureCatalog)} {
-		if _, err := f.wire.request(ctx, slot, http.MethodGet); err != ErrFixtures {
+		if _, err := f.wire.request(ctx, slot, fixtureGetRequest); err != ErrFixtures {
 			t.Fatal("foreign fixture address accepted", err)
 		}
 	}
-	if _, err := f.wire.request(nil, 0, http.MethodGet); err != ErrFixtures {
+	if _, err := f.wire.request(nil, 0, fixtureGetRequest); err != ErrFixtures {
 		t.Fatal("nil context accepted", err)
 	}
 	var missing *fixtureWire
-	if _, err := missing.request(ctx, 0, http.MethodGet); err != ErrFixtures {
+	if _, err := missing.request(ctx, 0, fixtureGetRequest); err != ErrFixtures {
 		t.Fatal("nil wire accepted", err)
 	}
 	for _, invalid := range []*fixtureWire{{}, {ledger: f.wire.ledger}, {ledger: f.wire.ledger, actors: f.wire.actors}} {
-		if _, err := invalid.request(ctx, 0, http.MethodGet); err != ErrFixtures {
+		if _, err := invalid.request(ctx, 0, fixtureGetRequest); err != ErrFixtures {
 			t.Fatal("incomplete wire accepted", err)
 		}
 	}
