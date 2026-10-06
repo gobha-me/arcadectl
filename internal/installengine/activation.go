@@ -110,46 +110,86 @@ func (a *Activation) verify(ctx context.Context, s *installstate.Snapshot, opts 
 	defer cancel()
 	before, err := a.engine.ObserveServing(ctx, s, a.serving)
 	if err != nil {
+		traceActivation(ctx, activationServingBefore)
 		return ErrActivation
 	}
 	binding, err := a.binding(ctx, s, opts)
 	if err != nil {
+		traceActivation(ctx, activationBindingBefore)
 		return ErrActivation
 	}
 	origin := "https://" + net.JoinHostPort(before.address, "8443")
 	client, err := adminclient.LoadBoundWithDialer(adminclient.ContextConfig{Version: "v1", Name: "installation", APIOrigin: origin, TLSServerName: "arcadectl-api." + before.namespace + ".svc", CAFile: opts.CAFile, CredentialFile: opts.CredentialFile}, binding.client, binding.ca, binding.peerSHA256, func(dialCtx context.Context, network, address string) (net.Conn, error) {
 		if network != "tcp" || address != net.JoinHostPort(before.address, "8443") {
+			traceActivation(ctx, activationClientLoad)
 			return nil, ErrActivation
 		}
 		// Own the connection through verification, not the HTTP transport's
 		// detached/cancellable connection-acquisition context.
 		conn, err := dial(ctx, before)
 		if err != nil || conn == nil {
+			traceActivation(ctx, activationConnectionOpen)
 			if conn != nil {
 				_ = conn.Close()
 			}
 			return nil, ErrActivation
 		}
 		current, err := a.engine.ObserveServing(dialCtx, s, a.serving)
+		if err != nil {
+			traceActivation(ctx, activationServingDialRead)
+			_ = conn.Close()
+			return nil, ErrActivation
+		}
+		if current.fingerprint != before.fingerprint {
+			traceActivation(ctx, activationServingDialMatch)
+			_ = conn.Close()
+			return nil, ErrActivation
+		}
 		bound, bindErr := a.binding(dialCtx, s, opts)
-		if err != nil || current.fingerprint != before.fingerprint || bindErr != nil || bound != binding {
+		if bindErr != nil {
+			traceActivation(ctx, activationBindingDialRead)
+			_ = conn.Close()
+			return nil, ErrActivation
+		}
+		if bound != binding {
+			traceActivation(ctx, activationBindingDialMatch)
 			_ = conn.Close()
 			return nil, ErrActivation
 		}
 		return conn, nil
 	})
 	if err != nil {
+		traceActivation(ctx, activationClientLoad)
 		return ErrActivation
 	}
 	defer client.Close()
 	identity, err := client.Verify(ctx)
-	if err != nil || identity.Namespace != before.namespace || identity.PrincipalID != adminauth.AdminPrincipalID {
+	if err != nil {
+		traceActivation(ctx, activationSelf)
+		return ErrActivation
+	}
+	if identity.Namespace != before.namespace || identity.PrincipalID != adminauth.AdminPrincipalID {
+		traceActivation(ctx, activationSelfIdentity)
 		return ErrActivation
 	}
 	after, err := a.engine.ObserveServing(ctx, s, a.serving)
-	bound, bindErr := a.binding(ctx, s, opts)
-	if err != nil || after.fingerprint != before.fingerprint || bindErr != nil || bound != binding {
+	if err != nil {
+		traceActivation(ctx, activationServingAfterRead)
 		return ErrActivation
 	}
+	if after.fingerprint != before.fingerprint {
+		traceActivation(ctx, activationServingAfterMatch)
+		return ErrActivation
+	}
+	bound, bindErr := a.binding(ctx, s, opts)
+	if bindErr != nil {
+		traceActivation(ctx, activationBindingAfterRead)
+		return ErrActivation
+	}
+	if bound != binding {
+		traceActivation(ctx, activationBindingAfterMatch)
+		return ErrActivation
+	}
+	traceActivation(ctx, activationComplete)
 	return nil
 }

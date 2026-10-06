@@ -45,13 +45,19 @@ func (c *ClusterTargetAuthenticated) Verify(ctx context.Context, request Lifecyc
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	if p.original(ctx, request.Snapshot) != nil {
+		traceActivation(ctx, activationOriginalBefore)
 		return ErrActivation
 	}
 	// Current retained Secret/file bindings are authoritative. Do not reload
 	// the original bootstrap candidate here: target package changes and valid
 	// same-Secret-UID administrator rotation must remain supported.
-	if c.activation.VerifyForwarded(ctx, request.Snapshot, request.Options.Activation, p.access) != nil || p.original(ctx, request.Snapshot) != nil {
+	if c.activation.VerifyForwarded(ctx, request.Snapshot, request.Options.Activation, p.access) != nil {
 		return ErrActivation
 	}
+	if p.original(ctx, request.Snapshot) != nil {
+		traceActivation(ctx, activationOriginalAfter)
+		return ErrActivation
+	}
+	traceActivation(ctx, activationComplete)
 	return nil
 }

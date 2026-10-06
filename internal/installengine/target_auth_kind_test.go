@@ -314,8 +314,9 @@ func TestKindTargetAuthenticatedNativeKubelet(t *testing.T) {
 			caFile := filepath.Join(base, "api-ca-"+s.Anchor().InstallationID+".pem")
 			request := LifecycleCheck{Checkpoint: TargetAuthenticated, Snapshot: s, Mode: installstate.Install, Target: plan,
 				Options: LifecycleOptions{Now: time.Now().UTC(), Activation: ActivationOptions{CredentialFile: clientFile, CAFile: caFile}}}
-			if err := proof.Verify(ctx, request); err != nil {
-				t.Fatal("actual native authenticated target proof: ", err)
+			trace := &activationTrace{}
+			if err := proof.Verify(context.WithValue(ctx, activationTraceKey{}, trace), request); err != nil {
+				t.Fatalf("actual native authenticated target proof refused (stage=%s)", trace.stage())
 			}
 			proveKindAdmissionFixtureStorage(t, ctx, config, s.Anchor(), plan)
 			proveKindAdmissionFixtureRecipes(t, ctx, config, engine, s, plan)
