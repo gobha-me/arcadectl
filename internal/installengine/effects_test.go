@@ -38,6 +38,11 @@ func fixturePlan(t *testing.T) *installrender.Plan {
 func fixturePlanProfile(t *testing.T, namespace, profile string) *installrender.Plan {
 	t.Helper()
 	images := installpackage.Images{Controller: "registry.example/controller@sha256:" + strings.Repeat("a", 64), API: "registry.example/api@sha256:" + strings.Repeat("b", 64)}
+	return fixturePlanImages(t, namespace, profile, images)
+}
+
+func fixturePlanImages(t *testing.T, namespace, profile string, images installpackage.Images) *installrender.Plan {
+	t.Helper()
 	payloads, crds, err := installrender.RenderPayloads(images, false)
 	if err != nil {
 		t.Fatal(err)

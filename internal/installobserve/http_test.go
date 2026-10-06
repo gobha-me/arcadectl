@@ -94,7 +94,7 @@ func TestProductionFactoryPagedMetadataAndDomainHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := observation.Snapshot()
-	if len(s.GameServers.Items) != 1 || len(s.Secrets.Items) != 1 || s.GameServers.ResourceVersion != "list-rv" || s.Secrets.ResourceVersion != "secret-rv" || s.GameServers.Continue != "" || s.Secrets.Continue != "" || s.Secrets.Items[0].Annotations != nil || secretPages.Load() != 2 || domainPages.Load() != 2 || requests.Load() != 23 || observation.Runtime().Attachments.ResourceVersion != "list-rv" {
+	if len(s.GameServers.Items) != 1 || len(s.Secrets.Items) != 1 || s.GameServers.ResourceVersion != "list-rv" || s.Secrets.ResourceVersion != "secret-rv" || s.GameServers.Continue != "" || s.Secrets.Continue != "" || s.Secrets.Items[0].Annotations != nil || secretPages.Load() != 2 || domainPages.Load() != 2 || requests.Load() != 24 || observation.Runtime().Attachments.ResourceVersion != "list-rv" || observation.Runtime().EndpointSlices.ResourceVersion != "list-rv" {
 		t.Fatal("production factory did not establish complete paged evidence")
 	}
 }

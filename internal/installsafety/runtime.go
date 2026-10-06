@@ -7,6 +7,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	storagev1 "k8s.io/api/storage/v1"
 )
 
@@ -22,6 +23,7 @@ type RuntimeSnapshot struct {
 	ReplicationControllers *corev1.ReplicationControllerList
 	CronJobs               *batchv1.CronJobList
 	Attachments            *storagev1.VolumeAttachmentList
+	EndpointSlices         *discoveryv1.EndpointSliceList
 }
 
 func (r *RuntimeSnapshot) DeepCopy() *RuntimeSnapshot {
@@ -31,6 +33,6 @@ func (r *RuntimeSnapshot) DeepCopy() *RuntimeSnapshot {
 	return &RuntimeSnapshot{
 		Deployments: r.Deployments.DeepCopy(), ReplicaSets: r.ReplicaSets.DeepCopy(), StatefulSets: r.StatefulSets.DeepCopy(),
 		DaemonSets: r.DaemonSets.DeepCopy(), ReplicationControllers: r.ReplicationControllers.DeepCopy(),
-		CronJobs: r.CronJobs.DeepCopy(), Attachments: r.Attachments.DeepCopy(),
+		CronJobs: r.CronJobs.DeepCopy(), Attachments: r.Attachments.DeepCopy(), EndpointSlices: r.EndpointSlices.DeepCopy(),
 	}
 }

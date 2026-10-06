@@ -238,14 +238,15 @@ func TestCollectRuntimeClosureIsCompleteAndDefensivelyCopied(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := observation.Runtime()
-	if len(r.Deployments.Items) != 1 || len(r.ReplicaSets.Items) != 1 || len(r.StatefulSets.Items) != 1 || len(r.DaemonSets.Items) != 1 || len(r.ReplicationControllers.Items) != 1 || len(r.CronJobs.Items) != 1 || len(r.Attachments.Items) != 1 || r.Attachments.Items[0].Namespace != "" {
+	if len(r.Deployments.Items) != 1 || len(r.ReplicaSets.Items) != 1 || len(r.StatefulSets.Items) != 1 || len(r.DaemonSets.Items) != 1 || len(r.ReplicationControllers.Items) != 1 || len(r.CronJobs.Items) != 1 || len(r.Attachments.Items) != 1 || r.Attachments.Items[0].Namespace != "" || len(r.EndpointSlices.Items) != 1 {
 		t.Fatal("complete builtin/global attachment inventory missing")
 	}
 	r.Deployments.Items[0].UID, r.Attachments.Items[0].UID = "changed", "changed"
-	if observation.Runtime().Deployments.Items[0].UID != "uid-deployments" || observation.Runtime().Attachments.Items[0].UID != "uid-volumeattachments" || (*Observation)(nil).Runtime() != nil || (&Observation{}).Runtime() != nil {
+	r.EndpointSlices.Items[0].UID = "changed"
+	if observation.Runtime().Deployments.Items[0].UID != "uid-deployments" || observation.Runtime().Attachments.Items[0].UID != "uid-volumeattachments" || observation.Runtime().EndpointSlices.Items[0].UID != "uid-endpointslices" || (*Observation)(nil).Runtime() != nil || (&Observation{}).Runtime() != nil {
 		t.Fatal("runtime evidence aliases caller changes or zero observation")
 	}
-	for _, resource := range []string{"deployments", "replicasets", "statefulsets", "daemonsets", "replicationcontrollers", "cronjobs", "volumeattachments"} {
+	for _, resource := range []string{"deployments", "replicasets", "statefulsets", "daemonsets", "replicationcontrollers", "cronjobs", "volumeattachments", "endpointslices"} {
 		t.Run(resource, func(t *testing.T) {
 			fault := newFixture(t)
 			fault.dynamic.PrependReactor("list", resource, func(clienttesting.Action) (bool, runtime.Object, error) {

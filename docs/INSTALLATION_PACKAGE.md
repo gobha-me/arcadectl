@@ -612,3 +612,56 @@ kubelet operation or full binary install/upgrade/rollback/uninstall. Complete
 API/controller quiescence, the remaining admission branches, retained recovery
 guidance and actual isolated lifecycle CI remain required before issue #27 can
 be delivered.
+
+### Bound API/controller shutdown checkpoint
+
+The separate read-only `ClusterQuiescence` implements `APIStopped` and
+`RuntimeStopped`, not controller availability or the full lifecycle provider.
+The sealed observer now also collects the complete unfiltered namespace
+EndpointSlice list, within the existing whole-observation byte/pagination and
+original-journal barriers. An unavailable page or case-aliased/unknown typed
+field cannot become absence evidence.
+
+API shutdown requires both an absent settled API Deployment inventory entry
+and an exact-name NotFound read, plus complete absence of its executable
+descendants and alternate builtin workload templates. Original API Service
+UID/spec evidence binds any surviving empty EndpointSlices. Native portless
+placeholders and just-drained original HTTPS slices are allowed; unready,
+terminating or otherwise nonempty slices are not absence. Service replacement,
+malformed original-UID ownership and stale descendants fail closed.
+
+Full runtime shutdown additionally requires both original signed zero-replica
+controller Deployments, their current observed generation and zero counters,
+and no related Pods, including terminal or deleting Pods. Missing controllers
+are allowed only after settled retaining-uninstall removal, never recreated or
+adopted. Reserved names, owner UIDs/names, family labels, ServiceAccount aliases,
+image repositories and API Secret references are independent refusal signals.
+Shared and tagged image repositories remain supported: the API-only checkpoint
+can distinguish an original whole signed controller Pod/RS/Deployment chain,
+including an unscheduled Pending Pod, from a repository-only orphan signal.
+The authenticated serving path still requires a scheduled original Pod.
+
+Kubernetes retains ten ReplicaSet revisions while executable package trust is
+bounded to three packages. Historical zero sets can therefore be certified as
+inert without claiming unavailable historical signatures: exact original live
+parent UID/owner/selector/hash derivatives, bounded native-shaped annotations,
+current zero status and complete related-Pod absence are required. A deleted
+parent's sets cannot qualify as inert and always block full runtime shutdown.
+The API-only checkpoint may ignore independently unrelated controller history.
+Historical payloads cannot authorize execution or
+adoption; only exact whole signed controller-template equality can authorize a
+controller exception from the journal's active/target/previous package set.
+This lets recovery pause a signed predecessor still running after a failed
+target rollout, without admitting unknown or unreferenced historical execution.
+Target readiness remains a separate exact-target obligation.
+Independent ColdSafety still scans every old
+template for workers and remounts, regardless of zero replicas.
+
+Repeated whole observations and original runtime identity/read-shape witnesses
+surround the check. This is not a cluster lock or an effect. HTTPS fixtures cover
+race/refusal boundaries; exact 1.35.8/1.37.0 isolated API-server fixtures cover
+native zero-state objects, portless placeholders and genuinely admitted Pending
+controller Pods with ServiceAccount admission enabled. Seeded fixture status is
+not controller-manager/kubelet shutdown evidence. Actual target availability,
+all admission branches, complete binary lifecycle/recovery output and isolated
+fresh/predecessor upgrade/rollback/uninstall CI remain delivery requirements.

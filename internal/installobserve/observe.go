@@ -28,6 +28,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -192,6 +193,7 @@ func runtimeCollections(r *installsafety.RuntimeSnapshot) []collection {
 	r.StatefulSets, r.DaemonSets = &appsv1.StatefulSetList{}, &appsv1.DaemonSetList{}
 	r.ReplicationControllers, r.CronJobs = &corev1.ReplicationControllerList{}, &batchv1.CronJobList{}
 	r.Attachments = &storagev1.VolumeAttachmentList{}
+	r.EndpointSlices = &discoveryv1.EndpointSliceList{}
 	return []collection{
 		{"apps/v1", "Deployment", "deployments", true, r.Deployments},
 		{"apps/v1", "ReplicaSet", "replicasets", true, r.ReplicaSets},
@@ -200,6 +202,7 @@ func runtimeCollections(r *installsafety.RuntimeSnapshot) []collection {
 		{"v1", "ReplicationController", "replicationcontrollers", true, r.ReplicationControllers},
 		{"batch/v1", "CronJob", "cronjobs", true, r.CronJobs},
 		{"storage.k8s.io/v1", "VolumeAttachment", "volumeattachments", false, r.Attachments},
+		{"discovery.k8s.io/v1", "EndpointSlice", "endpointslices", true, r.EndpointSlices},
 	}
 }
 

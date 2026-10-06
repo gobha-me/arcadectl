@@ -4,7 +4,6 @@
 package installengine
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -27,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
+	strictjson "sigs.k8s.io/json"
 )
 
 var ErrServing = errors.New("original installation API serving identity is unproved")
@@ -52,9 +52,8 @@ func decodeServing(o *unstructured.Unstructured, out any) error {
 	if err != nil || len(body) > 1024*1024 {
 		return ErrServing
 	}
-	d := json.NewDecoder(bytes.NewReader(body))
-	d.DisallowUnknownFields()
-	if d.Decode(out) != nil {
+	strictErrors, err := strictjson.UnmarshalStrict(body, out)
+	if err != nil || len(strictErrors) != 0 {
 		return ErrServing
 	}
 	return nil
@@ -307,11 +306,17 @@ func readyPod(p *corev1.Pod) bool {
 }
 
 func validServingPodTemplate(p *corev1.Pod, rs *appsv1.ReplicaSet) bool {
+	return validOriginalPodTemplate(p, rs, true)
+}
+
+// Controller identity can be proved before scheduling. Serving identity cannot.
+// Both paths preserve the same closed token/default/signed-spec normalization.
+func validOriginalPodTemplate(p *corev1.Pod, rs *appsv1.ReplicaSet, requireNode bool) bool {
 	if p.GenerateName != rs.Name+"-" || !generatedServingName(p.Name, p.GenerateName) || !apiequality.Semantic.DeepEqual(p.Labels, rs.Spec.Template.Labels) || !apiequality.Semantic.DeepEqual(p.Annotations, rs.Spec.Template.Annotations) {
 		return false
 	}
 	want, actual := rs.Spec.Template.Spec.DeepCopy(), p.Spec.DeepCopy()
-	if !normalizeSAAlias(want) || !normalizeSAAlias(actual) || actual.NodeName == "" || len(validation.IsDNS1123Subdomain(actual.NodeName)) != 0 || actual.EnableServiceLinks == nil || !*actual.EnableServiceLinks || actual.Priority != nil && *actual.Priority != 0 || actual.PreemptionPolicy != nil && *actual.PreemptionPolicy != corev1.PreemptLowerPriority || len(actual.Tolerations) != 2 {
+	if !normalizeSAAlias(want) || !normalizeSAAlias(actual) || requireNode && actual.NodeName == "" || actual.NodeName != "" && len(validation.IsDNS1123Subdomain(actual.NodeName)) != 0 || actual.EnableServiceLinks == nil || !*actual.EnableServiceLinks || actual.Priority != nil && *actual.Priority != 0 || actual.PreemptionPolicy != nil && *actual.PreemptionPolicy != corev1.PreemptLowerPriority || len(actual.Tolerations) != 2 {
 		return false
 	}
 	seen := map[string]bool{}

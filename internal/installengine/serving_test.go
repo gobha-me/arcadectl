@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gobha-me/arcadectl/internal/adminauth"
+	"github.com/gobha-me/arcadectl/internal/installrender"
 	"github.com/gobha-me/arcadectl/internal/installstate"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -90,7 +91,12 @@ func fixtureTokenVolume(name string) corev1.Volume {
 
 func newServingFixture(t *testing.T) *servingFixture {
 	t.Helper()
-	f := newFixture(t, false)
+	return newServingFixtureWithPlan(t, fixturePlan(t))
+}
+
+func newServingFixtureWithPlan(t *testing.T, plan *installrender.Plan, others ...*installrender.Plan) *servingFixture {
+	t.Helper()
+	f := newFixtureWithPlans(t, false, append([]*installrender.Plan{plan}, others...)...)
 	now := time.Now().UTC()
 	opts, issuer, issuerKey := fixtureTLSWithIssuer(t, f.plan.Namespace(), now)
 	c, err := f.engine.PrepareCredentials(context.Background(), f.snapshot, opts)
