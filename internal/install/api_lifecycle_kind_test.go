@@ -377,7 +377,7 @@ func runKindAPILifecycle(t *testing.T, f kindAPILifecycleFixture) {
 			t.Fatal("world PV identity drift")
 		}
 	}
-	runtimePod := func(digest string) types.UID {
+	runtimePod := func(stage, digest string) types.UID {
 		pods, err := f.cluster.CoreV1().Pods(namespace).List(f.ctx, metav1.ListOptions{LabelSelector: "app.kubernetes.io/name=game-server,app.kubernetes.io/instance=" + name})
 		if err != nil || len(pods.Items) != 1 {
 			t.Fatal("expected exactly one real Factorio Pod")
@@ -385,12 +385,17 @@ func runKindAPILifecycle(t *testing.T, f kindAPILifecycleFixture) {
 		pod := pods.Items[0]
 		wanted := "ghcr.io/gobha-me/arcadectl-factorio@" + digest
 		if pod.DeletionTimestamp != nil || pod.Status.Phase != corev1.PodRunning || pod.UID == "" {
+			for _, status := range pod.Status.ContainerStatuses {
+				if status.Name == "game" {
+					t.Fatal("Factorio runtime is not live: " + kindRuntimeTerminationDiagnostic(stage, status))
+				}
+			}
 			t.Fatal("Factorio runtime is not live")
 		}
 		found := false
 		for _, status := range pod.Status.ContainerStatuses {
-			if status.Name == "game" && (status.RestartCount != 0 || status.LastTerminationState.Terminated != nil && status.LastTerminationState.Terminated.Reason == "OOMKilled") {
-				t.Fatal("fresh Factorio runtime crashed or was OOM killed")
+			if status.Name == "game" && (status.RestartCount != 0 || status.State.Terminated != nil || status.LastTerminationState.Terminated != nil && status.LastTerminationState.Terminated.Reason == "OOMKilled") {
+				t.Fatal("fresh Factorio runtime terminated: " + kindRuntimeTerminationDiagnostic(stage, status))
 			}
 			if status.Name == "game" && status.Ready && status.RestartCount == 0 && strings.Contains(status.ImageID, digest) {
 				found = true
@@ -511,23 +516,23 @@ func runKindAPILifecycle(t *testing.T, f kindAPILifecycleFixture) {
 	verifyBytes(true, false)
 	empty := adminv1.EmptyRequest{Version: "v1"}
 	mutate("POST", "start", empty)
-	initialPod := runtimePod(digestA)
+	initialPod := runtimePod("initial-start", digestA)
 	mutate("POST", "stop", empty)
 	verifyBytes(false, true)
 	mutate("PATCH", "configure", adminv1.ConfigureRequest{Version: "v1", Settings: json.RawMessage(`{"name":"Configured API proof","visibility":"private","maxPlayers":20}`)})
 	settingsName = "Configured API proof"
 	mutate("POST", "start", empty)
-	configuredPod := runtimePod(digestA)
+	configuredPod := runtimePod("configured-start", digestA)
 	if configuredPod == initialPod {
 		t.Fatal("stop/start reused the old Factorio Pod identity")
 	}
 	mutate("POST", "restart", empty)
-	restartedPod := runtimePod(digestA)
+	restartedPod := runtimePod("restart", digestA)
 	if restartedPod == configuredPod {
 		t.Fatal("restart did not replace the actual Factorio Pod")
 	}
 	mutate("POST", "update", adminv1.UpdateRequest{Version: "v1", Image: adminv1.Image{Digest: digestB}})
-	updatedPod := runtimePod(digestB)
+	updatedPod := runtimePod("update", digestB)
 	if updatedPod == restartedPod {
 		t.Fatal("immutable image update did not replace the actual Factorio Pod")
 	}
@@ -547,7 +552,7 @@ func runKindAPILifecycle(t *testing.T, f kindAPILifecycleFixture) {
 		t.Fatal("CLI admission lost exact recovery identities")
 	}
 	started := waitOperation(admission.OperationID)
-	runtimePod(digestB)
+	runtimePod("cli-start", digestB)
 	var cliWait adminv1.Operation
 	if json.Unmarshal(f.runCLI("operation", "wait", admission.OperationID), &cliWait) != nil || cliWait.UID != started.UID || cliWait.Phase != "Succeeded" {
 		t.Fatal("CLI wait lost exact terminal receipt")
