@@ -38,7 +38,39 @@ Fixed guidance requires preserving original signed packages, protected receipts
 and client/CA files; it forbids deleting the Namespace/PVCs or replaying an
 uncertain effect with a fresh candidate. This is observation and recovery
 guidance, **not** backup, coldness, detach, deletion or full lifecycle proof.
-The administrator command and integrated lifecycle certification remain in
+The separate administrator boundary now exposes only read-only inspection:
+
+```sh
+GOMAXPROCS=2 GOMEMLIMIT=1GiB go build -p 1 ./cmd/arcadectl-installer
+./arcadectl-installer inspect \
+  --namespace "$INSTALL_NAMESPACE" --profile "$INSTALL_PROFILE" \
+  --bootstrap-package "$ORIGINAL_BOOTSTRAP_PACKAGE_PATH" \
+  --package "$CURRENT_PACKAGE_PATH" --trust-key "$INSTALL_TRUST_KEY_PATH" \
+  --state-dir "$EXISTING_PRIVATE_STATE_PATH" --bootstrap-receipt bootstrap.json \
+  --kubeconfig "$EXPLICIT_PRIVATE_KUBECONFIG_PATH" --context "$EXPLICIT_CONTEXT"
+```
+
+Repeat `--package` for one to three independently trusted current/target/previous
+packages. All paths are explicit, clean and absolute; the existing receipts
+directory is euid-owned mode 0700 and the kubeconfig is a protected mode-0600
+regular file. No state directory, receipt, Namespace, journal or credential is
+created or repaired. The default five-minute timeout may be lowered but not
+raised; cancellation and incomplete observations fail without partial output.
+
+Kubeconfig input must contain exactly one complete, typed-strict v1 Config
+document. The explicit context must select existing cluster/user entries, and
+any nonempty context namespace must match `--namespace`. It requires an explicit
+CA and exactly one static credential mode: bearer, a complete client certificate/
+key pair, or complete basic credentials. Conflicting inline/file sources,
+relative references, anonymous authentication, exec/auth-provider plugins,
+impersonation, insecure TLS, configured proxies and URL queries/fragments/non-root paths
+are refused. Selected references are frozen by protected bounded reads before
+HTTP transport creation. It does not use SDK loaders/conversion, default context,
+in-cluster credentials, system/default CA selection, environment kubeconfig
+merges/proxy routing, credential refresh or persistence. A stdout failure is an
+error and never leads to a mutation or retry. This command is not an API-client
+fallback; the ordinary CLI remains API-only and the package command offline.
+Lifecycle mutation commands and integrated runtime certification remain in
 development.
 
 ```sh
