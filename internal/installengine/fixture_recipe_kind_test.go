@@ -67,6 +67,10 @@ func proveKindAdmissionFixtureRecipes(t *testing.T, parent context.Context, conf
 		t.Helper()
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cleanupCancel()
+		if ledger.document.DestroySeed != nil && ledger.document.DestroySeed.State != fixtureDestroySeedAcknowledged {
+			t.Error("unknown native status seed remains fenced; requiring exact owned-cluster teardown")
+			return
+		}
 		// Enumerate original durable ACKs even after post-ACK refusal. Unknown
 		// CREATE blocks all transitions; only the enclosing exact-owned Kind
 		// teardown may drain that disposable cluster. No SDK/name adoption.
@@ -105,7 +109,14 @@ func proveKindAdmissionFixtureRecipes(t *testing.T, parent context.Context, conf
 				t.Error("refusing replaced/unproved native recipe cleanup")
 				return // no fresh intent can repair an externally missing original
 			}
-			if ledger.validateResult(slot, fixtureStableResult, live, time.Now().UTC()) != nil {
+			shapeErr := ledger.validateResult(slot, fixtureStableResult, live, time.Now().UTC())
+			if slot == fixtureCancelledDestroy && ledger.document.DestroySeed != nil {
+				shapeErr = ledger.validateDestroySeedResult(live, time.Now().UTC())
+				if live.GetResourceVersion() != ledger.document.DestroySeed.AcknowledgedResourceVersion {
+					shapeErr = ErrFixtures
+				}
+			}
+			if shapeErr != nil {
 				t.Error("refusing unproved whole native fixture shape before cleanup")
 				return // reliable ACK identity is not inert-shape permission
 			}
@@ -305,9 +316,10 @@ func proveKindAdmissionFixtureRecipes(t *testing.T, parent context.Context, conf
 			t.Fatal("private synthetic live shape capture refused")
 		}
 	}
+	proveKindCancelledDestroySeed(t, ctx, wire, admin, plan)
 	fresh, err := engine.journal.Load(ctx, s.Anchor())
 	if err != nil || !bytes.Equal(fresh.Bytes(), s.Bytes()) || fresh.ResourceVersion() != s.ResourceVersion() || engine.fixtureFence(s) != ErrFixtures {
 		t.Fatal("native recipe proof changed journal or silently retired its fence")
 	}
-	t.Log("all ten fixed recipes passed whole dry-run/ACK/stable validation through private native wire; actual Job controller suspended, manual gated Pod owners/specs unchanged for30s; original ledger cleanup requires actual absence; WAL remains fenced")
+	t.Log("all ten fixed recipes passed whole dry-run/ACK/stable validation; cancelled synthetic status seed reliably ACKed through original admin wire; schema-valid confirmation dry-run accepted for destroy admin and exactly policy-denied for destroy controller; no confirmation persisted; original cleanup requires actual absence; WAL remains fenced")
 }

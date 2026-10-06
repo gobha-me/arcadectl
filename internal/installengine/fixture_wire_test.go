@@ -34,6 +34,11 @@ type fixtureWireTest struct {
 	deleteReply             func(http.ResponseWriter)
 	afterEffect             func()
 	afterPreview            func()
+	seeds                   int
+	seedReply               func(http.ResponseWriter, *unstructured.Unstructured)
+	afterSeed               func()
+	denySeed                bool
+	missingSeedDiscovery    bool
 }
 
 func newFixtureWireTest(t *testing.T) *fixtureWireTest {
@@ -82,6 +87,9 @@ func newFixtureWireTestAtActor(t *testing.T, a *actorFixture) *fixtureWireTest {
 					}
 				}
 				// Actor construction still uses the baseline discovery before this hook.
+				if gv == "arcade.gobha.me/v1alpha1" && !f.missingSeedDiscovery {
+					resources = append(resources, metav1.APIResource{Name: "gamedestroys/status", Kind: "GameDestroy", Namespaced: true, Verbs: metav1.Verbs{"update"}})
+				}
 				_ = json.NewEncoder(w).Encode(metav1.APIResourceList{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "APIResourceList"}, GroupVersion: gv, APIResources: resources})
 				return true
 			}
@@ -106,13 +114,48 @@ func newFixtureWireTestAtActor(t *testing.T, a *actorFixture) *fixtureWireTest {
 					}
 				}
 			}
+			seedPermission := fixtureDestroySeedPermission(ledger.document.Entries[fixtureCancelledDestroy].Key.Namespace, ledger.document.Entries[fixtureCancelledDestroy].Key.Name)
+			isSeed := reflect.DeepEqual(seedPermission.spec, review.Spec) && r.Header.Get("Impersonate-User") == ""
+			valid = valid || isSeed
 			if r.Method != http.MethodPost || !valid || r.URL.RawQuery != "fieldManager=arcadectl-installer&fieldValidation=Strict" {
 				t.Error("fixture review escaped fixed identity/route")
 			}
-			review.Status.Allowed = valid && !a.denyAdmin && !a.denyActor
+			review.Status.Allowed = valid && !a.denyAdmin && !a.denyActor && !(isSeed && f.denySeed)
 			_ = json.NewEncoder(w).Encode(review)
 			if a.afterReview != nil {
 				a.afterReview()
+			}
+			return true
+		}
+		seedKey := ledger.document.Entries[fixtureCancelledDestroy].Key
+		seedPath, _, _ := fixturePath(seedKey, false)
+		if r.URL.Path == seedPath+"/status" {
+			if r.Method != http.MethodPut || r.Header.Get("Impersonate-User") != "" || r.URL.RawQuery != "fieldManager=arcadectl-installer&fieldValidation=Strict" {
+				t.Error("seed escaped fixed admin/status route/query")
+			}
+			f.seeds++
+			var got unstructured.Unstructured
+			want, _ := ledger.object(fixtureCancelledDestroy)
+			want.SetUID(ledger.document.Entries[fixtureCancelledDestroy].OriginalUID)
+			want.SetResourceVersion(ledger.document.DestroySeed.BeforeResourceVersion)
+			want.Object["status"], _ = ledger.destroySeedStatus()
+			if json.NewDecoder(r.Body).Decode(&got.Object) != nil || !reflect.DeepEqual(got.Object, want.Object) || ledger.document.DestroySeed.State != fixtureDestroySeedAttempted || ledger.seedEffect || !ledger.seedAck {
+				t.Error("seed lost original deterministic body/durable intent/send consumption")
+			}
+			object := f.objects[fixtureCancelledDestroy].DeepCopy()
+			object.Object["status"], _ = ledger.destroySeedStatus()
+			object.SetResourceVersion("102")
+			fields := object.Object["metadata"].(map[string]any)["managedFields"].([]any)
+			object.Object["metadata"].(map[string]any)["managedFields"] = append(fields, map[string]any{"manager": "arcadectl-installer", "operation": "Update", "apiVersion": object.GetAPIVersion(), "fieldsType": "FieldsV1", "fieldsV1": fixtureDestroySeedFieldset(), "time": time.Now().UTC().Truncate(time.Second).Format(time.RFC3339), "subresource": "status"})
+			f.objects[fixtureCancelledDestroy] = object.DeepCopy()
+			if f.afterSeed != nil {
+				f.afterSeed()
+			}
+			w.Header().Set("X-Private-Canary", "PRIVATE-SEED-HEADER")
+			if f.seedReply != nil {
+				f.seedReply(w, object)
+			} else {
+				_ = json.NewEncoder(w).Encode(object.Object)
 			}
 			return true
 		}

@@ -39,8 +39,8 @@ func (f *fixtureLedger) destroySeedStatus() (map[string]any, error) {
 	}, nil
 }
 
-// This schema-derived fieldset is not native-profile certification. The future
-// once-only status transport must confirm it against both declared profiles.
+// This schema-derived fieldset is not by itself native-profile certification.
+// The once-only status transport must prove it against both declared profiles.
 func fixtureDestroySeedFieldset() map[string]any {
 	return map[string]any{"f:status": map[string]any{
 		".": map[string]any{}, "f:phase": map[string]any{},

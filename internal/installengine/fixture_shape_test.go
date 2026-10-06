@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	arcadev1 "github.com/gobha-me/arcadectl/api/v1alpha1"
 	"github.com/gobha-me/arcadectl/internal/canonicaljson"
@@ -31,7 +32,7 @@ func captureNativeFixtureShape(f *fixtureLedger, slot int, stage string, o *unst
 	if dir == "" {
 		return nil
 	}
-	if f == nil || o == nil || slot < 0 || slot >= len(fixtureCatalog) || stage != "ack" && stage != "live" {
+	if f == nil || o == nil || slot < 0 || slot >= len(fixtureCatalog) || stage != "ack" && stage != "live" && (stage != "seed" || slot != fixtureCancelledDestroy) {
 		return ErrFixtures
 	}
 	want, err := f.object(slot)
@@ -57,6 +58,12 @@ func captureNativeFixtureShape(f *fixtureLedger, slot int, stage string, o *unst
 	}
 	if err != nil {
 		return ErrFixtures
+	}
+	if stage == "seed" {
+		status, err := f.destroySeedStatus()
+		if err != nil || !reflect.DeepEqual(o.Object["status"], status) {
+			return ErrFixtures
+		}
 	}
 	shape := map[string]any{"apiVersion": o.Object["apiVersion"], "kind": o.Object["kind"], "metadata": o.Object["metadata"]}
 	if status, present := o.Object["status"]; present {
@@ -186,5 +193,76 @@ func TestNativeFixtureShapeCaptureIsPrivateClosedAndOffByDefault(t *testing.T) {
 		if captureNativeFixtureShape(ledger, 0, stage, mutated) != ErrFixtures {
 			t.Fatal("foreign/private observation admitted", change)
 		}
+	}
+}
+
+func TestNativeFixtureSeedShapeCaptureRequiresExactSyntheticOriginal(t *testing.T) {
+	dir := t.TempDir()
+	if os.Chmod(dir, 0700) != nil {
+		t.Fatal("private seed capture directory unavailable")
+	}
+	t.Setenv("ARCADECTL_TEST_NATIVE_FIXTURE_SHAPES", dir)
+	f := newFixture(t, false)
+	ledger, err := f.engine.prepareFixtureLedger(t.Context(), f.snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ledger.close()
+	acknowledgeAllRecipeFixtures(t, ledger)
+	seeded := fixtureDestroySeedExample(t, ledger, time.Now().UTC().Add(-time.Minute))
+	if captureNativeFixtureShape(ledger, fixtureCancelledDestroy, "seed", seeded) != nil {
+		t.Fatal("fixed synthetic seed capture refused")
+	}
+	files, err := privatefs.Open(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	name := "kubernetes-1.35.8-fixture-9-seed.json"
+	body, _, err := files.Read(name, 65536)
+	if err != nil {
+		t.Fatal("seed shape not privately recorded")
+	}
+	var shape map[string]any
+	if json.Unmarshal(body, &shape) != nil || shape["spec"] != nil || shape["kind"] != "GameDestroy" || !reflect.DeepEqual(shape["status"], seeded.Object["status"]) {
+		t.Fatal("seed capture stored executable spec or changed fixed synthetic status")
+	}
+	if captureNativeFixtureShape(ledger, 0, "seed", seeded) != ErrFixtures || captureNativeFixtureShape(ledger, fixtureCancelledDestroy, "seed", seeded) != ErrFixtures {
+		t.Fatal("seed capture accepted another slot or overwrote original evidence")
+	}
+	for label, change := range map[string]func(*unstructured.Unstructured){
+		"phase": func(o *unstructured.Unstructured) { o.Object["status"].(map[string]any)["phase"] = "Deleting" },
+		"guidance": func(o *unstructured.Unstructured) {
+			o.Object["status"].(map[string]any)["preview"].(map[string]any)["restoreGuidance"] = "PRIVATE-CANARY"
+		},
+		"status-extra": func(o *unstructured.Unstructured) { o.Object["status"].(map[string]any)["private"] = "PRIVATE-CANARY" },
+		"confirmation": func(o *unstructured.Unstructured) {
+			_ = unstructured.SetNestedField(o.Object, ledger.document.RunID, "spec", "confirmationChallenge")
+		},
+		"foreign-uid": func(o *unstructured.Unstructured) { o.SetUID("c0000000-0000-4000-8000-000000000001") },
+		"metadata": func(o *unstructured.Unstructured) {
+			o.Object["metadata"].(map[string]any)["private"] = "PRIVATE-CANARY"
+		},
+	} {
+		t.Run(label, func(t *testing.T) {
+			negativeDir := t.TempDir()
+			if os.Chmod(negativeDir, 0700) != nil {
+				t.Fatal("private negative capture directory unavailable")
+			}
+			t.Setenv("ARCADECTL_TEST_NATIVE_FIXTURE_SHAPES", negativeDir)
+			o := seeded.DeepCopy()
+			change(o)
+			if captureNativeFixtureShape(ledger, fixtureCancelledDestroy, "seed", o) != ErrFixtures {
+				t.Fatal("foreign/nonfixed seed diagnostic accepted")
+			}
+			entries, err := os.ReadDir(negativeDir)
+			if err != nil || len(entries) != 0 {
+				t.Fatal("refused synthetic seed created a private diagnostic artifact")
+			}
+		})
+	}
+	recorded, _, err := files.Read(name, 65536)
+	if err != nil || string(recorded) != string(body) {
+		t.Fatal("refused seed diagnostics changed original private capture")
 	}
 }

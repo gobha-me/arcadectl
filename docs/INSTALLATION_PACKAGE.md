@@ -804,9 +804,10 @@ cannot be cleared, and the other target/mode/reference fields are immutable.
 A private pure recipe and separate whole-result validator now describe only
 the original slot's `Cancelled` status with its run-derived challenge, fixed
 already-expired preview and fixture-only guidance. The ordinary validator still
-rejects every GameDestroy status. This component permits no status write and
-never persists a confirmation. Its exact status fieldset is schema-derived,
-not yet certified on either native profile. The destroy controller must remain
+rejects every GameDestroy status. This pure component permits no status write
+and never persists a confirmation; the separately guarded private transport is
+described below. Its exact status fieldset is schema-derived and must pass both
+native profiles rather than merely typed/schema validation. The destroy controller must remain
 independently cold: terminal cancellation alone does not prevent finalizer or
 worker/lease cleanup effects.
 
@@ -818,16 +819,43 @@ consumed send capability plus a distinct canonical result RV. Receipt changes
 cannot accompany entry changes or reset/reseed; an acknowledged receipt remains
 immutable throughout otherwise-valid original UID/RV cleanup. Document/body
 drift and protected-file replacement also fail closed. These are state-machine
-primitives, not status transport, reliable native ACK, recovery settlement or
+primitives, not reliable native ACK, recovery settlement or
 cleanup authorization. The active WAL fence remains in effect.
 
-A future closed status transport must consume those capabilities around a
-single original-actor request, pin reliable UID/RV evidence before post-request
-refusals, and certify exact whole returned/live shapes on both native profiles.
-It must separately justify the schema-valid dry-run-only confirmation change
-and prove paired administrator acceptance/controller policy denial. CRD/CEL,
-RBAC or status-subresource acceptance is not substitute evidence for the signed
-unsafe admission policy, which matches the main resource rather than `/status`.
+The private status transport derives only the original slot9 named `/status`
+PUT from the closed constructor, original UID and intent RV. It independently
+requires that exact named status UPDATE discovery/SSAR for the frozen original
+install administrator; missing rights refuse, with no new grant, token or
+impersonation fallback. The wire first proves the actual absent-status original
+whole body at the intent RV. Shared-ledger serialization, single-send capability
+consumption before any possible request, fixed manager/Strict validation and
+below-wrapper request guards prevent generic mutation or replay.
+
+A bounded strict native response with the original UID and distinct canonical RV
+is durably acknowledged before any post-request witness, wrapper error or whole-
+shape refusal. An unknown response remains attempted and fenced; later GET,
+client reconstruction, reload and guessed acknowledgement cannot repair or
+resend it. Successful return additionally requires the exact complete seeded
+shape and unchanged original witnesses. No CREATE UID capability is supplied.
+This component does not itself establish coldness or cleanup authority.
+
+The disposable native proof separately requires absent application controllers
+and only the exact synthetic GameDestroy among domain objects, with no leases.
+After seeding, only a dry-run main-resource UPDATE adds the run challenge while
+retaining cancellation, fictional target, audit identity and exact status.
+A separate pure whole validator permits only that confirmed-spec/fieldset and
+generation delta; it checks main/status managed-field roles and native ordering
+for same-second or later-second timestamps before private normalization.
+The native proof deliberately crosses a whole-second boundary, pairs distinct-
+admin acceptance with exact original unsafe-policy/controller denial, and
+uncached-observes the entire unchanged persistent original after every dry-run.
+No confirmation is persisted. These controls must pass both exact native
+profiles; CRD/CEL, RBAC or status-subresource acceptance alone is not evidence
+for the signed unsafe admission policy, which matches the main resource rather
+than `/status`. Fresh test-cluster cold scans are not a production cold provider.
+Both exact supported profiles exercise this sequence in the native authentication
+gate, including original UID/RV cleanup and actual absence. This is native
+component evidence, not signed-binary install/upgrade/rollback/uninstall acceptance.
 
 The disposable native test now uses the same engine's original direct transport,
 sealed actor/policy witnesses and private ledger-bound wire for whole-validated
@@ -840,6 +868,9 @@ acknowledgements even after post-ACK refusal, uses original UID/fresh RV
 preconditions and requires actual absence. Unknown CREATE blocks cleanup
 transitions and no Job is removed before its worker's absence is proved;
 exact owned-cluster teardown remains an independent fallback.
+Unknown status seeding also blocks every cleanup transition. A seeded original
+requires its complete exact seeded shape and acknowledged RV before test
+cleanup; seed ACK alone is not inertness proof or permission to delete.
 The already-cancelled synthetic leaf uses background deletion only within that
 fresh exclusively owned cluster, with no finalizers/owners or observed
 application/runtime descendants and no deployed application controller.

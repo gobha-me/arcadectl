@@ -46,6 +46,7 @@ const (
 	fixtureCreateRequest
 	fixtureDeleteRequest
 	fixtureDryRunRequest
+	fixtureSeedStatusRequest
 )
 
 func (actors *admissionActors) fixtures(ctx context.Context, ledger *fixtureLedger) (*fixtureWire, error) {
@@ -353,14 +354,17 @@ func (t fixtureIdentityTransport) RoundTrip(r *http.Request) (*http.Response, er
 }
 
 type fixtureCapture struct {
-	identity          fixtureWireIdentity
-	method, url       string
-	body              []byte
-	key               installstate.Key
-	result            *unstructured.Unstructured
-	uid               types.UID
-	notFound, success bool
-	dryRun            bool
+	identity           fixtureWireIdentity
+	method, url        string
+	body               []byte
+	key                installstate.Key
+	result             *unstructured.Unstructured
+	uid                types.UID
+	notFound, success  bool
+	dryRun             bool
+	seedUID            types.UID
+	seedBeforeRV       string
+	seedAcknowledgedRV string
 }
 
 func (c *fixtureCapture) guard(r *http.Request) bool {
@@ -400,7 +404,8 @@ func nativeFixtureUID(value string) bool {
 
 // Parse the reply below wrappers and strip ALL response bodies at the caller.
 // Only complete bounded unambiguous JSON with the exact original route identity
-// yields a reliable CREATE UID; spec/status/remaining metadata are NOT trusted.
+// yields a reliable CREATE UID or original status-seed UID/distinct RV;
+// spec/status/remaining metadata are NOT trusted until whole validation.
 func (c *fixtureCapture) capture(response *http.Response) {
 	if response == nil {
 		return
@@ -440,6 +445,12 @@ func (c *fixtureCapture) capture(response *http.Response) {
 	if key != c.key || !nativeFixtureUID(string(o.GetUID())) {
 		return
 	}
+	if c.method == http.MethodPut {
+		if !nativeFixtureUID(string(c.seedUID)) || o.GetUID() != c.seedUID || !fixtureRV(c.seedBeforeRV) || !fixtureRV(o.GetResourceVersion()) || o.GetResourceVersion() == c.seedBeforeRV {
+			return
+		}
+		c.seedAcknowledgedRV = o.GetResourceVersion()
+	}
 	c.result, c.success = o, true
 	if c.method == http.MethodPost && !c.dryRun {
 		c.uid = o.GetUID()
@@ -449,7 +460,8 @@ func (c *fixtureCapture) capture(response *http.Response) {
 // Called only with ledger.wireMu held by the closed operations above. It has no
 // caller-selected key, actor or payload. Persistent effects consume the shared
 // send capability immediately before Do; preview never consumes or grants one.
-// Even an accidental new caller cannot select PUT/PATCH or a non-dry preview.
+// Even an accidental new caller cannot select generic PUT/PATCH or a non-dry
+// preview. The sole status PUT derives from the fixed original seed intent.
 func (w *fixtureWire) request(ctx context.Context, slot int, operation fixtureRequest) (*fixtureCapture, error) {
 	if ctx == nil || w == nil || w.ledger == nil || w.actors == nil || w.actors.admission == nil || w.actors.admission.prerequisites == nil || w.actors.admission.prerequisites.access == nil || w.actors.admission.prerequisites.access.frozen == nil || slot < 0 || slot >= len(fixtureCatalog) || len(w.ledger.document.Entries) != len(fixtureCatalog) {
 		return nil, ErrFixtures
@@ -486,6 +498,16 @@ func (w *fixtureWire) request(ctx context.Context, slot int, operation fixtureRe
 			return nil, ErrFixtures
 		}
 		payload = opts
+	case fixtureSeedStatusRequest:
+		if slot != fixtureCancelledDestroy {
+			return nil, ErrFixtures
+		}
+		verb, method = "seed-status", http.MethodPut
+		o, err := w.destroySeedPayload(ctx)
+		if err != nil {
+			return nil, ErrFixtures
+		}
+		payload = o.Object
 	default:
 		return nil, ErrFixtures
 	}
@@ -497,6 +519,9 @@ func (w *fixtureWire) request(ctx context.Context, slot int, operation fixtureRe
 	path, _, err := fixturePath(key, method == http.MethodPost)
 	if err != nil {
 		return nil, ErrFixtures
+	}
+	if operation == fixtureSeedStatusRequest {
+		path += "/status"
 	}
 	identity := fixtureWireIdentity{actor: actor, namespace: key.Namespace}
 	parent := w.actors.admission.prerequisites.access.frozen
@@ -518,13 +543,19 @@ func (w *fixtureWire) request(ctx context.Context, slot int, operation fixtureRe
 	u := *a.base
 	u.Path = strings.TrimRight(u.Path, "/") + path
 	u.RawQuery = ""
-	if method == http.MethodPost {
+	if method == http.MethodPost || operation == fixtureSeedStatusRequest {
 		u.RawQuery = "fieldManager=arcadectl-installer&fieldValidation=Strict"
 		if operation == fixtureDryRunRequest {
 			u.RawQuery = "dryRun=All&" + u.RawQuery
 		}
 	}
 	capture := &fixtureCapture{identity: identity, method: method, url: u.String(), body: body, key: key, dryRun: operation == fixtureDryRunRequest}
+	if operation == fixtureSeedStatusRequest {
+		if !f.destroySeedReady() {
+			return nil, ErrFixtures
+		}
+		capture.seedUID, capture.seedBeforeRV = entry.OriginalUID, f.document.DestroySeed.BeforeResourceVersion
+	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	ctx = logr.NewContext(ctx, logr.Discard())
@@ -539,11 +570,17 @@ func (w *fixtureWire) request(ctx context.Context, slot int, operation fixtureRe
 	if operation == fixtureCreateRequest || operation == fixtureDeleteRequest {
 		f.effectSlot = -1
 	} // consumed before any possible wire attempt
+	if operation == fixtureSeedStatusRequest {
+		f.seedEffect = false
+	}
 	response, err := a.client.Do(r)
 	if response != nil && response.Body != nil {
 		_ = response.Body.Close()
 	}
 	if err != nil || !capture.success {
+		if operation == fixtureSeedStatusRequest && capture.seedAcknowledgedRV == "" {
+			f.seedAck = false // even a direct private enum caller cannot ACK uncertainty
+		}
 		return capture, ErrFixtures
 	}
 	return capture, nil
