@@ -69,14 +69,44 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
+  install-engine-race:
+    name: Installer engine race shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 1GiB
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Discover and run every assigned race test
+        run: bash ./hack/test-installengine-race-shard.sh '${{ matrix.shard }}'
+
   go-and-policy:
     name: Go and policy
+    needs: install-engine-race
+    # Do not turn failed/cancelled dependencies into a skipped passing gate.
+    # Whole-workflow cancellation can cancel this gate too; it is never green.
+    if: ${{ always() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       GOMAXPROCS: "2"
       GOMEMLIMIT: 1GiB
     steps:
+      - name: Require every installer engine race shard
+        env:
+          ENGINE_RACE_RESULT: ${{ needs.install-engine-race.result }}
+        run: test "$ENGINE_RACE_RESULT" = success
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up Go
@@ -95,7 +125,11 @@ jobs:
       - name: Vet
         run: go vet -p 1 ./...
       - name: Test with race detector
-        run: go test -race -p 1 -timeout=15m ./...
+        run: |
+          discovered=$(go list ./...)
+          mapfile -t packages < <(printf '%s\n' "$discovered" | awk '$0 != "github.com/gobha-me/arcadectl/internal/installengine"')
+          test "${#packages[@]}" -gt 0
+          go test -race -p 1 -timeout=15m "${packages[@]}"
       - name: Test API-server lifecycle transitions
         run: make test-envtest
       - name: Build reproducible controller image

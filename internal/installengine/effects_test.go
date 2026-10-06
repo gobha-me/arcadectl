@@ -213,7 +213,12 @@ func newFixtureWithPlans(t *testing.T, installed bool, plans ...*installrender.P
 		ns.Annotations = map[string]string{}
 	}
 	ns.Annotations[installstate.Annotation], ns.Annotations[installstate.BootstrapAnnotation] = string(body), doc.InstallationID
-	client := fake.NewClientset(ns)
+	// This namespace-only journal seam uses GET/UPDATE, not SSA. Defaults,
+	// original UID/RV conflicts, increments and defensive copies are supplied
+	// explicitly below. The managed-field fake rebuilds the entire Kubernetes
+	// REST mapper on every update; native fieldsets are tested with real HTTP/
+	// API servers separately, never inferred from this object tracker.
+	client := fake.NewSimpleClientset(ns)
 	client.PrependReactor("update", "namespaces", func(action clienttest.Action) (bool, runtime.Object, error) {
 		candidate := action.(clienttest.UpdateAction).GetObject().(*corev1.Namespace).DeepCopy()
 		f.nsUpdates++
