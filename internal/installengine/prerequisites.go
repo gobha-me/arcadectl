@@ -64,6 +64,12 @@ var proofCollections = []proofCollection{
 	{"admissionregistration.k8s.io/v1", "ValidatingAdmissionPolicy", "validatingadmissionpolicies", false},
 	{"admissionregistration.k8s.io/v1", "ValidatingAdmissionPolicyBinding", "validatingadmissionpolicybindings", false},
 	{"apps/v1", "ReplicaSet", "replicasets", true},
+	{"apps/v1", "Deployment", "deployments", true},
+	{"apps/v1", "StatefulSet", "statefulsets", true},
+	{"apps/v1", "DaemonSet", "daemonsets", true},
+	{"v1", "ReplicationController", "replicationcontrollers", true},
+	{"batch/v1", "CronJob", "cronjobs", true},
+	{"storage.k8s.io/v1", "VolumeAttachment", "volumeattachments", false},
 	{"discovery.k8s.io/v1", "EndpointSlice", "endpointslices", true},
 }
 

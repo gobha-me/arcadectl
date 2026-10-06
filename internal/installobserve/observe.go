@@ -24,9 +24,11 @@ import (
 	"github.com/gobha-me/arcadectl/internal/installsafety"
 	"github.com/gobha-me/arcadectl/internal/installstate"
 	admissionv1 "k8s.io/api/admissionregistration/v1"
+	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -72,6 +74,14 @@ type Observer struct {
 type Observation struct {
 	snapshot *installsafety.Snapshot
 	journal  *installstate.Snapshot
+	runtime  *installsafety.RuntimeSnapshot
+}
+
+func (o *Observation) Runtime() *installsafety.RuntimeSnapshot {
+	if o == nil {
+		return nil
+	}
+	return o.runtime.DeepCopy()
 }
 
 func (o *Observation) Journal() *installstate.Snapshot {
@@ -177,6 +187,22 @@ type collection struct {
 	target             runtime.Object
 }
 
+func runtimeCollections(r *installsafety.RuntimeSnapshot) []collection {
+	r.Deployments, r.ReplicaSets = &appsv1.DeploymentList{}, &appsv1.ReplicaSetList{}
+	r.StatefulSets, r.DaemonSets = &appsv1.StatefulSetList{}, &appsv1.DaemonSetList{}
+	r.ReplicationControllers, r.CronJobs = &corev1.ReplicationControllerList{}, &batchv1.CronJobList{}
+	r.Attachments = &storagev1.VolumeAttachmentList{}
+	return []collection{
+		{"apps/v1", "Deployment", "deployments", true, r.Deployments},
+		{"apps/v1", "ReplicaSet", "replicasets", true, r.ReplicaSets},
+		{"apps/v1", "StatefulSet", "statefulsets", true, r.StatefulSets},
+		{"apps/v1", "DaemonSet", "daemonsets", true, r.DaemonSets},
+		{"v1", "ReplicationController", "replicationcontrollers", true, r.ReplicationControllers},
+		{"batch/v1", "CronJob", "cronjobs", true, r.CronJobs},
+		{"storage.k8s.io/v1", "VolumeAttachment", "volumeattachments", false, r.Attachments},
+	}
+}
+
 func collections(s *installsafety.Snapshot) []collection {
 	s.GameServers, s.Backups, s.Restores = &arcade.GameServerList{}, &arcade.GameBackupList{}, &arcade.GameRestoreList{}
 	s.Destroys, s.Operations = &arcade.GameDestroyList{}, &arcade.ArcadeOperationList{}
@@ -218,7 +244,8 @@ func (o *Observer) Collect(ctx context.Context, anchor installstate.Anchor) (*Ob
 		return nil, ErrOwnership
 	}
 	snapshot := &installsafety.Snapshot{}
-	cs := collections(snapshot)
+	runtimeSnapshot := &installsafety.RuntimeSnapshot{}
+	cs := append(collections(snapshot), runtimeCollections(runtimeSnapshot)...)
 	graph := newOwnerGraph(o, doc.Resources, cs)
 	budget := 32 * 1024 * 1024
 	for _, c := range cs {
@@ -235,7 +262,7 @@ func (o *Observer) Collect(ctx context.Context, anchor installstate.Anchor) (*Ob
 	if err != nil || after.Anchor() != anchor || after.ResourceVersion() != before.ResourceVersion() || !reflect.DeepEqual(before.Document(), after.Document()) {
 		return nil, ErrConcurrent
 	}
-	return &Observation{snapshot, after}, nil
+	return &Observation{snapshot: snapshot, journal: after, runtime: runtimeSnapshot}, nil
 }
 
 func (o *Observer) collectList(ctx context.Context, c collection, graph *ownerGraph, budget *int) error {

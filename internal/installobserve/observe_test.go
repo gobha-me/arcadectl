@@ -86,7 +86,7 @@ func newFixture(t *testing.T) *fixture {
 		ns.Labels["pod-security.kubernetes.io/"+mode+"-version"] = plan.Profile().PodSecurityVersion
 	}
 	f := &fixture{core: kubefake.NewClientset(ns), anchor: installstate.Anchor{Namespace: plan.Namespace(), UID: doc.NamespaceUID, InstallationID: doc.InstallationID}, objects: map[string]*metav1.PartialObjectMetadata{}, lists: map[string][]unstructured.Unstructured{}}
-	f.cs = collections(&installsafety.Snapshot{})
+	f.cs = append(collections(&installsafety.Snapshot{}), runtimeCollections(&installsafety.RuntimeSnapshot{})...)
 	kinds := map[schema.GroupVersionResource]string{}
 	for _, c := range f.cs {
 		gv, _ := schema.ParseGroupVersion(c.gv)
@@ -216,6 +216,45 @@ func TestCollectCompleteOriginalJournalAndRecursiveMetadataOnly(t *testing.T) {
 		if action.GetVerb() != "get" && action.GetVerb() != "list" {
 			t.Fatal("observation changed cluster state")
 		}
+	}
+}
+
+func TestCollectRuntimeClosureIsCompleteAndDefensivelyCopied(t *testing.T) {
+	f := newFixture(t)
+	for _, c := range runtimeCollections(&installsafety.RuntimeSnapshot{}) {
+		namespace := f.anchor.Namespace
+		if !c.namespaced {
+			namespace = ""
+		}
+		o := unstructured.Unstructured{Object: map[string]any{"apiVersion": c.gv, "kind": c.kind}}
+		o.SetName("fixture-" + c.resource)
+		o.SetNamespace(namespace)
+		o.SetUID(types.UID("uid-" + c.resource))
+		o.SetResourceVersion("30")
+		f.lists[c.resource] = []unstructured.Unstructured{o}
+	}
+	observation, err := f.o.Collect(context.Background(), f.anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := observation.Runtime()
+	if len(r.Deployments.Items) != 1 || len(r.ReplicaSets.Items) != 1 || len(r.StatefulSets.Items) != 1 || len(r.DaemonSets.Items) != 1 || len(r.ReplicationControllers.Items) != 1 || len(r.CronJobs.Items) != 1 || len(r.Attachments.Items) != 1 || r.Attachments.Items[0].Namespace != "" {
+		t.Fatal("complete builtin/global attachment inventory missing")
+	}
+	r.Deployments.Items[0].UID, r.Attachments.Items[0].UID = "changed", "changed"
+	if observation.Runtime().Deployments.Items[0].UID != "uid-deployments" || observation.Runtime().Attachments.Items[0].UID != "uid-volumeattachments" || (*Observation)(nil).Runtime() != nil || (&Observation{}).Runtime() != nil {
+		t.Fatal("runtime evidence aliases caller changes or zero observation")
+	}
+	for _, resource := range []string{"deployments", "replicasets", "statefulsets", "daemonsets", "replicationcontrollers", "cronjobs", "volumeattachments"} {
+		t.Run(resource, func(t *testing.T) {
+			fault := newFixture(t)
+			fault.dynamic.PrependReactor("list", resource, func(clienttesting.Action) (bool, runtime.Object, error) {
+				return true, nil, errors.New("PRIVATE-CANARY inaccessible runtime list")
+			})
+			if result, err := fault.o.Collect(context.Background(), fault.anchor); result != nil || err != ErrRead {
+				t.Fatal("runtime read failure returned partial evidence")
+			}
+		})
 	}
 }
 

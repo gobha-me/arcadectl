@@ -26,7 +26,7 @@ import (
 	strictjson "sigs.k8s.io/json"
 )
 
-// proofRequest is private and used only by the fixed version, discovery and
+// proofRequest is private and used only by fixed version, discovery, named PV and
 // authorization methods below. It exposes neither arbitrary routes nor retrying
 // SDK clients. Authorization POSTs are nonpersistent evaluations, not effects.
 func (a *HTTPAccess) proofRequest(ctx context.Context, method, path string, body any, out any) (map[string]any, error) {
@@ -136,7 +136,7 @@ func (a *HTTPAccess) checkVersion(ctx context.Context, profile installpackage.Pr
 	return nil
 }
 
-var proofGroups = []string{"v1", "apps/v1", "batch/v1", "coordination.k8s.io/v1", "discovery.k8s.io/v1", "rbac.authorization.k8s.io/v1", "apiextensions.k8s.io/v1", "admissionregistration.k8s.io/v1", "authorization.k8s.io/v1", "arcade.gobha.me/v1alpha1"}
+var proofGroups = []string{"v1", "apps/v1", "batch/v1", "coordination.k8s.io/v1", "discovery.k8s.io/v1", "storage.k8s.io/v1", "rbac.authorization.k8s.io/v1", "apiextensions.k8s.io/v1", "admissionregistration.k8s.io/v1", "authorization.k8s.io/v1", "arcade.gobha.me/v1alpha1"}
 
 func discoveryPath(gv string) (string, error) {
 	for _, known := range proofGroups {

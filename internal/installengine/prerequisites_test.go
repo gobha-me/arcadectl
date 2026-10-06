@@ -112,7 +112,7 @@ func TestPrerequisitesOperationPermissionsAreExactAndDropSettledEffects(t *testi
 	}
 	partialPermissions := derive(partial, installstate.Uninstall, previous)
 	for _, permission := range partialPermissions {
-		if a := permission.spec.ResourceAttributes; a != nil && a.Resource == "deployments" && a.Verb != "get" {
+		if a := permission.spec.ResourceAttributes; a != nil && a.Resource == "deployments" && a.Verb != "get" && a.Verb != "list" {
 			t.Fatal("uninstall reauthorized a settled deployment effect")
 		}
 	}
@@ -124,7 +124,7 @@ func TestPrerequisitesOperationPermissionsAreExactAndDropSettledEffects(t *testi
 	ready.Stage, ready.ActivePackage, ready.PreviousPackage = installstate.Applying, previous.Digest(), previous.Digest()
 	settled := derive(ready, installstate.Upgrade, target)
 	for _, permission := range settled {
-		if a := permission.spec.ResourceAttributes; a != nil && a.Resource == "deployments" && a.Verb != "get" {
+		if a := permission.spec.ResourceAttributes; a != nil && a.Resource == "deployments" && a.Verb != "get" && a.Verb != "list" {
 			t.Fatal("settled target deployments retained mutation authority")
 		}
 	}

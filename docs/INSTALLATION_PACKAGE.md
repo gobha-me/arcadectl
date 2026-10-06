@@ -564,3 +564,51 @@ storage. Neither the bridge nor an empty/settled observation proves coldness:
 exact current claim identity/binding, detached storage, workload templates that
 could remount claims, API/controller descendants and endpoints, actual runtime
 readiness and full lifecycle CI remain separate required obligations.
+
+### Bound current-world and cold-storage checkpoint
+
+The separate `ClusterCold` checkpoint now combines the sealed same-identity
+observer with pure cold-data validation. The observer also reads complete
+namespace Deployment, ReplicaSet, StatefulSet, DaemonSet, ReplicationController
+and CronJob lists, plus the complete cluster VolumeAttachment list. Failure of
+any of these reads discards the entire observation; copies do not alias callers.
+
+Every live namespace PVC is retained, including unlabeled claims outside domain
+history. A current stopped GameServer must resolve the complete selected adapter
+path set through the platform planner, with exact claim UIDs, durable identity
+labels and bound-world observations. Status-only active-data switches do not
+escape validation just because the GameServer generation stayed unchanged.
+Only never-observed generated Pending data can lack a bound-world receipt;
+explicit selections and previously observed worlds cannot use that exception.
+Historical operation references may outlive their PVCs, but remain conservative
+future-mount signals rather than authority to adopt replacements.
+
+Bound claims require exact UID-to-PV binding, nondeleting ownerless backing
+PVs, matching class/mode, covering access modes and positive observed capacity.
+An increased capacity request is not mistaken for new data identity or loss of
+coldness while the stopped world's older capacity remains bound. Named PV GETs
+are derived from namespace claims and global attachment sources, individually
+discovery/SSAR-authorized and bounded. No PV LIST, wildcard read or PVC/PV delete
+authority is introduced. The declared CSI storage prerequisite supplies exact
+physical `(driver, volumeHandle)` identity: a differently named PV or translated
+inline attachment cannot hide an alias. Matching attachment intent is refused
+until absent, including pending, false-attached, deleting and error states.
+Well-formed distinct CSI sources remain unrelated; missing, ambiguous or
+uncomparable source evidence fails closed.
+
+Pods and every collected builtin workload template are checked for retained
+mounts and broad data-worker signals, regardless of completion, suspension,
+termination or zero replicas. StatefulSet claim-template names and generic
+ephemeral claim names are included. The checkpoint repeats complete observations
+and protected server/claim/PV identity, bracketing them with the original signed
+policy UID/spec/resource-version evidence and original namespace journal.
+Harmless leader renewals and independently proved unrelated attachment changes
+are not protected world identity.
+
+This is read-only cold-data evidence, not a cluster lock, storage provisioner,
+admission-behavior receipt, runtime-stop fallback or full `LifecycleChecks`
+provider. Unit/HTTPS fixtures do not certify physical CSI detachment, real
+kubelet operation or full binary install/upgrade/rollback/uninstall. Complete
+API/controller quiescence, the remaining admission branches, retained recovery
+guidance and actual isolated lifecycle CI remain required before issue #27 can
+be delivered.
