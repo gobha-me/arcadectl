@@ -14,6 +14,7 @@ import (
 	arcadev1alpha1 "github.com/gobha-me/arcadectl/api/v1alpha1"
 	"github.com/gobha-me/arcadectl/internal/catalog"
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -52,6 +53,7 @@ func TestEnvtestLifecycleStatusCollisionAndRecovery(t *testing.T) {
 	for name, add := range map[string]func(*runtime.Scheme) error{
 		"Arcadectl":    arcadev1alpha1.AddToScheme,
 		"apps":         appsv1.AddToScheme,
+		"batch":        batchv1.AddToScheme,
 		"core":         corev1.AddToScheme,
 		"coordination": coordinationv1.AddToScheme,
 	} {
@@ -68,6 +70,7 @@ func TestEnvtestLifecycleStatusCollisionAndRecovery(t *testing.T) {
 		t.Fatalf("create test namespace: %v", err)
 	}
 	testOperationAPI(t, ctx, configuration, kubeClient)
+	testNativeDestroyJobCleanup(t, ctx, kubeClient)
 	testRetainedDataAdmission(t, ctx, kubeClient)
 	server := controllerTestServer(arcadev1alpha1.DesiredStateRunning)
 	server.UID = ""
