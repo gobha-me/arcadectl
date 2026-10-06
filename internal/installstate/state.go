@@ -194,9 +194,8 @@ func contracts(plans []*installrender.Plan, namespace, profile string) (map[Key]
 			return nil, nil, ErrInvalid
 		}
 		digests[plan.Digest()] = true
-		for _, resource := range plan.Resources() {
-			object := resource.Object
-			key := Key{object.GetAPIVersion(), object.GetKind(), object.GetNamespace(), object.GetName()}
+		for _, resource := range plan.ResourceMetadata() {
+			key := Key{resource.APIVersion, resource.Kind, resource.Namespace, resource.Name}
 			value := contract{resource.Retained, resource.Phase}
 			if old, ok := keys[key]; ok && old != value {
 				return nil, nil, ErrInvalid
