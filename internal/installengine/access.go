@@ -57,10 +57,11 @@ type HTTPAccess struct {
 
 type attemptKey struct{}
 type requestAttempt struct {
-	used   atomic.Bool
-	method string
-	probe  *probeCapture
-	actor  *actorRequestCapture
+	used    atomic.Bool
+	method  string
+	probe   *probeCapture
+	actor   *actorRequestCapture
+	fixture *fixtureCapture
 }
 type attemptTransport struct{ next http.RoundTripper }
 
@@ -74,6 +75,9 @@ func (t attemptTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	if attempt.probe != nil && !attempt.probe.guard(r) {
 		return nil, ErrAdmission
 	}
+	if attempt.fixture != nil && !attempt.fixture.guard(r) {
+		return nil, ErrFixtures
+	}
 	response, err := t.next.RoundTrip(r)
 	if err != nil || response == nil {
 		return response, err
@@ -86,6 +90,15 @@ func (t attemptTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	}
 	copyResponse.Status = strconv.Itoa(response.StatusCode) + " " + http.StatusText(response.StatusCode)
 	copyResponse.Trailer = nil
+	if attempt.fixture != nil {
+		// Fixture replies are captured below wrappers, then replaced by fixed
+		// public bytes. No native status, body, header or trailer can become a
+		// debug/error leak or a wrapper-selected acknowledgement identity.
+		attempt.fixture.capture(response)
+		copyResponse.Body = io.NopCloser(strings.NewReader(`{}`))
+		copyResponse.ContentLength = 2
+		return &copyResponse, nil
+	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		if attempt.probe != nil {
 			attempt.probe.classify(r, response)

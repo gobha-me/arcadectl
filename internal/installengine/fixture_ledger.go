@@ -11,6 +11,7 @@ import (
 	"io"
 	"reflect"
 	"strconv"
+	"sync"
 
 	"github.com/gobha-me/arcadectl/internal/canonicaljson"
 	"github.com/gobha-me/arcadectl/internal/installrender"
@@ -270,13 +271,18 @@ func validFixtureTransition(before, after fixtureLedgerDocument) bool {
 // The future provider must perform original witness/permission/whole-shape
 // checks around each effect. advance never issues any Kubernetes request.
 type fixtureLedger struct {
-	engine   *Engine
-	name     string
-	lock     *privatefs.Lock
-	identity privatefs.FileIdentity
-	body     []byte
-	document fixtureLedgerDocument
-	ackSlot  int // instance-local attempt capability; NEVER restored by load
+	// Serializes wire clients sharing this ledger, not arbitrary provider WAL
+	// transitions. The closed provider owns transitions/close serially and must
+	// never alter a ledger concurrently with a wire operation.
+	wireMu     sync.Mutex
+	engine     *Engine
+	name       string
+	lock       *privatefs.Lock
+	identity   privatefs.FileIdentity
+	body       []byte
+	document   fixtureLedgerDocument
+	ackSlot    int // instance-local attempt capability; NEVER restored by load
+	effectSlot int // single-send capability shared by ALL clients of this ledger
 }
 
 func (e *Engine) prepareFixtureLedger(ctx context.Context, s *installstate.Snapshot) (*fixtureLedger, error) {
@@ -313,7 +319,7 @@ func (e *Engine) prepareFixtureLedger(ctx context.Context, s *installstate.Snaps
 		return nil, ErrFixtures // never treat uncertain durability as absent intent
 	}
 	success = true
-	return &fixtureLedger{engine: e, name: fixtureLedgerName(s), lock: lock, identity: identity, body: body, document: d, ackSlot: -1}, nil
+	return &fixtureLedger{engine: e, name: fixtureLedgerName(s), lock: lock, identity: identity, body: body, document: d, ackSlot: -1, effectSlot: -1}, nil
 }
 
 // Resume only this exact protected run and original journal. Reading a matching
@@ -347,7 +353,7 @@ func (e *Engine) loadFixtureLedger(ctx context.Context, s *installstate.Snapshot
 		return nil, ErrFixtures
 	}
 	success = true
-	return &fixtureLedger{engine: e, name: name, lock: lock, identity: identity, body: body, document: d, ackSlot: -1}, nil
+	return &fixtureLedger{engine: e, name: name, lock: lock, identity: identity, body: body, document: d, ackSlot: -1, effectSlot: -1}, nil
 }
 
 func (f *fixtureLedger) nextDocument() (fixtureLedgerDocument, error) {
@@ -394,8 +400,12 @@ func (f *fixtureLedger) advance(next fixtureLedgerDocument) error {
 	f.identity, f.body, f.document = identity, body, d
 	if changed >= 0 {
 		f.ackSlot = -1
+		f.effectSlot = -1
 		if next.Entries[changed].State == fixtureCreateAttempted {
 			f.ackSlot = changed
+			f.effectSlot = changed
+		} else if next.Entries[changed].State == fixtureDeleteAttempted {
+			f.effectSlot = changed
 		}
 	}
 	return nil

@@ -32,6 +32,7 @@ type actorFixture struct {
 	denyAdmin, denyActor, forbiddenProbe bool
 	denial                               map[string]any
 	afterReview, afterProbe              func()
+	fixtureHandler                       func(http.ResponseWriter, *http.Request) bool
 }
 
 // Uses the actual closed HTTP factory and original sealed inventory. Responses
@@ -64,6 +65,9 @@ func newActorFixture(t *testing.T) *actorFixture {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Header.Get("Authorization") != "Bearer FAKE-ADMIN-CANARY" {
 			t.Error("frozen administrator authentication changed")
+		}
+		if f.fixtureHandler != nil && f.fixtureHandler(w, r) {
+			return
 		}
 		if r.URL.Path == "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews" {
 			var review authv1.SelfSubjectAccessReview

@@ -818,6 +818,42 @@ as proof of a specific discovery or permission failure.
 The active test WAL remains fenced even after test cleanup. No ordinary effect
 or cold/runtime proof ignores its fixtures or considers this run complete.
 
+### Private ledger-bound transport checkpoint
+
+The private fixture transport consumes an instance-local, once-only send
+capability after a durable CREATE/DELETE intent. All clients sharing the ledger
+serialize wire operations; the closed provider still owns WAL transitions and
+close serially. Loading a ledger or rebuilding a client cannot recreate a send
+capability. GET observes the fixed address without adopting unknown CREATE UIDs,
+resetting attempts or converting DELETE acknowledgements into absence.
+
+Routes, objects and software actors are derived from the ten fixed slots.
+The original administrator creates ordinary inert fixtures; the original
+destroy-admin creates the born-cancelled GameDestroy; retained synthetic PVC
+cleanup selects the original destroy-controller. These use the original frozen
+admin transport and already-held impersonation rights, not new tokens/grants.
+Discovery, exact-operation SSARs, unchanged original journal/account/RBAC/policy
+witnesses and protected WAL bytes surround every operation. Private clients
+reject general Access use, arbitrary methods, changed routes/bodies/identities,
+replay-enabling headers, retries and redirects.
+
+Bounded strict native JSON with the exact CREATE status/address and canonical
+nonzero native UID supplies a reliable acknowledgement. That UID is fsynced
+before post-request witness/refusal checks, including an outer transport error.
+Malformed identity remains unknown; later GET cannot repair it. All native
+response bodies, headers and trailers are captured/sanitized below wrappers.
+DELETE derives original UID and journaled fresh RV preconditions, leaves the
+attempt unresolved until independently observed actual absence, and never
+resends after a lost response, post-witness refusal, client rebuild or restart.
+
+This is a private transport component with fake-credential HTTPS regression
+tests, **not a production permission boundary or full provider**. No public
+entrypoint invokes it. Complete cold/runtime absence, whole dry-run validation
+before CREATE, accepted/live metadata/status/descendant validation before
+cleanup, native transport certification and WAL retirement remain necessary.
+Native recipe evidence above uses the normal SDK and does not certify this
+transport or these missing production checks.
+
 ### Native non-binding storage-candidate evidence
 
 The existing isolated native-authentication Kind test additionally checks a
