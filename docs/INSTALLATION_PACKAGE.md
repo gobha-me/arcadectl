@@ -657,6 +657,12 @@ Target readiness remains a separate exact-target obligation.
 Independent ColdSafety still scans every old
 template for workers and remounts, regardless of zero replicas.
 
+Ownership closure is precomputed over the complete observed metadata graph
+before runtime classification. Object UIDs and every owner reference count,
+independently of list order or owner flags/kind. A renamed nested set or an
+indirect descendant through a Job or recursively observed metadata owner cannot
+hide ahead of its parent in a list.
+
 Repeated whole observations and original runtime identity/read-shape witnesses
 surround the check. This is not a cluster lock or an effect. HTTPS fixtures cover
 race/refusal boundaries; exact 1.35.8/1.37.0 isolated API-server fixtures cover
@@ -665,3 +671,45 @@ controller Pods with ServiceAccount admission enabled. Seeded fixture status is
 not controller-manager/kubelet shutdown evidence. Actual target availability,
 all admission branches, complete binary lifecycle/recovery output and isolated
 fresh/predecessor upgrade/rollback/uninstall CI remain delivery requirements.
+
+### Bound target-controller availability checkpoint
+
+The separate read-only `ClusterControllers` implements only
+`ControllersAvailable`, in Applying and Verifying. Both original ServiceAccounts
+and Deployments must match the exact signed target package and their original
+inventory UIDs. During rollback the target is the older approved package, not
+the still-active newer package; neither the active package nor shutdown's
+signed-predecessor exception can substitute for target readiness.
+
+Complete unfiltered workload observations establish the actual
+Pod-to-ReplicaSet-to-original-Deployment chains. Native selection chooses the
+oldest whole-template-matching set, with name tie-breaking; matching ignores
+only the hash label and the reviewed ServiceAccount alias normalization.
+The selected set must have current one-replica readiness counters, original
+owner/selector/hash derivatives and native controller desired/max annotations
+of `1/2`. Every other related set, including older matching revisions, must be
+inert with no related Pods. Exactly one scheduled Running, Ready,
+whole-template-derived Pod is required for each selected set. Extra, orphaned,
+terminal, deleting, altered or stale descendants are refused.
+
+Classification follows original and derivative UIDs, all owner references,
+reserved family names/labels/selectors and both ServiceAccount aliases, across
+outer and nested workload metadata/specs. Transitive UID closure is independent
+of list order and includes recursively observed metadata owners. Any related
+alternate builtin workload is refused, including zero/suspended templates.
+Repository equality alone is deliberately not controller identity: an active
+API or domain worker can share the repository without becoming a controller
+descendant. Availability neither authorizes those siblings nor certifies their
+shape. It does not replace ColdSafety's broader no-worker/remount obligation,
+prove namespace-wide runtime absence or exclusive credential authority.
+
+Two complete observations and unchanged relevant account/controller/set/Pod
+witnesses are bracketed by the original Namespace/journal barriers. Unrelated
+runtime and leader-lease churn is not target controller identity. These are
+temporal reads, not an atomic lock. Exact 1.35.8/1.37.0 API-server fixtures admit
+the scheduled controller Pod shapes and distinguish unready/old executable
+sets from seeded target-ready topology; scheduling and Ready counters are
+explicit test-admin inputs. They do not certify a real scheduler, kubelet,
+controller-manager, leader acquisition or successful reconciliation. The
+complete provider, remaining admission branches, authenticated activation,
+installer/recovery command and actual binary lifecycle CI remain required.

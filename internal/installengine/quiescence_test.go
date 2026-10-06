@@ -205,6 +205,10 @@ func TestQuiescenceBoundProviderRefusesExecutableAndRacingDescendants(t *testing
 	quiescenceCases(t, fixturePlan(t), []string{"healthy", "api-only-controllers-running", "api-only-pending-controller", "uninstall-controllers-removed", "api-pod", "terminal-api-pod", "deleting-api-pod", "orphan-api-rs", "endpoint-unready", "endpoint-terminating", "endpoint-replacement-service", "endpoint-corrupted-original-owner", "endpoint-drained-port", "api-deployment-survives", "service-missing-recorded", "service-replacement", "deployment-replacement", "controller-stale", "controller-paused", "controller-ready", "controller-missing-unrecorded", "controller-missing-recorded", "unknown-rs-running", "controller-pod-by-owner-uid", "daemonset-zero", "statefulset-zero", "cronjob-suspended", "job-terminal", "replicationcontroller-zero", "secret-env", "secret-projected", "init-api-image", "ephemeral-api-image", "missing-endpoint-list", "endpoint-page-failure", "journal-rv", "namespace-uid", "controller-rv-second", "rs-rv-second", "pod-second", "unrelated-pod-renewal", "unrelated-empty-slice"})
 }
 
+func TestQuiescenceOwnershipClosureIsIndependentOfListOrderAndOwnerKind(t *testing.T) {
+	quiescenceCases(t, fixturePlan(t), []string{"nested-rs-first", "transitive-job-owner"})
+}
+
 func TestQuiescenceSharedTaggedRepositoriesRequireWholeOriginalControllerIdentity(t *testing.T) {
 	images := installpackage.Images{Controller: "registry.example:5000/runtime:controller@sha256:" + strings.Repeat("a", 64), API: "registry.example:5000/runtime:api@sha256:" + strings.Repeat("b", 64)}
 	plan := fixturePlanImages(t, "isolated-install", installrender.Profile135, images)
@@ -242,6 +246,23 @@ func quiescenceCases(t *testing.T, plan *installrender.Plan, scenarios []string,
 			apiPod.Spec.ServiceAccountName = apiFamily
 			doc := v.f.snapshot.Document()
 			switch scenario {
+			case "nested-rs-first":
+				original := sets.Items[0]
+				nested := inertFixture(&deployments.Items[0], "bcdfg99999", 3)
+				nested.Name, nested.UID, nested.Labels = "renamed", "nested-rs", map[string]string{"other": "label"}
+				nested.Spec.Template.Labels = maps.Clone(nested.Labels)
+				nested.Spec.Template.Spec = *pod.Spec.DeepCopy()
+				nested.OwnerReferences = fixtureOwner("apps/v1", "ReplicaSet", original.Name, original.UID)
+				nested.OwnerReferences[0].Name = "damaged-owner-name"
+				sets.Items = append([]appsv1.ReplicaSet{*nested}, sets.Items...)
+				pod.OwnerReferences = fixtureOwner("apps/v1", "ReplicaSet", nested.Name, nested.UID)
+				lists["Pod"] = &corev1.PodList{Items: []corev1.Pod{pod}}
+			case "transitive-job-owner":
+				original := sets.Items[0]
+				job := batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "renamed-job", Namespace: ns.Name, UID: "nested-job", ResourceVersion: "10", OwnerReferences: fixtureOwner("apps/v1", "ReplicaSet", original.Name, original.UID)}, Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: *pod.Spec.DeepCopy()}}}
+				lists["Job"] = &batchv1.JobList{Items: []batchv1.Job{job}}
+				pod.OwnerReferences = fixtureOwner("batch/v1", "Job", job.Name, job.UID)
+				lists["Pod"] = &corev1.PodList{Items: []corev1.Pod{pod}}
 			case "api-only-controllers-running", "api-only-pending-controller", "api-only-controller-pod-drift", "api-only-signed-predecessor", "api-only-extra-unreferenced-plan", "api-only-extra-unregistered-plan", "api-only-predecessor-pod-drift":
 				checkpoint = APIStopped
 				deployments.Items[0].Spec.Replicas = ptr.To[int32](1)

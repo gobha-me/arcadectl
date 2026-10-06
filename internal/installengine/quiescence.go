@@ -204,12 +204,27 @@ func (e *Engine) stopped(ctx context.Context, request LifecycleCheck, o *install
 	}
 	basicSelected := selected
 	selected = func(meta metav1.ObjectMeta, spec *corev1.PodSpec) bool {
+		if originalUIDs[meta.UID] {
+			return true
+		}
 		for _, owner := range meta.OwnerReferences {
 			if originalUIDs[owner.UID] {
 				return true
 			}
 		}
 		return basicSelected(meta, spec)
+	}
+	// Close all observed ownership edges before classification, rather than
+	// depending on a parent ReplicaSet preceding its renamed descendants.
+	for i := range r.ReplicaSets.Items {
+		item := &r.ReplicaSets.Items[i]
+		parentKnown := len(item.OwnerReferences) == 1 && parents[item.OwnerReferences[0].Name] != nil
+		if parentKnown || selected(item.ObjectMeta, &item.Spec.Template.Spec) || selected(item.Spec.Template.ObjectMeta, &item.Spec.Template.Spec) {
+			originalUIDs[item.UID] = true
+		}
+	}
+	if closeDescendantUIDs(s, r, originalUIDs) != nil {
+		return nil, ErrQuiescence
 	}
 	seenParents := map[string]bool{}
 	for i := range r.Deployments.Items {

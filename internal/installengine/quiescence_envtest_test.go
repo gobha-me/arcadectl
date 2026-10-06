@@ -275,6 +275,133 @@ func TestEnvtestQuiescenceDeclaredProfiles(t *testing.T) {
 			if q.Verify(ctx, request) != ErrQuiescence {
 				t.Fatal("native executable unknown-history RS accepted")
 			}
+			proveNativeControllerAvailability(t, ctx, plan, kube, engine, store, s, parents)
 		})
+	}
+}
+
+// Reuse only the isolated API-server fixture, not a shutdown/activation receipt.
+// These are native admitted shapes with explicitly admin-seeded counters,
+// scheduling and Ready status. No scheduler, controller-manager or kubelet runs.
+func proveNativeControllerAvailability(t *testing.T, ctx context.Context, plan *installrender.Plan, kube kubernetes.Interface, engine *Engine, store *installstate.Store, s *installstate.Snapshot, parents []*appsv1.Deployment) {
+	t.Helper()
+	d := s.Document()
+	d.Mode, d.Stage, d.ActivePackage, d.Installed = installstate.Install, installstate.Applying, "", false
+	d.Revision++
+	oldSets, err := kube.AppsV1().ReplicaSets(plan.Namespace()).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range oldSets.Items {
+		set := &oldSets.Items[i]
+		set.Spec.Replicas = ptr.To[int32](0)
+		set, err = kube.AppsV1().ReplicaSets(plan.Namespace()).Update(ctx, set, metav1.UpdateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		set.Status = appsv1.ReplicaSetStatus{ObservedGeneration: set.Generation}
+		if _, err := kube.AppsV1().ReplicaSets(plan.Namespace()).UpdateStatus(ctx, set, metav1.UpdateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pods := []*corev1.Pod{}
+	for _, original := range parents {
+		parent, err := kube.AppsV1().Deployments(plan.Namespace()).Get(ctx, original.Name, metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		parent.Spec.Replicas = ptr.To[int32](1)
+		parent.Annotations["deployment.kubernetes.io/revision"] = "2"
+		parent, err = kube.AppsV1().Deployments(plan.Namespace()).Update(ctx, parent, metav1.UpdateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		parent.Status = appsv1.DeploymentStatus{ObservedGeneration: parent.Generation, Replicas: 1, UpdatedReplicas: 1, ReadyReplicas: 1, AvailableReplicas: 1}
+		parent, err = kube.AppsV1().Deployments(plan.Namespace()).UpdateStatus(ctx, parent, metav1.UpdateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := deploymentKey(plan.Namespace(), parent.Name)
+		template, err := engine.contracts[plan.Digest()].Template(key, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range d.Resources {
+			if d.Resources[i].Key == key {
+				d.Resources[i].TemplateSHA256 = template.Hash()
+			}
+		}
+		set := inertFixture(parent, "bcdfg56789", 2)
+		set.Spec.Template = *parent.Spec.Template.DeepCopy()
+		set.Spec.Template.Labels[appsv1.DefaultDeploymentUniqueLabelKey] = "bcdfg56789"
+		set.Labels = set.Spec.Template.Labels
+		set.Annotations[installstate.MutationAnnotation] = parent.Annotations[installstate.MutationAnnotation]
+		set.Spec.Replicas = ptr.To[int32](1)
+		set.UID, set.ResourceVersion, set.Generation = "", "", 0
+		set.Status = appsv1.ReplicaSetStatus{}
+		set, err = kube.AppsV1().ReplicaSets(plan.Namespace()).Create(ctx, set, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		set.Status = appsv1.ReplicaSetStatus{ObservedGeneration: set.Generation, Replicas: 1, FullyLabeledReplicas: 1, ReadyReplicas: 1, AvailableReplicas: 1}
+		set, err = kube.AppsV1().ReplicaSets(plan.Namespace()).UpdateStatus(ctx, set, metav1.UpdateOptions{})
+		if err != nil || !availableControllerSet(set, parent) {
+			t.Fatal("native target RS shape", err)
+		}
+		spec := set.Spec.Template.Spec.DeepCopy()
+		spec.NodeName = "native-fixture-node"
+		pod, err := kube.CoreV1().Pods(plan.Namespace()).Create(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{GenerateName: set.Name + "-", Namespace: plan.Namespace(), Labels: set.Spec.Template.Labels, Annotations: set.Spec.Template.Annotations, OwnerReferences: fixtureOwner("apps/v1", "ReplicaSet", set.Name, set.UID)}, Spec: *spec}, metav1.CreateOptions{})
+		if err != nil || !validOriginalPodTemplate(pod, set, true) {
+			t.Fatal("native scheduled controller Pod shape", err)
+		}
+		pods = append(pods, pod)
+	}
+	body, err := installstate.Encode(d, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns, err := kube.CoreV1().Namespaces().Get(ctx, plan.Namespace(), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns.Annotations[installstate.Annotation] = string(body)
+	if _, err := kube.CoreV1().Namespaces().Update(ctx, ns, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	s, err = store.Load(ctx, s.Anchor())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := NewClusterPrerequisites(engine, engine.access.(*HTTPAccess))
+	if err != nil {
+		t.Fatal(err)
+	}
+	check, err := NewClusterControllers(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := LifecycleCheck{Checkpoint: ControllersAvailable, Snapshot: s, Mode: installstate.Install, Target: plan, Options: LifecycleOptions{Now: time.Now().UTC()}}
+	if check.Verify(ctx, request) != ErrControllers {
+		t.Fatal("native unready controller admitted as available")
+	}
+	for _, pod := range pods {
+		pod.Status = corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{Name: pod.Spec.Containers[0].Name, Image: pod.Spec.Containers[0].Image, ImageID: pod.Spec.Containers[0].Image, Ready: true, Started: ptr.To(true), State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}}, Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}, {Type: corev1.ContainersReady, Status: corev1.ConditionTrue}, {Type: corev1.PodScheduled, Status: corev1.ConditionTrue}, {Type: corev1.PodInitialized, Status: corev1.ConditionTrue}}}
+		if _, err := kube.CoreV1().Pods(plan.Namespace()).UpdateStatus(ctx, pod, metav1.UpdateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := check.Verify(ctx, request); err != nil {
+		t.Fatal("bound native target availability", err)
+	}
+	old, err := kube.AppsV1().ReplicaSets(plan.Namespace()).Get(ctx, oldSets.Items[0].Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old.Spec.Replicas = ptr.To[int32](1)
+	if _, err := kube.AppsV1().ReplicaSets(plan.Namespace()).Update(ctx, old, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if check.Verify(ctx, request) != ErrControllers {
+		t.Fatal("native old executable set admitted as target availability")
 	}
 }

@@ -285,11 +285,15 @@ func normalizeSAAlias(s *corev1.PodSpec) bool {
 }
 
 func readyPod(p *corev1.Pod) bool {
+	return readyNamedPod(p, "api")
+}
+
+func readyNamedPod(p *corev1.Pod, name string) bool {
 	if p.Status.Phase != corev1.PodRunning || len(p.Status.ContainerStatuses) != 1 || len(p.Status.InitContainerStatuses) != 0 || len(p.Status.EphemeralContainerStatuses) != 0 {
 		return false
 	}
 	c := p.Status.ContainerStatuses[0]
-	if c.Name != "api" || !c.Ready || c.Started != nil && !*c.Started || c.State.Running == nil || c.State.Waiting != nil || c.State.Terminated != nil {
+	if c.Name != name || !c.Ready || c.Started != nil && !*c.Started || c.State.Running == nil || c.State.Waiting != nil || c.State.Terminated != nil {
 		return false
 	}
 	seen := map[corev1.PodConditionType]bool{}
