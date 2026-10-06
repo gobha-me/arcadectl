@@ -229,7 +229,7 @@ func (w *SecretWorkflow) retained(ctx context.Context, s *installstate.Snapshot,
 		return nil, caID, err
 	}
 	d := fresh.Document()
-	if d.Pending != nil {
+	if d.Pending != nil && (!retiringAccessDelete(d) || w.engine.verifyRetiredAdmission(ctx, fresh) != nil) {
 		return nil, caID, ErrInvalid
 	}
 	ca, caID, err := privatefs.ReadAbsolute(caFile, 65536, privatefs.TrustedPublic)

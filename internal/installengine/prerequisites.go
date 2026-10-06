@@ -182,7 +182,7 @@ func (p *ClusterPrerequisites) documentPermissions(d installstate.Document, mode
 		if (c.kind == "Pod" || c.kind == "ReplicaSet") && mode != installstate.Uninstall {
 			permissions = append(permissions, proofPermission{authv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &authv1.ResourceAttributes{Group: gv.Group, Version: gv.Version, Resource: c.plural, Namespace: ns, Verb: "get"}}, c.kind})
 		}
-		if c.kind == "Pod" || c.kind == "PersistentVolumeClaim" || c.kind == "GameDestroy" {
+		if (c.kind == "Pod" || c.kind == "PersistentVolumeClaim" || c.kind == "GameDestroy") && !(mode == installstate.Uninstall && d.AdmissionRetirementRevision != 0) {
 			permissions = append(permissions, proofPermission{authv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &authv1.ResourceAttributes{Group: gv.Group, Version: gv.Version, Resource: c.plural, Namespace: ns, Verb: "create"}}, c.kind})
 		}
 	}

@@ -58,6 +58,29 @@ func (a *ClusterAdmission) VerifyConfigured(ctx context.Context, request Lifecyc
 	return err
 }
 
+// VerifyRetained is the uninstall-only administrator observation after runtime
+// access retirement. It needs durable original behavior evidence and unchanged
+// healthy protections, but performs no probes or account/permission recreation.
+func (a *ClusterAdmission) VerifyRetained(ctx context.Context, request LifecycleCheck) error {
+	if a == nil || a.prerequisites == nil || ctx == nil || request.Checkpoint != RetainedAdmission || request.Mode != installstate.Uninstall || request.Snapshot == nil {
+		return ErrInvalid
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	if a.prerequisites.engine.verifyRetiredAdmission(ctx, request.Snapshot) != nil {
+		return ErrAdmission
+	}
+	before, err := a.configured(ctx, request)
+	if err != nil {
+		return ErrAdmission
+	}
+	after, err := a.configured(ctx, request)
+	if err != nil || !sameAdmissionConfiguration(before, after) || a.prerequisites.engine.verifyRetiredAdmission(ctx, request.Snapshot) != nil {
+		return ErrAdmission
+	}
+	return nil
+}
+
 // VerifyCreateProbes establishes only the six paired CREATE behaviors. This
 // must not stand alone as LifecycleChecks.AdmissionEffective: cold/retention,
 // UPDATE/subresource and applicable live-claim evidence remain separate proof

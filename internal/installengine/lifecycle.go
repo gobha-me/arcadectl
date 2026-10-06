@@ -53,6 +53,10 @@ const (
 	// non-executable identity needed by native Pod behavioral probes. RBAC,
 	// Service, Secrets and workloads still require AdmissionEffective.
 	AdmissionConfigured
+	// RetainedAdmission is administrator read-only verification of unchanged
+	// original protections and durable pre-retirement behavioral evidence.
+	// It is uninstall-only, not a substitute for live AdmissionEffective.
+	RetainedAdmission
 )
 
 // LifecycleChecks is an internal proof-provider seam. It MUST NOT be populated
@@ -137,6 +141,7 @@ func (l *Lifecycle) Begin(ctx context.Context, s *installstate.Snapshot, mode in
 		return fresh, ErrInvalid
 	}
 	d.Mode, d.TargetPackage, d.Stage = mode, target, installstate.Preparing
+	d.AdmissionRetirementRevision = 0
 	if !l.engine.compatible(d) || mode == installstate.Install && d.Installed || mode != installstate.Install && !d.Installed {
 		return fresh, ErrInvalid
 	}
@@ -164,11 +169,24 @@ func (l *Lifecycle) checkOperation(ctx context.Context, kind Checkpoint, s *inst
 	if plan == nil {
 		return ErrInvalid
 	}
+	if kind == RetainedAdmission && (mode != installstate.Uninstall || l.engine.verifyRetiredAdmission(ctx, s) != nil) {
+		return ErrLifecycle
+	}
 	if err := l.checks.Check(ctx, LifecycleCheck{kind, s, mode, plan, opts}); err != nil {
 		return ErrLifecycle // never expose provider/cluster/private-file details
 	}
+	if kind == RetainedAdmission && l.engine.verifyRetiredAdmission(ctx, s) != nil {
+		return ErrLifecycle
+	}
 	_, err := l.original(ctx, s)
 	return err
+}
+
+func uninstallAdmissionCheckpoint(d installstate.Document) Checkpoint {
+	if d.Mode == installstate.Uninstall && d.AdmissionRetirementRevision != 0 {
+		return RetainedAdmission
+	}
+	return AdmissionEffective
 }
 
 func (l *Lifecycle) stage(ctx context.Context, s *installstate.Snapshot, stage installstate.Stage) (*installstate.Snapshot, error) {
@@ -319,6 +337,16 @@ func (l *Lifecycle) Step(ctx context.Context, s *installstate.Snapshot, opts Lif
 		return fresh, ErrInvalid
 	}
 	if d.Pending != nil {
+		if d.AdmissionRetirementRevision != 0 {
+			for _, kind := range []Checkpoint{RetainedAdmission, ColdSafety, RuntimeStopped} {
+				if err := l.check(ctx, kind, fresh, opts); err != nil {
+					return fresh, err
+				}
+			}
+			if err := l.secrets.VerifyRetained(ctx, fresh, opts.Activation.CAFile, opts.Now); err != nil {
+				return fresh, err
+			}
+		}
 		if d.Pending.Key.Kind != "Secret" {
 			return l.engine.Recover(ctx, fresh)
 		}
@@ -349,7 +377,7 @@ func (l *Lifecycle) Step(ctx context.Context, s *installstate.Snapshot, opts Lif
 		if err := l.secrets.VerifyRetained(ctx, fresh, opts.Activation.CAFile, opts.Now); err != nil {
 			return fresh, err
 		}
-		if err := l.check(ctx, AdmissionEffective, fresh, opts); err != nil {
+		if err := l.check(ctx, uninstallAdmissionCheckpoint(d), fresh, opts); err != nil {
 			return fresh, err
 		}
 		return l.stage(ctx, fresh, installstate.Quiescing)
@@ -362,7 +390,10 @@ func (l *Lifecycle) Step(ctx context.Context, s *installstate.Snapshot, opts Lif
 		return l.apply(ctx, fresh, opts)
 	case installstate.Verifying:
 		if d.Mode == installstate.Uninstall {
-			for _, kind := range []Checkpoint{AdmissionEffective, ColdSafety, RuntimeStopped} {
+			if d.AdmissionRetirementRevision == 0 {
+				return fresh, ErrLifecycle
+			}
+			for _, kind := range []Checkpoint{RetainedAdmission, ColdSafety, RuntimeStopped} {
 				if err := l.check(ctx, kind, fresh, opts); err != nil {
 					return fresh, err
 				}
@@ -387,7 +418,7 @@ func (l *Lifecycle) Step(ctx context.Context, s *installstate.Snapshot, opts Lif
 
 func (l *Lifecycle) quiesce(ctx context.Context, s *installstate.Snapshot, opts LifecycleOptions) (*installstate.Snapshot, error) {
 	d := s.Document()
-	for _, kind := range []Checkpoint{AdmissionEffective, ColdSafety} {
+	for _, kind := range []Checkpoint{uninstallAdmissionCheckpoint(d), ColdSafety} {
 		if err := l.check(ctx, kind, s, opts); err != nil {
 			return s, err
 		}
@@ -560,7 +591,7 @@ func deleteRank(k installstate.Key) int {
 }
 
 func (l *Lifecycle) uninstall(ctx context.Context, s *installstate.Snapshot, opts LifecycleOptions) (*installstate.Snapshot, error) {
-	for _, kind := range []Checkpoint{AdmissionEffective, ColdSafety, RuntimeStopped} {
+	for _, kind := range []Checkpoint{uninstallAdmissionCheckpoint(s.Document()), ColdSafety, RuntimeStopped} {
 		if err := l.check(ctx, kind, s, opts); err != nil {
 			return s, err
 		}
@@ -584,7 +615,13 @@ func (l *Lifecycle) uninstall(ctx context.Context, s *installstate.Snapshot, opt
 		return bytes.Compare([]byte(a.Key.Name), []byte(b.Key.Name))
 	})
 	if len(runtime) == 0 {
+		if s.Document().AdmissionRetirementRevision == 0 {
+			return s, ErrLifecycle
+		}
 		return l.stage(ctx, s, installstate.Verifying)
+	}
+	if accessRetirementKey(runtime[0].Key) && s.Document().AdmissionRetirementRevision == 0 {
+		return l.retireAdmission(ctx, s, opts)
 	}
 	return l.engine.Delete(ctx, s, runtime[0].Key)
 }

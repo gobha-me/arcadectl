@@ -126,6 +126,10 @@ type Document struct {
 	Installed       bool       `json:"installed"`
 	Resources       []Resource `json:"resources"`
 	Pending         *Pending   `json:"pending"`
+	// AdmissionRetirementRevision pins protected pre-removal evidence for this
+	// exact uninstall. Omission preserves canonical bytes of legacy journals.
+	// It is not permission to skip current retained-protection observations.
+	AdmissionRetirementRevision uint64 `json:"admissionRetirementRevision,omitempty"`
 }
 
 func NewID() (string, error) {
@@ -214,6 +218,9 @@ func contracts(plans []*installrender.Plan, namespace, profile string) (map[Key]
 
 func validate(d Document, plans []*installrender.Plan) error {
 	if d.Version != Version || !hexID.MatchString(d.InstallationID) || !installrender.ValidNamespace(d.Namespace) || !validIdentity(string(d.NamespaceUID)) || d.Revision == 0 || d.Revision > 9007199254740991 || !validMode(d.Mode) || !validStage(d.Stage) || d.Resources == nil || len(d.Resources) > MaxResources {
+		return ErrInvalid
+	}
+	if d.AdmissionRetirementRevision != 0 && (d.Mode != Uninstall || d.AdmissionRetirementRevision >= d.Revision || d.Stage == Preparing) {
 		return ErrInvalid
 	}
 	keys, digests, err := contracts(plans, d.Namespace, d.ProfileID)

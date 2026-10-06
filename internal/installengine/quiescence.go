@@ -48,8 +48,15 @@ func (q *ClusterQuiescence) Verify(ctx context.Context, request LifecycleCheck) 
 		return ErrInvalid
 	}
 	d := request.Snapshot.Document()
-	if d.Pending != nil || request.Mode != d.Mode || request.Target == nil || request.Target.Digest() != d.TargetPackage {
+	if request.Mode != d.Mode || request.Target == nil || request.Target.Digest() != d.TargetPackage {
 		return ErrInvalid
+	}
+	if d.Pending != nil {
+		// Access withdrawal may await foreground deletion/acknowledgement. Its
+		// original receipt allows observation only, not pending runtime effects.
+		if request.Checkpoint != RuntimeStopped || !retiringAccessDelete(d) || q.prerequisites.engine.verifyRetiredAdmission(ctx, request.Snapshot) != nil {
+			return ErrInvalid
+		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -59,6 +66,9 @@ func (q *ClusterQuiescence) Verify(ctx context.Context, request LifecycleCheck) 
 	}
 	second, err := q.collect(ctx, request)
 	if err != nil || first != second || q.prerequisites.original(ctx, request.Snapshot) != nil {
+		return ErrQuiescence
+	}
+	if d.Pending != nil && q.prerequisites.engine.verifyRetiredAdmission(ctx, request.Snapshot) != nil {
 		return ErrQuiescence
 	}
 	return nil

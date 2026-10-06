@@ -201,7 +201,7 @@ func validTransition(before, next Document) bool {
 	}
 	if before.Stage == Complete {
 		// A new operation cannot silently switch packages or mode mid-journal.
-		if next.Stage != Preparing || next.Pending != nil || next.ActivePackage != before.ActivePackage || next.PreviousPackage != before.PreviousPackage || next.Installed != before.Installed || !reflect.DeepEqual(next.Resources, before.Resources) {
+		if next.Stage != Preparing || next.Pending != nil || next.AdmissionRetirementRevision != 0 || next.ActivePackage != before.ActivePackage || next.PreviousPackage != before.PreviousPackage || next.Installed != before.Installed || !reflect.DeepEqual(next.Resources, before.Resources) {
 			return false
 		}
 		if next.Mode == Install {
@@ -214,6 +214,15 @@ func validTransition(before, next Document) bool {
 	}
 	if next.Mode != before.Mode || next.TargetPackage != before.TargetPackage {
 		return false
+	}
+	if next.AdmissionRetirementRevision != before.AdmissionRetirementRevision {
+		// One observation-only latch, before any access is withdrawn. Subsequent
+		// effects, recovery and completion cannot replace or erase its evidence.
+		return before.Mode == Uninstall && before.Stage == Applying && next.Stage == Applying &&
+			before.AdmissionRetirementRevision == 0 && next.AdmissionRetirementRevision == before.Revision &&
+			before.Pending == nil && next.Pending == nil && next.ActivePackage == before.ActivePackage &&
+			next.PreviousPackage == before.PreviousPackage && next.Installed == before.Installed &&
+			reflect.DeepEqual(next.Resources, before.Resources)
 	}
 	if next.Stage == Complete {
 		if before.Stage != Verifying || before.Pending != nil || next.Pending != nil {

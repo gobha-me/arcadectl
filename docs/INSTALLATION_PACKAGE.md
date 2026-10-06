@@ -510,6 +510,28 @@ settled controller removal proves authoritative absence rather than recreating
 or adopting a controller. Same-package reinstall keeps retained credential UIDs
 and never generates replacement tokens.
 
+Uninstall proves live runtime-identity admission behavior before withdrawing
+the first original RoleBinding or ClusterRoleBinding. After executable runtime
+and Services are gone, it fsyncs a protected receipt containing the exact
+pre-removal journal and all twelve original policy/binding UID, resource-version
+and template-hash witnesses. An observation-only journal CAS latches that
+receipt's original revision. Accounts and permissions are not retained merely
+to run tests. Later removal, pending-delete recovery and final verification use
+the distinct administrator read-only `RetainedAdmission` checkpoint, alongside
+fresh cold-data, runtime-absence and retained-credential observations.
+
+Missing/corrupt receipts, changed or unhealthy protections, substituted
+inventory, and recreation of removed access objects fail closed. This proves
+removal of the installation's own runtime access, not global revocation of
+independent administrator grants. The marker cannot be replaced or cleared
+mid-operation; it resets only when a completed operation begins its successor.
+Monotonic revisions prevent reusing earlier uninstall evidence after reinstall.
+No additional signed resources, retention flags, grants or counts are introduced.
+Legacy journals omit the new optional marker and retain their canonical bytes;
+an already partially withdrawn legacy uninstall without pre-removal evidence
+is not retrospectively certified. Older binaries that do not understand the
+new marker reject such journals; downgrade compatibility is not implied.
+
 Completion rechecks CRD availability, admission effectiveness, controller
 evidence, authenticated target activation, every target-ready inventory hash
 and live shape, current CRD storage/conditions and original private Secret UIDs.
@@ -675,10 +697,13 @@ remain required. The prerequisite contract does not silently gain PVC DELETE,
 additional UPDATE or Pod subresource privileges. No scheduler, kubelet, real
 world destruction or binary installation lifecycle is certified here.
 
-Final uninstall still needs an explicit dependency-retention contract: live Pod
-probes cannot run after removal of every ServiceAccount. Pending that decision,
-the proof fails closed at a missing original account; it never silently retains,
-recreates or adopts a substitute, or downgrades to configuration-only evidence.
+Final uninstall uses the approved pre-removal behavior/durable-evidence and
+post-removal administrator-observation split described above. It does not run
+live actor probes after their permissions/accounts are removed. Original
+accounts are never silently retained, recreated or adopted. Fresh-bootstrap
+behavioral authorization, production fixture lifecycle and the complete closed
+lifecycle-provider composition remain separate unfinished obligations; this
+retirement checkpoint is not full install/upgrade/rollback/uninstall acceptance.
 
 ## Original CRD discovery and bound safety reads
 

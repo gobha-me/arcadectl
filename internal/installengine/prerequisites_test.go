@@ -116,6 +116,13 @@ func TestPrerequisitesOperationPermissionsAreExactAndDropSettledEffects(t *testi
 			t.Fatal("uninstall reauthorized a settled deployment effect")
 		}
 	}
+	retired := partial
+	retired.Mode, retired.Stage, retired.Revision, retired.AdmissionRetirementRevision = installstate.Uninstall, installstate.Applying, 100, 90
+	for _, permission := range derive(retired, installstate.Uninstall, previous) {
+		if a := permission.spec.ResourceAttributes; a != nil && a.Verb == "create" {
+			t.Fatal("access-retired uninstall still requires admission probe CREATE")
+		}
+	}
 	upgrade := derive(d, installstate.Upgrade, target)
 	if !containsPermission(upgrade, "deployments", "", "arcadectl-api", "delete") || !containsPermission(upgrade, "deployments", "", "", "create") || !containsPermission(upgrade, "deployments", "", "arcadectl-controller", "update") || !containsPermission(upgrade, "pods", "portforward", "", "create") {
 		t.Fatal("upgrade lacks API replacement/controller pause/activation union")

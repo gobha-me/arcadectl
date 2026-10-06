@@ -62,7 +62,7 @@ func (v *lifecycleFixture) Check(ctx context.Context, request LifecycleCheck) er
 			if rank == 0 && (r == nil || tmpl.CheckCRD(v.f.access.objects[key], r.UID, tmpl) != nil) {
 				return ErrLifecycle
 			}
-		case AdmissionConfigured, AdmissionEffective:
+		case AdmissionConfigured, AdmissionEffective, RetainedAdmission:
 			if (rank == 1 || rank == 2) && r == nil {
 				return ErrLifecycle
 			}
@@ -212,6 +212,9 @@ func newLifecycleFixturePlans(t *testing.T, plans ...*installrender.Plan) *lifec
 		if key.Kind == "CustomResourceDefinition" {
 			names, _, _ := unstructured.NestedMap(result.Object, "spec", "names")
 			result.Object["status"] = map[string]any{"acceptedNames": names, "storedVersions": []any{"v1alpha1"}, "conditions": []any{map[string]any{"type": "Established", "status": "True"}, map[string]any{"type": "NamesAccepted", "status": "True"}}}
+		}
+		if key.Kind == "ValidatingAdmissionPolicy" {
+			result.Object["status"] = map[string]any{"observedGeneration": result.GetGeneration(), "typeChecking": map[string]any{}}
 		}
 		if key.Kind == "Deployment" {
 			replicas, _, _ := unstructured.NestedInt64(result.Object, "spec", "replicas")
@@ -588,6 +591,34 @@ func TestLifecycleFreshRetainUninstallAndSamePackageReinstall(t *testing.T) {
 		if v.private.objects[name].UID != uid {
 			t.Fatal("private original UID changed")
 		}
+	}
+}
+
+func TestLifecycleUninstallDoesNotProbeRemovedRuntimeIdentities(t *testing.T) {
+	v := newLifecycleFixture(t)
+	s := v.finish(t, v.f.snapshot)
+	v.probe = func(request LifecycleCheck) error {
+		if request.Mode != installstate.Uninstall || request.Checkpoint != AdmissionEffective {
+			return nil
+		}
+		for _, resource := range request.Target.Resources() {
+			key := resourceKey(resource)
+			if !resource.Retained && (key.Kind == "ServiceAccount" || key.Kind == "Role" || key.Kind == "RoleBinding") {
+				if entry, _ := v.f.engine.inventory(request.Snapshot.Document(), key); entry == nil {
+					return ErrLifecycle // a real identity cannot use its removed authorization
+				}
+			}
+		}
+		return nil
+	}
+	var err error
+	s, err = v.l.Begin(context.Background(), s, installstate.Uninstall, v.f.plan.Digest(), v.opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s = v.finish(t, s)
+	if s.Document().Installed || len(s.Document().Resources) != 20 {
+		t.Fatal("uninstall retained extra runtime identities")
 	}
 }
 

@@ -290,6 +290,9 @@ func (e *Engine) Delete(ctx context.Context, s *installstate.Snapshot, key insta
 	if d.Pending != nil || !deletionAllowed(d, r, t) {
 		return nil, ErrInvalid
 	}
+	if d.AdmissionRetirementRevision != 0 && e.verifyRetiredAdmission(ctx, fresh) != nil {
+		return fresh, ErrAdmission
+	}
 	live, err := e.access.Get(ctx, key)
 	if err != nil || t.MatchLive(live, r.UID) != nil {
 		return nil, ErrOwnership
@@ -330,6 +333,9 @@ func (e *Engine) recover(ctx context.Context, s *installstate.Snapshot, ack *uns
 	p := d.Pending
 	if p == nil || p.Key.Kind == "Secret" || p.Key.Kind == "Namespace" {
 		return s, ErrInvalid
+	}
+	if d.AdmissionRetirementRevision != 0 && e.verifyRetiredAdmission(ctx, fresh) != nil {
+		return fresh, ErrAdmission
 	}
 	// Schema-valid public journal bytes do not authorize a different package,
 	// paused target, action or stage. Bind recovery to the same action contract.
