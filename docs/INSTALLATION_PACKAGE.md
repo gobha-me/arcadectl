@@ -430,3 +430,56 @@ recovery after one/both controller removals and retained-only verification,
 and same-name replacement refusal. These fixtures do not certify real admission
 behavior, kubelet forwarding, preservation of running world bytes or executed
 predecessor images. Those remain mandatory runtime gates for issue #27.
+
+## Closed cluster prerequisite proof
+
+The production prerequisite foundation uses fixed, bounded version, discovery
+and SelfSubjectAccessReview routes over the frozen administrator HTTPS identity.
+It requires the exact declared Kubernetes patch and effective version, literal
+discovery scope, resource kind/verbs and the exact requested authorization spec.
+Only explicit `allowed: true` with no denial/evaluation error proves permission.
+Native discovery may omit `apiVersion`; a present version must be literal `v1`.
+Nonpersistent authorization responses may include only strictly checked inert
+managed-field bookkeeping for the fixed installer manager and exact submitted
+spec fieldset. Generic HTTP error codes, metadata and policy-looking messages
+are not authorization evidence. Responses are bounded, duplicate/unknown keys
+are rejected, error bodies are discarded, and POSTs never retry or redirect.
+
+Permissions are derived from the requested operation and remaining original
+inventory, not merely the previous completed mode. Collection CREATE has no
+resource-name restriction. Bound lifecycle proof never requests Namespace
+CREATE/DELETE, Secret UPDATE/DELETE or PVC DELETE. Retaining reinstall does not
+request retained-resource creates; uninstall does not require native forwarding
+or already-settled runtime mutations. Closed nonpersistent admission probes
+still require Pod/PVC/GameDestroy CREATE authorization; these permissions are
+not an authorization to perform persistent probe writes.
+
+`VerifyBootstrap` checks the sealed fresh target, protected TLS/issuance inputs,
+native-route capability, exact cluster contract and all fixed public addresses
+before the namespace's first write. Every address must be authoritatively absent;
+there is no existing-resource adoption. The durable bootstrap receipt remains
+the definitive original-UID/no-replay barrier; preflight is not a lock. Bound
+resume rechecks the original journal before and after its observations. A saved
+durable credential candidate replaces the need to reopen original issuance
+certificate/key files, but its CA must still match the protected activation CA.
+A missing candidate already used by an inventoried Secret is never regenerated.
+
+Serial isolated API-server tests cover both exact declared patches, native
+discovery/authorization response shapes and portforward kind, restricted RBAC
+refusal before namespace creation, fresh pre-CRD proof, candidate-backed resume,
+CA mismatch and loss of a used candidate. The Linux amd64 1.35.8 fixture uses
+checksum-pinned upstream 1.35.8 kube-apiserver with checksum-pinned 1.35.0 envtest
+etcd/kubectl, because the reviewed envtest index has no 1.35.8 bundle. It does not
+substitute a nearby API-server patch. All fixtures are disposable and downloads
+stream to bounded task-owned files instead of allocating archive-sized buffers.
+
+This is not a complete `LifecycleChecks` provider or runtime certification.
+Behavioral admission, complete cold/quiescence evidence, actual controller
+readiness, native real-kubelet authentication, administrator installer command,
+recovery output and fresh/upgrade/rollback/uninstall binary CI remain required.
+Native Pod behavioral probes also require an existing original ServiceAccount:
+the coordinator integration must order that non-executable signed dependency
+before the probes, while still gating RBAC and workload activation on admission
+effectiveness. CREATE probe coverage does not certify DELETE/UPDATE branches;
+real lifecycle CI and any applicable live-claim proof must cover those explicitly
+without adding PVC deletion authority to ordinary retaining uninstall.
