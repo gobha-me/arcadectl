@@ -12,6 +12,7 @@ import (
 	"mime"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -25,22 +26,35 @@ import (
 	strictjson "sigs.k8s.io/json"
 )
 
-type probeCaptureKey struct{}
 type probeCapture struct {
-	path     string
+	method   string
+	url      string
+	body     []byte
 	expected map[string]any
 	denied   atomic.Bool
 }
 
+// guard runs BELOW wrappers and BEFORE the wire. A wrapper cannot turn a
+// nonpersistent probe into a real write, a different route or a different
+// operation. In particular DELETE needs dryRun in its BODY, not just its URL.
+func (p *probeCapture) guard(r *http.Request) bool {
+	if p == nil || r == nil || r.URL == nil || r.Host != r.URL.Host || r.RequestURI != "" || r.Method != p.method || r.URL.String() != p.url || r.GetBody != nil || r.Body == nil || r.ContentLength != int64(len(p.body)) || len(r.TransferEncoding) != 0 || r.Header.Get("Accept") != "application/json" || r.Header.Get("Content-Type") != "application/json" {
+		return false
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 65537))
+	_ = r.Body.Close()
+	if err != nil || !bytes.Equal(body, p.body) {
+		return false
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	return true
+}
+
 // classify runs inside the inner transport, before SDK wrappers can see any
-// native error body. Only a fixed single-attempt dry-run CREATE's exact native
+// native error body. Only a fixed single-attempt dry-run operation's exact native
 // policy/binding/validation Status is evidence; raw errors never escape.
 func (p *probeCapture) classify(request *http.Request, response *http.Response) {
-	if p == nil || request.Method != http.MethodPost || request.URL.Path != p.path || response.StatusCode != http.StatusUnprocessableEntity || response.Body == nil {
-		return
-	}
-	q := request.URL.Query()
-	if len(q) != 3 || len(q["dryRun"]) != 1 || len(q["fieldValidation"]) != 1 || len(q["fieldManager"]) != 1 || q.Get("dryRun") != "All" || q.Get("fieldValidation") != "Strict" || q.Get("fieldManager") != "arcadectl-installer" {
+	if p == nil || p.expected == nil || request.Method != p.method || request.URL.String() != p.url || response.StatusCode != http.StatusUnprocessableEntity || response.Body == nil {
 		return
 	}
 	typ, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
@@ -107,6 +121,25 @@ func expectedProbeDenial(key installstate.Key, plural, policy, binding, validati
 }
 
 func (a *HTTPAccess) probeCreate(ctx context.Context, object *unstructured.Unstructured, policy, binding, validation string) (*unstructured.Unstructured, error) {
+	return a.probeOperation(ctx, probeCreateOperation, object, policy, binding, validation)
+}
+
+type admissionProbeOperation uint8
+
+const (
+	probeCreateOperation admissionProbeOperation = iota
+	probeUpdateOperation
+	probeEphemeralOperation
+	probeResizeOperation
+	probeDeletePVCOperation
+)
+
+// This seam is private and dry-run ONLY. It does not authorize persistent
+// fixture creation, PVC deletion, impersonation or additional installer RBAC.
+// Named operations require the actual old object's UID/RV, not fictitious
+// CREATE metadata. Callers must independently verify the whole returned shape
+// and reread the unchanged original object across the operation.
+func (a *HTTPAccess) probeOperation(ctx context.Context, operation admissionProbeOperation, object *unstructured.Unstructured, policy, binding, validation string) (*unstructured.Unstructured, error) {
 	if a == nil || a.client == nil || a.base == nil || ctx == nil || object == nil {
 		return nil, ErrInvalid
 	}
@@ -115,28 +148,66 @@ func (a *HTTPAccess) probeCreate(ctx context.Context, object *unstructured.Unstr
 	if err != nil {
 		return nil, err
 	}
+	method, successCode := http.MethodPost, http.StatusCreated
+	query := "dryRun=All&fieldManager=arcadectl-installer&fieldValidation=Strict"
+	var payload any = object.Object
+	switch operation {
+	case probeCreateOperation:
+		if object.GetUID() != "" || object.GetResourceVersion() != "" {
+			return nil, ErrInvalid
+		}
+	case probeUpdateOperation, probeEphemeralOperation, probeResizeOperation, probeDeletePVCOperation:
+		// The two declared native storage profiles encode RV as uint64.
+		// Zero (including zero-padded spellings) selects unconditional UPDATE,
+		// so it must never count as a pinned oldObject, even on a VAP denial.
+		rv, err := strconv.ParseUint(object.GetResourceVersion(), 10, 64)
+		if !receiptUID.MatchString(string(object.GetUID())) || err != nil || rv == 0 || strconv.FormatUint(rv, 10) != object.GetResourceVersion() {
+			return nil, ErrInvalid
+		}
+		path += "/" + key.Name
+		method, successCode = http.MethodPut, http.StatusOK
+		switch operation {
+		case probeEphemeralOperation, probeResizeOperation:
+			if key.Kind != "Pod" {
+				return nil, ErrInvalid
+			}
+			if operation == probeEphemeralOperation {
+				path += "/ephemeralcontainers"
+			} else {
+				path += "/resize"
+			}
+		case probeDeletePVCOperation:
+			if key.Kind != "PersistentVolumeClaim" {
+				return nil, ErrInvalid
+			}
+			method, query = http.MethodDelete, "dryRun=All"
+			uid, rv := object.GetUID(), object.GetResourceVersion()
+			payload = metav1.DeleteOptions{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "DeleteOptions"}, DryRun: []string{metav1.DryRunAll}, Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &rv}}
+		}
+	default:
+		return nil, ErrInvalid
+	}
 	negative := policy != "" || binding != "" || validation != ""
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	ctx = logr.NewContext(ctx, logr.Discard())
-	ctx = context.WithValue(ctx, attemptKey{}, &atomic.Bool{})
-	var capture *probeCapture
 	u := *a.base
 	u.Path = strings.TrimRight(u.Path, "/") + path
-	u.RawQuery = "dryRun=All&fieldManager=arcadectl-installer&fieldValidation=Strict"
+	u.RawQuery = query
+	body, err := json.Marshal(payload)
+	if err != nil || len(body) > 65536 {
+		return nil, ErrInvalid
+	}
+	capture := &probeCapture{method: method, url: u.String(), body: body}
 	if negative {
 		expected, err := expectedProbeDenial(key, plural, policy, binding, validation)
 		if err != nil {
 			return nil, err
 		}
-		capture = &probeCapture{path: u.Path, expected: expected}
-		ctx = context.WithValue(ctx, probeCaptureKey{}, capture)
+		capture.expected = expected
 	}
-	body, err := json.Marshal(object.Object)
-	if err != nil || len(body) > 65536 {
-		return nil, ErrInvalid
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(body))
+	ctx = context.WithValue(ctx, attemptKey{}, &requestAttempt{method: method, probe: capture})
+	request, err := http.NewRequestWithContext(ctx, method, u.String(), bytes.NewReader(body))
 	if err != nil {
 		return nil, ErrInvalid
 	}
@@ -157,7 +228,7 @@ func (a *HTTPAccess) probeCreate(ctx context.Context, object *unstructured.Unstr
 		}
 		return nil, ErrAdmission
 	}
-	if response.StatusCode != http.StatusCreated {
+	if response.StatusCode != successCode {
 		return nil, ErrAdmission
 	}
 	typ, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
@@ -175,6 +246,9 @@ func (a *HTTPAccess) probeCreate(ctx context.Context, object *unstructured.Unstr
 	}
 	result := &unstructured.Unstructured{Object: fields}
 	if result.GetAPIVersion() != key.APIVersion || result.GetKind() != key.Kind || result.GetNamespace() != key.Namespace || result.GetName() != key.Name {
+		return nil, ErrAdmission
+	}
+	if operation != probeCreateOperation && (result.GetUID() != object.GetUID() || result.GetResourceVersion() != object.GetResourceVersion()) {
 		return nil, ErrAdmission
 	}
 	return result, nil // caller must additionally verify the whole defaulted shape

@@ -13,7 +13,6 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -36,7 +35,7 @@ func (a *HTTPAccess) proofRequest(ctx context.Context, method, path string, body
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	ctx = logr.NewContext(ctx, logr.Discard())
-	ctx = context.WithValue(ctx, attemptKey{}, &atomic.Bool{})
+	ctx = context.WithValue(ctx, attemptKey{}, &requestAttempt{method: method})
 	var encoded []byte
 	var err error
 	if body != nil {

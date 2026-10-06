@@ -525,6 +525,50 @@ API-server fixtures have no kubelet or policy-status controller and are not
 full runtime lifecycle certification. The partial CREATE proof is deliberately
 not a complete `LifecycleChecks.AdmissionEffective` implementation.
 
+### Named dry-run transport and native operation evidence
+
+The private admission transport also has a closed operation set: named PUT for
+Pod/PVC/GameDestroy, PUT for Pod `ephemeralcontainers` and `resize`, and named
+PVC DELETE. Named operations require the original nonempty UID and canonical
+positive-decimal uint64 resource version used by both exact native profiles.
+Zero (including zero-padded forms) is refused before the wire: it selects an
+unconditional native UPDATE, not a pinned old object. Native conflict tests use
+a different positive version and independently require HTTP 409, rather than
+counting a changed result version as precondition enforcement.
+The operations accept only native HTTP 200 and the same resource identity, never
+201/202, a generic Success Status, 404/409, another policy denial or a retry.
+The transport validates identity, not the complete accepted defaulted shape;
+a future production provider must independently certify that shape and bracket
+all probes with original-object, policy, account and journal barriers.
+
+DELETE constructs a fixed `DeleteOptions` body containing `dryRun: [All]` and
+both original UID/resource-version preconditions. Kubernetes does not decode
+query options when this body is present, so a URL-only dry-run is insufficient.
+No propagation, grace, orphan or unsafe-delete option is exposed. Before the
+wire, the inner transport checks the entire fixed method, URL/Host, query,
+body and JSON headers against the request-bound witness. Context loss, operation
+substitution, wrapper mutation and replay are refused. Native errors are
+classified privately, then their body, status text, trailers and header
+parameters are sanitized before outer SDK wrappers can observe them.
+
+Both exact profiles certify unchanged named UPDATE acceptance, worker image,
+gate and authorization-marker denials, worker subresource denials paired with
+non-worker subresource acceptance, retained-PVC label/marker-change/marker-removal/DELETE denials,
+non-world PVC DELETE acceptance, and unsafe-destroy spec/audit-identity denials.
+Every operation rereads and compares the entire unchanged persistent fixture.
+Worker Pods have actual original Job owners, one scheduling gate and no token
+automount. Their test-owned Jobs are suspended with parallelism zero; PVCs use
+an empty storage class. Distinct-identity unsafe fixtures are test-only native
+clients, not production impersonation or credential fallback.
+
+This is API-server transport evidence, not an installer fixture lifecycle or
+complete `AdmissionEffective` implementation. Production temporary-fixture
+ownership/recovery/cleanup, whole named-result validation, operation-specific
+authorization checks and unchanged original policy/account/journal witnesses
+remain required. The prerequisite contract does not silently gain PVC DELETE,
+additional UPDATE or Pod subresource privileges. No scheduler, kubelet, real
+world destruction or binary installation lifecycle is certified here.
+
 Final uninstall still needs an explicit dependency-retention contract: live Pod
 probes cannot run after removal of every ServiceAccount. Pending that decision,
 the proof fails closed at a missing original account; it never silently retains,

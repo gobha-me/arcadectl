@@ -9,17 +9,23 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"reflect"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/gobha-me/arcadectl/internal/installrender"
 	admissionv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
@@ -51,7 +57,7 @@ func TestEnvtestNativeAdmissionProbeDeclaredProfiles(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 			defer cancel()
 			access, err := NewHTTPAccess(config)
 			if err != nil {
@@ -81,7 +87,7 @@ func TestEnvtestNativeAdmissionProbeDeclaredProfiles(t *testing.T) {
 					if _, err := admin.CoreV1().Namespaces().Create(ctx, &ns, metav1.CreateOptions{}); err != nil {
 						t.Fatal(err)
 					}
-				case "ServiceAccount", "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding":
+				case "ServiceAccount", "Role", "RoleBinding", "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding":
 					if _, err := access.Create(ctx, resourceKey(resource), object, false); err != nil {
 						t.Fatal("signed fixture dependency: ", err)
 					}
@@ -149,6 +155,279 @@ func TestEnvtestNativeAdmissionProbeDeclaredProfiles(t *testing.T) {
 			if err != nil || len(destroys.Items) != 0 {
 				t.Fatal("GameDestroy probe persisted")
 			}
+			proveNativeNamedAdmissionProbes(t, ctx, plan, access, custom, config, policies, bindings)
 		})
 	}
+}
+
+// Live oldObjects are essential: dry-run CREATE cannot seed UPDATE/DELETE.
+// These fixtures exist ONLY in a test-owned API server, have no executable
+// scheduler/kubelet, and use closed scheduling gates and nonprovisioning PVCs.
+// This does not grant the production installer fixture mutation privileges or
+// constitute a completed AdmissionEffective/lifecycle proof.
+func proveNativeNamedAdmissionProbes(t *testing.T, ctx context.Context, plan *installrender.Plan, access *HTTPAccess, custom dynamic.Interface, config *rest.Config, policies map[string]*admissionv1.ValidatingAdmissionPolicy, bindings map[string]string) {
+	t.Helper()
+	policyName := func(stem string) string {
+		t.Helper()
+		found := ""
+		for name := range policies {
+			if name == stem || strings.HasPrefix(name, stem+"-") {
+				if found != "" {
+					t.Fatal("ambiguous signed policy stem")
+				}
+				found = name
+			}
+		}
+		if found == "" {
+			t.Fatal("missing signed policy stem:", stem)
+		}
+		return found
+	}
+	clientFor := func(o *unstructured.Unstructured) dynamic.ResourceInterface {
+		key := schema.GroupVersionResource{Version: "v1", Resource: "pods"}
+		if o.GetKind() == "PersistentVolumeClaim" {
+			key.Resource = "persistentvolumeclaims"
+		}
+		if o.GetKind() == "GameDestroy" {
+			key = schema.GroupVersionResource{Group: "arcade.gobha.me", Version: "v1alpha1", Resource: "gamedestroys"}
+		}
+		return custom.Resource(key).Namespace(plan.Namespace())
+	}
+	create := func(o *unstructured.Unstructured) *unstructured.Unstructured {
+		t.Helper()
+		live, err := clientFor(o).Create(ctx, o, metav1.CreateOptions{FieldManager: "arcadectl-installer", FieldValidation: "Strict"})
+		if err != nil {
+			t.Fatal("owned inert native fixture create:", err)
+		}
+		return live
+	}
+	check := func(name string, a *HTTPAccess, op admissionProbeOperation, original, desired *unstructured.Unstructured, policy string, index int) {
+		t.Helper()
+		binding, message := "", ""
+		if policy != "" {
+			binding = bindings[policy]
+			message = policies[policy].Spec.Validations[index].Message
+		}
+		result, err := a.probeOperation(ctx, op, desired, policy, binding, message)
+		if err != nil {
+			// Public-only test objects in our private API server may be decoded
+			// for diagnosis; production errors remain fixed and fully stripped.
+			var native *unstructured.Unstructured
+			var nativeErr error
+			if op == probeDeletePVCOperation {
+				uid, rv := desired.GetUID(), desired.GetResourceVersion()
+				nativeErr = clientFor(desired).Delete(ctx, desired.GetName(), metav1.DeleteOptions{DryRun: []string{metav1.DryRunAll}, Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &rv}})
+			} else {
+				var sub []string
+				if op == probeEphemeralOperation {
+					sub = []string{"ephemeralcontainers"}
+				}
+				if op == probeResizeOperation {
+					sub = []string{"resize"}
+				}
+				native, nativeErr = clientFor(desired).Update(ctx, desired, metav1.UpdateOptions{DryRun: []string{metav1.DryRunAll}, FieldValidation: "Strict", FieldManager: "arcadectl-installer"}, sub...)
+			}
+			encoded, _ := json.Marshal(native)
+			t.Fatalf("owned native %s probe refused: %v; public native result %s error %v", name, err, encoded, nativeErr)
+		}
+		if policy == "" && result == nil || policy != "" && result != nil {
+			t.Fatal("unexpected native operation result")
+		}
+		// The private seam checks native identity only, never treats an accepted
+		// response as whole-template or live ownership proof. Independently
+		// certify this fixture's result shape and nonpersistence here.
+		if result != nil {
+			if op == probeDeletePVCOperation {
+				if result.GetDeletionTimestamp() == nil {
+					t.Fatal("native PVC DELETE omitted deletion timestamp")
+				}
+			} else if !reflect.DeepEqual(result.Object["spec"], desired.Object["spec"]) {
+				encoded, _ := json.Marshal(result.Object)
+				t.Fatalf("owned native %s defaulted spec mismatch: %s", name, encoded)
+			}
+		}
+		after, err := clientFor(original).Get(ctx, original.GetName(), metav1.GetOptions{})
+		if err != nil || !reflect.DeepEqual(after.Object, original.Object) {
+			t.Fatalf("owned native %s dry-run changed original fixture: %v", name, err)
+		}
+	}
+	for _, worker := range []string{"backup", "restore", "destroy"} {
+		policy := policyName("arcadectl-" + worker + "-worker-gate")
+		positive, _, _, err := admissionCreateProbe(plan, policy, "arcadectl-controller", "arcadectl-probe-0123456789abcdef0123456789abcdef")
+		if err != nil {
+			t.Fatal(err)
+		}
+		positive.SetName("arcadectl-probe-" + worker)
+		// Real workers have a Job owner. Restore/destroy executable-field
+		// checks compare that metadata directly, so an ownerless CREATE probe
+		// is not a valid positive UPDATE fixture. Seed an actual suspended,
+		// parallelism-zero Job; do not invent an owner UID or run a worker.
+		job := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "batch/v1", "kind": "Job",
+			"metadata": map[string]any{"name": worker + "-admission-probe", "namespace": plan.Namespace()},
+			"spec":     map[string]any{"parallelism": int64(0), "suspend": true, "template": map[string]any{"metadata": map[string]any{"labels": positive.Object["metadata"].(map[string]any)["labels"]}, "spec": positive.Object["spec"]}},
+		}}
+		owner, err := custom.Resource(schema.GroupVersionResource{Group: "batch", Version: "v1", Resource: "jobs"}).Namespace(plan.Namespace()).Create(ctx, job, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatal("owned inert Job fixture create:", err)
+		}
+		yes := true
+		positive.SetOwnerReferences([]metav1.OwnerReference{{APIVersion: "batch/v1", Kind: "Job", Name: owner.GetName(), UID: owner.GetUID(), Controller: &yes, BlockOwnerDeletion: &yes}})
+		live := create(positive)
+		check(worker+" unchanged update", access, probeUpdateOperation, live, live.DeepCopy(), "", 0)
+		changed := live.DeepCopy()
+		containers, _, _ := unstructured.NestedSlice(changed.Object, "spec", "containers")
+		containers[0].(map[string]any)["image"] = "registry.example/foreign:test"
+		_ = unstructured.SetNestedSlice(changed.Object, containers, "spec", "containers")
+		check(worker+" executable update", access, probeUpdateOperation, live, changed, policy, 2)
+		changed = live.DeepCopy()
+		unstructured.RemoveNestedField(changed.Object, "spec", "schedulingGates")
+		check(worker+" unauthorized gate removal", access, probeUpdateOperation, live, changed, policy, 3)
+		changed = live.DeepCopy()
+		changed.SetAnnotations(map[string]string{"arcade.gobha.me/" + worker + "-pod-authorized": "foreign-uid"})
+		check(worker+" UID marker update", access, probeUpdateOperation, live, changed, policy, 3)
+		check(worker+" ephemeral subresource", access, probeEphemeralOperation, live, live.DeepCopy(), policy, 0)
+		check(worker+" resize subresource", access, probeResizeOperation, live, live.DeepCopy(), policy, 0)
+	}
+	// Paired native subresource successes on a non-worker, still gated Pod
+	// establish route/verb validity; a worker rejection cannot be a 404/RBAC
+	// substitute. Persistent setup remains owned by this fixture, not engine.
+	plain, _, _, err := admissionCreateProbe(plan, policyName("arcadectl-backup-worker-gate"), "arcadectl-controller", "arcadectl-probe-0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain.SetName("arcadectl-probe-plain")
+	plain.SetLabels(nil)
+	_ = unstructured.SetNestedSlice(plain.Object, []any{map[string]any{"name": "example.com/hold"}}, "spec", "schedulingGates")
+	pl := create(plain)
+	check("plain ephemeral", access, probeEphemeralOperation, pl, pl.DeepCopy(), "", 0)
+	check("plain resize", access, probeResizeOperation, pl, pl.DeepCopy(), "", 0)
+
+	retained, _, _, err := admissionCreateProbe(plan, policyName("arcadectl-retained-world-pvc-delete"), "arcadectl-controller", "arcadectl-probe-0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained.SetName("arcadectl-probe-retained")
+	claim := create(retained)
+	policy := policyName("arcadectl-retained-world-pvc-delete")
+	check("retained unchanged update", access, probeUpdateOperation, claim, claim.DeepCopy(), "", 0)
+	changed := claim.DeepCopy()
+	labels := changed.GetLabels()
+	delete(labels, "arcade.gobha.me/data-policy")
+	changed.SetLabels(labels)
+	check("retained label removal", access, probeUpdateOperation, claim, changed, policy, 3)
+	changed = claim.DeepCopy()
+	changed.SetAnnotations(map[string]string{"arcade.gobha.me/cold-backup-uid": "foreign-backup"})
+	check("retained marker change", access, probeUpdateOperation, claim, changed, policy, 1)
+	check("retained DELETE", access, probeDeletePVCOperation, claim, claim.DeepCopy(), policy, 2)
+	// Seed a native old marker using the actual signed ordinary-controller
+	// RBAC, solely in this fixture. Removing an existing marker is a distinct
+	// oldObject branch from trying to forge a new one.
+	ordinaryConfig := rest.CopyConfig(config)
+	ordinaryConfig.Impersonate = rest.ImpersonationConfig{UserName: "system:serviceaccount:" + plan.Namespace() + ":arcadectl-controller"}
+	ordinaryCustom, err := dynamic.NewForConfig(ordinaryConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marked, err := ordinaryCustom.Resource(schema.GroupVersionResource{Version: "v1", Resource: "persistentvolumeclaims"}).Namespace(plan.Namespace()).Update(ctx, changed, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatal("owned marker fixture update:", err)
+	}
+	cleared := marked.DeepCopy()
+	cleared.SetAnnotations(nil)
+	check("retained marker removal", access, probeUpdateOperation, marked, cleared, policy, 1)
+	plainClaim := retained.DeepCopy()
+	plainClaim.SetName("arcadectl-probe-plain-claim")
+	plainClaim.SetLabels(nil)
+	cl := create(plainClaim)
+	check("plain DELETE", access, probeDeletePVCOperation, cl, cl.DeepCopy(), "", 0)
+	liveRV, err := strconv.ParseUint(cl.GetResourceVersion(), 10, 64)
+	if err != nil || liveRV <= 1 {
+		t.Fatal("unexpected native fixture RV")
+	}
+	for _, op := range []admissionProbeOperation{probeUpdateOperation, probeDeletePVCOperation} {
+		for _, field := range []string{"uid", "resourceVersion"} {
+			wrong := cl.DeepCopy()
+			if field == "uid" {
+				wrong.SetUID("foreign-uid")
+			} else {
+				wrong.SetResourceVersion(strconv.FormatUint(liveRV-1, 10))
+			}
+			if _, err := access.probeOperation(ctx, op, wrong, "", "", ""); err != ErrAdmission {
+				t.Fatal("native named operation accepted foreign old identity")
+			}
+			if field == "resourceVersion" {
+				// Independently prove the server conflict, not merely the
+				// seam refusing a changed response RV after an unconditional
+				// update. In particular RV zero is NOT a stale-RV fixture.
+				var nativeErr error
+				if op == probeUpdateOperation {
+					_, nativeErr = clientFor(cl).Update(ctx, wrong, metav1.UpdateOptions{DryRun: []string{metav1.DryRunAll}})
+				} else {
+					uid, rv := wrong.GetUID(), wrong.GetResourceVersion()
+					nativeErr = clientFor(cl).Delete(ctx, wrong.GetName(), metav1.DeleteOptions{DryRun: []string{metav1.DryRunAll}, Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &rv}})
+				}
+				if !apierrors.IsConflict(nativeErr) {
+					t.Fatalf("native nonzero stale RV was not a conflict: %v", nativeErr)
+				}
+			}
+			after, err := clientFor(cl).Get(ctx, cl.GetName(), metav1.GetOptions{})
+			if err != nil || !reflect.DeepEqual(after.Object, cl.Object) {
+				t.Fatal("foreign-identity dry-run changed fixture")
+			}
+		}
+	}
+
+	destroy, _, _, err := admissionCreateProbe(plan, policyName("arcadectl-destroy-unsafe-admin"), "arcadectl-controller", "arcadectl-probe-0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	destroy.SetName("arcadectl-probe-destroy")
+	d := create(destroy)
+	check("destroy unchanged update", access, probeUpdateOperation, d, d.DeepCopy(), "", 0)
+	unsafe := d.DeepCopy()
+	unstructured.RemoveNestedField(unsafe.Object, "spec", "backupRef")
+	unstructured.RemoveNestedField(unsafe.Object, "spec", "repositorySecretRef")
+	_ = unstructured.SetNestedField(unsafe.Object, "UnsafeNoBackup", "spec", "mode")
+	_ = unstructured.SetNestedField(unsafe.Object, "owned native admission fixture", "spec", "unsafeReason")
+	unsafe.SetAnnotations(map[string]string{"arcade.gobha.me/unsafe-requested-by": "system:serviceaccount:" + plan.Namespace() + ":arcadectl-destroy-admin"})
+	// Distinct identities are test-owned native clients only. No production
+	// probe introduces impersonation, an admin token or permission fallback.
+	adminConfig := rest.CopyConfig(config)
+	adminConfig.Impersonate = rest.ImpersonationConfig{UserName: "system:serviceaccount:" + plan.Namespace() + ":arcadectl-destroy-admin"}
+	adminAccess, err := NewHTTPAccess(adminConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminCustom, err := dynamic.NewForConfig(adminConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsafe.SetUID("")
+	unsafe.SetResourceVersion("")
+	unsafe.SetManagedFields(nil)
+	unsafe.SetCreationTimestamp(metav1.Time{})
+	unsafe.SetGeneration(0)
+	unsafe.SetName("arcadectl-probe-unsafe")
+	u, err := adminCustom.Resource(schema.GroupVersionResource{Group: "arcade.gobha.me", Version: "v1alpha1", Resource: "gamedestroys"}).Namespace(plan.Namespace()).Create(ctx, unsafe, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatal("owned unsafe fixture create:", err)
+	}
+	// Mode changes are refused by CRD transition validation before VAP.
+	// Exercise the intended VAP UPDATE branch with a valid mutable spec
+	// field on an already-unsafe object, using the destroy controller's
+	// metadata-only exception rather than a mode-changing false positive.
+	controllerConfig := rest.CopyConfig(config)
+	controllerConfig.Impersonate = rest.ImpersonationConfig{UserName: "system:serviceaccount:" + plan.Namespace() + ":arcadectl-destroy-controller"}
+	controllerAccess, err := NewHTTPAccess(controllerConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("unsafe controller unchanged update", controllerAccess, probeUpdateOperation, u, u.DeepCopy(), "", 0)
+	changed = u.DeepCopy()
+	_ = unstructured.SetNestedField(changed.Object, true, "spec", "cancelRequested")
+	check("unsafe controller spec update", controllerAccess, probeUpdateOperation, u, changed, policyName("arcadectl-destroy-unsafe-admin"), 0)
+	changed = u.DeepCopy()
+	changed.SetAnnotations(map[string]string{"arcade.gobha.me/unsafe-requested-by": "foreign-admin"})
+	check("unsafe audit identity update", adminAccess, probeUpdateOperation, u, changed, policyName("arcadectl-destroy-unsafe-admin"), 1)
 }

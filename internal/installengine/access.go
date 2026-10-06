@@ -11,6 +11,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -49,14 +50,22 @@ type HTTPAccess struct {
 }
 
 type attemptKey struct{}
+type requestAttempt struct {
+	used   atomic.Bool
+	method string
+	probe  *probeCapture
+}
 type attemptTransport struct{ next http.RoundTripper }
 
 func (t attemptTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	if r.Method != http.MethodGet {
-		attempt, ok := r.Context().Value(attemptKey{}).(*atomic.Bool)
-		if !ok || !attempt.CompareAndSwap(false, true) {
-			return nil, ErrOutcomeUnknown
-		}
+	// All requests carry their original operation witness, including GET.
+	// Losing context or replacing a probe PUT with GET is not a read fallback.
+	attempt, ok := r.Context().Value(attemptKey{}).(*requestAttempt)
+	if !ok || attempt == nil || r.Method != attempt.method || !attempt.used.CompareAndSwap(false, true) {
+		return nil, ErrOutcomeUnknown
+	}
+	if attempt.probe != nil && !attempt.probe.guard(r) {
+		return nil, ErrAdmission
 	}
 	response, err := t.next.RoundTrip(r)
 	if err != nil || response == nil {
@@ -65,10 +74,14 @@ func (t attemptTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	// Sanitize before client-go's outer debug/auth wrappers can observe headers.
 	copyResponse := *response
 	copyResponse.Header = http.Header{}
-	copyResponse.Header.Set("Content-Type", response.Header.Get("Content-Type"))
+	if typ, _, err := mime.ParseMediaType(response.Header.Get("Content-Type")); err == nil && typ == "application/json" {
+		copyResponse.Header.Set("Content-Type", "application/json")
+	}
+	copyResponse.Status = strconv.Itoa(response.StatusCode) + " " + http.StatusText(response.StatusCode)
+	copyResponse.Trailer = nil
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		if probe, ok := r.Context().Value(probeCaptureKey{}).(*probeCapture); ok {
-			probe.classify(r, response)
+		if attempt.probe != nil {
+			attempt.probe.classify(r, response)
 		}
 		if response.Body != nil {
 			_ = response.Body.Close()
@@ -260,7 +273,7 @@ func (a *HTTPAccess) requestAt(ctx context.Context, method string, key installst
 	}
 	u.RawQuery = query.Encode()
 	ctx = logr.NewContext(ctx, logr.Discard())
-	ctx = context.WithValue(ctx, attemptKey{}, &atomic.Bool{})
+	ctx = context.WithValue(ctx, attemptKey{}, &requestAttempt{method: method})
 	r, err := http.NewRequestWithContext(ctx, method, u.String(), bytes.NewReader(encoded))
 	if err != nil {
 		return nil, ErrInvalid
