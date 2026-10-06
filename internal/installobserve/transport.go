@@ -9,10 +9,12 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	strictjson "sigs.k8s.io/json"
 )
 
 const maxResponseBytes = 4 * 1024 * 1024
@@ -70,10 +72,15 @@ func (t readTransport) RoundTrip(request *http.Request) (*http.Response, error) 
 		if err != nil {
 			return nil, ErrRead
 		}
+	} else if _, err := boundedJSON(body); err != nil {
+		// Check raw syntax before a permissive SDK decoder can collapse
+		// duplicate keys or replace invalid UTF-8 in public safety objects.
+		return nil, ErrRead
 	}
 	copyResponse := *response
-	copyResponse.Header = response.Header.Clone()
-	copyResponse.Header.Del("Warning")
+	copyResponse.Header = http.Header{"Content-Type": []string{"application/json"}}
+	copyResponse.Trailer = nil
+	copyResponse.Status = strconv.Itoa(response.StatusCode) + " " + http.StatusText(response.StatusCode)
 	copyResponse.Body = io.NopCloser(bytes.NewReader(body))
 	copyResponse.ContentLength = int64(len(body))
 	return &copyResponse, nil
@@ -88,7 +95,7 @@ func sanitizedMetadata(body []byte, kind string) ([]byte, error) {
 	}
 	if kind == "PartialObjectMetadataList" {
 		var input metav1.PartialObjectMetadataList
-		if err := json.Unmarshal(body, &input); err != nil {
+		if strictDecode(body, &input) != nil {
 			return nil, ErrRead
 		}
 		output := metav1.PartialObjectMetadataList{TypeMeta: input.TypeMeta, ListMeta: metav1.ListMeta{ResourceVersion: input.ResourceVersion, Continue: input.Continue, RemainingItemCount: input.RemainingItemCount}, Items: make([]metav1.PartialObjectMetadata, len(input.Items))}
@@ -102,7 +109,7 @@ func sanitizedMetadata(body []byte, kind string) ([]byte, error) {
 		return result, nil
 	}
 	var input metav1.PartialObjectMetadata
-	if err := json.Unmarshal(body, &input); err != nil {
+	if strictDecode(body, &input) != nil {
 		return nil, ErrRead
 	}
 	result, err := json.Marshal(metav1.PartialObjectMetadata{TypeMeta: input.TypeMeta, ObjectMeta: publicMetadata(&input)})
@@ -117,20 +124,33 @@ func sanitizedMetadata(body []byte, kind string) ([]byte, error) {
 // Only the Kubernetes metadata envelope is allowed; data/stringData/spec/status
 // must not be quietly discarded by a permissive PartialObjectMetadata decoder.
 func metadataEnvelope(body []byte, kind string) bool {
+	v, err := boundedJSON(body)
+	return err == nil && metadataObject(v, kind)
+}
+
+func boundedJSON(body []byte) (any, error) {
 	if !utf8.Valid(body) {
-		return false
+		return nil, ErrRead
 	}
 	d := json.NewDecoder(bytes.NewReader(body))
 	d.UseNumber()
 	nodes := 0
 	v, err := jsonValue(d, 0, &nodes)
 	if err != nil {
-		return false
+		return nil, ErrRead
 	}
 	if _, err := d.Token(); err != io.EOF {
-		return false
+		return nil, ErrRead
 	}
-	return metadataObject(v, kind)
+	return v, nil
+}
+
+func strictDecode(body []byte, out any) error {
+	strictErrors, err := strictjson.UnmarshalStrict(body, out)
+	if err != nil || len(strictErrors) != 0 {
+		return ErrRead
+	}
+	return nil
 }
 
 func metadataObject(value any, kind string) bool {

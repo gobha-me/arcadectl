@@ -9,6 +9,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/gobha-me/arcadectl/internal/installstate"
 	"github.com/gobha-me/arcadectl/internal/privatefs"
 	authv1 "k8s.io/api/authorization/v1"
+	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -197,6 +199,47 @@ func TestEnvtestClusterPrerequisitesDeclaredProfiles(t *testing.T) {
 			s, err = store.Commit(ctx, s, d)
 			if err != nil {
 				t.Fatal(err)
+			}
+			crdRequest := request
+			crdRequest.Checkpoint, crdRequest.Snapshot = CRDsAvailable, s
+			if proof.VerifyCRDs(ctx, crdRequest) == nil {
+				t.Fatal("served discovery replaced missing original CRD inventory")
+			}
+			for _, resource := range plan.Resources() {
+				if resource.Object.GetKind() != "CustomResourceDefinition" {
+					continue
+				}
+				s, err = engine.Apply(ctx, s, resourceKey(resource), plan.Digest(), false)
+				if err != nil {
+					t.Fatal("original journaled native CRD installation: ", err)
+				}
+			}
+			crdRequest.Snapshot = s
+			if err := wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 15*time.Second, true, func(ctx context.Context) (bool, error) { return proof.VerifyCRDs(ctx, crdRequest) == nil, nil }); err != nil {
+				t.Fatal("actual original CRD/storage and served discovery proof: ", err)
+			}
+			// Native populated public objects certify strict typed read defaults,
+			// not coldness. No kubelet exists; the Pod is scheduling-gated and
+			// the PVC explicitly requests no storage class/provisioning.
+			podObject, _, _, err := admissionCreateProbe(plan, probePolicyName(t, plan, "arcadectl-backup-worker-gate"), "arcadectl-controller", "arcadectl-probe-"+strings.Repeat("a", 32))
+			var pod corev1.Pod
+			if err != nil || decodeServing(podObject, &pod) != nil {
+				t.Fatal("native populated observer fixture invalid")
+			}
+			if _, err := admin.CoreV1().Pods(plan.Namespace()).Create(ctx, &pod, metav1.CreateOptions{}); err != nil {
+				t.Fatal("task-owned scheduling-gated native observer Pod: ", err)
+			}
+			claimObject, _, _, err := admissionCreateProbe(plan, probePolicyName(t, plan, "arcadectl-restore-candidate-pvc-create"), "arcadectl-controller", "arcadectl-probe-"+strings.Repeat("b", 32))
+			var claim corev1.PersistentVolumeClaim
+			if err != nil || decodeServing(claimObject, &claim) != nil {
+				t.Fatal("native populated observer claim fixture invalid")
+			}
+			if _, err := admin.CoreV1().PersistentVolumeClaims(plan.Namespace()).Create(ctx, &claim, metav1.CreateOptions{}); err != nil {
+				t.Fatal("task-owned no-provisioning native observer PVC: ", err)
+			}
+			observation, err := proof.observe(ctx, crdRequest)
+			if err != nil || observation == nil || observation.Snapshot() == nil || observation.Journal().ResourceVersion() != s.ResourceVersion() || len(observation.Snapshot().Pods.Items) != 1 || len(observation.Snapshot().Claims.Items) != 1 {
+				t.Fatal("same-cluster frozen-identity native safety read failed: ", err)
 			}
 			candidate, err := engine.PrepareCredentials(ctx, s, tls)
 			if err != nil {

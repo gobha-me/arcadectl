@@ -529,3 +529,38 @@ Final uninstall still needs an explicit dependency-retention contract: live Pod
 probes cannot run after removal of every ServiceAccount. Pending that decision,
 the proof fails closed at a missing original account; it never silently retains,
 recreates or adopts a substitute, or downgrades to configuration-only evidence.
+
+## Original CRD discovery and bound safety reads
+
+`ClusterPrerequisites.VerifyCRDs` combines every original inventoried CRD's
+recorded signed template with its original UID, native establishment/storage
+state and identical signed target conversion/schema contract. It requires all
+five retained CRDs and actual exact-version custom-resource discovery for every
+derived operation permission, including all five collection reads and the
+GameDestroy CREATE probe. Another pass requires unchanged original CRD UIDs,
+resource versions and template hashes across discovery. Original Namespace and
+sealed journal checks bracket the gate. Discovery alone cannot adopt CRDs or
+replace the signed storage/conversion checks; this is not an atomic cluster lock.
+
+The private observer bridge derives read clients from the mutation access's
+frozen cluster/static credential identity, not a separately reopened kubeconfig.
+Caller changes to TLS bytes, impersonation groups/extras, token files or host
+configuration do not redirect or refresh that identity. Complete unfiltered
+reads and metadata-only recursive owner evidence must retain the supplied
+sealed original journal's exact anchor, resource version and bytes. Changed,
+replaced or stale journal/Namespace observations are discarded in full.
+
+Metadata sanitation and raw error suppression occur below supplied wrappers
+and SDK logging. Public response syntax rejects duplicate keys, invalid UTF-8,
+trailing JSON and excessive depth/node counts before SDK decoding; conversion
+to typed safety objects and metadata uses case-sensitive strict decoding.
+Unknown fields or capitalization aliases cannot silently become safety state.
+Only fixed JSON content type/status and no raw headers/trailers reach wrappers.
+
+Native API-server fixtures on both declared profiles cover CRD establishment,
+served discovery and the same-cluster read bridge, including populated gated
+Pod and no-provisioning PVC reads. They do not provide a kubelet or physical
+storage. Neither the bridge nor an empty/settled observation proves coldness:
+exact current claim identity/binding, detached storage, workload templates that
+could remount claims, API/controller descendants and endpoints, actual runtime
+readiness and full lifecycle CI remain separate required obligations.

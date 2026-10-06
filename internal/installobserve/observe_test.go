@@ -252,7 +252,7 @@ func TestCollectRefusesJournalChangeOrReplacement(t *testing.T) {
 }
 
 func TestCollectRefusesInvalidListAndOwnerEvidence(t *testing.T) {
-	for _, tc := range []string{"owner-missing", "owner-uid", "owner-rv", "owner-deleting", "owner-cycle", "cluster-unpinned", "scope-mismatch", "discovery-ambiguous", "discovery-error", "discovery-gv", "discovery-no-get", "discovery-resource-name", "discovery-group", "duplicate", "wrong-namespace", "wrong-kind", "wrong-uid", "bad-gv", "bad-name"} {
+	for _, tc := range []string{"owner-missing", "owner-uid", "owner-rv", "owner-deleting", "owner-cycle", "cluster-unpinned", "scope-mismatch", "discovery-ambiguous", "discovery-error", "discovery-gv", "discovery-no-get", "discovery-resource-name", "discovery-group", "duplicate", "wrong-namespace", "wrong-kind", "wrong-uid", "bad-gv", "bad-name", "unknown-spec", "casing-spec", "casing-nested-spec"} {
 		t.Run(tc, func(t *testing.T) {
 			f := newFixture(t)
 			f.claim("world", owner("ConfigMap", "parent"))
@@ -289,6 +289,12 @@ func TestCollectRefusesInvalidListAndOwnerEvidence(t *testing.T) {
 				ref := owner("ConfigMap", "parent")
 				ref.Name = "../secret"
 				f.lists["persistentvolumeclaims"][0].SetOwnerReferences([]metav1.OwnerReference{ref})
+			case "unknown-spec":
+				f.lists["persistentvolumeclaims"][0].Object["spec"] = map[string]any{"unreviewed": "private-canary"}
+			case "casing-spec":
+				f.lists["persistentvolumeclaims"][0].Object["Spec"] = map[string]any{"volumeName": "private-canary"}
+			case "casing-nested-spec":
+				f.lists["persistentvolumeclaims"][0].Object["spec"] = map[string]any{"VolumeName": "private-canary"}
 			default:
 				f.o.clients.Discovery = func(ctx context.Context, gv string) (*metav1.APIResourceList, error) {
 					list, _ := discovery(ctx, gv)

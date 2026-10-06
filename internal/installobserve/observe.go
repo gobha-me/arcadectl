@@ -140,12 +140,13 @@ func strictHTTPClient(config *rest.Config, metadataOnly bool) (*http.Client, err
 	c := rest.CopyConfig(config)
 	previous := c.WrapTransport
 	c.WrapTransport = func(base http.RoundTripper) http.RoundTripper {
+		// Sanitize below supplied instrumentation as well as client-go's
+		// debug/auth wrappers: neither may observe private Secret metadata.
+		var guarded http.RoundTripper = readTransport{next: base, metadata: metadataOnly}
 		if previous != nil {
-			base = previous(base)
+			guarded = previous(guarded)
 		}
-		// client-go's debug/auth wrappers sit outside WrapTransport. Place the
-		// guard here so even debug response-header logging sees no Warning.
-		return readTransport{next: base, metadata: metadataOnly}
+		return guarded
 	}
 	h, err := rest.HTTPClientFor(c)
 	if err != nil {
@@ -288,7 +289,10 @@ func (o *Observer) collectList(ctx context.Context, c collection, graph *ownerGr
 		for _, item := range converted {
 			list.Items = append(list.Items, *item.(*unstructured.Unstructured))
 		}
-		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(list.UnstructuredContent(), c.target); err != nil {
+		// A permissive unstructured conversion discards unknown spec/status
+		// fields. Those cannot silently become closed safety evidence.
+		body, err := json.Marshal(list.UnstructuredContent())
+		if err != nil || strictDecode(body, c.target) != nil {
 			return ErrRead
 		}
 	}

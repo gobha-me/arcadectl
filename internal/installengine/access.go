@@ -43,6 +43,9 @@ type HTTPAccess struct {
 	client *http.Client
 	base   *url.URL
 	native *nativeTLS
+	// Private frozen read-client configuration shares this access's exact
+	// cluster/static identity, never the caller's rotating files or plugins.
+	frozen *rest.Config
 }
 
 type attemptKey struct{}
@@ -94,6 +97,14 @@ func NewHTTPAccess(config *rest.Config) (*HTTPAccess, error) {
 	// HTTP/2 can retry REFUSED_STREAM/GOAWAY within one RoundTrip, beyond the
 	// guard below. Non-replayable nonempty writes use HTTP/1.1 exclusively.
 	c.TLSClientConfig.NextProtos = []string{"http/1.1"}
+	c.Impersonate.Groups = append([]string(nil), c.Impersonate.Groups...)
+	if c.Impersonate.Extra != nil {
+		c.Impersonate.Extra = make(map[string][]string, len(config.Impersonate.Extra))
+		for key, values := range config.Impersonate.Extra {
+			c.Impersonate.Extra[key] = append([]string(nil), values...)
+		}
+	}
+	frozen := rest.CopyConfig(c)
 	native := nativeTransport(c)
 	previous := c.WrapTransport
 	c.WrapTransport = func(base http.RoundTripper) http.RoundTripper {
@@ -109,7 +120,7 @@ func NewHTTPAccess(config *rest.Config) (*HTTPAccess, error) {
 		return nil, ErrInvalid
 	}
 	h.CheckRedirect = func(*http.Request, []*http.Request) error { return ErrRead }
-	return &HTTPAccess{client: h, base: u, native: native}, nil
+	return &HTTPAccess{client: h, base: u, native: native, frozen: frozen}, nil
 }
 
 // File-backed credentials are protected, bounded snapshots, never background
