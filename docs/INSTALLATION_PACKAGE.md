@@ -608,9 +608,12 @@ recovery output and fresh/upgrade/rollback/uninstall binary CI remain required.
 Native Pod behavioral probes also require an existing original ServiceAccount.
 Fresh install and retaining reinstall now put the signed ServiceAccounts first
 within the non-executable dependency rank, behind `AdmissionConfigured` (every
-original signed policy/binding and current healthy type-checking). RBAC, Service,
-credentials and workloads remain behind behavioral admission effectiveness.
-Resuming after one ServiceAccount does not bypass either admission barrier.
+original signed policy/binding and current healthy type-checking). Its original
+signed RBAC then uses a separate, non-executable `BootstrapAdmission` gate:
+administrator CREATE pairs, all original accounts, cold worlds and complete
+namespace workload absence. Services, new credentials and workloads remain
+behind full behavioral admission effectiveness. Resuming after one account or
+one RBAC resource does not bypass the corresponding repeated barrier.
 CREATE probe coverage does not certify DELETE/UPDATE branches;
 real lifecycle CI and any applicable live-claim proof must cover those explicitly
 without adding PVC deletion authority to ordinary retaining uninstall.
@@ -652,6 +655,42 @@ barriers, full accepted-shape refusal, no replay and raw-error redaction. These
 API-server fixtures have no kubelet or policy-status controller and are not
 full runtime lifecycle certification. The partial CREATE proof is deliberately
 not a complete `LifecycleChecks.AdmissionEffective` implementation.
+
+## Closed non-executable RBAC bootstrap
+
+Identity-specific admission proof cannot run before an actor has its signed
+runtime permissions. `ClusterAdmission.VerifyBootstrap` breaks that dependency
+only for original signed Role/ClusterRole/RoleBinding/ClusterRoleBinding effects.
+It is a distinct checkpoint, not a weaker meaning of `AdmissionEffective`.
+The coordinator enforces Install/Applying, not installed, no pending intent or
+access-retirement marker, and either a fresh package or a same-package retaining
+reinstall. Upgrade and rollback keep their existing full behavioral barriers.
+
+Every signed ServiceAccount must already have its original journal UID and
+exact target shape. Existing signed RBAC must also remain original and exact.
+The package's named Services and Deployments must be absent both from inventory
+and exact live GETs; a replacement or failed read is not absence. This Service
+predicate concerns installation Services, not a claim that every namespace
+Service was listed. The sealed observer separately proves complete absence of
+all namespace Pods, Jobs, Deployments, ReplicaSets, StatefulSets, DaemonSets,
+ReplicationControllers, CronJobs and EndpointSlices, including suspended,
+terminal and deleting objects. Cold-world/worker/fence/mount/GC evidence remains
+mandatory. No absence is inferred from incomplete or missing collections.
+
+The provider brackets the six administrator CREATE pairs with that complete
+absence/cold proof, unchanged world identities, original account versions and
+all twelve original healthy protection objects. Fresh bootstrap requires its
+managed credential Secrets absent; retaining reinstall preserves only its
+inventoried originals, with private SecretWorkflow verification repeated by the
+coordinator. It never regenerates retained credentials. Pending RBAC recovery
+stays observation-only, after which the next effect repeats the bootstrap gate.
+
+No temporary verifier roles, TokenRequest/impersonation privileges, extra human
+Kubernetes accounts or runtime permission expansions are introduced. Full actor
+UPDATE/DELETE/subresource proof still gates Services, new Secrets, workloads and
+completion. Fixed HTTPS fixtures test the production observer/provider and
+fault barriers; they do not certify native policy evaluation, real storage,
+kubelet behavior or a complete binary installation lifecycle.
 
 ### Named dry-run transport and native operation evidence
 

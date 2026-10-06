@@ -62,7 +62,7 @@ func (v *lifecycleFixture) Check(ctx context.Context, request LifecycleCheck) er
 			if rank == 0 && (r == nil || tmpl.CheckCRD(v.f.access.objects[key], r.UID, tmpl) != nil) {
 				return ErrLifecycle
 			}
-		case AdmissionConfigured, AdmissionEffective, RetainedAdmission:
+		case AdmissionConfigured, AdmissionEffective, RetainedAdmission, BootstrapAdmission:
 			if (rank == 1 || rank == 2) && r == nil {
 				return ErrLifecycle
 			}
@@ -89,7 +89,7 @@ func (v *lifecycleFixture) Check(ctx context.Context, request LifecycleCheck) er
 }
 
 func TestLifecycleSignedServiceAccountsPrecedeBehavioralAdmission(t *testing.T) {
-	for _, gate := range []Checkpoint{AdmissionConfigured, AdmissionEffective} {
+	for _, gate := range []Checkpoint{AdmissionConfigured, BootstrapAdmission, AdmissionEffective} {
 		t.Run(fmt.Sprint(gate), func(t *testing.T) {
 			v := newLifecycleFixture(t)
 			v.fail = gate
@@ -113,12 +113,12 @@ func TestLifecycleSignedServiceAccountsPrecedeBehavioralAdmission(t *testing.T) 
 			for _, r := range s.Document().Resources {
 				if r.Key.Kind == "ServiceAccount" {
 					accounts++
-				} else if r.Key.Kind != "Namespace" && installRank(r.Key) >= 3 {
-					t.Fatal("RBAC/service/workload authority preceded behavioral proof")
+				} else if r.Key.Kind != "Namespace" && installRank(r.Key) >= 3 && !(gate == AdmissionEffective && bootstrapRBACKey(r.Key)) {
+					t.Fatal("authority exceeded its narrow bootstrap barrier")
 				}
 			}
 			wanted := 0
-			if gate == AdmissionEffective {
+			if gate != AdmissionConfigured {
 				for _, resource := range v.f.plan.Resources() {
 					if resource.Object.GetKind() == "ServiceAccount" {
 						wanted++
@@ -126,7 +126,7 @@ func TestLifecycleSignedServiceAccountsPrecedeBehavioralAdmission(t *testing.T) 
 				}
 			}
 			if accounts != wanted {
-				t.Fatal("configured/effective barriers did not bound identity-only effects")
+				t.Fatal("configured/bootstrap/effective barriers did not bound account effects")
 			}
 		})
 	}
@@ -169,6 +169,27 @@ func TestLifecycleServiceAccountResumeDoesNotSkipBehavioralBarrier(t *testing.T)
 	s = v.finish(t, s)
 	if !s.Document().Installed || !slices.Contains(v.checks, AdmissionConfigured) || !slices.Contains(v.checks, AdmissionEffective) {
 		t.Fatal("resumed install skipped one admission obligation")
+	}
+}
+
+func TestLifecycleBootstrapInstallsOwnRBACBeforeFullActorProof(t *testing.T) {
+	v := newLifecycleFixture(t)
+	v.probe = func(request LifecycleCheck) error {
+		if request.Checkpoint == AdmissionEffective {
+			for _, resource := range request.Target.Resources() {
+				key := resourceKey(resource)
+				if accessRetirementKey(key) {
+					if r, _ := v.f.engine.inventory(request.Snapshot.Document(), key); r == nil {
+						return ErrLifecycle // actor proof needs its original signed access
+					}
+				}
+			}
+		}
+		return nil
+	}
+	s := v.finish(t, v.f.snapshot)
+	if !s.Document().Installed || !slices.Contains(v.checks, AdmissionEffective) {
+		t.Fatal("bootstrap did not reach full actor proof and installed completion")
 	}
 }
 

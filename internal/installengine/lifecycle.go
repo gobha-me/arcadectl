@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"time"
 
@@ -50,13 +51,20 @@ const (
 	// AdmissionConfigured proves all original signed policies/bindings and
 	// current healthy type-checking, but NOT behavior. Install may create only
 	// its signed ServiceAccounts behind this barrier, providing the original
-	// non-executable identity needed by native Pod behavioral probes. RBAC,
-	// Service, Secrets and workloads still require AdmissionEffective.
+	// non-executable identity needed by native Pod behavioral probes. Signed
+	// RBAC needs BootstrapAdmission; Service, new Secrets and workloads still
+	// require AdmissionEffective.
 	AdmissionConfigured
 	// RetainedAdmission is administrator read-only verification of unchanged
 	// original protections and durable pre-retirement behavioral evidence.
 	// It is uninstall-only, not a substitute for live AdmissionEffective.
 	RetainedAdmission
+	// BootstrapAdmission proves current original protections, admin paired
+	// CREATE behavior, all original signed accounts, complete namespace runtime
+	// absence and cold worlds. Only Install/Applying may use it, solely to
+	// create its original signed RBAC before full identity-specific proof.
+	// It grants no temporary verifier permissions and never starts a workload.
+	BootstrapAdmission
 )
 
 // LifecycleChecks is an internal proof-provider seam. It MUST NOT be populated
@@ -172,11 +180,34 @@ func (l *Lifecycle) checkOperation(ctx context.Context, kind Checkpoint, s *inst
 	if kind == RetainedAdmission && (mode != installstate.Uninstall || l.engine.verifyRetiredAdmission(ctx, s) != nil) {
 		return ErrLifecycle
 	}
+	var bootstrapWitness map[installstate.Key]admissionIdentity
+	if kind == BootstrapAdmission {
+		if mode != installstate.Install {
+			return ErrLifecycle
+		}
+		var err error
+		bootstrapWitness, err = l.engine.bootstrapAccess(ctx, s)
+		if err != nil {
+			return ErrLifecycle
+		}
+		if s.Document().ActivePackage != "" && l.secrets.VerifyRetained(ctx, s, opts.Activation.CAFile, opts.Now) != nil {
+			return ErrLifecycle
+		}
+	}
 	if err := l.checks.Check(ctx, LifecycleCheck{kind, s, mode, plan, opts}); err != nil {
 		return ErrLifecycle // never expose provider/cluster/private-file details
 	}
 	if kind == RetainedAdmission && l.engine.verifyRetiredAdmission(ctx, s) != nil {
 		return ErrLifecycle
+	}
+	if kind == BootstrapAdmission {
+		current, err := l.engine.bootstrapAccess(ctx, s)
+		if err != nil || !reflect.DeepEqual(bootstrapWitness, current) {
+			return ErrLifecycle
+		}
+		if s.Document().ActivePackage != "" && l.secrets.VerifyRetained(ctx, s, opts.Activation.CAFile, opts.Now) != nil {
+			return ErrLifecycle
+		}
 	}
 	_, err := l.original(ctx, s)
 	return err
@@ -498,6 +529,8 @@ func (l *Lifecycle) apply(ctx context.Context, s *installstate.Snapshot, opts Li
 			gate := AdmissionEffective
 			if d.Mode == installstate.Install && key.Kind == "ServiceAccount" {
 				gate = AdmissionConfigured // fresh AND retaining reinstall
+			} else if d.Mode == installstate.Install && bootstrapRBACKey(key) {
+				gate = BootstrapAdmission
 			}
 			if err := l.check(ctx, gate, s, opts); err != nil {
 				return s, err

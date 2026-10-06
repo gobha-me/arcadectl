@@ -90,6 +90,12 @@ func (a *ClusterAdmission) VerifyCreateProbes(ctx context.Context, request Lifec
 	if request.Checkpoint != AdmissionEffective || ctx == nil {
 		return ErrInvalid
 	}
+	return a.verifyCreateProbes(ctx, request)
+}
+
+// Called only by the two closed public entrypoints; bootstrap adds independent
+// cold/runtime/account prerequisites, never aliases full AdmissionEffective.
+func (a *ClusterAdmission) verifyCreateProbes(ctx context.Context, request LifecycleCheck) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	before, err := a.configured(ctx, request)
