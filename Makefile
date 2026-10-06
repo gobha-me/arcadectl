@@ -30,7 +30,10 @@ render-api:
 	@bash ./hack/render-api.sh "$(API_IMAGE)"
 
 test-envtest:
-	go test -tags=envtest -p 1 -timeout=9m ./api/v1alpha1 ./internal/controller ./internal/install ./internal/installcontract ./internal/installengine
+	# This also runs every ordinary test in these packages. Keep that coverage;
+	# the installer suite must not consume the budget before native profiles start.
+	# Native API-server evidence must execute, not reuse a prior test-result cache.
+	go test -tags=envtest -p 1 -timeout=20m -count=1 ./api/v1alpha1 ./internal/controller ./internal/install ./internal/installcontract ./internal/installengine
 
 test-kind-api:
 	GOMAXPROCS=2 GOMEMLIMIT=1GiB go test -tags=kindapi -p 1 -timeout=35m -v ./internal/install -run '^TestKindAuthenticatedAdmin$$' -count=1

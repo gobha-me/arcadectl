@@ -63,8 +63,13 @@ func proveKindAdmissionFixtureRecipes(t *testing.T, parent context.Context, conf
 	if err != nil {
 		t.Fatal("owned recipe client unavailable")
 	}
+	gcCleanupComplete := true // No custom GC domain has been created yet.
 	cleanup := func() {
 		t.Helper()
+		if !gcCleanupComplete {
+			t.Error("custom GC proof domain not proved absent; refusing all fixture cleanup and requiring exact owned Kind teardown")
+			return // A fixture parent DELETE must never GC-sweep an unknown child.
+		}
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cleanupCancel()
 		if ledger.document.DestroySeed != nil && ledger.document.DestroySeed.State != fixtureDestroySeedAcknowledged {
@@ -317,6 +322,11 @@ func proveKindAdmissionFixtureRecipes(t *testing.T, parent context.Context, conf
 		}
 	}
 	proveKindCancelledDestroySeed(t, ctx, wire, admin, plan)
+	gcCleanupComplete = false // Also survives t.Fatal/Goexit inside the helper.
+	gcCleanupComplete = proveKindFixtureGCMetadata(t, ctx, wire, admin)
+	if !gcCleanupComplete {
+		t.Fatal("custom GC proof cleanup incomplete; fixture parent deletion remains fenced")
+	}
 	fresh, err := engine.journal.Load(ctx, s.Anchor())
 	if err != nil || !bytes.Equal(fresh.Bytes(), s.Bytes()) || fresh.ResourceVersion() != s.ResourceVersion() || engine.fixtureFence(s) != ErrFixtures {
 		t.Fatal("native recipe proof changed journal or silently retired its fence")

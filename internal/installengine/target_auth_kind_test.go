@@ -299,13 +299,23 @@ func TestKindTargetAuthenticatedNativeKubelet(t *testing.T) {
 			defer readyCancel()
 			ticker := time.NewTicker(time.Second)
 			defer ticker.Stop()
+			var stableServing *Serving
+			var stableSince time.Time
 			for {
-				if _, err := engine.ObserveServing(readyCtx, s, access.Serving()); err == nil {
+				// Ready alone can precede native status/EndpointSlice convergence.
+				// Settle the full original route fingerprint BEFORE the one-shot
+				// proof; never retry authentication or relax its drift refusal.
+				observed, err := engine.ObserveServing(readyCtx, s, access.Serving())
+				if err != nil || observed == nil {
+					stableServing, stableSince = nil, time.Time{}
+				} else if stableServing == nil || observed.fingerprint != stableServing.fingerprint {
+					stableServing, stableSince = observed, time.Now()
+				} else if time.Since(stableSince) >= 5*time.Second {
 					break
 				}
 				select {
 				case <-readyCtx.Done():
-					t.Fatal("actual original API did not converge to signed Ready serving evidence")
+					t.Fatal("actual original API did not converge to stable signed Ready serving evidence")
 				case <-ticker.C:
 				}
 			}
