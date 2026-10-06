@@ -5,6 +5,42 @@ The integrated installer, upgrade/rollback runtime certification, and package
 lifecycle CI remain in development under issue #27. This is not a released
 package or a declaration of production-supported Kubernetes profiles.
 
+## Read-only retained-world recovery reporting
+
+The internal closed `RecoveryReporter` reads only the original Namespace and
+its sealed installation journal, plus **all** current namespace PVCs. Reporting
+works after a completed retaining uninstall without surviving workloads,
+ServiceAccounts, admission fixtures, domain CRDs, or Secret reads. It includes
+unlabeled and unrelated claims, even when their former owner no longer exists;
+membership grants no ownership, adoption or permission to delete.
+
+The reporter requires the unchanged, durable original bootstrap receipt and
+independently trusted current signed packages. The original bootstrap package
+can predate all three currently registered packages and must be verified
+separately, not retied to the newest package or regenerated. `PinnedAnchor`
+does not bootstrap a Namespace, repair local state, bind a journal or create a
+lock file. A receipt's acknowledged UID alone does not prove Namespace shape;
+the reporter independently checks its exact current signed shape and journal.
+
+Two complete, bounded, unfiltered PVC enumerations must have identical sorted
+whole claim items (including each UID, resource version and shape), bracketed
+by unchanged original Namespace/journal checks and a final receipt check. Each
+enumeration has a coherent list revision, but unrelated storage churn may
+advance that revision between reads. Its second revision is report metadata,
+not a namespace identity or a cold-world lock.
+
+Output is bounded, JSON-escaped and allowlisted: original installation identity,
+profile, journal revision/mode/stage, known package digests, public pending
+action/address/original UID, and current PVC name/UID/resource version/PV name/
+phase/deletion flag. It never dumps objects, labels, annotations, owner
+references, arbitrary status text, credentials, private paths or raw errors.
+Fixed guidance requires preserving original signed packages, protected receipts
+and client/CA files; it forbids deleting the Namespace/PVCs or replaying an
+uncertain effect with a fresh candidate. This is observation and recovery
+guidance, **not** backup, coldness, detach, deletion or full lifecycle proof.
+The administrator command and integrated lifecycle certification remain in
+development.
+
 ```sh
 GOMAXPROCS=2 GOMEMLIMIT=1GiB go build -p 1 ./cmd/arcadectl-package
 ./arcadectl-package --help
