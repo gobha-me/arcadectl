@@ -15,8 +15,9 @@ recovery_record() {
 # whenever reconciliation recreates its player Service, including failure
 # settlement. This does not substitute for runtime or world-byte validation.
 recovery_publish_player_endpoint_if_present() {
-  local service address uid server_uid
-  service=$(kube get service "$server_name" --namespace "$namespace" --ignore-not-found --output=json)
+  local service address uid server_uid current current_uid
+  service=$(kube get service "$server_name" --namespace "$namespace" --ignore-not-found --output=json) \
+    || die "recovery player Service observation failed"
   [[ -n "$service" ]] || return 0
   address=$(jq -r '.spec.clusterIP' <<<"$service")
   uid=$(jq -r '.metadata.uid' <<<"$service")
@@ -28,10 +29,29 @@ recovery_publish_player_endpoint_if_present() {
     ([.metadata.ownerReferences[]? | select(.controller == true)] | length) == 1 and
     any(.metadata.ownerReferences[]?; .kind == "GameServer" and .name == $server and .uid == $uid and .controller == true)' \
     <<<"$service" >/dev/null || die "recovery player Service is not the owned game runtime"
-  kube patch service "$server_name" --namespace "$namespace" --subresource=status --type=json \
+  if kube patch service "$server_name" --namespace "$namespace" --subresource=status --type=json \
     --patch "$(jq -cn --arg uid "$uid" --arg address "$address" '
       [{op:"test",path:"/metadata/uid",value:$uid},
-       {op:"add",path:"/status/loadBalancer",value:{ingress:[{ip:$address}]}}]')" >/dev/null
+       {op:"add",path:"/status/loadBalancer",value:{ingress:[{ip:$address}]}}]')" >/dev/null 2>&1; then
+    return 0
+  fi
+  # Cold-stop may delete this optional Service between GET and the UID-guarded
+  # PATCH. Do not replay the effect or mistake an arbitrary error for absence.
+  current=$(kube get service "$server_name" --namespace "$namespace" --ignore-not-found --output=json) \
+    || die "recovery player Service reobservation failed after publication refusal"
+  [[ -n "$current" ]] || return 0
+  current_uid=$(jq -r '.metadata.uid' <<<"$current")
+  [[ "$current_uid" =~ ^[0-9a-f-]{36}$ && "$current_uid" != "$uid" ]] \
+    || die "recovery endpoint publication failed for the same original Service"
+  jq -e --arg server "$server_name" --arg uid "$server_uid" --arg ns "$namespace" '
+    .apiVersion == "v1" and .kind == "Service" and .metadata.name == $server and .metadata.namespace == $ns and
+    .spec.type == "LoadBalancer" and (.spec.clusterIP | test("^[0-9a-fA-F:.]+$")) and
+    ([.metadata.ownerReferences[]? | select(.controller == true)] | length) == 1 and
+    any(.metadata.ownerReferences[]?; .apiVersion == "arcade.gobha.me/v1alpha1" and
+      .kind == "GameServer" and .name == $server and .uid == $uid and .controller == true)' \
+    <<<"$current" >/dev/null || die "recovery replacement player Service is not the owned game runtime"
+  # An exact owned replacement may be published only by the next bounded
+  # observation with its own identity. This call never retries the PATCH.
 }
 
 recovery_start() {
