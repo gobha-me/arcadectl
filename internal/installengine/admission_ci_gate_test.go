@@ -45,6 +45,31 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	if yaml.Unmarshal(body, &workflow) != nil {
 		t.Fatal("CI workflow malformed")
 	}
+	// Identical PR-merge/head trees do not have identical source SHA/epoch.
+	// Signed packages, image revision labels and lifecycle evidence must use
+	// the requested head (or exact main push), not a synthetic merge identity.
+	for _, name := range []string{"kind-install-binary", "kind-install-admission", "kind-install-auth", "kind-api", "kind-recovery", "install-engine-race", "go-and-policy", "kind-lifecycle"} {
+		if _, present := workflow.Jobs[name]; !present {
+			t.Errorf("required exact-source CI job %s is absent", name)
+		}
+	}
+	for name, job := range workflow.Jobs {
+		checkouts := 0
+		for _, step := range job.Steps {
+			if strings.HasPrefix(step.Uses, "actions/checkout@") {
+				checkouts++
+				if step.With["ref"] != "${{ github.event.pull_request.head.sha || github.sha }}" {
+					t.Errorf("CI job %s does not pin the exact candidate/main source", name)
+				}
+			}
+		}
+		if checkouts != 1 {
+			t.Errorf("CI job %s lacks one unambiguous exact-source checkout", name)
+		}
+	}
+	if t.Failed() {
+		t.FailNow()
+	}
 	admission := workflow.Jobs["kind-install-admission"]
 	races := workflow.Jobs["install-engine-race"]
 	if !slices.Equal(races.Strategy.Matrix.Shard, []int{0, 1, 2, 3, 4, 5, 6, 7}) || len(races.Strategy.Matrix.Exclude) != 0 {

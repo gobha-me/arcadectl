@@ -27,6 +27,11 @@ and the separate real Factorio lifecycle/recovery gates for the exact candidate;
 after merge, required CI must also pass for the exact main SHA. Storage/network
 prerequisites remain explicit and are not provisioned by the installer.
 
+Every CI checkout explicitly selects the PR head SHA or the exact main push SHA.
+A generated PR merge commit can have the same tree but a different source SHA
+and commit epoch; its image/package provenance is not exact-head certification.
+The binary job retains full history for the declared predecessor source.
+
 The native harness signs with a temporary test-only key and uses a disposable
 registry. Its packages are not release artifacts and its trust key is not a
 release trust identity. Release supply-chain work (#39) and the release go/no-go
