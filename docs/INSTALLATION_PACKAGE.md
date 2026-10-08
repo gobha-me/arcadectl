@@ -162,6 +162,23 @@ retirement or reusable authorization; unbound GC and Lease observations keep
 their full intermediate remote guards. These repeated observations are not an
 atomic namespace snapshot or a continuous authorization guarantee.
 
+Within a warm pass, an original ready controller's Lease can renew between its
+metadata and whole-object LISTs. Only a complete forward-resource-version-only
+refusal, with successful closing discovery/journal barriers, is eligible for
+classification. The private classifier must reprove the original controller
+chain and holder, immutable whole Lease shape, freshness and monotonic renewal,
+every unrelated whole Lease, inventory and descendant closure, and fresh whole
+signed public objects correlated to the refused metadata. A mismatch anywhere
+else refuses immediately. At most three fresh complete collections share the
+original 32 MiB collection-byte budget and existing parent deadline; discovery
+keeps its original separate bounds, and exact current LIST authorization and
+actor/policy/journal/world/WAL witnesses are repeated. No effect, setup, probe or
+driver is retried. Refused data never becomes a successful `GCObservation`.
+The final collection must exactly pair metadata and whole Leases. A private
+invocation-local high-water mark rejects regression behind a classified renewal;
+only a fully closed pass advances the accepted phase floor, which is retained
+even if the next pass refuses. Cold and ordinary unbound readers remain strict.
+
 The native full-admission harness can opt into private fixed stage/index and
 read-phase/slot diagnostics for its single actual attempt. These retain no
 objects, raw errors, identities or credentials and grant no callback, recovery
@@ -174,6 +191,16 @@ metadata pages/shape/UID correlation, and whole Lease pages/membership/metadata
 correlation. These labels do not disclose resource names, versions, paths or
 responses, and do not distinguish a benign renewal from an unsafe replacement.
 They cannot authorize retries or relaxation of ownership checks.
+
+After a failed executable lifecycle Step, the installer also prints fixed
+same-attempt diagnostic progress: the last checkpoint and whether it was
+entered, passed or refused, plus bounded admission/activation stages when
+available. Each Step has a fresh opaque recorder; entering another checkpoint
+clears previous inner progress. A passed checkpoint must not be mistaken for
+the cause of a later inventory/effect failure. Output contains no provider
+errors, objects, names, paths, identities or credentials and performs no extra
+cluster reads or retries. Errors, exit codes and protected recovery remain
+unchanged. Diagnostics are progress, not proof or established root cause.
 
 The development native gates are separate and mandatory in the committed CI:
 four complete public admission runs (profiles 135/137, cold/warm) and three actual

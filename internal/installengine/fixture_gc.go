@@ -37,32 +37,40 @@ func (w *fixtureWire) gcMetadataModeLocked(ctx context.Context, pairLeases bool)
 // callers retain live remote witnesses at every original boundary. No source,
 // permission, metadata page, final discovery or journal check is omitted.
 func (w *fixtureWire) gcMetadataReadLocked(ctx context.Context, pairLeases bool, reads *fixturePhaseRead) (*installobserve.GCObservation, error) {
+	observation, _, err := w.gcMetadataAttempt(ctx, pairLeases, reads, nil)
+	return observation, err
+}
+
+func (w *fixtureWire) gcMetadataAttempt(ctx context.Context, pairLeases bool, reads *fixturePhaseRead, budget *installobserve.GCReadBudget) (*installobserve.GCObservation, *installobserve.LeaseRVConflict, error) {
 	if w.gcReadCurrent(ctx, reads) != nil {
-		return nil, ErrFixtures
+		return nil, nil, ErrFixtures
 	}
 	p := w.actors.admission.prerequisites
 	s := w.actors.request.Snapshot
 	reader, err := installobserve.NewGCReader(p.access.readConfig(), p.engine.journal, w.actors.request.Target)
 	if err != nil {
-		return nil, ErrFixtures
+		return nil, nil, ErrFixtures
 	}
 	discovery, err := reader.Discover(ctx, s.Anchor())
 	if err != nil || w.gcReadCurrent(ctx, reads) != nil {
-		return nil, ErrFixtures
+		return nil, nil, ErrFixtures
 	}
 	for _, source := range discovery.Resources() {
 		permission := gcMetadataPermission(source, s.Anchor().Namespace)
 		// Only the original administrator's current exact LIST right. No new
 		// grant, TokenRequest, impersonation or full-object fallback is used.
 		if p.access.authorize(ctx, permission.spec) != nil {
-			return nil, ErrFixtures
+			return nil, nil, ErrFixtures
 		}
 	}
 	if w.gcReadCurrent(ctx, reads) != nil {
-		return nil, ErrFixtures
+		return nil, nil, ErrFixtures
 	}
 	var observation *installobserve.GCObservation
-	if pairLeases {
+	var refusal *installobserve.LeaseRVConflict
+	if pairLeases && budget != nil {
+		observation, refusal, err = reader.CollectWithLeaseRefusal(ctx, discovery, budget)
+	} else if pairLeases {
 		observation, err = reader.CollectWithLeases(ctx, discovery)
 	} else {
 		observation, err = reader.Collect(ctx, discovery)
@@ -92,13 +100,19 @@ func (w *fixtureWire) gcMetadataReadLocked(ctx context.Context, pairLeases bool,
 			step = admissionPhaseGCClosing
 		}
 		traceAdmissionPhase(ctx, step, -1)
-		return nil, ErrFixtures
+		if refusal != nil {
+			journal := refusal.Journal()
+			if journal == nil || journal.Anchor() != s.Anchor() || journal.ResourceVersion() != s.ResourceVersion() || !bytes.Equal(journal.Bytes(), s.Bytes()) || w.gcReadCurrent(ctx, reads) != nil {
+				return nil, nil, ErrFixtures
+			}
+		}
+		return nil, refusal, ErrFixtures
 	}
 	journal := observation.Journal()
 	if journal == nil || journal.Anchor() != s.Anchor() || journal.ResourceVersion() != s.ResourceVersion() || !bytes.Equal(journal.Bytes(), s.Bytes()) || w.gcReadCurrent(ctx, reads) != nil {
-		return nil, ErrFixtures
+		return nil, nil, ErrFixtures
 	}
-	return observation, nil
+	return observation, nil, nil
 }
 
 func (w *fixtureWire) gcReadCurrent(ctx context.Context, reads *fixturePhaseRead) error {

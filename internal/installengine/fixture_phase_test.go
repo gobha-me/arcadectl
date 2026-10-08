@@ -25,6 +25,7 @@ import (
 // Real sealed observer, immutable companion and original actor/WAL transport;
 // fake HTTPS objects are NOT native admission, effect or lifecycle certification.
 type fixturePhaseTest struct {
+	test           *testing.T
 	f              *fixtureWireTest
 	lists, gets    int
 	hide           map[int]bool
@@ -63,10 +64,15 @@ func fixturePhaseFactoryWithSetup(t *testing.T, setup func(*fixturePhaseTest)) f
 		t.Fatal("signed service checkpoint not reached")
 	}
 	newPreview := fixturePreviewFactoryFromActor(t, newActorFixtureAtCheckpoint(t, seed.v, s))
+	return fixturePhaseFactoryFromWireFactory(t, newPreview, setup)
+}
+
+func fixturePhaseFactoryFromWireFactory(t *testing.T, newPreview func(*testing.T) *fixtureWireTest, setup func(*fixturePhaseTest)) func(*testing.T) *fixturePhaseTest {
+	t.Helper()
 	return func(t *testing.T) *fixturePhaseTest {
 		t.Helper()
 		f := newPreview(t)
-		h := &fixturePhaseTest{f: f, hide: map[int]bool{}}
+		h := &fixturePhaseTest{test: t, f: f, hide: map[int]bool{}}
 		base := f.actor.fixtureHandler
 		groups := map[string][]metav1.APIResource{}
 		add := func(gv, kind, plural string, namespaced bool) {

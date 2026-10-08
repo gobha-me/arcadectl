@@ -175,7 +175,15 @@ func (l *Lifecycle) check(ctx context.Context, kind Checkpoint, s *installstate.
 	return l.checkOperation(ctx, kind, s, d.Mode, d.TargetPackage, opts)
 }
 
-func (l *Lifecycle) checkOperation(ctx context.Context, kind Checkpoint, s *installstate.Snapshot, mode installstate.Mode, target string, opts LifecycleOptions) error {
+func (l *Lifecycle) checkOperation(ctx context.Context, kind Checkpoint, s *installstate.Snapshot, mode installstate.Mode, target string, opts LifecycleOptions) (resultErr error) {
+	traceLifecycleCheckpoint(ctx, kind, lifecycleDiagnosticEntered)
+	defer func() {
+		state := lifecycleDiagnosticRefused
+		if resultErr == nil {
+			state = lifecycleDiagnosticPassed
+		}
+		traceLifecycleCheckpoint(ctx, kind, state)
+	}()
 	plan := l.engine.plans[target]
 	if plan == nil {
 		return ErrInvalid

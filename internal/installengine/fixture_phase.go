@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/gobha-me/arcadectl/internal/installobserve"
@@ -39,6 +40,10 @@ type fixturePhaseObservation struct {
 // Exact original recorded templates apply during mixed-package transitions;
 // no readiness requirement, target-only replacement, or Secret GET is added.
 func (a *ClusterAdmission) phasePublicInventory(ctx context.Context, request LifecycleCheck) ([]fixtureWorldRow, error) {
+	return a.phasePublicInventoryAgainstGC(ctx, request, nil)
+}
+
+func (a *ClusterAdmission) phasePublicInventoryAgainstGC(ctx context.Context, request LifecycleCheck, gcRows []installobserve.GCObject) ([]fixtureWorldRow, error) {
 	if a == nil || a.prerequisites == nil || request.Snapshot == nil {
 		return nil, ErrFixtures
 	}
@@ -71,6 +76,25 @@ func (a *ClusterAdmission) phasePublicInventory(ctx context.Context, request Lif
 		}
 		if err != nil {
 			return nil, ErrFixtures
+		}
+		if gcRows != nil && key.Namespace != "" {
+			path, err := resourcePath(key, true)
+			if err != nil {
+				return nil, ErrFixtures
+			}
+			plural := path[strings.LastIndex(path, "/")+1:]
+			matches := 0
+			for _, observed := range gcRows {
+				if observed.Metadata.UID == live.GetUID() || observed.Source.Kind == key.Kind && observed.Source.GVR.GroupVersion().String() == key.APIVersion && observed.Metadata.Namespace == key.Namespace && observed.Metadata.Name == key.Name {
+					if observed.Source.Kind != key.Kind || observed.Source.GVR.GroupVersion().String() != key.APIVersion || observed.Source.GVR.Resource != plural || !reflect.DeepEqual(observed.Metadata, fixtureGCMetadata(live)) {
+						return nil, ErrFixtures
+					}
+					matches++
+				}
+			}
+			if matches != 1 {
+				return nil, ErrFixtures
+			}
 		}
 		row, err := phaseRow(key, live.GetUID(), live.GetResourceVersion(), live)
 		if err != nil {
@@ -197,7 +221,7 @@ func (w *fixtureWire) observePhaseLocked(ctx context.Context) (*fixturePhaseObse
 			return nil, ErrFixtures
 		}
 		traceAdmissionPhase(ctx, admissionPhaseGC, -1)
-		gc, err := w.gcMetadataReadLocked(ctx, len(phase.Leaders) != 0, reads)
+		gc, phase, err := w.phaseGCWithRenewals(ctx, o, phase, live, reads)
 		if err != nil || !local() {
 			return nil, ErrFixtures
 		}
@@ -435,6 +459,18 @@ func phaseVolumesMatch(worlds fixtureWorldsDocument, phase fixturePhaseBaseline,
 }
 
 func (f *fixtureLedger) phaseGC(o *installobserve.Observation, objects [fixtureMaxSlots]*unstructured.Unstructured, gc *installobserve.GCObservation, refreshed map[installstate.Key]*coordinationv1.Lease) error {
+	return f.phaseGCRows(o, objects, gc, refreshed)
+}
+
+// Pure inventory/owner validation also checks an unsealed refusal projection.
+// Passing it never supplies a GCObservation, phase floor or effect authority.
+type fixtureGCRows interface {
+	Journal() *installstate.Snapshot
+	Objects() []installobserve.GCObject
+	Descendants([]types.UID) ([]installobserve.GCObject, error)
+}
+
+func (f *fixtureLedger) phaseGCRows(o *installobserve.Observation, objects [fixtureMaxSlots]*unstructured.Unstructured, gc fixtureGCRows, refreshed map[installstate.Key]*coordinationv1.Lease) error {
 	if f == nil || !validFixtureRecipe(f.document) || gc == nil || gc.Journal() == nil || !bytes.Equal(gc.Journal().Bytes(), f.document.Journal) || gc.Journal().ResourceVersion() != f.document.JournalResourceVersion {
 		return ErrFixtures
 	}

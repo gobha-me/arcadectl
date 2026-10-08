@@ -251,8 +251,10 @@ func runMutation(ctx context.Context, o options, stdout, stderr io.Writer) int {
 		if _, err := fmt.Fprintf(stdout, "installation stage %s revision %d\n", s.Document().Stage, s.Document().Revision); err != nil {
 			return 1
 		}
-		s, err = x.lifecycle.Step(ctx, s, mutationLifecycleOptions(o, s))
+		stepCtx, diagnostic := installengine.WithLifecycleDiagnostic(ctx)
+		s, err = x.lifecycle.Step(stepCtx, s, mutationLifecycleOptions(o, s))
 		if err != nil || s == nil {
+			_, _ = fmt.Fprintf(stderr, "installation diagnostic progress %s\n", diagnostic.Snapshot())
 			_, _ = io.WriteString(stderr, "installation stopped at a protected checkpoint; inspect before explicit resume; no failed effect was retried\n")
 			return 4
 		}

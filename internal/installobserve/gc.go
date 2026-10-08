@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -243,7 +244,7 @@ func sameGCJournal(a, b *installstate.Snapshot) bool {
 // unfiltered metadata pages. The engine must repeat relevant object/WAL/world
 // witnesses at effect barriers; collection RVs are not a namespace-wide lock.
 func (g *GCReader) Collect(ctx context.Context, discovery *GCDiscovery) (*GCObservation, error) {
-	return g.collect(ctx, discovery, false)
+	return g.collect(ctx, discovery, false, nil, nil)
 }
 
 // CollectWithLeases pairs complete strict whole Leases with their complete
@@ -251,10 +252,10 @@ func (g *GCReader) Collect(ctx context.Context, discovery *GCDiscovery) (*GCObse
 // exact namespace LIST permission, never names, selectors, callbacks or grants.
 // Every other GC source remains metadata-only, particularly Secrets.
 func (g *GCReader) CollectWithLeases(ctx context.Context, discovery *GCDiscovery) (*GCObservation, error) {
-	return g.collect(ctx, discovery, true)
+	return g.collect(ctx, discovery, true, nil, nil)
 }
 
-func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeases bool) (*GCObservation, error) {
+func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeases bool, refusal **LeaseRVConflict, sharedBudget *int) (*GCObservation, error) {
 	if g != nil {
 		g.diagnostic.Store(0)
 	}
@@ -272,6 +273,10 @@ func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeas
 		return nil, ErrConcurrent
 	}
 	budget := 32 * 1024 * 1024
+	if sharedBudget == nil {
+		sharedBudget = &budget
+	}
+	rvConflict := false
 	objects := []GCObject{}
 	identities := map[types.UID]GCObject{}
 	var leases *coordinationv1.LeaseList
@@ -295,7 +300,7 @@ func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeas
 		g.diagnostic.Store(gcStageMetadataPages)
 		items, _, err := boundedPages(ctx, func(ctx context.Context, opts metav1.ListOptions) (runtime.Object, error) {
 			return g.observer.clients.Metadata.Resource(source.GVR).Namespace(discovery.journal.Anchor().Namespace).List(ctx, opts)
-		}, &budget)
+		}, sharedBudget)
 		if err != nil {
 			return nil, ErrRead
 		}
@@ -336,7 +341,7 @@ func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeas
 			leases = &coordinationv1.LeaseList{}
 			c := collection{"coordination.k8s.io/v1", "Lease", "leases", true, leases}
 			g.diagnostic.Store(gcStageLeasePages)
-			if g.observer.collectList(ctx, c, newOwnerGraph(g.observer, nil, []collection{c}), &budget) != nil {
+			if g.observer.collectList(ctx, c, newOwnerGraph(g.observer, nil, []collection{c}), sharedBudget) != nil {
 				return nil, ErrRead
 			}
 			leasesReadAt = time.Now().UTC()
@@ -352,8 +357,21 @@ func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeas
 			for index := range leases.Items {
 				lease := &leases.Items[index]
 				m, ok := byUID[lease.UID]
-				if !ok || !reflect.DeepEqual(m, publicMetadata(lease)) {
+				if !ok {
 					return nil, ErrConcurrent
+				}
+				whole := publicMetadata(lease)
+				if !reflect.DeepEqual(m, whole) {
+					// The ordinary entry points still refuse immediately. The
+					// opt-in route retains ONLY forward RV-only discrepancies,
+					// never membership/owner/shape changes or a successful seal.
+					oldRV, oldErr := strconv.ParseUint(m.ResourceVersion, 10, 64)
+					newRV, newErr := strconv.ParseUint(whole.ResourceVersion, 10, 64)
+					whole.ResourceVersion = m.ResourceVersion
+					if refusal == nil || oldErr != nil || newErr != nil || newRV <= oldRV || !reflect.DeepEqual(m, whole) {
+						return nil, ErrConcurrent
+					}
+					rvConflict = true
 				}
 				delete(byUID, lease.UID)
 			}
@@ -374,6 +392,11 @@ func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeas
 	// Preserve the public observation's original canonical source order despite
 	// scheduling Lease requests last; within-source page/item order is unchanged.
 	slices.SortStableFunc(objects, func(a, b GCObject) int { return strings.Compare(a.Source.GVR.String(), b.Source.GVR.String()) })
+	if rvConflict {
+		*refusal = &LeaseRVConflict{journal: discovery.journal, objects: objects, leases: leases, readAt: leasesReadAt}
+		g.diagnostic.Store(gcStageLeaseCorrelation)
+		return nil, ErrConcurrent
+	}
 	g.diagnostic.Store(gcStageComplete)
 	return &GCObservation{journal: discovery.journal, objects: objects, leases: leases, leasesReadAt: leasesReadAt}, nil
 }
@@ -390,7 +413,14 @@ func gcEventAlias(a, b GCObject) bool {
 // a fixed workload allowlist. It returns identities only; callers must correlate
 // every allowed fixture child with independent original whole-object evidence.
 func (o *GCObservation) Descendants(roots []types.UID) ([]GCObject, error) {
-	if o == nil || o.journal == nil || len(roots) == 0 || len(roots) > installsafety.MaxOwnerGraphNodes {
+	if o == nil {
+		return nil, ErrInvalid
+	}
+	return gcDescendants(o.journal, o.objects, roots)
+}
+
+func gcDescendants(journal *installstate.Snapshot, objects []GCObject, roots []types.UID) ([]GCObject, error) {
+	if journal == nil || len(roots) == 0 || len(roots) > installsafety.MaxOwnerGraphNodes {
 		return nil, ErrInvalid
 	}
 	selected := map[types.UID]bool{}
@@ -401,7 +431,7 @@ func (o *GCObservation) Descendants(roots []types.UID) ([]GCObject, error) {
 		}
 		selected[root] = true
 	}
-	for _, object := range o.objects {
+	for _, object := range objects {
 		for _, owner := range object.Metadata.OwnerReferences {
 			children[owner.UID] = append(children[owner.UID], object.Metadata.UID)
 		}
@@ -416,7 +446,7 @@ func (o *GCObservation) Descendants(roots []types.UID) ([]GCObject, error) {
 		}
 	}
 	result := []GCObject{}
-	for _, object := range o.objects {
+	for _, object := range objects {
 		if selected[object.Metadata.UID] && !slices.Contains(roots, object.Metadata.UID) {
 			result = append(result, GCObject{object.Source, *object.Metadata.DeepCopy()})
 		}

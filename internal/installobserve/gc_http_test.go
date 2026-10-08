@@ -96,7 +96,7 @@ func newGCHTTPFixture(t *testing.T, fault string) *gcHTTPFixture {
 				_, _ = io.WriteString(w, "PRIVATE-GC-CANARY")
 				return
 			}
-			if (h.fault == "discovery-drift" && h.reads[path] > 2 || h.wholeFault == "post-discovery" && h.wholeReads > 0) && gv == "v1" {
+			if (h.fault == "discovery-drift" && h.reads[path] > 2 || strings.HasSuffix(h.wholeFault, "post-discovery") && h.wholeReads > 0) && gv == "v1" {
 				list.APIResources[0].Verbs = metav1.Verbs{"get", "list"}
 			}
 			_ = json.NewEncoder(w).Encode(list)
@@ -167,8 +167,12 @@ func newGCHTTPFixture(t *testing.T, fault string) *gcHTTPFixture {
 					switch h.wholeFault {
 					case "missing":
 						continue
-					case "rv":
+					case "rv", "rv-post-discovery", "rv-post-journal":
 						m.ResourceVersion = "22"
+					case "rv-back":
+						m.ResourceVersion = "20"
+					case "generation":
+						m.Generation++
 					case "uid":
 						m.UID = "foreign-uid"
 					case "name":
