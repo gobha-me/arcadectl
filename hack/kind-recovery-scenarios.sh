@@ -16,15 +16,17 @@ recovery_record() {
 # settlement. This does not substitute for runtime or world-byte validation.
 recovery_publish_player_endpoint_if_present() {
   local service address uid server_uid current current_uid
+  local uid_pattern='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  local nil_uid=00000000-0000-0000-0000-000000000000
   service=$(kube get service "$server_name" --namespace "$namespace" --ignore-not-found --output=json) \
     || die "recovery player Service observation failed"
   [[ -n "$service" ]] || return 0
   address=$(jq -r '.spec.clusterIP' <<<"$service")
   uid=$(jq -r '.metadata.uid' <<<"$service")
-  [[ "$address" =~ ^[0-9a-fA-F:.]+$ && "$uid" =~ ^[0-9a-f-]{36}$ ]] \
+  [[ "$address" =~ ^[0-9a-fA-F:.]+$ && "$uid" =~ $uid_pattern && "$uid" != "$nil_uid" ]] \
     || die "recovery player Service lacks an exact identity and ClusterIP"
   server_uid=$(kube get gameserver "$server_name" --namespace "$namespace" --output=jsonpath='{.metadata.uid}')
-  [[ "$server_uid" =~ ^[0-9a-f-]{36}$ ]] || die "recovery endpoint publication lacks the live exact GameServer UID"
+  [[ "$server_uid" =~ $uid_pattern && "$server_uid" != "$nil_uid" ]] || die "recovery endpoint publication lacks the live exact GameServer UID"
   jq -e --arg server "$server_name" --arg uid "$server_uid" '.spec.type == "LoadBalancer" and
     ([.metadata.ownerReferences[]? | select(.controller == true)] | length) == 1 and
     any(.metadata.ownerReferences[]?; .kind == "GameServer" and .name == $server and .uid == $uid and .controller == true)' \
@@ -41,8 +43,8 @@ recovery_publish_player_endpoint_if_present() {
     || die "recovery player Service reobservation failed after publication refusal"
   [[ -n "$current" ]] || return 0
   current_uid=$(jq -r '.metadata.uid' <<<"$current")
-  [[ "$current_uid" =~ ^[0-9a-f-]{36}$ && "$current_uid" != "$uid" ]] \
-    || die "recovery endpoint publication failed for the same original Service"
+  [[ "$current_uid" =~ $uid_pattern && "$current_uid" != "$nil_uid" && "$current_uid" != "$uid" ]] \
+    || die "recovery endpoint publication lacks a distinct exact Service UID"
   jq -e --arg server "$server_name" --arg uid "$server_uid" --arg ns "$namespace" '
     .apiVersion == "v1" and .kind == "Service" and .metadata.name == $server and .metadata.namespace == $ns and
     .spec.type == "LoadBalancer" and (.spec.clusterIP | test("^[0-9a-fA-F:.]+$")) and

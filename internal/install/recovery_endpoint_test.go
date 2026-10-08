@@ -24,6 +24,17 @@ server_name=lifecycle
 mock_original_uid=10000000-0000-4000-8000-000000000001
 mock_server_uid=20000000-0000-4000-8000-000000000001
 mock_replacement_uid=30000000-0000-4000-8000-000000000001
+case "$mode" in
+  *-uid-dashes) mock_bad_uid=------------------------------------ ;;
+  *-uid-no-separators) mock_bad_uid=300000000000400080000000000000000001 ;;
+  *-uid-wrong-placement) mock_bad_uid=3000000-00000-4000-8000-000000000001 ;;
+  *-uid-nil) mock_bad_uid=00000000-0000-0000-0000-000000000000 ;;
+esac
+case "$mode" in
+  initial-uid-*) mock_original_uid=$mock_bad_uid ;;
+  server-uid-*) mock_server_uid=$mock_bad_uid ;;
+  replacement-uid-*) mock_replacement_uid=$mock_bad_uid ;;
+esac
 printf '0\n' > "$counter"
 die() { printf '%s\n' "$*" >&2; exit 9; }
 service() {
@@ -49,7 +60,7 @@ kube() {
       else
         case "$mode" in
           absent) return 0 ;;
-          replacement) service "$mock_replacement_uid" "$mock_server_uid" ;;
+          replacement|replacement-uid-*) service "$mock_replacement_uid" "$mock_server_uid" ;;
           foreign) service "$mock_replacement_uid" "$mock_replacement_uid" ;;
           malformed) printf '{}\n' ;;
           wrong-name) service "$mock_replacement_uid" "$mock_server_uid" | jq '.metadata.name="foreign"' ;;
@@ -121,6 +132,18 @@ fi
 		{"extra-controller", false, false, 1, 2},
 		{"missing-owner", false, false, 1, 2},
 		{"get-error", false, false, 1, 2},
+		{"initial-uid-dashes", false, false, 0, 1},
+		{"initial-uid-no-separators", false, false, 0, 1},
+		{"initial-uid-wrong-placement", false, false, 0, 1},
+		{"initial-uid-nil", false, false, 0, 1},
+		{"server-uid-dashes", false, false, 0, 1},
+		{"server-uid-no-separators", false, false, 0, 1},
+		{"server-uid-wrong-placement", false, false, 0, 1},
+		{"server-uid-nil", false, false, 0, 1},
+		{"replacement-uid-dashes", false, false, 1, 2},
+		{"replacement-uid-no-separators", false, false, 1, 2},
+		{"replacement-uid-wrong-placement", false, false, 1, 2},
+		{"replacement-uid-nil", false, false, 1, 2},
 	} {
 		name := fixture.mode
 		if fixture.legacy {
@@ -154,7 +177,7 @@ fi
 			}
 			calls, err := os.ReadFile(trace)
 			gameserverReads := 1
-			if fixture.legacy || fixture.mode == "initially-absent" || fixture.mode == "initial-get-error" {
+			if fixture.legacy || fixture.mode == "initially-absent" || fixture.mode == "initial-get-error" || strings.HasPrefix(fixture.mode, "initial-uid-") {
 				gameserverReads = 0
 			}
 			if err != nil || strings.Count(string(calls), "patch/service\n") != fixture.patches || strings.Count(string(calls), "get/service\n") != fixture.reads || strings.Count(string(calls), "get/gameserver\n") != gameserverReads {
