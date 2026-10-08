@@ -322,7 +322,7 @@ spec:
   settings: {name: Recovery proof, visibility: private}
 EOF
   kube create --filename "$workspace/recovery-server.yaml" >/dev/null
-  kube_bounded 130 wait pvc/"$claim_name" --namespace "$namespace" --for=jsonpath='{.status.phase}'=Bound --timeout=120s >/dev/null
+  wait_world_pvc_bound "$claim_name" "$namespace" 120
   wait_server "$server_name" Stopped RuntimeStopped 120
   recovery_original_pvc_uid=$(kube get pvc "$claim_name" --namespace "$namespace" --output=jsonpath='{.metadata.uid}')
   recovery_original_pv=$(kube get pvc "$claim_name" --namespace "$namespace" --output=jsonpath='{.spec.volumeName}')
