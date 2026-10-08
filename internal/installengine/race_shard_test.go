@@ -5,6 +5,7 @@ package installengine
 
 import (
 	"errors"
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -20,10 +21,10 @@ func TestInstallerRaceShardsDiscoverUnicodeTestsAndKeepCompleteTrees(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	names := []string{"TestAlpha", "TestÉclair", "TestΓamma", "ExampleRead", "FuzzCorpus", "TestZulu", "Test_123"}
+	names := []string{"TestAlpha", "TestÉclair", "TestΓamma", "ExampleRead", "FuzzCorpus", "TestZulu", "Test_123", "TestEight", "TestNine", "TestTen", "TestEleven", "TestTwelve", "TestThirteen", "TestFourteen", "TestFifteen", "TestSixteen", "TestSeventeen", "TestEighteen", "TestNineteen"}
 	stub := `go() {
   if [[ "$*" == 'test -race -p 1 -list . ./internal/installengine' ]]; then
-    printf '%s\n' TestAlpha TestÉclair TestΓamma ExampleRead FuzzCorpus TestZulu Test_123 'ok fake-package 0.001s'
+    printf '%s\n' TestAlpha TestÉclair TestΓamma ExampleRead FuzzCorpus TestZulu Test_123 TestEight TestNine TestTen TestEleven TestTwelve TestThirteen TestFourteen TestFifteen TestSixteen TestSeventeen TestEighteen TestNineteen 'ok fake-package 0.001s'
   else
     printf '%s\n' "$*"
   fi
@@ -32,7 +33,7 @@ func TestInstallerRaceShardsDiscoverUnicodeTestsAndKeepCompleteTrees(t *testing.
 export -f go
 exec bash "$@"`
 	combined := []string{}
-	for shard := 0; shard < 4; shard++ {
+	for shard := 0; shard < 8; shard++ {
 		output, err := exec.Command("bash", "-c", stub, "shard-fixture", script, strconv.Itoa(shard), "--list-only").CombinedOutput()
 		if err != nil {
 			t.Fatalf("shard discovery: %v %s", err, output)
@@ -40,13 +41,16 @@ exec bash "$@"`
 		selected := strings.Fields(string(output))
 		combined = append(combined, selected...)
 		for i, name := range selected {
-			if name != names[shard+i*4] {
+			if name != names[shard+i*8] {
 				t.Fatal("wrong round-robin assignment", shard)
 			}
 		}
 		output, err = exec.Command("bash", "-c", stub, "shard-fixture", script, strconv.Itoa(shard)).CombinedOutput()
 		if err != nil {
 			t.Fatalf("shard execution: %v %s", err, output)
+		}
+		if !strings.HasPrefix(string(output), fmt.Sprintf("Installer engine race shard %d/8: %d of %d discovered tests\n", shard, len(selected), len(names))) {
+			t.Fatal("reported shard coverage disagreed with actual partition")
 		}
 		pattern := []string{}
 		for _, name := range selected {
@@ -61,7 +65,7 @@ exec bash "$@"`
 	if !slices.Equal(names, combined) {
 		t.Fatal("duplicate or omitted compiled tests")
 	}
-	for _, args := range [][]string{nil, {"-1"}, {"4"}, {"x"}, {"0", "--unreviewed"}, {"0", "--list-only", "extra"}} {
+	for _, args := range [][]string{nil, {"-1"}, {"8"}, {"01"}, {"x"}, {"0", "--unreviewed"}, {"0", "--list-only", "extra"}} {
 		command := exec.Command("bash", append([]string{"-c", "go() { return 93; }\nexport -f go\nexec bash \"$@\"", "invalid-argument-fixture", script}, args...)...)
 		if err := command.Run(); err == nil {
 			t.Fatal("invalid shard arguments accepted")
@@ -76,6 +80,12 @@ exec bash "$@"`
 		command := exec.Command("bash", "-c", failure+"\nexport -f go\nexec bash \"$@\"", "failure-fixture", script, "0")
 		if err := command.Run(); err == nil {
 			t.Fatal("discovery, empty gate or selected test failure was swallowed")
+		}
+	}
+	for _, option := range [][]string{nil, {"--list-only"}} {
+		args := append([]string{"-c", "go() { printf '%s\\n' TestOnly; }\nexport -f go\nexec bash \"$@\"", "empty-assignment-fixture", script, "7"}, option...)
+		if exec.Command("bash", args...).Run() == nil {
+			t.Fatal("empty assigned shard became a passing gate")
 		}
 	}
 }

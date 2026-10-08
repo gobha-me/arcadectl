@@ -7,12 +7,12 @@
 # silently omit new tests. Each name belongs to exactly one round-robin shard.
 set -euo pipefail
 
-if [[ $# -lt 1 || $# -gt 2 || ! $1 =~ ^[0-3]$ || ${2:-} != "" && ${2:-} != --list-only ]]; then
-  echo 'Usage: bash hack/test-installengine-race-shard.sh {0|1|2|3} [--list-only]' >&2
+if [[ $# -lt 1 || $# -gt 2 || ! $1 =~ ^[0-7]$ || ${2:-} != "" && ${2:-} != --list-only ]]; then
+  echo 'Usage: bash hack/test-installengine-race-shard.sh {0|1|2|3|4|5|6|7} [--list-only]' >&2
   exit 2
 fi
 engine_race_shard_index=$1
-engine_race_shard_count=4
+engine_race_shard_count=8
 
 engine_race_listing=$(go test -race -p 1 -list . ./internal/installengine)
 mapfile -t engine_race_tests < <(printf '%s\n' "$engine_race_listing" | awk '/^(Test|Example|Fuzz)[^[:space:]]*$/')
@@ -42,5 +42,5 @@ engine_race_pattern=''
 for engine_race_name in "${engine_race_selected[@]}"; do
   engine_race_pattern+="${engine_race_pattern:+|}^${engine_race_name}$"
 done
-printf 'Installer engine race shard %s/4: %s of %s discovered tests\n' "$engine_race_shard_index" "${#engine_race_selected[@]}" "${#engine_race_tests[@]}"
+printf 'Installer engine race shard %s/%s: %s of %s discovered tests\n' "$engine_race_shard_index" "$engine_race_shard_count" "${#engine_race_selected[@]}" "${#engine_race_tests[@]}"
 go test -race -p 1 -timeout=20m ./internal/installengine -run "$engine_race_pattern" -count=1

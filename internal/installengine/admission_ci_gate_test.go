@@ -24,6 +24,7 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 			Needs    []string `yaml:"needs"`
 			Strategy struct {
 				Matrix struct {
+					Shard   []int    `yaml:"shard"`
 					Profile []int    `yaml:"profile"`
 					Mode    []string `yaml:"mode"`
 					Exclude []struct {
@@ -45,6 +46,17 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 		t.Fatal("CI workflow malformed")
 	}
 	admission := workflow.Jobs["kind-install-admission"]
+	races := workflow.Jobs["install-engine-race"]
+	if !slices.Equal(races.Strategy.Matrix.Shard, []int{0, 1, 2, 3, 4, 5, 6, 7}) || len(races.Strategy.Matrix.Exclude) != 0 {
+		t.Fatal("compiled race test partitions omitted from CI")
+	}
+	raceRun := false
+	for _, step := range races.Steps {
+		raceRun = raceRun || step.Run == "bash ./hack/test-installengine-race-shard.sh '${{ matrix.shard }}'"
+	}
+	if !raceRun {
+		t.Fatal("CI does not execute its assigned compiled race test trees")
+	}
 	if !slices.Equal(admission.Strategy.Matrix.Profile, []int{135, 137}) || !slices.Equal(admission.Strategy.Matrix.Mode, []string{"cold", "warm"}) {
 		t.Fatal("full native admission profile/mode omitted")
 	}
