@@ -390,7 +390,7 @@ func TestKindAuthenticatedAdmin(t *testing.T) {
 		stdout, stderr := &privateOutputCapture{}, &privateOutputCapture{}
 		command.Stdout, command.Stderr = stdout, stderr
 		if command.Run() != nil || stdout.truncated || stderr.truncated {
-			t.Fatal("ordinary CLI fixture failed; private output withheld")
+			t.Fatalf("ordinary CLI fixture failed (fixed stage %s); private output withheld", nativeCLIStage(args))
 		}
 		credentialOutputs = append(credentialOutputs, stdout.contents, stderr.contents)
 		return stdout.contents

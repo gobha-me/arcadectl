@@ -30,6 +30,8 @@ readonly collision_name=collision
 readonly repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=hack/repository-health.sh
 source "$repository_root/hack/repository-health.sh"
+# shellcheck source=hack/world-pvc-wait.sh
+source "$repository_root/hack/world-pvc-wait.sh"
 workspace=$(mktemp -d "${TMPDIR:-/tmp}/arcadectl-kind-lifecycle.XXXXXX")
 readonly workspace
 run_suffix=$(basename "$workspace" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9' | tail -c 12)
@@ -1168,8 +1170,7 @@ EOF
   say "creating stopped Factorio server and binding retained world"
   begin_transition create-stopped
   kube apply --filename "$workspace/factorio-server.yaml" >/dev/null
-  wait_present persistentvolumeclaim "$claim_name" 120
-  kube_bounded 130 wait persistentvolumeclaim/"$claim_name" --namespace "$namespace" --for=jsonpath='{.status.phase}'=Bound --timeout=120s >/dev/null
+  wait_world_pvc_bound "$claim_name" "$namespace" 120
   wait_server "$server_name" Stopped RuntimeStopped 120
   assert_runtime_absent "$server_name"
   pvc_uid=$(kube get persistentvolumeclaim "$claim_name" --namespace "$namespace" --output=jsonpath='{.metadata.uid}')
@@ -1421,8 +1422,7 @@ EOF
 
 say "creating stopped server and retained storage"
 kube apply --filename "$workspace/server.yaml" >/dev/null
-wait_present persistentvolumeclaim "$claim_name" 90
-kube_bounded 100 wait persistentvolumeclaim/"$claim_name" --namespace "$namespace" --for=jsonpath='{.status.phase}'=Bound --timeout=90s >/dev/null
+wait_world_pvc_bound "$claim_name" "$namespace" 90
 wait_server "$server_name" Stopped RuntimeStopped 90
 assert_runtime_absent "$server_name"
 pvc_uid=$(kube get persistentvolumeclaim "$claim_name" --namespace "$namespace" --output=jsonpath='{.metadata.uid}')
@@ -2386,8 +2386,7 @@ sed -e "s/arcadectl-e2e-world-$run_suffix/$destroy_pv_name/" \
 kube apply --filename "$workspace/destroy-persistent-volume.yaml" >/dev/null
 sed "s/name: $server_name/name: $destroy_server_name/" "$workspace/server.yaml" >"$workspace/destroy-server.yaml"
 kube apply --filename "$workspace/destroy-server.yaml" >/dev/null
-kube_bounded 100 wait persistentvolumeclaim/"$destroy_claim_name" --namespace "$namespace" \
-  --for=jsonpath='{.status.phase}'=Bound --timeout=90s >/dev/null
+wait_world_pvc_bound "$destroy_claim_name" "$namespace" 90
 wait_server "$destroy_server_name" Stopped RuntimeStopped 90
 destroy_server_uid=$(kube get gameserver "$destroy_server_name" --namespace "$namespace" --output=jsonpath='{.metadata.uid}')
 destroy_generation=$(kube get gameserver "$destroy_server_name" --namespace "$namespace" --output=jsonpath='{.metadata.generation}')

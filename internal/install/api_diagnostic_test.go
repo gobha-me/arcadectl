@@ -12,6 +12,47 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
+// Preserve the closed native stage type and the richer Kind diagnostic's
+// existing labels. Configure/update labels intentionally differ; never pass
+// the enum's String through a mismatched string whitelist.
+func kindRuntimeDiagnosticStage(stage nativeRuntimeStage) string {
+	switch stage {
+	case nativeRuntimeInitialStart:
+		return "initial-start"
+	case nativeRuntimeConfigure:
+		return "configured-start"
+	case nativeRuntimeRestart:
+		return "restart"
+	case nativeRuntimeImageUpdate:
+		return "update"
+	case nativeRuntimeCLIStart:
+		return "cli-start"
+	default:
+		return "unknown"
+	}
+}
+
+func TestKindRuntimeDiagnosticStageRetainsClosedNativeMapping(t *testing.T) {
+	for stage := 0; stage < 256; stage++ {
+		want := "unknown"
+		switch nativeRuntimeStage(stage) {
+		case nativeRuntimeInitialStart:
+			want = "initial-start"
+		case nativeRuntimeConfigure:
+			want = "configured-start"
+		case nativeRuntimeRestart:
+			want = "restart"
+		case nativeRuntimeImageUpdate:
+			want = "update"
+		case nativeRuntimeCLIStart:
+			want = "cli-start"
+		}
+		if got := kindRuntimeDiagnosticStage(nativeRuntimeStage(stage)); got != want {
+			t.Fatal("native stage lost its closed Kind diagnostic mapping")
+		}
+	}
+}
+
 // Fixed public fields only: native reason/message/container IDs and logs may
 // contain arbitrary runtime bytes. Never print a raw ContainerStatus or Pod.
 // Keep this pure helper and its regression in ordinary CI, not only Kind builds.

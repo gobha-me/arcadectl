@@ -29,6 +29,33 @@ func (writer *rejectingStreamWriter) Write([]byte) (int, error) {
 	return 0, errors.New("destination-full credential-canary")
 }
 
+// Keep the fixture's script inode executable-busy on Linux. The repository
+// runner contract must be tested after successful startup, not accidentally
+// satisfied by a redacted startup error. A stable shell reads this script.
+func keepRepositoryScriptExecutableBusy(t *testing.T, program string) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		return
+	}
+	writer, err := os.OpenFile(program, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := writer.Close(); err != nil {
+			t.Error("fixture writer cleanup failed")
+		}
+	})
+	command := exec.Command(program)
+	if err := command.Start(); !errors.Is(err, syscall.ETXTBSY) {
+		if err == nil {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+		}
+		t.Fatal("fixture did not exercise the executable-busy startup condition")
+	}
+}
+
 func TestCommandRunnerDrainsAfterDestinationFailureBeforeRepositoryCleanup(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
@@ -40,10 +67,11 @@ func TestCommandRunnerDrainsAfterDestinationFailureBeforeRepositoryCleanup(t *te
 	if err := os.WriteFile(program, []byte(contents), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	keepRepositoryScriptExecutableBusy(t, program)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	writer := &rejectingStreamWriter{}
-	err := (&commandRunner{path: program}).Stream(ctx, map[string]string{"CLEANUP_PATH": cleanup}, writer, "dump")
+	err := (&commandRunner{path: "/bin/sh"}).Stream(ctx, map[string]string{"CLEANUP_PATH": cleanup}, writer, program, "dump")
 	if err == nil || strings.Contains(err.Error(), "canary") || writer.calls != 1 {
 		t.Fatalf("Stream failure must be bounded and stop destination writes: err=%v calls=%d", err, writer.calls)
 	}
@@ -58,25 +86,7 @@ func TestCommandRunnerDrainingStillHonorsContextCancellation(t *testing.T) {
 	if err := os.WriteFile(program, []byte("#!/bin/sh\nexec /usr/bin/yes credential-canary\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// Execute the stable shell, not a just-written script inode. Some Linux
-	// filesystems can still report ETXTBSY for a fresh executable; that tests
-	// fixture startup instead of the intended drain/cancellation contract.
-	// Holding a writable descriptor deterministically exercises this distinction.
-	if runtime.GOOS == "linux" {
-		writer, err := os.OpenFile(program, os.O_WRONLY, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer writer.Close()
-		command := exec.Command(program)
-		if err := command.Start(); !errors.Is(err, syscall.ETXTBSY) {
-			if err == nil {
-				_ = command.Process.Kill()
-				_ = command.Wait()
-			}
-			t.Fatal("fixture did not exercise the executable-busy startup condition")
-		}
-	}
+	keepRepositoryScriptExecutableBusy(t, program)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	started := time.Now()
@@ -105,9 +115,10 @@ func TestCommandRunnerControlLimitStillAllowsRepositoryCleanup(t *testing.T) {
 	if err := os.WriteFile(program, []byte(contents), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	keepRepositoryScriptExecutableBusy(t, program)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	output, err := (&commandRunner{path: program}).Control(ctx, map[string]string{"CLEANUP_PATH": cleanup}, "snapshots")
+	output, err := (&commandRunner{path: "/bin/sh"}).Control(ctx, map[string]string{"CLEANUP_PATH": cleanup}, program, "snapshots")
 	if err == nil || len(output) != 0 {
 		t.Fatal("oversized control response must fail without publishing its partial output")
 	}
