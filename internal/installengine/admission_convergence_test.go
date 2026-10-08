@@ -25,13 +25,21 @@ import (
 // Complete production initial-phase proof over fake HTTPS, BEFORE any fixture
 // WAL. This tests readiness/election convergence, not native controller timing.
 func TestAdmissionInitialPhaseConvergenceBeforeWALForPartialAndFullFamilies(t *testing.T) {
-	for _, familyCount := range []int{1, 2} {
-		t.Run(map[int]string{1: "first-original-second-absent", 2: "both-originals"}[familyCount], func(t *testing.T) {
+	for _, scenario := range []struct {
+		name        string
+		familyCount int
+		mode        installstate.Mode
+	}{{"first-original-second-absent", 1, installstate.Install}, {"both-originals", 2, installstate.Install}, {"uninstall-originals", 2, installstate.Uninstall}} {
+		t.Run(scenario.name, func(t *testing.T) {
+			familyCount := scenario.familyCount
 			plan := fixturePlan(t)
 			v, ns, lists := readyControllerFixture(t, plan)
 			d, err := installstate.Decode([]byte(ns.Annotations[installstate.Annotation]), plan)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if scenario.mode == installstate.Uninstall {
+				d.Mode, d.Stage, d.ActivePackage, d.Installed = installstate.Uninstall, installstate.Preparing, plan.Digest(), true
 			}
 			parents := lists["Deployment"].(*appsv1.DeploymentList)
 			sets := lists["ReplicaSet"].(*appsv1.ReplicaSetList)

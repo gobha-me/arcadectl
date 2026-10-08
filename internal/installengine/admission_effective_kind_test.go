@@ -47,21 +47,9 @@ func TestKindAdmissionEffectiveFullMatrix(t *testing.T) {
 							t.Fatal("original warm controllers did not converge")
 						}
 					}
-					var previous *Serving
-					var quiet time.Time
-					if wait.PollUntilContextTimeout(ctx, time.Second, 3*time.Minute, true, func(ctx context.Context) (bool, error) {
-						fresh, err := engine.ObserveServing(ctx, snapshot, access.Serving())
-						if err != nil || fresh == nil {
-							previous, quiet = nil, time.Time{}
-							return false, nil
-						}
-						if previous == nil || previous.fingerprint != fresh.fingerprint {
-							previous, quiet = fresh, time.Now()
-						}
-						return time.Since(quiet) >= 5*time.Second, nil
-					}) != nil {
-						t.Fatal("original runtime did not settle")
-					}
+					// Production must settle original serving before its initial
+					// WAL, just like the executable. Do not hide that prerequisite
+					// behind a harness-only readiness wait.
 					admission, err := NewClusterAdmission(engine, access)
 					if err != nil {
 						t.Fatal("original admission unavailable")

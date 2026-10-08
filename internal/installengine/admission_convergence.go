@@ -8,6 +8,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/gobha-me/arcadectl/internal/installstate"
 	"k8s.io/apimachinery/pkg/util/wait"
 )
 
@@ -23,6 +24,20 @@ func (a *ClusterAdmission) waitInitialPhase(ctx context.Context, request Lifecyc
 	p := a.prerequisites
 	if _, err := p.permissions(request); err != nil {
 		return nil, ErrInvalid // invalid target/mode never consumes a readiness wait
+	}
+	d := request.Snapshot.Document()
+	if d.Stage == installstate.Verifying && d.Mode != installstate.Uninstall {
+		// Final admission includes the original API's WHOLE Deployment/RS/Pod/
+		// EndpointSlice rows. A CREATE ACK or two briefly identical Pending
+		// observations cannot seal its initial baseline before native startup.
+		// Partial Applying and uninstall retain their existing phase contracts.
+		api, template := p.engine.inventory(d, deploymentKey(d.Namespace, apiFamily))
+		if api == nil || template == nil || p.engine.fixtureFence(request.Snapshot) != nil || p.original(ctx, request.Snapshot) != nil {
+			return nil, ErrAdmission
+		}
+		if p.waitOriginalServing(ctx, request.Snapshot) != nil {
+			return nil, ErrAdmission
+		}
 	}
 	var initial *initialAdmissionPhase
 	err := wait.PollUntilContextTimeout(ctx, time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {

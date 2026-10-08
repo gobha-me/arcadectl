@@ -125,6 +125,13 @@ read-only proofs, fenced by the unchanged original journal on every attempt.
 It also waits for the complete initial phase before creating an admission
 fixture WAL, allowing an already-created original controller to finish startup
 and election while preserving absent/not-yet-created family semantics.
+For final non-uninstall verification, the original signed API must first pass
+the same complete serving-fingerprint proof and five-second quiet interval used
+before activation, within its existing three-minute bound. This happens before
+initial phase capture or WAL creation, with original journal and fixture-fence
+barriers; it opens no forwarding/authentication channel. Missing original API
+identity refuses. Partial Applying and uninstall phase semantics are unchanged;
+changes after sealing still fail the exact whole-object/RV comparisons.
 After a reliably acknowledged original UID/RV foreground DELETE, the lifecycle
 only observes that exact intent for up to five minutes and independently
 CAS-settles actual absence. Lost responses, replacement UIDs, journal drift or

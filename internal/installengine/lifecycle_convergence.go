@@ -82,14 +82,26 @@ func (c *clusterLifecycleChecks) waitServing(ctx context.Context, request Lifecy
 	if request.Options.Now.IsZero() || d.Pending != nil || d.Stage != installstate.Verifying || request.Mode != d.Mode || request.Mode == installstate.Uninstall || request.Target == nil || request.Target.Digest() != d.TargetPackage {
 		return ErrInvalid
 	}
+	return p.waitOriginalServing(ctx, request.Snapshot)
+}
+
+// Shared READ-only original-serving convergence. Admission invokes this only
+// before capturing/sealing its initial phase in non-uninstall Verifying; the
+// activation wrapper retains its own checkpoint/target validation. ObserveServing
+// still enforces the original Verifying/mode/target/whole-shape contract. No WAL,
+// Secret, forwarding channel or authentication is created by this wait.
+func (p *ClusterPrerequisites) waitOriginalServing(ctx context.Context, snapshot *installstate.Snapshot) error {
+	if p == nil || p.engine == nil || p.access == nil || ctx == nil || snapshot == nil {
+		return ErrInvalid
+	}
 	var previous *Serving
 	var quiet time.Time
 	err := wait.PollUntilContextTimeout(ctx, time.Second, 3*time.Minute, true, func(ctx context.Context) (bool, error) {
-		if p.original(ctx, request.Snapshot) != nil {
+		if p.engine.fixtureFence(snapshot) != nil || p.original(ctx, snapshot) != nil {
 			return false, ErrActivation
 		}
-		fresh, err := p.engine.ObserveServing(ctx, request.Snapshot, p.access.Serving())
-		if p.original(ctx, request.Snapshot) != nil {
+		fresh, err := p.engine.ObserveServing(ctx, snapshot, p.access.Serving())
+		if p.original(ctx, snapshot) != nil || p.engine.fixtureFence(snapshot) != nil {
 			return false, ErrActivation
 		}
 		if err != nil || fresh == nil {
