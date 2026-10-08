@@ -23,11 +23,18 @@ import (
 // and whole native-shaped fake objects. These are wire/WAL regressions, not
 // native CREATE/status admission, coldness or cleanup certification.
 func fixtureSeedWireFactory(t *testing.T) func(*testing.T) *fixtureWireTest {
+	return fixtureSeedWireFactoryWithWorlds(t, false)
+}
+
+func fixtureSeedWireFactoryWithWorlds(t *testing.T, sealed bool) func(*testing.T) *fixtureWireTest {
 	t.Helper()
 	newPreview := fixturePreviewFactory(t)
 	return func(t *testing.T) *fixtureWireTest {
 		t.Helper()
 		f := newPreview(t)
+		if sealed && f.wire.ledger.sealOriginalWorlds([]fixtureWorldRow{}) != nil {
+			t.Fatal("original empty-world seal unavailable")
+		}
 		acknowledgeAllRecipeFixtures(t, f.wire.ledger)
 		created := time.Now().UTC().Truncate(time.Second).Add(-20 * time.Second)
 		for slot := range fixtureCatalog {

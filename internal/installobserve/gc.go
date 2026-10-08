@@ -18,6 +18,7 @@ import (
 	"github.com/gobha-me/arcadectl/internal/installrender"
 	"github.com/gobha-me/arcadectl/internal/installsafety"
 	"github.com/gobha-me/arcadectl/internal/installstate"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -65,8 +66,20 @@ func (d *GCDiscovery) Resources() []GCResource {
 }
 
 type GCObservation struct {
-	journal *installstate.Snapshot
-	objects []GCObject
+	journal      *installstate.Snapshot
+	objects      []GCObject
+	leases       *coordinationv1.LeaseList
+	leasesReadAt time.Time
+}
+
+// PairedLeases returns the complete whole-object Lease read correlated inside
+// this collection interval, not a later GET against aging metadata. Ordinary
+// metadata-only Collect observations deliberately have no such evidence.
+func (o *GCObservation) PairedLeases() (*coordinationv1.LeaseList, time.Time) {
+	if o == nil || o.leases == nil {
+		return nil, time.Time{}
+	}
+	return o.leases.DeepCopy(), o.leasesReadAt
 }
 
 func (o *GCObservation) Journal() *installstate.Snapshot {
@@ -183,6 +196,18 @@ func sameGCJournal(a, b *installstate.Snapshot) bool {
 // unfiltered metadata pages. The engine must repeat relevant object/WAL/world
 // witnesses at effect barriers; collection RVs are not a namespace-wide lock.
 func (g *GCReader) Collect(ctx context.Context, discovery *GCDiscovery) (*GCObservation, error) {
+	return g.collect(ctx, discovery, false)
+}
+
+// CollectWithLeases pairs complete strict whole Leases with their complete
+// metadata source before the final discovery/journal barrier. It uses the same
+// exact namespace LIST permission, never names, selectors, callbacks or grants.
+// Every other GC source remains metadata-only, particularly Secrets.
+func (g *GCReader) CollectWithLeases(ctx context.Context, discovery *GCDiscovery) (*GCObservation, error) {
+	return g.collect(ctx, discovery, true)
+}
+
+func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeases bool) (*GCObservation, error) {
 	if ctx == nil || g == nil || discovery == nil || discovery.reader != g || discovery.journal == nil {
 		return nil, ErrInvalid
 	}
@@ -198,7 +223,24 @@ func (g *GCReader) Collect(ctx context.Context, discovery *GCDiscovery) (*GCObse
 	budget := 32 * 1024 * 1024
 	objects := []GCObject{}
 	identities := map[types.UID]GCObject{}
-	for _, source := range discovery.resources {
+	var leases *coordinationv1.LeaseList
+	var leasesReadAt time.Time
+	// Continuously renewed Leases must not age behind every other SDK LIST's
+	// rate limiter before whole-object correlation. Reorder READS only; never
+	// mutate the sealed catalogue, skip a source/page, change the supplied
+	// read limiter/QPS (including the installer's bounded shared default) or weaken
+	// the final fresh discovery/journal barrier. Other sources keep their order.
+	readOrder := make([]GCResource, 0, len(discovery.resources))
+	for _, last := range []bool{false, true} {
+		for _, source := range discovery.resources {
+			lease := source.GVR.Group == "coordination.k8s.io" && source.GVR.Resource == "leases"
+			if lease == last {
+				readOrder = append(readOrder, source)
+			}
+		}
+	}
+	for _, source := range readOrder {
+		start := len(objects)
 		items, _, err := boundedPages(ctx, func(ctx context.Context, opts metav1.ListOptions) (runtime.Object, error) {
 			return g.observer.clients.Metadata.Resource(source.GVR).Namespace(discovery.journal.Anchor().Namespace).List(ctx, opts)
 		}, &budget)
@@ -232,11 +274,46 @@ func (g *GCReader) Collect(ctx context.Context, discovery *GCDiscovery) (*GCObse
 				return nil, ErrRead
 			}
 		}
+		if pairLeases && source.GVR.Group == "coordination.k8s.io" && source.GVR.Resource == "leases" {
+			if source.GVR.Version != "v1" || source.Kind != "Lease" || leases != nil {
+				return nil, ErrRead
+			}
+			leases = &coordinationv1.LeaseList{}
+			c := collection{"coordination.k8s.io/v1", "Lease", "leases", true, leases}
+			if g.observer.collectList(ctx, c, newOwnerGraph(g.observer, nil, []collection{c}), &budget) != nil {
+				return nil, ErrRead
+			}
+			leasesReadAt = time.Now().UTC()
+			if len(leases.Items) != len(objects)-start {
+				return nil, ErrConcurrent
+			}
+			byUID := map[types.UID]metav1.ObjectMeta{}
+			for _, row := range objects[start:] {
+				byUID[row.Metadata.UID] = row.Metadata
+			}
+			for index := range leases.Items {
+				lease := &leases.Items[index]
+				m, ok := byUID[lease.UID]
+				if !ok || !reflect.DeepEqual(m, publicMetadata(lease)) {
+					return nil, ErrConcurrent
+				}
+				delete(byUID, lease.UID)
+			}
+			if len(byUID) != 0 {
+				return nil, ErrConcurrent
+			}
+		}
+	}
+	if pairLeases && leases == nil {
+		return nil, ErrRead
 	}
 	if !current() {
 		return nil, ErrConcurrent
 	}
-	return &GCObservation{discovery.journal, objects}, nil
+	// Preserve the public observation's original canonical source order despite
+	// scheduling Lease requests last; within-source page/item order is unchanged.
+	slices.SortStableFunc(objects, func(a, b GCObject) int { return strings.Compare(a.Source.GVR.String(), b.Source.GVR.String()) })
+	return &GCObservation{journal: discovery.journal, objects: objects, leases: leases, leasesReadAt: leasesReadAt}, nil
 }
 
 // Core and events.k8s.io Events alias the same stored objects. This is the sole

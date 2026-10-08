@@ -7,8 +7,6 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/gobha-me/arcadectl/internal/installrender"
-	"github.com/gobha-me/arcadectl/internal/installstate"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
@@ -23,6 +21,7 @@ const (
 	fixtureRetainedPVC
 	fixturePlainPVC
 	fixtureCancelledDestroy
+	fixtureVerifiedCancelledDestroy
 )
 
 // Pure, closed construction from the protected original recipe. This does not
@@ -31,18 +30,14 @@ const (
 // the original namespace/access/policies, exact absence and whole dry-run shape.
 // In particular, no ordinary installer effect is exempted from the WAL fence.
 func (f *fixtureLedger) object(slot int) (*unstructured.Unstructured, error) {
-	if f == nil || f.engine == nil || f.lock == nil || slot < 0 || slot >= len(fixtureCatalog) {
+	if f == nil || f.engine == nil || f.lock == nil || slot < 0 || slot >= len(fixtureCatalogFor(f.document)) {
 		return nil, ErrFixtures
 	}
-	d, err := f.engine.decodeFixtureLedger(f.body)
+	d, err := f.decodeCurrentWAL(f.body)
 	if err != nil || !reflect.DeepEqual(d, f.document) {
 		return nil, ErrFixtures
 	}
-	plans := make([]*installrender.Plan, 0, len(f.engine.plans))
-	for _, plan := range f.engine.plans {
-		plans = append(plans, plan)
-	}
-	journal, err := installstate.Decode(d.Journal, plans...)
+	journal, err := f.decodeCurrentJournal(d.Journal)
 	if err != nil {
 		return nil, ErrFixtures
 	}
@@ -50,7 +45,7 @@ func (f *fixtureLedger) object(slot int) (*unstructured.Unstructured, error) {
 	if !plan.IsTrusted() || plan.Namespace() != journal.Namespace {
 		return nil, ErrFixtures
 	}
-	entry, recipe := d.Entries[slot], fixtureCatalog[slot]
+	entry, recipe := d.Entries[slot], fixtureCatalogFor(d)[slot]
 	meta := map[string]any{"name": entry.Key.Name, "namespace": entry.Key.Namespace}
 	o := &unstructured.Unstructured{Object: map[string]any{"apiVersion": recipe.version, "kind": recipe.kind, "metadata": meta}}
 	switch slot {
@@ -128,6 +123,17 @@ func (f *fixtureLedger) object(slot int) (*unstructured.Unstructured, error) {
 		o.Object["spec"] = map[string]any{
 			"target": map[string]any{"gameServer": map[string]any{"name": name, "uid": "synthetic-server-" + d.RunID}, "game": "admission-probe", "data": map[string]any{"identity": "synthetic-" + d.RunID, "claims": []any{map[string]any{"path": "data", "claimRef": map[string]any{"name": name, "uid": "synthetic-claim-" + d.RunID}}}}},
 			"mode":   "UnsafeNoBackup", "unsafeReason": "isolated cancelled admission fixture", "cancelRequested": true,
+		}
+	case fixtureVerifiedCancelledDestroy:
+		// Separate fictional identities, cancelled before CREATE and never
+		// confirmed. These are not the unsafe original's world references and
+		// cannot target native UUIDs or any acknowledged fixture/storage UID.
+		name := "arcadectl-verified-probe-" + d.RunID
+		o.Object["spec"] = map[string]any{
+			"target": map[string]any{"gameServer": map[string]any{"name": name, "uid": "synthetic-verified-server-" + d.RunID}, "game": "admission-probe", "data": map[string]any{"identity": "synthetic-verified-" + d.RunID, "claims": []any{map[string]any{"path": "data", "claimRef": map[string]any{"name": name, "uid": "synthetic-verified-claim-" + d.RunID}}}}},
+			"mode":   "VerifiedBackup", "cancelRequested": true,
+			"backupRef":           map[string]any{"name": name, "uid": "synthetic-verified-backup-" + d.RunID},
+			"repositorySecretRef": map[string]any{"name": name, "uid": "synthetic-verified-repository-" + d.RunID, "resourceVersion": "1"},
 		}
 	default:
 		return nil, ErrFixtures

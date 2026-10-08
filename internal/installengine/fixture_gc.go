@@ -21,7 +21,23 @@ func (w *fixtureWire) gcMetadata(ctx context.Context) (*installobserve.GCObserva
 	}
 	w.ledger.wireMu.Lock()
 	defer w.ledger.wireMu.Unlock()
-	if w.current(ctx) != nil {
+	return w.gcMetadataLocked(ctx)
+}
+
+// Caller holds this ledger's wireMu; all original checks remain mandatory.
+func (w *fixtureWire) gcMetadataLocked(ctx context.Context) (*installobserve.GCObservation, error) {
+	return w.gcMetadataModeLocked(ctx, false)
+}
+
+func (w *fixtureWire) gcMetadataModeLocked(ctx context.Context, pairLeases bool) (*installobserve.GCObservation, error) {
+	return w.gcMetadataReadLocked(ctx, pairLeases, nil)
+}
+
+// Only the complete phase passes a pinned local read boundary. All unbound GC
+// callers retain live remote witnesses at every original boundary. No source,
+// permission, metadata page, final discovery or journal check is omitted.
+func (w *fixtureWire) gcMetadataReadLocked(ctx context.Context, pairLeases bool, reads *fixturePhaseRead) (*installobserve.GCObservation, error) {
+	if w.gcReadCurrent(ctx, reads) != nil {
 		return nil, ErrFixtures
 	}
 	p := w.actors.admission.prerequisites
@@ -31,7 +47,7 @@ func (w *fixtureWire) gcMetadata(ctx context.Context) (*installobserve.GCObserva
 		return nil, ErrFixtures
 	}
 	discovery, err := reader.Discover(ctx, s.Anchor())
-	if err != nil || w.current(ctx) != nil {
+	if err != nil || w.gcReadCurrent(ctx, reads) != nil {
 		return nil, ErrFixtures
 	}
 	for _, source := range discovery.Resources() {
@@ -42,18 +58,30 @@ func (w *fixtureWire) gcMetadata(ctx context.Context) (*installobserve.GCObserva
 			return nil, ErrFixtures
 		}
 	}
-	if w.current(ctx) != nil {
+	if w.gcReadCurrent(ctx, reads) != nil {
 		return nil, ErrFixtures
 	}
-	observation, err := reader.Collect(ctx, discovery)
+	var observation *installobserve.GCObservation
+	if pairLeases {
+		observation, err = reader.CollectWithLeases(ctx, discovery)
+	} else {
+		observation, err = reader.Collect(ctx, discovery)
+	}
 	if err != nil || observation == nil {
 		return nil, ErrFixtures
 	}
 	journal := observation.Journal()
-	if journal == nil || journal.Anchor() != s.Anchor() || journal.ResourceVersion() != s.ResourceVersion() || !bytes.Equal(journal.Bytes(), s.Bytes()) || w.current(ctx) != nil {
+	if journal == nil || journal.Anchor() != s.Anchor() || journal.ResourceVersion() != s.ResourceVersion() || !bytes.Equal(journal.Bytes(), s.Bytes()) || w.gcReadCurrent(ctx, reads) != nil {
 		return nil, ErrFixtures
 	}
 	return observation, nil
+}
+
+func (w *fixtureWire) gcReadCurrent(ctx context.Context, reads *fixturePhaseRead) error {
+	if reads != nil {
+		return reads.local(ctx, w)
+	}
+	return w.current(ctx)
 }
 
 func gcMetadataPermission(source installobserve.GCResource, namespace string) proofPermission {

@@ -34,9 +34,10 @@ import (
 // DELETE, all behavioral probes, and cleanup/retirement. No public caller uses
 // this primitive yet. There is no callback/object/path/actor selection API.
 type fixtureWire struct {
-	ledger  *fixtureLedger
-	actors  *admissionActors
-	clients map[admissionActor]*HTTPAccess
+	ledger       *fixtureLedger
+	actors       *admissionActors
+	clients      map[admissionActor]*HTTPAccess
+	previewStage fixturePreviewStage // diagnostics only, protected by ledger.wireMu
 }
 
 type fixtureRequest uint8
@@ -47,6 +48,7 @@ const (
 	fixtureDeleteRequest
 	fixtureDryRunRequest
 	fixtureSeedStatusRequest
+	fixtureWarmSeedStatusRequest
 )
 
 func (actors *admissionActors) fixtures(ctx context.Context, ledger *fixtureLedger) (*fixtureWire, error) {
@@ -86,19 +88,33 @@ func (actors *admissionActors) fixtures(ctx context.Context, ledger *fixtureLedg
 }
 
 func (w *fixtureWire) current(ctx context.Context) error {
-	if w == nil || w.ledger == nil || w.ledger.engine == nil || w.ledger.engine.files == nil || w.actors == nil || ctx == nil || w.ledger.lock == nil {
+	if ctx == nil || w.localCurrent() != nil || w.actors.verify(ctx) != nil {
+		return ErrFixtures
+	}
+	return nil
+}
+
+// Exact protected local evidence, never a substitute for live authorization,
+// actor/policy/journal guards or a complete phase. The read-only named scan
+// retains these checks at EACH old boundary, even when remote guards bracket
+// the whole closed scan. Local inode+hash identity is not a monotonic version.
+func (w *fixtureWire) localCurrent() error {
+	if w == nil || w.ledger == nil || w.ledger.engine == nil || w.ledger.engine.files == nil || w.actors == nil || w.ledger.lock == nil {
 		return ErrFixtures
 	}
 	f, s := w.ledger, w.actors.request.Snapshot
 	if s == nil || !bytes.Equal(f.document.Journal, s.Bytes()) || f.document.JournalResourceVersion != s.ResourceVersion() {
 		return ErrFixtures
 	}
+	if f.document.OriginalWorldsSHA256 != "" && f.originalWorldsCurrent() != nil {
+		return ErrFixtures
+	}
 	body, identity, err := f.engine.files.Read(f.name, fixtureLedgerMaxBytes)
 	if err != nil || identity != f.identity || !bytes.Equal(body, f.body) || f.engine.files.ConfirmDurable(f.name, identity) != nil {
 		return ErrFixtures
 	}
-	d, err := f.engine.decodeFixtureLedger(body)
-	if err != nil || !reflect.DeepEqual(d, f.document) || w.actors.verify(ctx) != nil {
+	d, err := f.decodeCurrentWAL(body)
+	if err != nil || !reflect.DeepEqual(d, f.document) {
 		return ErrFixtures
 	}
 	return nil
@@ -155,7 +171,7 @@ func fixtureActor(slot int, verb string) admissionActor {
 }
 
 func (w *fixtureWire) prepare(ctx context.Context, slot int, verb string) (installstate.Key, admissionActor, error) {
-	if w == nil || w.ledger == nil || slot < 0 || slot >= len(fixtureCatalog) || w.current(ctx) != nil {
+	if w == nil || w.ledger == nil || slot < 0 || slot >= len(fixtureCatalogFor(w.ledger.document)) || verb != "get" && (w.ledger.markerUnresolved() || w.ledger.retirementArchive) || w.current(ctx) != nil {
 		return installstate.Key{}, 0, ErrFixtures
 	}
 	key := w.ledger.document.Entries[slot].Key
@@ -188,6 +204,11 @@ func (w *fixtureWire) get(ctx context.Context, slot int) (*unstructured.Unstruct
 	}
 	w.ledger.wireMu.Lock()
 	defer w.ledger.wireMu.Unlock()
+	return w.getLocked(ctx, slot)
+}
+
+// Caller holds this ledger's wireMu, including composed read-only observations.
+func (w *fixtureWire) getLocked(ctx context.Context, slot int) (*unstructured.Unstructured, bool, error) {
 	_, _, err := w.prepare(ctx, slot, "get")
 	if err != nil {
 		return nil, false, err
@@ -219,21 +240,54 @@ func (w *fixtureWire) dryRun(ctx context.Context, slot int) (*unstructured.Unstr
 	}
 	w.ledger.wireMu.Lock()
 	defer w.ledger.wireMu.Unlock()
+	return w.dryRunLocked(ctx, slot)
+}
+
+// The closed admission driver holds wireMu across both complete phase
+// observations and this one send. Keep the lock-owning wrapper for other paths.
+func (w *fixtureWire) dryRunLocked(ctx context.Context, slot int) (*unstructured.Unstructured, error) {
+	if w == nil || w.ledger == nil {
+		return nil, ErrFixtures
+	}
+	w.previewStage = fixturePreviewReadiness
 	if !w.ledger.dryRunReady(slot) {
 		return nil, ErrFixtures
 	}
-	if _, _, err := w.prepare(ctx, slot, "create"); err != nil || !w.ledger.dryRunReady(slot) {
+	w.previewStage = fixturePreviewPrepare
+	if _, _, err := w.prepare(ctx, slot, "create"); err != nil {
 		return nil, ErrFixtures
 	}
+	w.previewStage = fixturePreviewPreparedReadiness
+	if !w.ledger.dryRunReady(slot) {
+		return nil, ErrFixtures
+	}
+	w.previewStage = fixturePreviewRequest
 	capture, err := w.request(ctx, slot, fixtureDryRunRequest)
-	if err != nil || capture == nil || capture.result == nil || capture.uid != "" || w.current(ctx) != nil || !w.ledger.dryRunReady(slot) || w.ledger.validateResult(slot, fixtureDryRunResult, capture.result, time.Now().UTC()) != nil {
+	if err != nil {
 		return nil, ErrFixtures
 	}
+	w.previewStage = fixturePreviewReply
+	if capture == nil || capture.result == nil || capture.uid != "" {
+		return nil, ErrFixtures
+	}
+	w.previewStage = fixturePreviewPostWitness
+	if w.current(ctx) != nil {
+		return nil, ErrFixtures
+	}
+	w.previewStage = fixturePreviewPostReadiness
+	if !w.ledger.dryRunReady(slot) {
+		return nil, ErrFixtures
+	}
+	w.previewStage = fixturePreviewWholeShape
+	if w.ledger.validateResult(slot, fixtureDryRunResult, capture.result, time.Now().UTC()) != nil {
+		return nil, ErrFixtures
+	}
+	w.previewStage = fixturePreviewAccepted
 	return capture.result.DeepCopy(), nil
 }
 
 func (f *fixtureLedger) dryRunReady(slot int) bool {
-	if f == nil || slot < 0 || slot >= len(fixtureCatalog) || len(f.document.Entries) != len(fixtureCatalog) || f.ackSlot != -1 || f.effectSlot != -1 || f.document.Entries[slot].State != fixturePlanned {
+	if f.markerUnresolved() || slot < 0 || slot >= len(fixtureCatalogFor(f.document)) || f.ackSlot != -1 || f.effectSlot != -1 || f.document.Entries[slot].State != fixturePlanned {
 		return false
 	}
 	next, err := f.nextDocument()
@@ -249,12 +303,20 @@ func (f *fixtureLedger) dryRunReady(slot int) bool {
 // pinned/fsynced BEFORE returning a body for the separate whole-shape validator,
 // or checking post-request witnesses. Unknown outcomes revoke ACK capability.
 func (w *fixtureWire) create(ctx context.Context, slot int) (*unstructured.Unstructured, error) {
-	if w == nil || w.ledger == nil || slot < 0 || slot >= len(fixtureCatalog) {
+	if w == nil || w.ledger == nil || slot < 0 || slot >= fixtureMaxSlots {
 		return nil, ErrFixtures
 	}
 	w.ledger.wireMu.Lock()
 	defer w.ledger.wireMu.Unlock()
-	if len(w.ledger.document.Entries) != len(fixtureCatalog) {
+	return w.createLocked(ctx, slot)
+}
+
+// Caller holds wireMu for the complete original-creation witness interval.
+func (w *fixtureWire) createLocked(ctx context.Context, slot int) (*unstructured.Unstructured, error) {
+	if w == nil || w.ledger == nil || slot < 0 || slot >= fixtureMaxSlots {
+		return nil, ErrFixtures
+	}
+	if slot >= len(fixtureCatalogFor(w.ledger.document)) {
 		return nil, ErrFixtures
 	}
 	if w.ledger.document.Entries[slot].State != fixtureCreateAttempted || w.ledger.ackSlot != slot || w.ledger.effectSlot != slot {
@@ -289,12 +351,12 @@ func (w *fixtureWire) create(ctx context.Context, slot int) (*unstructured.Unstr
 }
 
 func (w *fixtureWire) delete(ctx context.Context, slot int) error {
-	if w == nil || w.ledger == nil || slot < 0 || slot >= len(fixtureCatalog) {
+	if w == nil || w.ledger == nil || slot < 0 || slot >= fixtureMaxSlots {
 		return ErrFixtures
 	}
 	w.ledger.wireMu.Lock()
 	defer w.ledger.wireMu.Unlock()
-	if len(w.ledger.document.Entries) != len(fixtureCatalog) {
+	if slot >= len(fixtureCatalogFor(w.ledger.document)) {
 		return ErrFixtures
 	}
 	if w.ledger.document.Entries[slot].State != fixtureDeleteAttempted || w.ledger.effectSlot != slot {
@@ -361,6 +423,7 @@ type fixtureCapture struct {
 	result             *unstructured.Unstructured
 	uid                types.UID
 	notFound, success  bool
+	strictNotFound     bool // closed CREATE-counterpart reads need exact native Status
 	dryRun             bool
 	seedUID            types.UID
 	seedBeforeRV       string
@@ -414,6 +477,9 @@ func (c *fixtureCapture) capture(response *http.Response) {
 		defer response.Body.Close()
 	}
 	if c.method == http.MethodGet && response.StatusCode == http.StatusNotFound {
+		if c.strictNotFound && !fixtureCounterpartNotFound(response, c.key) {
+			return
+		}
 		c.notFound, c.success = true, true
 		return
 	}
@@ -461,12 +527,19 @@ func (c *fixtureCapture) capture(response *http.Response) {
 // caller-selected key, actor or payload. Persistent effects consume the shared
 // send capability immediately before Do; preview never consumes or grants one.
 // Even an accidental new caller cannot select generic PUT/PATCH or a non-dry
-// preview. The sole status PUT derives from the fixed original seed intent.
+// preview. Both closed status routes derive from the fixed original intent.
 func (w *fixtureWire) request(ctx context.Context, slot int, operation fixtureRequest) (*fixtureCapture, error) {
-	if ctx == nil || w == nil || w.ledger == nil || w.actors == nil || w.actors.admission == nil || w.actors.admission.prerequisites == nil || w.actors.admission.prerequisites.access == nil || w.actors.admission.prerequisites.access.frozen == nil || slot < 0 || slot >= len(fixtureCatalog) || len(w.ledger.document.Entries) != len(fixtureCatalog) {
+	if ctx == nil || w == nil || w.ledger == nil || w.actors == nil || w.actors.admission == nil || w.actors.admission.prerequisites == nil || w.actors.admission.prerequisites.access == nil || w.actors.admission.prerequisites.access.frozen == nil || slot < 0 || slot >= len(fixtureCatalogFor(w.ledger.document)) {
 		return nil, ErrFixtures
 	}
 	f := w.ledger
+	if f.document.OriginalWorldsSHA256 != "" && f.originalWorldsCurrent() != nil {
+		return nil, ErrFixtures
+	}
+	if operation != fixtureGetRequest && f.markerUnresolved() {
+		return nil, ErrFixtures // no old effect route accepts a marked/unknown PVC
+	}
+	seedRequest := operation == fixtureSeedStatusRequest || operation == fixtureWarmSeedStatusRequest
 	entry := f.document.Entries[slot]
 	key := entry.Key
 	var payload any
@@ -508,6 +581,16 @@ func (w *fixtureWire) request(ctx context.Context, slot int, operation fixtureRe
 			return nil, ErrFixtures
 		}
 		payload = o.Object
+	case fixtureWarmSeedStatusRequest:
+		if slot != fixtureCancelledDestroy {
+			return nil, ErrFixtures
+		}
+		verb, method = "seed-status", http.MethodPut
+		o, err := w.warmDestroySeedPayload(ctx)
+		if err != nil {
+			return nil, ErrFixtures
+		}
+		payload = o.Object
 	default:
 		return nil, ErrFixtures
 	}
@@ -520,7 +603,7 @@ func (w *fixtureWire) request(ctx context.Context, slot int, operation fixtureRe
 	if err != nil {
 		return nil, ErrFixtures
 	}
-	if operation == fixtureSeedStatusRequest {
+	if seedRequest {
 		path += "/status"
 	}
 	identity := fixtureWireIdentity{actor: actor, namespace: key.Namespace}
@@ -543,15 +626,15 @@ func (w *fixtureWire) request(ctx context.Context, slot int, operation fixtureRe
 	u := *a.base
 	u.Path = strings.TrimRight(u.Path, "/") + path
 	u.RawQuery = ""
-	if method == http.MethodPost || operation == fixtureSeedStatusRequest {
+	if method == http.MethodPost || seedRequest {
 		u.RawQuery = "fieldManager=arcadectl-installer&fieldValidation=Strict"
 		if operation == fixtureDryRunRequest {
 			u.RawQuery = "dryRun=All&" + u.RawQuery
 		}
 	}
 	capture := &fixtureCapture{identity: identity, method: method, url: u.String(), body: body, key: key, dryRun: operation == fixtureDryRunRequest}
-	if operation == fixtureSeedStatusRequest {
-		if !f.destroySeedReady() {
+	if seedRequest {
+		if operation == fixtureSeedStatusRequest && !f.destroySeedReady() || operation == fixtureWarmSeedStatusRequest && !f.destroyWarmSeedReady() {
 			return nil, ErrFixtures
 		}
 		capture.seedUID, capture.seedBeforeRV = entry.OriginalUID, f.document.DestroySeed.BeforeResourceVersion
@@ -567,10 +650,13 @@ func (w *fixtureWire) request(ctx context.Context, slot int, operation fixtureRe
 	r.GetBody = nil
 	r.Header.Set("Accept", "application/json")
 	r.Header.Set("Content-Type", "application/json")
+	if f.document.OriginalWorldsSHA256 != "" && f.originalWorldsCurrent() != nil {
+		return nil, ErrFixtures
+	}
 	if operation == fixtureCreateRequest || operation == fixtureDeleteRequest {
 		f.effectSlot = -1
 	} // consumed before any possible wire attempt
-	if operation == fixtureSeedStatusRequest {
+	if seedRequest {
 		f.seedEffect = false
 	}
 	response, err := a.client.Do(r)
@@ -578,7 +664,7 @@ func (w *fixtureWire) request(ctx context.Context, slot int, operation fixtureRe
 		_ = response.Body.Close()
 	}
 	if err != nil || !capture.success {
-		if operation == fixtureSeedStatusRequest && capture.seedAcknowledgedRV == "" {
+		if seedRequest && capture.seedAcknowledgedRV == "" {
 			f.seedAck = false // even a direct private enum caller cannot ACK uncertainty
 		}
 		return capture, ErrFixtures

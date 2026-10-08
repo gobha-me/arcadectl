@@ -38,6 +38,46 @@ const targetKindRegistry = "registry:3.0.0@sha256:6c5666b861f3505b116bb9aa9b2517
 // Cleanup is registered before creation and checks exact identity and labels.
 func targetKindFixture(t *testing.T, nodeImage string) (context.Context, *rest.Config, string) {
 	t.Helper()
+	ctx, config, api, _ := targetKindFixtureImages(t, nodeImage, false)
+	return ctx, config, api
+}
+
+// The closed warm option builds the normal controller, not lifecycle-test code.
+// Both images use the same exact-owned registry/cluster and serial build path.
+func targetKindFixtureImages(t *testing.T, nodeImage string, withController bool) (context.Context, *rest.Config, string, string) {
+	return targetKindFixtureImagesForRecipe(t, nodeImage, withController, false)
+}
+
+// A closed, larger finite native-test budget for the eleven-original recipe
+// and its complete before/after phase brackets. No kubeconfig, permission or
+// cluster ownership behavior changes, and ordinary v1 keeps its existing bound.
+func targetKindFixtureImagesV2(t *testing.T, nodeImage string, withController bool) (context.Context, *rest.Config, string, string) {
+	return targetKindFixtureImagesForRecipe(t, nodeImage, withController, true)
+}
+
+func targetKindFixtureImagesForRecipe(t *testing.T, nodeImage string, withController, recipeV2 bool) (context.Context, *rest.Config, string, string) {
+	t.Helper()
+	ctx, config, current, _ := targetKindFixtureImagesForScope(t, nodeImage, withController, recipeV2, false, false)
+	return ctx, config, current.API, current.Controller
+}
+
+// Binary lifecycle has multiple complete behavioral barriers, not a single
+// component proof. Its larger finite test-only deadline does not change any
+// production proof or command deadline. Only the declared owned node profiles
+// are accepted, and 1.37 additionally builds the ACTUAL pinned predecessor tree.
+func targetKindInstallerFixture(t *testing.T, nodeImage string, predecessor bool) (context.Context, *rest.Config, installpackage.Images, installpackage.Images) {
+	t.Helper()
+	if nodeImage != targetKind135 && nodeImage != targetKind137 {
+		t.Fatal("unsupported signed-binary fixture profile")
+	}
+	if predecessor && nodeImage != targetKind137 {
+		t.Fatal("unsupported predecessor fixture profile")
+	}
+	return targetKindFixtureImagesForScope(t, nodeImage, true, true, true, predecessor)
+}
+
+func targetKindFixtureImagesForScope(t *testing.T, nodeImage string, withController, recipeV2, binary, predecessor bool) (context.Context, *rest.Config, installpackage.Images, installpackage.Images) {
+	t.Helper()
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal("repository root unavailable")
@@ -50,12 +90,20 @@ func targetKindFixture(t *testing.T, nodeImage string) (context.Context, *rest.C
 	if os.Mkdir(dockerConfig, 0700) != nil {
 		t.Fatal("private Docker configuration unavailable")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	kubeconfig := filepath.Join(workspace, "kubeconfig")
+	budget := 20 * time.Minute
+	if recipeV2 {
+		budget = 40 * time.Minute
+	}
+	if binary {
+		budget = 330 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	t.Cleanup(cancel)
 	command := func(ctx context.Context, args ...string) *exec.Cmd {
 		c := exec.CommandContext(ctx, args[0], args[1:]...)
 		c.Dir = root
-		c.Env = append(os.Environ(), "DOCKER_CONFIG="+dockerConfig, "GOMAXPROCS=2", "GOMEMLIMIT=1GiB")
+		c.Env = append(os.Environ(), "DOCKER_CONFIG="+dockerConfig, "KUBECONFIG="+kubeconfig, "GOMAXPROCS=2", "GOMEMLIMIT=1GiB")
 		return c
 	}
 	public := func(input string, args ...string) string {
@@ -74,7 +122,6 @@ func targetKindFixture(t *testing.T, nodeImage string) (context.Context, *rest.C
 	}
 	name := "arcadectl-install-auth-" + hex.EncodeToString(random)
 	node, registry := name+"-control-plane", name+"-registry"
-	kubeconfig := filepath.Join(workspace, "kubeconfig")
 	public("", "docker", "info", "--format", "{{.ServerVersion}}")
 	for _, name := range []string{node, registry} {
 		output, err := command(ctx, "docker", "inspect", name).CombinedOutput()
@@ -82,7 +129,9 @@ func targetKindFixture(t *testing.T, nodeImage string) (context.Context, *rest.C
 			t.Fatal("owned container name preflight failed")
 		}
 	}
-	var nodeID, registryID, imageTag, imageID string
+	var nodeID, registryID string
+	type ownedImage struct{ tag, id string }
+	var images []ownedImage
 	var clusterArmed, registryArmed bool
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -102,7 +151,7 @@ func targetKindFixture(t *testing.T, nodeImage string) (context.Context, *rest.C
 			id, ok := inspect("{{.Id}}", node)
 			label, labelOK := inspect("{{index .Config.Labels \"io.x-k8s.kind.cluster\"}}", node)
 			if ok && labelOK && id != "" && label == name && (nodeID == "" || id == nodeID) {
-				if command(cleanupCtx, "go", "tool", "kind", "delete", "cluster", "--name", name).Run() != nil {
+				if command(cleanupCtx, "go", "tool", "kind", "delete", "cluster", "--name", name, "--kubeconfig", kubeconfig).Run() != nil {
 					t.Error("owned Kind cluster cleanup failed")
 				}
 			} else if id != "" {
@@ -120,18 +169,18 @@ func targetKindFixture(t *testing.T, nodeImage string) (context.Context, *rest.C
 				t.Error("refusing unowned registry cleanup")
 			}
 		}
-		if imageTag != "" {
-			id, ok := inspect("{{.Id}}", imageTag)
+		for _, image := range images {
+			id, ok := inspect("{{.Id}}", image.tag)
 			if ok && id != "" {
-				if imageID != "" && id == imageID {
-					if command(cleanupCtx, "docker", "image", "rm", imageTag).Run() != nil {
+				if image.id != "" && id == image.id {
+					if command(cleanupCtx, "docker", "image", "rm", image.tag).Run() != nil {
 						t.Error("owned image tag cleanup failed")
 					}
 				} else {
 					t.Error("refusing image cleanup without exact ownership")
 				}
 			}
-			if id, _ := inspect("{{.Id}}", imageTag); id != "" {
+			if id, _ := inspect("{{.Id}}", image.tag); id != "" {
 				t.Error("owned image tag remains")
 			}
 		}
@@ -165,43 +214,156 @@ func targetKindFixture(t *testing.T, nodeImage string) (context.Context, *rest.C
 		t.Fatal("registry endpoint unavailable")
 	}
 	host := "127.0.0.1:" + port
-	imageTag = host + "/arcadectl-api:" + name
-	if output, err := command(ctx, "docker", "image", "inspect", imageTag).CombinedOutput(); err == nil || !bytes.Contains(bytes.ToLower(output), []byte("no such image")) {
-		t.Fatal("owned image tag preflight failed")
-	}
 	sha := public("", "git", "rev-parse", "HEAD")
 	epoch := public("", "git", "show", "-s", "--format=%ct", "HEAD")
 	dirty := "false"
 	if public("", "git", "status", "--porcelain") != "" {
 		dirty = "true"
 	}
-	t.Log("building digest-pinned API image with bounded Go resources")
-	public("", "docker", "build", "--file", "Dockerfile.api", "--build-arg", "VCS_REF="+sha, "--build-arg", "SOURCE_DATE_EPOCH="+epoch,
-		"--build-arg", "SOURCE_DIRTY="+dirty, "--tag", imageTag, ".")
-	imageID = public("", "docker", "image", "inspect", "--format", "{{.Id}}", imageTag)
-	public("", "docker", "push", imageTag)
-	var digests []string
-	if json.Unmarshal([]byte(public("", "docker", "image", "inspect", "--format", "{{json .RepoDigests}}", imageTag)), &digests) != nil {
-		t.Fatal("image digest unavailable")
-	}
-	image := ""
-	for _, digest := range digests {
-		if strings.HasPrefix(digest, host+"/arcadectl-api@sha256:") {
-			image = digest
-		}
-	}
-	if image == "" {
-		t.Fatal("API image is not digest pinned")
-	}
 	hosts := "/etc/containerd/certs.d/" + host
 	public("", "docker", "exec", node, "mkdir", "-p", hosts)
 	public("[host.\"http://"+registry+":5000\"]\n  capabilities = [\"pull\", \"resolve\"]\n", "docker", "exec", "--interactive", node, "tee", hosts+"/hosts.toml")
-	public("", "docker", "exec", node, "ctr", "--namespace", "k8s.io", "images", "pull", "--hosts-dir", "/etc/containerd/certs.d", image)
+	build := func(repository, dockerfile, sourceRoot, sourceSHA, sourceEpoch, sourceDirty string) string {
+		t.Helper()
+		tag := host + "/" + repository + ":" + name
+		if output, err := command(ctx, "docker", "image", "inspect", tag).CombinedOutput(); err == nil || !bytes.Contains(bytes.ToLower(output), []byte("no such image")) {
+			t.Fatal("owned image tag preflight failed")
+		}
+		images = append(images, ownedImage{tag: tag}) // cleanup armed before build
+		t.Log("building digest-pinned " + repository + " image with serialized, concurrency-limited Go build")
+		args := []string{"docker", "build", "--file", filepath.Join(sourceRoot, dockerfile), "--build-arg", "VCS_REF=" + sourceSHA, "--build-arg", "SOURCE_DATE_EPOCH=" + sourceEpoch, "--build-arg", "SOURCE_DIRTY=" + sourceDirty}
+		if dockerfile == "Dockerfile" {
+			args = append(args, "--build-arg", "LIFECYCLE_TEST=false")
+		}
+		args = append(args, "--tag", tag, sourceRoot)
+		public("", args...)
+		images[len(images)-1].id = public("", "docker", "image", "inspect", "--format", "{{.Id}}", tag)
+		if public("", "docker", "image", "inspect", "--format", "{{index .Config.Labels \"org.opencontainers.image.revision\"}}", tag) != sourceSHA || public("", "docker", "image", "inspect", "--format", "{{index .Config.Labels \"arcade.gobha.me/source-dirty\"}}", tag) != sourceDirty || public("", "docker", "image", "inspect", "--format", "{{.Config.User}}", tag) != "65532:65532" {
+			t.Fatal("owned image source/user metadata refused")
+		}
+		public("", "docker", "push", tag)
+		var digests []string
+		if json.Unmarshal([]byte(public("", "docker", "image", "inspect", "--format", "{{json .RepoDigests}}", tag)), &digests) != nil {
+			t.Fatal("image digest unavailable")
+		}
+		image := ""
+		for _, digest := range digests {
+			if strings.HasPrefix(digest, host+"/"+repository+"@sha256:") {
+				if image != "" {
+					t.Fatal("ambiguous owned image digest")
+				}
+				image = digest
+			}
+		}
+		if image == "" {
+			t.Fatal("owned image is not digest pinned")
+		}
+		public("", "docker", "exec", node, "ctr", "--namespace", "k8s.io", "images", "pull", "--hosts-dir", "/etc/containerd/certs.d", image)
+		return image
+	}
+	apiImage := build("arcadectl-api", "Dockerfile.api", root, sha, epoch, dirty)
+	controllerImage := ""
+	if withController {
+		controllerImage = build("arcadectl-controller", "Dockerfile", root, sha, epoch, dirty)
+	}
+	var previous installpackage.Images
+	if binary && predecessor && nodeImage == targetKind137 {
+		// The archive is generated from tracked original commit bytes, never
+		// from a copied current runtime with misleading predecessor metadata.
+		// No Git ref/worktree is mutated and no external repository is fetched.
+		sourceRoot := filepath.Join(workspace, "predecessor-source")
+		archive := filepath.Join(workspace, "predecessor-source.tar")
+		if os.Mkdir(sourceRoot, 0700) != nil {
+			t.Fatal("private predecessor workspace unavailable")
+		}
+		public("", "git", "archive", "--format=tar", "--output="+archive, installrender.LegacySourceSHA)
+		public("", "tar", "--extract", "--file", archive, "--directory", sourceRoot, "--no-same-owner")
+		oldEpoch := public("", "git", "show", "-s", "--format=%ct", installrender.LegacySourceSHA)
+		previous.API = build("arcadectl-api-predecessor", "Dockerfile.api", sourceRoot, installrender.LegacySourceSHA, oldEpoch, "false")
+		previous.Controller = build("arcadectl-controller-predecessor", "Dockerfile", sourceRoot, installrender.LegacySourceSHA, oldEpoch, "false")
+	}
 	configuration, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
 		t.Fatal("isolated kubeconfig unavailable")
 	}
-	return ctx, configuration, image
+	return ctx, configuration, installpackage.Images{API: apiImage, Controller: controllerImage}, previous
+}
+
+// Shared signed-template setup; the boolean is a test-only closed choice, not
+// a production permission provider. Apply all selected controller effects
+// before a fixture WAL can fence ordinary engine work.
+func targetKindInstallation(t *testing.T, ctx context.Context, config *rest.Config, plan *installrender.Plan, withControllers bool) (*HTTPAccess, *Engine, *installstate.Store, *installstate.Snapshot, string) {
+	t.Helper()
+	access, err := NewDirectHTTPAccess(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := t.TempDir()
+	if os.Chmod(base, 0700) != nil {
+		t.Fatal("private evidence directory unavailable")
+	}
+	files, err := privatefs.Open(base, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = files.Close() })
+	receipt, err := installstate.PrepareBootstrap(files, "bootstrap.json", plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := receipt.EnsureNamespace(ctx, access.Namespaces())
+	if err != nil {
+		t.Fatal("original namespace bootstrap: ", err)
+	}
+	store, err := installstate.New(access.Namespaces(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err = store.Load(ctx, s.Anchor())
+	if err != nil {
+		t.Fatal("original journal load: ", err)
+	}
+	d := s.Document()
+	d.Stage, d.Revision = installstate.Applying, d.Revision+1
+	s, err = store.Commit(ctx, s, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine, err := NewWithAccess(access, store, files, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	credentials, err := engine.PrepareCredentials(ctx, s, fixtureTLS(t, plan.Namespace(), now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := NewSecretWorkflow(engine, access.PrivateSecrets())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{adminauth.CredentialSecretName, "arcadectl-api-tls"} {
+		s, err = secrets.Create(ctx, s, credentials, name, now)
+		if err != nil {
+			t.Fatal("native private effect: ", err)
+		}
+	}
+	for _, resource := range plan.Resources() {
+		if resource.Object.GetKind() == "Namespace" || !withControllers && resource.Object.GetKind() == "Deployment" && resource.Phase == installrender.Controllers {
+			continue
+		}
+		s, err = engine.Apply(ctx, s, resourceKey(resource), plan.Digest(), false)
+		if err != nil {
+			t.Fatalf("native signed effect %s: %v", resourceKey(resource).String(), err)
+		}
+	}
+	d = s.Document()
+	d.Stage, d.Revision = installstate.Verifying, d.Revision+1
+	s, err = store.Commit(ctx, s, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return access, engine, store, s, base
 }
 
 // Actual signed-template effects, original UID journal/Secrets, kubelet-built
@@ -215,78 +377,7 @@ func TestKindTargetAuthenticatedNativeKubelet(t *testing.T) {
 			plan := fixturePlanImages(t, "isolated-install", profile.id, installpackage.Images{
 				Controller: "registry.example/controller@sha256:" + strings.Repeat("a", 64), API: apiImage,
 			})
-			access, err := NewDirectHTTPAccess(config)
-			if err != nil {
-				t.Fatal(err)
-			}
-			base := t.TempDir()
-			if os.Chmod(base, 0700) != nil {
-				t.Fatal("private evidence directory unavailable")
-			}
-			files, err := privatefs.Open(base, false)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer files.Close()
-			receipt, err := installstate.PrepareBootstrap(files, "bootstrap.json", plan)
-			if err != nil {
-				t.Fatal(err)
-			}
-			s, err := receipt.EnsureNamespace(ctx, access.Namespaces())
-			if err != nil {
-				t.Fatal("original namespace bootstrap: ", err)
-			}
-			store, err := installstate.New(access.Namespaces(), plan)
-			if err != nil {
-				t.Fatal(err)
-			}
-			s, err = store.Load(ctx, s.Anchor())
-			if err != nil {
-				t.Fatal("original journal load: ", err)
-			}
-			d := s.Document()
-			d.Stage, d.Revision = installstate.Applying, d.Revision+1
-			s, err = store.Commit(ctx, s, d)
-			if err != nil {
-				t.Fatal(err)
-			}
-			engine, err := NewWithAccess(access, store, files, plan)
-			if err != nil {
-				t.Fatal(err)
-			}
-			now := time.Now().UTC()
-			tls := fixtureTLS(t, plan.Namespace(), now)
-			credentials, err := engine.PrepareCredentials(ctx, s, tls)
-			if err != nil {
-				t.Fatal(err)
-			}
-			secrets, err := NewSecretWorkflow(engine, access.PrivateSecrets())
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, name := range []string{adminauth.CredentialSecretName, "arcadectl-api-tls"} {
-				s, err = secrets.Create(ctx, s, credentials, name, now)
-				if err != nil {
-					t.Fatal("native private effect: ", err)
-				}
-			}
-			for _, resource := range plan.Resources() {
-				o := resource.Object
-				if o.GetKind() == "Namespace" || o.GetKind() == "Deployment" && resource.Phase == installrender.Controllers {
-					continue
-				}
-				key := installstate.Key{APIVersion: o.GetAPIVersion(), Kind: o.GetKind(), Namespace: o.GetNamespace(), Name: o.GetName()}
-				s, err = engine.Apply(ctx, s, key, plan.Digest(), false)
-				if err != nil {
-					t.Fatalf("native signed effect %s: %v", key.String(), err)
-				}
-			}
-			d = s.Document()
-			d.Stage, d.Revision = installstate.Verifying, d.Revision+1
-			s, err = store.Commit(ctx, s, d)
-			if err != nil {
-				t.Fatal(err)
-			}
+			access, engine, store, s, base := targetKindInstallation(t, ctx, config, plan, false)
 			p, err := NewClusterPrerequisites(engine, access)
 			if err != nil {
 				t.Fatal(err)

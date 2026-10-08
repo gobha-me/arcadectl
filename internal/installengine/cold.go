@@ -12,6 +12,7 @@ import (
 	"sort"
 	"time"
 
+	arcade "github.com/gobha-me/arcadectl/api/v1alpha1"
 	"github.com/gobha-me/arcadectl/internal/catalog"
 	"github.com/gobha-me/arcadectl/internal/installobserve"
 	"github.com/gobha-me/arcadectl/internal/installsafety"
@@ -44,48 +45,77 @@ func NewClusterCold(p *ClusterPrerequisites) (*ClusterCold, error) {
 // global attachment changes are not world identity, but both complete snapshots
 // must independently satisfy every obligation. This is not a cluster lock.
 func (c *ClusterCold) Verify(ctx context.Context, request LifecycleCheck) error {
+	_, err := c.captureOriginalWorlds(ctx, request)
+	return err
+}
+
+// Returns the exact owned tuple checked twice inside ordinary cold safety's
+// policy/journal barriers. Call before creating fixture intent; never establish
+// a resume baseline by collecting only the worlds that happen to survive.
+func (c *ClusterCold) captureOriginalWorlds(ctx context.Context, request LifecycleCheck) (*coldWorldTuple, error) {
 	if c == nil || c.prerequisites == nil || c.games == nil || ctx == nil || request.Checkpoint != ColdSafety || request.Options.Now.IsZero() {
-		return ErrInvalid
+		return nil, ErrInvalid
 	}
 	p := c.prerequisites
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	admission, err := NewClusterAdmission(p.engine, p.access)
 	if err != nil {
-		return ErrInvalid
+		return nil, ErrInvalid
 	}
 	before, err := admission.configured(ctx, request)
 	if err != nil {
-		return ErrColdSafety
+		return nil, ErrColdSafety
 	}
-	first, err := c.collect(ctx, request)
+	tuple, first, err := c.collectWorlds(ctx, request)
 	if err != nil {
-		return ErrColdSafety
+		return nil, ErrColdSafety
 	}
 	second, err := c.collect(ctx, request)
 	if err != nil || first != second {
-		return ErrColdSafety
+		return nil, ErrColdSafety
 	}
 	after, err := admission.configured(ctx, request)
 	if err != nil || !sameAdmissionConfiguration(before, after) || p.original(ctx, request.Snapshot) != nil {
-		return ErrColdSafety
+		return nil, ErrColdSafety
 	}
-	return nil
+	return tuple, nil
 }
 
 func (c *ClusterCold) collect(ctx context.Context, request LifecycleCheck) ([32]byte, error) {
+	_, hash, err := c.collectWorlds(ctx, request)
+	return hash, err
+}
+
+func (c *ClusterCold) collectWorlds(ctx context.Context, request LifecycleCheck) (*coldWorldTuple, [32]byte, error) {
+	tuple, _, _, hash, err := c.collectEvidence(ctx, request)
+	return tuple, hash, err
+}
+
+// The phase provider must build its initial runtime baseline from THIS same
+// complete observation that passed ordinary safety, never a later independent
+// read inferred safe merely because an earlier world tuple stayed unchanged.
+func (c *ClusterCold) collectEvidence(ctx context.Context, request LifecycleCheck) (*coldWorldTuple, *installobserve.Observation, []*corev1.PersistentVolume, [32]byte, error) {
 	var zero [32]byte
 	observation, err := c.prerequisites.observe(ctx, request)
 	if err != nil {
-		return zero, ErrColdSafety
+		return nil, nil, nil, zero, ErrColdSafety
 	}
 	s := observation.Snapshot()
 	r := observation.Runtime()
 	volumes, err := c.prerequisites.coldVolumes(ctx, s, r)
 	if err != nil || installsafety.ValidateCold(request.Target, s, r, request.Snapshot.Document().Resources, volumes, c.games) != nil {
-		return zero, ErrColdSafety
+		return nil, nil, nil, zero, ErrColdSafety
 	}
-	return coldWorldWitness(observation, volumes)
+	tuple, err := captureColdWorldTuple(observation, volumes)
+	if err != nil {
+		return nil, nil, nil, zero, ErrColdSafety
+	}
+	hash, err := tuple.witness()
+	if err != nil {
+		return nil, nil, nil, zero, ErrColdSafety
+	}
+	return tuple, observation, volumes, hash, nil
 }
 
 // Each PV read is an exact-name GET derived from the complete live namespace
@@ -155,11 +185,27 @@ func (p *ClusterPrerequisites) coldVolumes(ctx context.Context, s *installsafety
 }
 
 func coldWorldWitness(o *installobserve.Observation, volumes []*corev1.PersistentVolume) ([32]byte, error) {
-	var zero [32]byte
+	tuple, err := captureColdWorldTuple(o, volumes)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	return tuple.witness()
+}
+
+type coldWorldTuple struct {
+	Servers []arcade.GameServer
+	Claims  []corev1.PersistentVolumeClaim
+	Volumes []*corev1.PersistentVolume
+}
+
+func captureColdWorldTuple(o *installobserve.Observation, volumes []*corev1.PersistentVolume) (*coldWorldTuple, error) {
 	if o == nil || o.Snapshot() == nil {
-		return zero, ErrColdSafety
+		return nil, ErrColdSafety
 	}
 	s := o.Snapshot()
+	if s.GameServers == nil || s.Claims == nil {
+		return nil, ErrColdSafety
+	}
 	sort.Slice(s.GameServers.Items, func(i, j int) bool { return s.GameServers.Items[i].Name < s.GameServers.Items[j].Name })
 	sort.Slice(s.Claims.Items, func(i, j int) bool { return s.Claims.Items[i].Name < s.Claims.Items[j].Name })
 	protected := map[string]bool{}
@@ -170,15 +216,23 @@ func coldWorldWitness(o *installobserve.Observation, volumes []*corev1.Persisten
 	}
 	var worlds []*corev1.PersistentVolume
 	for _, volume := range volumes {
+		if volume == nil {
+			return nil, ErrColdSafety
+		}
 		if protected[volume.Name] {
-			worlds = append(worlds, volume)
+			worlds = append(worlds, volume.DeepCopy())
 		}
 	}
-	body, err := json.Marshal(struct {
-		Servers any
-		Claims  any
-		Volumes any
-	}{s.GameServers.Items, s.Claims.Items, worlds})
+	sort.Slice(worlds, func(i, j int) bool { return worlds[i].Name < worlds[j].Name })
+	return &coldWorldTuple{s.GameServers.Items, s.Claims.Items, worlds}, nil
+}
+
+func (tuple *coldWorldTuple) witness() ([32]byte, error) {
+	var zero [32]byte
+	if tuple == nil {
+		return zero, ErrColdSafety
+	}
+	body, err := json.Marshal(tuple)
 	if err != nil || len(body) > 32*1024*1024 {
 		return zero, ErrColdSafety
 	}

@@ -174,8 +174,8 @@ func (a *ClusterAdmission) configured(ctx context.Context, request LifecycleChec
 	}
 	d := request.Snapshot.Document()
 	witness := &admissionConfiguration{anchor: request.Snapshot.Anchor(), objects: map[installstate.Key]admissionIdentity{}, policies: map[string]*admissionv1.ValidatingAdmissionPolicy{}, bindings: map[string]*admissionv1.ValidatingAdmissionPolicyBinding{}}
-	for _, resource := range request.Target.Resources() {
-		key := resourceKey(resource)
+	for _, resource := range request.Target.ResourceMetadata() {
+		key := installstate.Key{APIVersion: resource.APIVersion, Kind: resource.Kind, Namespace: resource.Namespace, Name: resource.Name}
 		if key.Kind != "ValidatingAdmissionPolicy" && key.Kind != "ValidatingAdmissionPolicyBinding" {
 			continue
 		}

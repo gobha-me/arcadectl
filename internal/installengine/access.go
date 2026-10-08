@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/flowcontrol"
 	strictjson "sigs.k8s.io/json"
 )
 
@@ -37,6 +38,12 @@ type Access interface {
 	Delete(context.Context, installstate.Key, metav1.DeleteOptions) error
 }
 
+// One aggregate SDK-only budget: full installation proofs perform complete
+// typed and metadata inventories repeatedly. Keep a small burst and preserve
+// every explicit caller limit; do not mint independent observer buckets.
+const installerReadQPS float32 = 100
+const installerReadBurst = 20
+
 // HTTPAccess uses client-go's TLS/authentication configuration, but deliberately
 // not rest.Request/dynamic/typed mutation methods (which can retry internally).
 // Responses never pass through SDK body logging or permissive error decoders.
@@ -47,6 +54,10 @@ type HTTPAccess struct {
 	// Private frozen read-client configuration shares this access's exact
 	// cluster/static identity, never the caller's rotating files or plugins.
 	frozen *rest.Config
+	// One aggregate budget for SDK observers only when the caller supplies
+	// NO rate settings. Effect HTTP clients never use this limiter, and all
+	// explicit caller settings remain unchanged in the frozen configuration.
+	readLimiter flowcontrol.RateLimiter
 	// direct records explicitly selected no-environment-proxy routing. The
 	// caller's configuration has no callbacks; only our constructor adds one.
 	direct bool
@@ -95,6 +106,18 @@ func (t attemptTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 		// public bytes. No native status, body, header or trailer can become a
 		// debug/error leak or a wrapper-selected acknowledgement identity.
 		attempt.fixture.capture(response)
+		copyResponse.Body = io.NopCloser(strings.NewReader(`{}`))
+		copyResponse.ContentLength = 2
+		return &copyResponse, nil
+	}
+	if attempt.probe != nil && response.StatusCode >= 200 && response.StatusCode < 300 {
+		// Success is native evidence too. Capture beneath wrappers and replace
+		// the body before debug/auth code can observe it; no wrapper-selected
+		// positive object can certify an admission endpoint.
+		attempt.probe.captureSuccess(response)
+		if response.Body != nil {
+			_ = response.Body.Close()
+		}
 		copyResponse.Body = io.NopCloser(strings.NewReader(`{}`))
 		copyResponse.ContentLength = 2
 		return &copyResponse, nil
@@ -170,7 +193,11 @@ func newHTTPAccess(config *rest.Config, direct bool) (*HTTPAccess, error) {
 		return nil, ErrInvalid
 	}
 	h.CheckRedirect = func(*http.Request, []*http.Request) error { return ErrRead }
-	return &HTTPAccess{client: h, base: u, native: native, frozen: frozen, direct: direct}, nil
+	a := &HTTPAccess{client: h, base: u, native: native, frozen: frozen, direct: direct}
+	if frozen.RateLimiter == nil && frozen.QPS == 0 && frozen.Burst == 0 {
+		a.readLimiter = flowcontrol.NewTokenBucketRateLimiter(installerReadQPS, installerReadBurst)
+	}
+	return a, nil
 }
 
 // Observer clients must inherit explicit direct routing too. Keep the source
@@ -181,6 +208,9 @@ func (a *HTTPAccess) readConfig() *rest.Config {
 		return nil
 	}
 	c := rest.CopyConfig(a.frozen)
+	if a.readLimiter != nil {
+		c.QPS, c.Burst, c.RateLimiter = installerReadQPS, installerReadBurst, a.readLimiter
+	}
 	if a.direct {
 		c.Proxy = func(*http.Request) (*url.URL, error) { return nil, nil }
 	}

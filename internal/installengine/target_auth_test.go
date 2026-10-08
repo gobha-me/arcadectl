@@ -27,6 +27,12 @@ import (
 // This exercises the closed provider, not actual kubelet or binary lifecycle.
 func closedTargetFixture(t *testing.T, x *servingFixture, mode string, onUpgrade func(), onRead func(*corev1.Namespace)) (*ClusterTargetAuthenticated, LifecycleCheck, *atomic.Int32) {
 	t.Helper()
+	return closedTargetFixtureObserved(t, x, mode, onUpgrade, onRead, nil)
+}
+
+// Test-only exact read counting; never a production provider or wire callback.
+func closedTargetFixtureObserved(t *testing.T, x *servingFixture, mode string, onUpgrade func(), onRead func(*corev1.Namespace), onPath func(string)) (*ClusterTargetAuthenticated, LifecycleCheck, *atomic.Int32) {
+	t.Helper()
 	ns, err := x.f.access.client.CoreV1().Namespaces().Get(context.Background(), x.f.plan.Namespace(), metav1.GetOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -35,6 +41,9 @@ func closedTargetFixture(t *testing.T, x *servingFixture, mode string, onUpgrade
 	read := func(w http.ResponseWriter, r *http.Request) bool {
 		mu.Lock()
 		defer mu.Unlock()
+		if onPath != nil {
+			onPath(r.URL.Path)
+		}
 		if onRead != nil {
 			onRead(ns)
 		}

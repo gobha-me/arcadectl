@@ -139,7 +139,7 @@ func fixtureResultRefusals(t *testing.T, ledger *fixtureLedger, slot int, phase 
 		object *unstructured.Unstructured
 		now    time.Time
 	}{
-		{-1, phase, o, observed}, {len(fixtureCatalog), phase, o, observed}, {slot, 0, o, observed}, {slot, 99, o, observed}, {slot, phase, nil, observed}, {slot, phase, o, time.Time{}},
+		{-1, phase, o, observed}, {len(fixtureCatalogFor(ledger.document)), phase, o, observed}, {slot, 0, o, observed}, {slot, 99, o, observed}, {slot, phase, nil, observed}, {slot, phase, o, time.Time{}},
 		{slot, phase, o, time.Date(0, 1, 1, 0, 0, 0, 0, time.UTC)}, {slot, phase, o, time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)},
 	} {
 		if ledger.validateResult(invalid.slot, invalid.phase, invalid.object, invalid.now) != ErrFixtures {

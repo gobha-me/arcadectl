@@ -17,7 +17,11 @@ func workerName(name string) bool {
 }
 
 func workerSignals(metadata metav1.Object) bool {
-	if workerName(metadata.GetName()) || workerName(metadata.GetGenerateName()) || operationOwner(metadata) {
+	return workerName(metadata.GetName()) || workerName(metadata.GetGenerateName()) || workerMetadataSignals(metadata)
+}
+
+func workerMetadataSignals(metadata metav1.Object) bool {
+	if operationOwner(metadata) {
 		return true
 	}
 	labels := metadata.GetLabels()
@@ -109,7 +113,17 @@ func validateWorkers(namespace string, s *Snapshot, removable map[types.UID]bool
 		if !namespaced(o, namespace, seen) {
 			return ErrInvalid
 		}
-		if strings.HasPrefix(o.Name, "data-operation-") || workerSignals(o) || o.Labels[platformkube.LabelDataIdentity] != "" || o.Labels["arcade.gobha.me/operation-uid"] != "" || o.Spec.HolderIdentity != nil && operationUIDs[types.UID(*o.Spec.HolderIdentity)] {
+		// Operation evidence always wins, including at a reserved election
+		// address. Only Lease bookkeeping can distinguish the name collision;
+		// workerSignals remains unchanged for every Job and Pod.
+		if strings.HasPrefix(o.Name, "data-operation-") || workerMetadataSignals(o) || workerName(o.GenerateName) || o.Labels[platformkube.LabelDataIdentity] != "" || o.Labels["arcade.gobha.me/operation-uid"] != "" || o.Spec.HolderIdentity != nil && operationUIDs[types.UID(*o.Spec.HolderIdentity)] {
+			return ErrWorker
+		}
+		if controllerElectionAddress(o.Name) {
+			if !controllerElectionBookkeeping(namespace, o) {
+				return ErrWorker
+			}
+		} else if workerName(o.Name) {
 			return ErrWorker
 		}
 	}

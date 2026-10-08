@@ -15,7 +15,7 @@ import (
 // frozen original install-admin must independently hold this exact named right;
 // absent discovery/SSAR refuses, never grants access or changes identity.
 func (w *fixtureWire) prepareDestroySeed(ctx context.Context) error {
-	if w.current(ctx) != nil || !w.ledger.destroySeedReady() {
+	if w == nil || w.ledger == nil || !w.ledger.destroySeedReady() || w.current(ctx) != nil {
 		return ErrFixtures
 	}
 	key := w.ledger.document.Entries[fixtureCancelledDestroy].Key
@@ -35,7 +35,7 @@ func fixtureDestroySeedPermission(namespace, name string) proofPermission {
 }
 
 func (f *fixtureLedger) destroySeedReady() bool {
-	if f == nil || !f.seedAck || !f.seedEffect || f.ackSlot != -1 || f.effectSlot != -1 || f.document.DestroySeed == nil || f.document.DestroySeed.State != fixtureDestroySeedAttempted {
+	if f.markerUnresolved() || !f.seedAck || !f.seedEffect || f.ackSlot != -1 || f.effectSlot != -1 || f.document.DestroySeed == nil || f.document.DestroySeed.Mode != fixtureDestroySeedCold || f.document.DestroySeed.State != fixtureDestroySeedAttempted {
 		return false
 	}
 	_, err := f.destroySeedStatus() // canonical protected document + original UUID
@@ -83,6 +83,16 @@ func (w *fixtureWire) seedDestroyStatus(ctx context.Context) (*unstructured.Unst
 	f := w.ledger
 	f.wireMu.Lock()
 	defer f.wireMu.Unlock()
+	return w.seedDestroyStatusLocked(ctx)
+}
+
+// Caller holds wireMu across the complete setup phase interval. The capability
+// cleanup stays inside this body, before the driver's mandatory post-observation.
+func (w *fixtureWire) seedDestroyStatusLocked(ctx context.Context) (*unstructured.Unstructured, error) {
+	if w == nil || w.ledger == nil {
+		return nil, ErrFixtures
+	}
+	f := w.ledger
 	if !f.destroySeedReady() {
 		return nil, ErrFixtures
 	}

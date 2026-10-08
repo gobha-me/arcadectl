@@ -39,6 +39,7 @@ type fixtureWireTest struct {
 	afterSeed               func()
 	denySeed                bool
 	missingSeedDiscovery    bool
+	nativeWarmSeedReply     bool // native-derived FAKE reply, never certification
 }
 
 func newFixtureWireTest(t *testing.T) *fixtureWireTest {
@@ -62,7 +63,15 @@ func newFixtureWireTestAtActor(t *testing.T, a *actorFixture) *fixtureWireTest {
 		}
 	})
 	f := &fixtureWireTest{actor: a, objects: map[int]*unstructured.Unstructured{}}
+	initialLedger := ledger
 	a.fixtureHandler = func(w http.ResponseWriter, r *http.Request) bool {
+		// Construction starts with the original pinned ledger. An explicit
+		// reload/new run installs a new closed wire; validate its fixed original
+		// addresses, not a stale first-run nonce captured by this test handler.
+		ledger := initialLedger
+		if f.wire != nil {
+			ledger = f.wire.ledger
+		}
 		if strings.Contains(r.URL.Path, "PRIVATE-REDIRECT-CANARY") {
 			t.Error("redirect reached another address")
 			w.WriteHeader(500)
@@ -102,6 +111,17 @@ func newFixtureWireTestAtActor(t *testing.T, a *actorFixture) *fixtureWireTest {
 				return true
 			}
 			valid := false
+			isImpersonation := false
+			// Production recovery reconstructs the same THREE original actors
+			// before constructing the loaded-ledger wire. Admit only their exact
+			// already-held admin impersonation SSARs, never a wildcard/account
+			// creation or general review fallback.
+			for _, actor := range []admissionActor{ordinaryControllerActor, destroyControllerActor, destroyAdministratorActor} {
+				permission := authv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &authv1.ResourceAttributes{Version: "v1", Resource: "serviceaccounts", Namespace: a.request.Snapshot.Anchor().Namespace, Name: actor.account(), Verb: "impersonate"}}
+				if reflect.DeepEqual(permission, review.Spec) && r.Header.Get("Impersonate-User") == "" {
+					valid, isImpersonation = true, true
+				}
+			}
 			for slot, entry := range ledger.document.Entries {
 				for _, verb := range []string{"get", "create", "delete"} {
 					permission, _ := fixturePermission(entry.Key, verb)
@@ -121,6 +141,9 @@ func newFixtureWireTestAtActor(t *testing.T, a *actorFixture) *fixtureWireTest {
 				t.Error("fixture review escaped fixed identity/route")
 			}
 			review.Status.Allowed = valid && !a.denyAdmin && !a.denyActor && !(isSeed && f.denySeed)
+			if isImpersonation {
+				a.adminReviews++
+			}
 			_ = json.NewEncoder(w).Encode(review)
 			if a.afterReview != nil {
 				a.afterReview()
@@ -241,6 +264,18 @@ func newFixtureWireTestAtActor(t *testing.T, a *actorFixture) *fixtureWireTest {
 				}
 			case http.MethodDelete:
 				f.deletes++
+				// Verify the actual durable intent independently of whichever
+				// process/wire instance this fake server was constructed with.
+				// Production recovery creates a new locked ledger, not a replay
+				// through the old test client's in-memory document.
+				durable, _, readErr := ledger.engine.files.Read(fixtureLedgerName(a.request.Snapshot), fixtureLedgerMaxBytes)
+				document, decodeErr := ledger.engine.decodeFixtureLedger(durable)
+				if readErr != nil || decodeErr != nil || slot >= len(document.Entries) {
+					t.Error("DELETE preceded readable durable original intent")
+					w.WriteHeader(500)
+					return true
+				}
+				entry = document.Entries[slot]
 				var options metav1.DeleteOptions
 				if json.NewDecoder(r.Body).Decode(&options) != nil || options.Preconditions == nil || options.Preconditions.UID == nil || options.Preconditions.ResourceVersion == nil || *options.Preconditions.UID != entry.OriginalUID || *options.Preconditions.ResourceVersion != entry.DeleteResourceVersion || len(options.DryRun) != 0 || entry.State != fixtureDeleteAttempted || ledger.effectSlot != -1 {
 					t.Error("DELETE lost durable original UID/RV intent")

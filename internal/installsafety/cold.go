@@ -63,39 +63,13 @@ func ValidateCold(plan *installrender.Plan, s *Snapshot, r *RuntimeSnapshot, inv
 	if err := currentWorlds(s, byName, games); err != nil {
 		return err
 	}
-	seen := map[string]bool{}
-	seenUIDs := map[types.UID]bool{}
-	protected := map[csiIdentity]bool{}
-	wanted := map[string]bool{}
-	for name := range boundVolumes {
-		wanted[name] = true
-	}
-	for i := range r.Attachments.Items {
-		attachment := &r.Attachments.Items[i]
-		if !validCSIDriver(attachment.Spec.Attacher) || len(validation.IsDNS1123Subdomain(attachment.Spec.NodeName)) != 0 {
-			return ErrCold
-		}
-		source := attachment.Spec.Source
-		if (source.PersistentVolumeName == nil) == (source.InlineVolumeSpec == nil) || source.PersistentVolumeName != nil && *source.PersistentVolumeName == "" {
-			return ErrCold
-		}
-		if len(boundVolumes) != 0 && source.PersistentVolumeName != nil {
-			wanted[*source.PersistentVolumeName] = true
-		}
-	}
-	sources := map[string]csiIdentity{}
-	if len(volumes) != len(wanted) {
-		return ErrCold
+	// Shared physical-source proof works on the COMPLETE claim/attachment/PV
+	// evidence. It does not waive any ordinary world, binding, owner or worker
+	// obligation; all those checks remain here unchanged.
+	if err := ValidateCSIDetachment(s.Claims, r.Attachments, volumes); err != nil {
+		return err
 	}
 	for _, volume := range volumes {
-		if volume == nil || !wanted[volume.Name] || volume.Namespace != "" || !boundedIdentity(string(volume.UID)) || !boundedIdentity(volume.ResourceVersion) || volume.DeletionTimestamp != nil || seen[volume.Name] || seenUIDs[volume.UID] {
-			return ErrCold
-		}
-		identity, ok := csiBacking(volume.Spec.PersistentVolumeSource)
-		if !ok {
-			return ErrCold
-		}
-		sources[volume.Name] = identity
 		claim := boundVolumes[volume.Name]
 		ref := volume.Spec.ClaimRef
 		if claim != nil {
@@ -117,29 +91,6 @@ func ValidateCold(plan *installrender.Plan, s *Snapshot, r *RuntimeSnapshot, inv
 				if !covered {
 					return ErrCold
 				}
-			}
-			protected[identity] = true
-		}
-		seen[volume.Name] = true
-		seenUIDs[volume.UID] = true
-	}
-	if len(seen) != len(wanted) {
-		return ErrCold
-	}
-	for i := range r.Attachments.Items {
-		attachment := &r.Attachments.Items[i]
-		source := attachment.Spec.Source
-		// Attached=false is not detached: the object is still attach intent,
-		// including pending, deleting and error states. Wait for absence.
-		if source.PersistentVolumeName != nil {
-			if len(protected) != 0 && protected[sources[*source.PersistentVolumeName]] {
-				return ErrCold
-			}
-		} else {
-			inline := source.InlineVolumeSpec
-			identity, ok := csiBacking(inline.PersistentVolumeSource)
-			if !ok || !validAccessModes(inline.AccessModes) || inline.ClaimRef != nil || len(inline.Capacity) != 0 || inline.NodeAffinity != nil || inline.StorageClassName != "" || volumeMode(inline.VolumeMode) != corev1.PersistentVolumeFilesystem || inline.PersistentVolumeReclaimPolicy != "" && inline.PersistentVolumeReclaimPolicy != corev1.PersistentVolumeReclaimRetain || protected[identity] {
-				return ErrCold
 			}
 		}
 	}

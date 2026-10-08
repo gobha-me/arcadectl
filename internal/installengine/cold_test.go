@@ -4,6 +4,7 @@
 package installengine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,11 +19,13 @@ import (
 	"github.com/gobha-me/arcadectl/internal/installsafety"
 	"github.com/gobha-me/arcadectl/internal/installstate"
 	platformkube "github.com/gobha-me/arcadectl/internal/platform/kube"
+	"github.com/gobha-me/arcadectl/internal/privatefs"
 	authv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 )
@@ -160,12 +163,18 @@ func TestColdBoundProviderBracketsWorldPolicyAndJournalIdentity(t *testing.T) {
 	server.Status.ObservedData = &arcade.RetainedDataReference{Identity: desired.DataIdentity, Claims: []arcade.RetainedDataClaimReference{{Path: claim.Labels[platformkube.LabelDataPath], ClaimRef: arcade.ExactLocalReference{Name: claim.Name, UID: string(claim.UID)}}}}
 	pv := coldPVFixture()
 	pv.Spec.ClaimRef = &corev1.ObjectReference{Namespace: claim.Namespace, Name: claim.Name, UID: claim.UID}
-	for _, scenario := range []string{"healthy", "claim-rv", "pv-rv", "pv-uid", "status-switch", "policy-rv", "namespace-rv", "namespace-uid", "journal-rv", "mount-second", "attachment-second", "missing-global-list", "leader-renewal", "unrelated-attachment-renewal"} {
+	for _, scenario := range []string{"healthy", "claim-rv", "pv-rv", "pv-uid", "status-switch", "policy-rv", "namespace-rv", "namespace-uid", "journal-rv", "mount-second", "attachment-second", "missing-global-list", "leader-renewal", "unrelated-attachment-renewal", "phase-healthy", "phase-delayed-policy", "phase-worker-second", "phase-domain-second", "phase-data-lease-second", "phase-unrelated-row-second"} {
 		t.Run(scenario, func(t *testing.T) {
 			observations, pvReads := 0, 0
+			policyReads := 0
 			currentNS := ns.DeepCopy()
 			policyChanged := false
 			access := proofServer(t, func(w http.ResponseWriter, r *http.Request) {
+				if scenario == "phase-delayed-policy" {
+					if _, _, err := v.f.engine.files.Read(fixtureLedgerName(s), fixtureLedgerMaxBytes); !errors.Is(err, privatefs.ErrNotFound) {
+						t.Error("initial-phase convergence created a fixture WAL before complete proof")
+					}
+				}
 				w.Header().Set("Content-Type", "application/json")
 				if r.URL.Path == "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews" {
 					var review authv1.SelfSubjectAccessReview
@@ -286,6 +295,21 @@ func TestColdBoundProviderBracketsWorldPolicyAndJournalIdentity(t *testing.T) {
 						if scenario == "leader-renewal" {
 							items = append(items, map[string]any{"metadata": map[string]any{"name": "arcadectl-controller-leader-election", "namespace": ns.Name, "uid": "leader", "resourceVersion": string(rune('1' + observations))}, "spec": map[string]any{"holderIdentity": "controller"}})
 						}
+						if observations >= 2 && scenario == "phase-data-lease-second" {
+							items = append(items, map[string]any{"metadata": map[string]any{"name": "data-operation", "namespace": ns.Name, "uid": "phase-fence", "resourceVersion": "1", "labels": map[string]any{platformkube.LabelDestroyUID: "operation"}}, "spec": map[string]any{"holderIdentity": "operation"}})
+						}
+					case "Pod":
+						if observations >= 2 && (scenario == "phase-worker-second" || scenario == "phase-unrelated-row-second") {
+							account := "unrelated"
+							if scenario == "phase-worker-second" {
+								account = "arcadectl-backup-worker"
+							}
+							items = append(items, map[string]any{"metadata": map[string]any{"name": "new-pod", "namespace": ns.Name, "uid": "phase-pod", "resourceVersion": "1"}, "spec": map[string]any{"serviceAccountName": account, "containers": []any{map[string]any{"name": "unrelated", "image": "example.invalid/unrelated"}}}, "status": map[string]any{"phase": "Succeeded"}})
+						}
+					case "ArcadeOperation":
+						if observations >= 2 && scenario == "phase-domain-second" {
+							items = append(items, map[string]any{"metadata": map[string]any{"name": "new-intent", "namespace": ns.Name, "uid": "phase-intent", "resourceVersion": "1"}})
+						}
 					case "Deployment":
 						if observations >= 2 && scenario == "mount-second" {
 							items = append(items, map[string]any{"metadata": map[string]any{"name": "remount", "namespace": ns.Name, "uid": "remount", "resourceVersion": "1"}, "spec": map[string]any{"replicas": 0, "template": map[string]any{"spec": map[string]any{"volumes": []any{map[string]any{"name": "world", "persistentVolumeClaim": map[string]any{"claimName": claim.Name}}}}}}})
@@ -322,6 +346,12 @@ func TestColdBoundProviderBracketsWorldPolicyAndJournalIdentity(t *testing.T) {
 						continue
 					}
 					copy := o.DeepCopy()
+					if scenario == "phase-delayed-policy" && key.Kind == "ValidatingAdmissionPolicy" {
+						policyReads++
+						if policyReads == 1 {
+							unstructured.RemoveNestedField(copy.Object, "status", "typeChecking")
+						}
+					}
 					if strings.Contains(r.Header.Get("Accept"), "as=PartialObjectMetadata;") {
 						_ = json.NewEncoder(w).Encode(metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: "meta.k8s.io/v1", Kind: "PartialObjectMetadata"}, ObjectMeta: metav1.ObjectMeta{Name: copy.GetName(), Namespace: copy.GetNamespace(), UID: copy.GetUID(), ResourceVersion: copy.GetResourceVersion(), Generation: copy.GetGeneration(), OwnerReferences: copy.GetOwnerReferences()}})
 						return
@@ -335,6 +365,16 @@ func TestColdBoundProviderBracketsWorldPolicyAndJournalIdentity(t *testing.T) {
 					}
 					_ = json.NewEncoder(w).Encode(copy.Object)
 					return
+				}
+				if strings.HasPrefix(scenario, "phase-") {
+					for _, name := range controllerFamilies {
+						path, _ := resourcePath(deploymentKey(ns.Name, name), false)
+						if r.URL.Path == path {
+							w.WriteHeader(http.StatusNotFound)
+							_ = json.NewEncoder(w).Encode(metav1.Status{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Status"}, Status: metav1.StatusFailure, Reason: metav1.StatusReasonNotFound, Code: 404})
+							return
+						}
+					}
 				}
 				t.Error("unexpected cold route", r.URL.Path)
 				w.WriteHeader(404)
@@ -361,13 +401,65 @@ func TestColdBoundProviderBracketsWorldPolicyAndJournalIdentity(t *testing.T) {
 			}
 			request := LifecycleCheck{Checkpoint: ColdSafety, Snapshot: input, Mode: installstate.Install, Target: v.f.plan, Options: LifecycleOptions{Now: time.Now().UTC()}}
 			before := v.f.access.writes
-			err = cold.Verify(context.Background(), request)
-			valid := scenario == "healthy" || scenario == "leader-renewal" || scenario == "unrelated-attachment-renewal"
-			if (err == nil) != valid || err != nil && err != ErrColdSafety || v.f.access.writes != before {
+			var tuple *coldWorldTuple
+			refusal := ErrColdSafety
+			if strings.HasPrefix(scenario, "phase-") {
+				admission, createErr := NewClusterAdmission(engine, access)
+				if createErr != nil {
+					t.Fatal(createErr)
+				}
+				request.Checkpoint = AdmissionEffective
+				var phase *initialAdmissionPhase
+				var phaseErr error
+				if scenario == "phase-delayed-policy" {
+					ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+					defer cancel()
+					started := time.Now()
+					phase, phaseErr = admission.waitInitialPhase(ctx, request)
+					if phaseErr != nil || phase == nil || policyReads < 13 || time.Since(started) < time.Second {
+						t.Fatal("initial phase skipped original policy convergence", phaseErr)
+					}
+					fresh, err := store.Load(t.Context(), input.Anchor())
+					if err != nil || !bytes.Equal(fresh.Bytes(), input.Bytes()) || fresh.ResourceVersion() != input.ResourceVersion() {
+						t.Fatal("initial convergence changed the original journal")
+					}
+					if _, _, err := engine.files.Read(fixtureLedgerName(input), fixtureLedgerMaxBytes); !errors.Is(err, privatefs.ErrNotFound) {
+						t.Fatal("initial convergence granted fixture WAL authority")
+					}
+				} else {
+					phase, phaseErr = admission.captureInitialPhase(context.Background(), request)
+				}
+				err, refusal = phaseErr, ErrAdmission
+				request.Checkpoint = ColdSafety
+				if phase != nil {
+					tuple = phase.worlds
+					if len(phase.baseline.Rows) != 14 || len(phase.baseline.Leaders) != 0 {
+						t.Fatal("initial phase lost complete original public membership")
+					}
+				}
+			} else {
+				tuple, err = cold.captureOriginalWorlds(context.Background(), request)
+			}
+			valid := scenario == "healthy" || scenario == "leader-renewal" || scenario == "unrelated-attachment-renewal" || scenario == "phase-healthy" || scenario == "phase-delayed-policy"
+			if (err == nil) != valid || err != nil && err != refusal || v.f.access.writes != before {
 				t.Fatalf("cold bracket accepted contradictory evidence or mutated: %v; observations=%d volumes=%d", err, observations, pvReads)
 			}
 			if valid && (observations != 2 || pvReads != 2) {
 				t.Fatal("cold proof did not repeat complete evidence")
+			}
+			if !valid && tuple != nil {
+				t.Fatal("failed cold proof returned an original baseline")
+			}
+			if valid {
+				rows, err := tuple.fixtureWorldRows()
+				if err != nil || len(rows) != 3 {
+					t.Fatal("verified tuple lost original world/claim/PV closure")
+				}
+				for _, row := range rows {
+					if row.Key.Name == "foreign-pv" {
+						t.Fatal("unrelated attachment PV became an original world member")
+					}
+				}
 			}
 			if scenario == "policy-rv" && !policyChanged {
 				t.Fatal("policy race fixture not reached")

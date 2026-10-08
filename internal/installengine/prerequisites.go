@@ -120,8 +120,11 @@ func (p *ClusterPrerequisites) documentPermissions(d installstate.Document, mode
 		return nil, err
 	}
 	quiescing := d.Stage == installstate.Complete || d.Stage == installstate.Preparing || d.Stage == installstate.Quiescing || d.Stage == installstate.RecoveryRequired
-	for _, resource := range target.Resources() {
-		key := resourceKey(resource)
+	// Permission derivation needs only signed addresses. Whole templates stay
+	// independently compiled/validated below; copying every CRD schema here
+	// on each live witness adds no authorization or observation evidence.
+	for _, resource := range target.ResourceMetadata() {
+		key := installstate.Key{APIVersion: resource.APIVersion, Kind: resource.Kind, Namespace: resource.Namespace, Name: resource.Name}
 		if err := addPublic(key, "get"); err != nil {
 			return nil, err
 		}

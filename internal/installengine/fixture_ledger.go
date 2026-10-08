@@ -24,13 +24,21 @@ var ErrFixtures = errors.New("installation admission fixtures remain unresolved;
 
 const fixtureLedgerMaxBytes = installstate.MaxBytes + 16384
 
+const (
+	fixtureRecipeV1 = "inert-admission-v1"
+	fixtureRecipeV2 = "inert-admission-v2"
+	fixtureMaxSlots = 11
+)
+
+type fixtureRecipe struct {
+	version, kind, suffix string
+	owner                 int
+}
+
 // Closed recipe slots, never arbitrary Kubernetes addresses or objects. Jobs
 // precede their worker Pods so a future constructor can use the acknowledged
 // original owner UID, never a fabricated UID or a lookup by owner name.
-var fixtureCatalog = [...]struct {
-	version, kind, suffix string
-	owner                 int
-}{
+var fixtureCatalog = [...]fixtureRecipe{
 	{"batch/v1", "Job", "backup-job", -1},
 	{"v1", "Pod", "backup-pod", 0},
 	{"batch/v1", "Job", "restore-job", -1},
@@ -41,6 +49,40 @@ var fixtureCatalog = [...]struct {
 	{"v1", "PersistentVolumeClaim", "retained-pvc", -1},
 	{"v1", "PersistentVolumeClaim", "plain-pvc", -1},
 	{"arcade.gobha.me/v1alpha1", "GameDestroy", "cancelled-destroy", -1},
+}
+
+// Recipe semantics are immutable within a run. v2 appends an independent
+// born-cancelled VerifiedBackup original for the named UPDATE branch; it never
+// changes, upgrades or adopts any v1 original. The default producer stays v1
+// until construction, whole validators and both native profiles are proved.
+var fixtureCatalogV2 = [...]fixtureRecipe{
+	fixtureCatalog[0], fixtureCatalog[1], fixtureCatalog[2], fixtureCatalog[3],
+	fixtureCatalog[4], fixtureCatalog[5], fixtureCatalog[6], fixtureCatalog[7],
+	fixtureCatalog[8], fixtureCatalog[9],
+	{"arcade.gobha.me/v1alpha1", "GameDestroy", "verified-cancelled-destroy", -1},
+}
+
+// Only the sealed recipe selects a catalog, never a caller-supplied object,
+// count or cluster observation. Unknown and count-mismatched documents have
+// no addressable slots. In particular, an empty document is not a recipe.
+func fixtureCatalogFor(d fixtureLedgerDocument) []fixtureRecipe {
+	var catalog []fixtureRecipe
+	switch d.Recipe {
+	case fixtureRecipeV1:
+		catalog = fixtureCatalog[:]
+	case fixtureRecipeV2:
+		catalog = fixtureCatalogV2[:]
+	default:
+		return nil
+	}
+	if len(d.Entries) != len(catalog) {
+		return nil
+	}
+	return catalog
+}
+
+func validFixtureRecipe(d fixtureLedgerDocument) bool {
+	return len(fixtureCatalogFor(d)) != 0
 }
 
 type fixtureState string
@@ -68,14 +110,17 @@ type fixtureEntry struct {
 // fixture provider. Its private transitions are consumed only by that future
 // closed provider after independent original-identity/shape/absence proofs.
 type fixtureLedgerDocument struct {
-	Version                string                     `json:"version"`
-	Recipe                 string                     `json:"recipe"`
-	Revision               uint64                     `json:"revision"`
-	RunID                  string                     `json:"runId"`
-	Journal                json.RawMessage            `json:"journal"`
-	JournalResourceVersion string                     `json:"journalResourceVersion"`
-	Entries                []fixtureEntry             `json:"entries"`
-	DestroySeed            *fixtureDestroySeedReceipt `json:"destroySeed,omitempty"`
+	Version                string                        `json:"version"`
+	Recipe                 string                        `json:"recipe"`
+	Revision               uint64                        `json:"revision"`
+	RunID                  string                        `json:"runId"`
+	Journal                json.RawMessage               `json:"journal"`
+	JournalResourceVersion string                        `json:"journalResourceVersion"`
+	Entries                []fixtureEntry                `json:"entries"`
+	DestroySeed            *fixtureDestroySeedReceipt    `json:"destroySeed,omitempty"`
+	RetainedMarker         *fixtureRetainedMarkerReceipt `json:"retainedMarker,omitempty"`
+	OriginalWorldsSHA256   string                        `json:"originalWorldsSHA256,omitempty"`
+	Behavior               *fixtureBehaviorReceipt       `json:"behavior,omitempty"`
 }
 
 func fixtureLedgerName(s *installstate.Snapshot) string {
@@ -92,7 +137,13 @@ func (e *Engine) fixtureFence(s *installstate.Snapshot) error {
 	}
 	_, _, err := e.files.Read(fixtureLedgerName(s), fixtureLedgerMaxBytes)
 	if errors.Is(err, privatefs.ErrNotFound) {
-		return nil
+		evidence, err := e.readFixtureRetirement(s.Anchor())
+		if errors.Is(err, privatefs.ErrNotFound) {
+			return nil
+		}
+		if err == nil && evidence.record.State == fixtureRetired {
+			return nil // historical cleanup only; never AdmissionEffective
+		}
 	}
 	return ErrFixtures
 }
@@ -103,7 +154,7 @@ func fixtureRV(rv string) bool {
 }
 
 func (e *Engine) validateFixtureLedger(d fixtureLedgerDocument) error {
-	if e == nil || d.Version != "v1" || d.Recipe != "inert-admission-v1" || d.Revision == 0 || d.Revision > 9007199254740991 || !nonceID.MatchString(d.RunID) || !fixtureRV(d.JournalResourceVersion) || len(d.Entries) != len(fixtureCatalog) {
+	if e == nil || d.Version != "v1" || !validFixtureRecipe(d) || d.Revision == 0 || d.Revision > 9007199254740991 || !nonceID.MatchString(d.RunID) || !fixtureRV(d.JournalResourceVersion) {
 		return ErrFixtures
 	}
 	plans := make([]*installrender.Plan, 0, len(e.plans))
@@ -117,7 +168,7 @@ func (e *Engine) validateFixtureLedger(d fixtureLedgerDocument) error {
 	uids := map[types.UID]bool{}
 	pending, deleting, createPending, neverCreated := 0, false, false, false
 	for i, entry := range d.Entries {
-		recipe := fixtureCatalog[i]
+		recipe := fixtureCatalogFor(d)[i]
 		key := installstate.Key{APIVersion: recipe.version, Kind: recipe.kind, Namespace: journal.Namespace, Name: "arcadectl-probe-" + d.RunID + "-" + recipe.suffix}
 		if entry.Key != key {
 			return ErrFixtures
@@ -166,7 +217,7 @@ func (e *Engine) validateFixtureLedger(d fixtureLedgerDocument) error {
 			}
 		}
 		if entry.State == fixtureDeleteAttempted || entry.State == fixtureAbsent {
-			for child, childRecipe := range fixtureCatalog {
+			for child, childRecipe := range fixtureCatalogFor(d) {
 				if childRecipe.owner == i && d.Entries[child].State != fixtureAbsent {
 					return ErrFixtures // resumed evidence cannot invert GC ordering
 				}
@@ -176,7 +227,7 @@ func (e *Engine) validateFixtureLedger(d fixtureLedgerDocument) error {
 	if pending > 1 || deleting && createPending {
 		return ErrFixtures
 	}
-	if !validFixtureDestroySeedDocument(d) {
+	if !validFixtureDestroySeedDocument(d) || !validFixtureRetainedMarkerDocument(d) || !validFixtureWorldsSeal(d) || !validFixtureBehaviorDocument(d) {
 		return ErrFixtures
 	}
 	return nil
@@ -219,13 +270,27 @@ func (e *Engine) decodeFixtureLedger(body []byte) (fixtureLedgerDocument, error)
 }
 
 func validFixtureTransition(before, after fixtureLedgerDocument) bool {
-	if after.Revision != before.Revision+1 || after.Version != before.Version || after.Recipe != before.Recipe || after.RunID != before.RunID || after.JournalResourceVersion != before.JournalResourceVersion || !bytes.Equal(after.Journal, before.Journal) || len(before.Entries) != len(fixtureCatalog) || len(after.Entries) != len(before.Entries) {
+	if after.Revision != before.Revision+1 || after.Version != before.Version || after.Recipe != before.Recipe || after.RunID != before.RunID || after.JournalResourceVersion != before.JournalResourceVersion || !bytes.Equal(after.Journal, before.Journal) || !validFixtureRecipe(before) || !validFixtureRecipe(after) {
 		return false
 	}
-	if !reflect.DeepEqual(before.DestroySeed, after.DestroySeed) {
-		return reflect.DeepEqual(before.Entries, after.Entries) && validFixtureDestroySeedTransition(before, after)
+	if !validFixtureDestroySeedDocument(before) || !validFixtureDestroySeedDocument(after) || !validFixtureRetainedMarkerDocument(before) || !validFixtureRetainedMarkerDocument(after) || !validFixtureWorldsSeal(before) || !validFixtureWorldsSeal(after) || !validFixtureBehaviorDocument(before) || !validFixtureBehaviorDocument(after) {
+		return false
 	}
-	if before.DestroySeed != nil && before.DestroySeed.State != fixtureDestroySeedAcknowledged {
+	if !reflect.DeepEqual(before.Behavior, after.Behavior) {
+		return validFixtureBehaviorTransition(before, after)
+	}
+	if before.OriginalWorldsSHA256 != after.OriginalWorldsSHA256 {
+		return validFixtureWorldsSealTransition(before, after)
+	}
+	seedChanged := !reflect.DeepEqual(before.DestroySeed, after.DestroySeed)
+	markerChanged := !reflect.DeepEqual(before.RetainedMarker, after.RetainedMarker)
+	if seedChanged {
+		return !markerChanged && (before.RetainedMarker == nil || before.RetainedMarker.State == fixtureRetainedMarkerAcknowledged) && reflect.DeepEqual(before.Entries, after.Entries) && validFixtureDestroySeedTransition(before, after)
+	}
+	if markerChanged {
+		return (before.DestroySeed == nil || before.DestroySeed.State == fixtureDestroySeedAcknowledged) && reflect.DeepEqual(before.Entries, after.Entries) && validFixtureRetainedMarkerTransition(before, after)
+	}
+	if before.DestroySeed != nil && before.DestroySeed.State != fixtureDestroySeedAcknowledged || before.RetainedMarker != nil && before.RetainedMarker.State != fixtureRetainedMarkerAcknowledged {
 		return false // unknown status effect blocks EVERY ordinary entry transition
 	}
 	changed := -1
@@ -265,7 +330,7 @@ func validFixtureTransition(before, after fixtureLedgerDocument) bool {
 		if next.State != fixtureDeleteAttempted || next.OriginalUID != old.OriginalUID || !fixtureRV(next.DeleteResourceVersion) {
 			return false
 		}
-		for i, recipe := range fixtureCatalog {
+		for i, recipe := range fixtureCatalogFor(before) {
 			if recipe.owner == changed && before.Entries[i].State != fixtureAbsent {
 				return false // actual Pod absence must precede its Job deletion
 			}
@@ -284,20 +349,43 @@ type fixtureLedger struct {
 	// Serializes wire clients sharing this ledger, not arbitrary provider WAL
 	// transitions. The closed provider owns transitions/close serially and must
 	// never alter a ledger concurrently with a wire operation.
-	wireMu     sync.Mutex
-	engine     *Engine
-	name       string
-	lock       *privatefs.Lock
-	identity   privatefs.FileIdentity
-	body       []byte
-	document   fixtureLedgerDocument
-	ackSlot    int  // instance-local attempt capability; NEVER restored by load
-	effectSlot int  // single-send capability shared by ALL clients of this ledger
-	seedAck    bool // separate SAME-attempt capability; NEVER restored by load
-	seedEffect bool // consumed before status transport; never permission by itself
+	wireMu                       sync.Mutex
+	decodeCache                  fixtureDecodeCache
+	engine                       *Engine
+	name                         string
+	lock                         *privatefs.Lock
+	identity                     privatefs.FileIdentity
+	body                         []byte
+	document                     fixtureLedgerDocument
+	ackSlot                      int                        // instance-local attempt capability; NEVER restored by load
+	effectSlot                   int                        // single-send capability shared by ALL clients of this ledger
+	seedAck                      bool                       // separate SAME-attempt capability; NEVER restored by load
+	seedEffect                   bool                       // consumed before status transport; never permission by itself
+	markerAck                    bool                       // separate same-attempt capability; NEVER restored by load
+	markerEffect                 bool                       // consumed before marker transport; never permission by itself
+	worldPublication             bool                       // one same-instance file publication; NEVER restored by load
+	behaviorCompletion           *fixtureBehaviorCompletion // finite driver only; NEVER restored by load/archive
+	driverFresh                  bool                       // consumed once by the fresh closed v2 driver; NEVER restored
+	worldIdentity                *privatefs.FileIdentity    // pinned within this loaded session only
+	phaseFloor                   *fixturePhaseBaseline      // latest COMPLETE accepted read; shared by this ledger's wires
+	retirementArchive            bool                       // terminal archive reload has NO mutation/ACK capabilities
+	retirementEvidence           *fixtureRetirementEvidence // pinned for this loaded session, including retries
+	retirementArchiveIdentity    *privatefs.FileIdentity    // pinned even before sentinel publication
+	retirementSentinelIdentity   *privatefs.FileIdentity    // acquired publication pin, before further checks
+	retirementPublicationUnknown bool                       // failed publication cannot repin in this session
 }
 
 func (e *Engine) prepareFixtureLedger(ctx context.Context, s *installstate.Snapshot) (*fixtureLedger, error) {
+	return e.prepareFixtureLedgerRecipe(ctx, s, false)
+}
+
+// The complete closed driver creates a NEW v2 run. Loading an existing run
+// never calls this path and never changes its recipe or appends an original.
+func (e *Engine) prepareFixtureLedgerV2(ctx context.Context, s *installstate.Snapshot) (*fixtureLedger, error) {
+	return e.prepareFixtureLedgerRecipe(ctx, s, true)
+}
+
+func (e *Engine) prepareFixtureLedgerRecipe(ctx context.Context, s *installstate.Snapshot, v2 bool) (*fixtureLedger, error) {
 	if e == nil || ctx == nil || s == nil || s.Document().Pending != nil || s.Document().AdmissionRetirementRevision != 0 {
 		return nil, ErrInvalid
 	}
@@ -318,8 +406,12 @@ func (e *Engine) prepareFixtureLedger(ctx context.Context, s *installstate.Snaps
 	if err != nil {
 		return nil, ErrFixtures
 	}
-	d := fixtureLedgerDocument{Version: "v1", Recipe: "inert-admission-v1", Revision: 1, RunID: runID, Journal: s.Bytes(), JournalResourceVersion: s.ResourceVersion()}
-	for _, recipe := range fixtureCatalog {
+	d := fixtureLedgerDocument{Version: "v1", Recipe: fixtureRecipeV1, Revision: 1, RunID: runID, Journal: s.Bytes(), JournalResourceVersion: s.ResourceVersion()}
+	catalog := fixtureCatalog[:]
+	if v2 {
+		d.Recipe, catalog = fixtureRecipeV2, fixtureCatalogV2[:]
+	}
+	for _, recipe := range catalog {
 		d.Entries = append(d.Entries, fixtureEntry{Key: installstate.Key{APIVersion: recipe.version, Kind: recipe.kind, Namespace: s.Anchor().Namespace, Name: "arcadectl-probe-" + runID + "-" + recipe.suffix}, State: fixturePlanned})
 	}
 	body, err := e.fixtureLedgerBody(d)
@@ -331,7 +423,7 @@ func (e *Engine) prepareFixtureLedger(ctx context.Context, s *installstate.Snaps
 		return nil, ErrFixtures // never treat uncertain durability as absent intent
 	}
 	success = true
-	return &fixtureLedger{engine: e, name: fixtureLedgerName(s), lock: lock, identity: identity, body: body, document: d, ackSlot: -1, effectSlot: -1}, nil
+	return &fixtureLedger{engine: e, name: fixtureLedgerName(s), lock: lock, identity: identity, body: body, document: d, ackSlot: -1, effectSlot: -1, driverFresh: v2}, nil
 }
 
 // Resume only this exact protected run and original journal. Reading a matching
@@ -372,7 +464,7 @@ func (f *fixtureLedger) nextDocument() (fixtureLedgerDocument, error) {
 	if f == nil || f.engine == nil || f.lock == nil {
 		return fixtureLedgerDocument{}, ErrFixtures
 	}
-	d, err := f.engine.decodeFixtureLedger(f.body)
+	d, err := f.decodeCurrentWAL(f.body)
 	if err == nil {
 		d.Revision++
 	}
@@ -380,16 +472,38 @@ func (f *fixtureLedger) nextDocument() (fixtureLedgerDocument, error) {
 }
 
 func (f *fixtureLedger) advance(next fixtureLedgerDocument) error {
+	if f != nil && f.retirementArchive {
+		return ErrFixtures
+	}
 	if f == nil || f.engine == nil || f.lock == nil {
 		return ErrFixtures
 	}
-	current, err := f.engine.decodeFixtureLedger(f.body)
+	current, err := f.decodeCurrentWAL(f.body)
 	if err != nil || !reflect.DeepEqual(current, f.document) || !validFixtureTransition(current, next) {
 		return ErrFixtures
 	}
 	seedChanged := !reflect.DeepEqual(f.document.DestroySeed, next.DestroySeed)
-	if seedChanged && (f.document.DestroySeed == nil && (f.ackSlot != -1 || f.effectSlot != -1) || f.document.DestroySeed != nil && (!f.seedAck || f.seedEffect)) {
+	markerChanged := !reflect.DeepEqual(f.document.RetainedMarker, next.RetainedMarker)
+	worldChanged := f.document.OriginalWorldsSHA256 != next.OriginalWorldsSHA256
+	behaviorChanged := !reflect.DeepEqual(f.document.Behavior, next.Behavior)
+	if behaviorChanged {
+		if !f.behaviorCompletion.matches(f) || f.ackSlot != -1 || f.effectSlot != -1 || f.seedAck || f.seedEffect || f.markerAck || f.markerEffect || f.worldPublication || f.originalWorldsCurrent() != nil {
+			return ErrFixtures
+		}
+	} else if f.behaviorCompletion != nil {
+		return ErrFixtures // no unrelated transition may spend or carry completion
+	}
+	if f.worldPublication || worldChanged && (f.ackSlot != -1 || f.effectSlot != -1 || f.seedAck || f.seedEffect || f.markerAck || f.markerEffect) {
+		return ErrFixtures
+	}
+	if seedChanged && (f.markerAck || f.markerEffect || f.document.DestroySeed == nil && (f.ackSlot != -1 || f.effectSlot != -1) || f.document.DestroySeed != nil && (!f.seedAck || f.seedEffect)) {
 		return ErrFixtures // no ACK before send, after uncertainty or after restart
+	}
+	if markerChanged && (f.seedAck || f.seedEffect || f.document.RetainedMarker == nil && (f.ackSlot != -1 || f.effectSlot != -1) || f.document.RetainedMarker != nil && (!f.markerAck || f.markerEffect)) {
+		return ErrFixtures
+	}
+	if !seedChanged && !markerChanged && (f.seedAck || f.seedEffect || f.markerAck || f.markerEffect) {
+		return ErrFixtures // no entry transition can spend stale receipt capabilities
 	}
 	changed := -1
 	for i, entry := range f.document.Entries {
@@ -401,6 +515,12 @@ func (f *fixtureLedger) advance(next fixtureLedgerDocument) error {
 			break
 		}
 	}
+	preparingEffect := seedChanged && f.document.DestroySeed == nil || markerChanged && f.document.RetainedMarker == nil || changed >= 0 && (next.Entries[changed].State == fixtureCreateAttempted || next.Entries[changed].State == fixtureDeleteAttempted)
+	if preparingEffect && current.OriginalWorldsSHA256 != "" && f.originalWorldsCurrent() != nil {
+		return ErrFixtures
+	}
+	// Reliable same-attempt acknowledgements deliberately do not require the
+	// companion: pin original UID/RV before reporting a late witness failure.
 	body, err := f.engine.fixtureLedgerBody(next)
 	if err != nil {
 		return ErrFixtures
@@ -408,6 +528,9 @@ func (f *fixtureLedger) advance(next fixtureLedgerDocument) error {
 	old, identity, err := f.engine.files.Read(f.name, fixtureLedgerMaxBytes)
 	if err != nil || identity != f.identity || !bytes.Equal(old, f.body) || f.engine.files.ConfirmDurable(f.name, identity) != nil {
 		return ErrFixtures
+	}
+	if behaviorChanged {
+		f.behaviorCompletion = nil // consume BEFORE a possibly uncertain publication
 	}
 	identity, err = f.engine.files.AtomicWrite(f.name, body, &identity)
 	if err != nil {
@@ -418,10 +541,20 @@ func (f *fixtureLedger) advance(next fixtureLedgerDocument) error {
 		return ErrFixtures
 	}
 	f.identity, f.body, f.document = identity, body, d
+	f.decodeCache.clearWAL()
+	if worldChanged {
+		f.worldPublication = true // sealed intent is NOT a durable companion witness
+	}
 	if seedChanged {
 		f.seedAck, f.seedEffect = false, false
 		if next.DestroySeed.State == fixtureDestroySeedAttempted {
 			f.seedAck, f.seedEffect = true, true
+		}
+	}
+	if markerChanged {
+		f.markerAck, f.markerEffect = false, false
+		if next.RetainedMarker.State == fixtureRetainedMarkerAttempted {
+			f.markerAck, f.markerEffect = true, true
 		}
 	}
 	if changed >= 0 {
@@ -443,6 +576,11 @@ func (f *fixtureLedger) close() error {
 	}
 	err := f.lock.Close()
 	f.lock = nil
+	f.decodeCache.clear()
 	f.seedAck, f.seedEffect = false, false
+	f.markerAck, f.markerEffect = false, false
+	f.worldPublication = false
+	f.behaviorCompletion = nil
+	f.worldIdentity = nil
 	return err
 }

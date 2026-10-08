@@ -66,14 +66,18 @@ func proveKindAdmissionFixtureRecipes(t *testing.T, parent context.Context, conf
 	gcCleanupComplete := true // No custom GC domain has been created yet.
 	cleanup := func() {
 		t.Helper()
+		if ledger.markerUnresolved() {
+			t.Error("unproved retained marker remains fenced; refusing fixture cleanup")
+			return
+		}
 		if !gcCleanupComplete {
 			t.Error("custom GC proof domain not proved absent; refusing all fixture cleanup and requiring exact owned Kind teardown")
 			return // A fixture parent DELETE must never GC-sweep an unknown child.
 		}
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cleanupCancel()
-		if ledger.document.DestroySeed != nil && ledger.document.DestroySeed.State != fixtureDestroySeedAcknowledged {
-			t.Error("unknown native status seed remains fenced; requiring exact owned-cluster teardown")
+		if ledger.document.DestroySeed != nil && (ledger.document.DestroySeed.Mode != fixtureDestroySeedCold || ledger.document.DestroySeed.State != fixtureDestroySeedAcknowledged) {
+			t.Error("unknown or non-cold native status seed remains fenced; requiring exact owned-cluster teardown")
 			return
 		}
 		// Enumerate original durable ACKs even after post-ACK refusal. Unknown
@@ -326,6 +330,10 @@ func proveKindAdmissionFixtureRecipes(t *testing.T, parent context.Context, conf
 	gcCleanupComplete = proveKindFixtureGCMetadata(t, ctx, wire, admin)
 	if !gcCleanupComplete {
 		t.Fatal("custom GC proof cleanup incomplete; fixture parent deletion remains fenced")
+	}
+	settled, err := wire.settledFixtures(ctx)
+	if err != nil || settled == nil || settled.wire != wire || settled.gc == nil {
+		t.Fatal("native whole GET/complete GC/GET original fixture composition refused after custom cleanup", err)
 	}
 	fresh, err := engine.journal.Load(ctx, s.Anchor())
 	if err != nil || !bytes.Equal(fresh.Bytes(), s.Bytes()) || fresh.ResourceVersion() != s.ResourceVersion() || engine.fixtureFence(s) != ErrFixtures {

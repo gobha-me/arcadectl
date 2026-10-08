@@ -88,6 +88,10 @@ func readyControllerFixture(t *testing.T, plan *installrender.Plan, others ...*i
 // Actual frozen HTTPAccess + sealed production observer, including all twenty
 // collections, metadata-only Secrets and original Namespace/journal barriers.
 func controllerProofAccess(t *testing.T, ns *corev1.Namespace, objects map[installstate.Key]*unstructured.Unstructured, lists map[string]runtime.Object, onObservation func(int), fault string) (*HTTPAccess, func() int) {
+	return controllerProofAccessWithRequests(t, ns, objects, lists, onObservation, fault, nil)
+}
+
+func controllerProofAccessWithRequests(t *testing.T, ns *corev1.Namespace, objects map[installstate.Key]*unstructured.Unstructured, lists map[string]runtime.Object, onObservation func(int), fault string, beforeRequest func(http.ResponseWriter, *http.Request) bool) (*HTTPAccess, func() int) {
 	t.Helper()
 	var mutex sync.Mutex
 	observations := 0
@@ -95,6 +99,9 @@ func controllerProofAccess(t *testing.T, ns *corev1.Namespace, objects map[insta
 		mutex.Lock()
 		defer mutex.Unlock()
 		w.Header().Set("Content-Type", "application/json")
+		if beforeRequest != nil && beforeRequest(w, request) {
+			return
+		}
 		if request.Method != http.MethodGet {
 			t.Error("readiness proof attempted mutation")
 		}

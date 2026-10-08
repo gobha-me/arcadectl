@@ -10,28 +10,38 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 )
 
 type gcHTTPFixture struct {
-	f         *fixture
-	g         *GCReader
-	lists     int
-	reads     map[string]int
-	fault     string
-	afterRead func(string)
+	f          *fixture
+	g          *GCReader
+	lists      int
+	reads      map[string]int
+	fault      string
+	afterRead  func(string)
+	wholeFault string
+	wholeReads int
 }
 
 func newGCHTTPFixture(t *testing.T, fault string) *gcHTTPFixture {
 	t.Helper()
 	h := &gcHTTPFixture{f: newFixture(t), fault: fault, reads: map[string]int{}}
 	catalogue := gcTestCatalogue(t)
+	if strings.HasPrefix(fault, "lease-last") {
+		version := metav1.GroupVersionForDiscovery{GroupVersion: "coordination.k8s.io/v1", Version: "v1"}
+		catalogue.Groups = append(catalogue.Groups, gcGroup{Name: "coordination.k8s.io", Versions: []metav1.GroupVersionForDiscovery{version}, Preferred: version})
+		catalogue.Lists[version.GroupVersion] = metav1.APIResourceList{TypeMeta: metav1.TypeMeta{Kind: "APIResourceList", APIVersion: "v1"}, GroupVersion: version.GroupVersion, APIResources: []metav1.APIResource{{Name: "leases", Kind: "Lease", Namespaced: true, Verbs: metav1.Verbs{"delete", "get", "list", "watch"}}}}
+	}
 	if strings.HasPrefix(fault, "event-") {
 		core := catalogue.Lists["v1"]
 		core.APIResources = append(core.APIResources, metav1.APIResource{Name: "events", Kind: "Event", Namespaced: true, Verbs: metav1.Verbs{"delete", "list", "watch"}})
@@ -86,7 +96,7 @@ func newGCHTTPFixture(t *testing.T, fault string) *gcHTTPFixture {
 				_, _ = io.WriteString(w, "PRIVATE-GC-CANARY")
 				return
 			}
-			if h.fault == "discovery-drift" && h.reads[path] > 2 && gv == "v1" {
+			if (h.fault == "discovery-drift" && h.reads[path] > 2 || h.wholeFault == "post-discovery" && h.wholeReads > 0) && gv == "v1" {
 				list.APIResources[0].Verbs = metav1.Verbs{"get", "list"}
 			}
 			_ = json.NewEncoder(w).Encode(list)
@@ -101,7 +111,8 @@ func newGCHTTPFixture(t *testing.T, fault string) *gcHTTPFixture {
 				queryValid = false
 			}
 		}
-		if r.Header.Get("Accept") != "application/json;as=PartialObjectMetadataList;g=meta.k8s.io;v=v1" || !queryValid || !strings.Contains(path, "/namespaces/"+h.f.anchor.Namespace+"/") {
+		wholeLease := strings.HasSuffix(path, "/leases") && r.Header.Get("Accept") == "application/json"
+		if !wholeLease && r.Header.Get("Accept") != "application/json;as=PartialObjectMetadataList;g=meta.k8s.io;v=v1" || !queryValid || !strings.Contains(path, "/namespaces/"+h.f.anchor.Namespace+"/") {
 			t.Error("GC metadata scope/negotiation/pagination changed")
 			w.WriteHeader(400)
 			return
@@ -126,8 +137,81 @@ func newGCHTTPFixture(t *testing.T, fault string) *gcHTTPFixture {
 		makeObject := func(name, uid string, owners ...metav1.OwnerReference) metav1.PartialObjectMetadata {
 			return metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: "meta.k8s.io/v1", Kind: "PartialObjectMetadata"}, ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: h.f.anchor.Namespace, UID: types.UID(uid), ResourceVersion: "21", Generation: 1, OwnerReferences: owners, Annotations: map[string]string{"private": "PRIVATE-GC-CANARY"}, Labels: map[string]string{"private": "PRIVATE-GC-CANARY"}}}
 		}
+		if wholeLease {
+			h.wholeReads++
+			page := coordinationv1.LeaseList{TypeMeta: metav1.TypeMeta{APIVersion: "coordination.k8s.io/v1", Kind: "LeaseList"}, ListMeta: metav1.ListMeta{ResourceVersion: "11"}, Items: []coordinationv1.Lease{}}
+			start, end := 0, 128
+			if q.Get("continue") == "" {
+				page.Continue = "whole-leases-next"
+			} else if q.Get("continue") == "whole-leases-next" {
+				start, end = 128, 129
+			} else {
+				t.Error("unknown whole Lease continuation")
+				w.WriteHeader(400)
+				return
+			}
+			if start == 128 && h.wholeFault == "late-denial" {
+				w.WriteHeader(403)
+				return
+			}
+			if start == 128 && h.wholeFault == "page-rv" {
+				page.ResourceVersion = "12"
+			}
+			for index := start; index < end; index++ {
+				m := makeObject("lease-"+strconv.Itoa(index), "lease-uid-"+strconv.Itoa(index)).ObjectMeta
+				// Whole public Lease fixtures carry no private metadata canary;
+				// metadata-only sources still prove transport-boundary sanitation.
+				m.Labels = map[string]string{"public-label": "whole-value"}
+				m.Annotations = map[string]string{"public-annotation": "whole-value"}
+				if index == 128 {
+					switch h.wholeFault {
+					case "missing":
+						continue
+					case "rv":
+						m.ResourceVersion = "22"
+					case "uid":
+						m.UID = "foreign-uid"
+					case "name":
+						m.Name = "foreign-name"
+					case "owner":
+						m.OwnerReferences = []metav1.OwnerReference{{APIVersion: "v1", Kind: "Pod", Name: "foreign", UID: "foreign"}}
+					}
+				}
+				page.Items = append(page.Items, coordinationv1.Lease{TypeMeta: metav1.TypeMeta{APIVersion: "coordination.k8s.io/v1", Kind: "Lease"}, ObjectMeta: m})
+			}
+			if h.wholeFault == "unknown-field" {
+				body, _ := json.Marshal(page)
+				var object map[string]any
+				_ = json.Unmarshal(body, &object)
+				object["items"].([]any)[0].(map[string]any)["unexpected"] = true
+				_ = json.NewEncoder(w).Encode(object)
+			} else {
+				_ = json.NewEncoder(w).Encode(page)
+			}
+			return
+		}
 		page := metav1.PartialObjectMetadataList{TypeMeta: metav1.TypeMeta{APIVersion: "meta.k8s.io/v1", Kind: "PartialObjectMetadataList"}, ListMeta: metav1.ListMeta{ResourceVersion: "11"}, Items: []metav1.PartialObjectMetadata{}}
 		switch {
+		case strings.HasSuffix(path, "/leases"):
+			if q.Get("continue") == "" {
+				for index := 0; index < 128; index++ {
+					page.Items = append(page.Items, makeObject("lease-"+strconv.Itoa(index), "lease-uid-"+strconv.Itoa(index)))
+				}
+				page.Continue = "leases-next"
+			} else if q.Get("continue") == "leases-next" {
+				if h.fault == "lease-last-late-denial" {
+					w.WriteHeader(403)
+					return
+				}
+				if h.fault == "lease-last-page-rv" {
+					page.ResourceVersion = "12"
+				}
+				page.Items = append(page.Items, makeObject("lease-128", "lease-uid-128"))
+			} else {
+				t.Error("unknown Lease continuation used")
+				w.WriteHeader(400)
+				return
+			}
 		case strings.HasSuffix(path, "/events"):
 			page.Items = append(page.Items, makeObject("event", "event-uid"))
 			if strings.HasPrefix(path, "/apis/events.k8s.io/") {
@@ -243,6 +327,116 @@ func writeGCDiscoveryFault(t *testing.T, w http.ResponseWriter, value any, field
 		target[field] = nil
 	}
 	_ = json.NewEncoder(w).Encode(object)
+}
+
+func TestGCReaderLeasePagesReadLastWithoutChangingSealedCatalogue(t *testing.T) {
+	for _, fault := range []string{"lease-last", "lease-last-late-denial", "lease-last-page-rv"} {
+		t.Run(fault, func(t *testing.T) {
+			h := newGCHTTPFixture(t, fault)
+			discovery, err := h.g.Discover(t.Context(), h.f.anchor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			original := discovery.Resources()
+			order := []string{}
+			h.afterRead = func(path string) {
+				if strings.Contains(path, "/namespaces/"+h.f.anchor.Namespace+"/") {
+					order = append(order, path)
+				}
+			}
+			observation, err := h.g.Collect(t.Context(), discovery)
+			if (err == nil) != (fault == "lease-last") || !reflect.DeepEqual(original, discovery.Resources()) {
+				t.Fatal("read scheduling changed the catalogue or accepted an incomplete Lease page", err)
+			}
+			if len(order) != len(original)+2 || !strings.HasSuffix(order[len(order)-1], "/leases") || !strings.HasSuffix(order[len(order)-2], "/leases") {
+				t.Fatal("all source/pages were not read with both Lease pages last")
+			}
+			for _, path := range order[:len(order)-2] {
+				if strings.HasSuffix(path, "/leases") {
+					t.Fatal("Lease page aged behind another metadata source")
+				}
+			}
+			if err == nil {
+				last := ""
+				counts := map[GCResource]int{}
+				for _, row := range observation.Objects() {
+					if row.Source.GVR.String() < last {
+						t.Fatal("public observation source order changed")
+					}
+					last = row.Source.GVR.String()
+					counts[row.Source]++
+				}
+				for _, source := range original {
+					if counts[source] == 0 || source.Kind == "Lease" && counts[source] != 129 {
+						t.Fatal("complete original source membership lost")
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestGCReaderPairedLeasesCompleteStrictAndSealed(t *testing.T) {
+	for _, fault := range []string{"", "late-denial", "page-rv", "missing", "rv", "uid", "name", "owner", "unknown-field", "post-discovery", "post-journal"} {
+		t.Run("paired-"+fault, func(t *testing.T) {
+			h := newGCHTTPFixture(t, "lease-last")
+			h.wholeFault = fault
+			discovery, err := h.g.Discover(t.Context(), h.f.anchor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fault == "post-journal" {
+				h.afterRead = func(path string) {
+					if path != "/api" || h.wholeReads == 0 {
+						return
+					}
+					ns, err := h.f.core.CoreV1().Namespaces().Get(t.Context(), h.f.anchor.Namespace, metav1.GetOptions{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					ns.ResourceVersion = "2"
+					if _, err := h.f.core.CoreV1().Namespaces().Update(t.Context(), ns, metav1.UpdateOptions{}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			before := time.Now().UTC()
+			observation, err := h.g.CollectWithLeases(t.Context(), discovery)
+			if (err == nil) != (fault == "") || err != nil && observation != nil {
+				t.Fatal("incomplete/inconsistent whole Lease pages became sealed evidence", err)
+			}
+			if err != nil {
+				return
+			}
+			leases, readAt := observation.PairedLeases()
+			if leases == nil || len(leases.Items) != 129 || h.wholeReads != 2 || leases.Continue != "" || leases.RemainingItemCount != nil || readAt.Before(before) || readAt.After(time.Now().UTC()) || leases.Items[0].Labels["public-label"] != "whole-value" || leases.Items[0].Annotations["public-annotation"] != "whole-value" {
+				t.Fatal("paired full Lease evidence missing or not bounded")
+			}
+			leases.Items[0].ResourceVersion = "forged"
+			again, sameTime := observation.PairedLeases()
+			if again.Items[0].ResourceVersion != "21" || !sameTime.Equal(readAt) {
+				t.Fatal("accessor mutated sealed Lease evidence")
+			}
+			metadataOnly, err := h.g.Collect(t.Context(), discovery)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if leases, stamp := metadataOnly.PairedLeases(); leases != nil || !stamp.IsZero() || h.wholeReads != 2 {
+				t.Fatal("ordinary metadata-only collector acquired whole Lease authority")
+			}
+		})
+	}
+}
+
+func TestGCReaderPairedLeasesRequiresCanonicalDiscoveredSource(t *testing.T) {
+	h := newGCHTTPFixture(t, "")
+	discovery, err := h.g.Discover(t.Context(), h.f.anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation, err := h.g.CollectWithLeases(t.Context(), discovery); err == nil || observation != nil || h.wholeReads != 0 {
+		t.Fatal("missing canonical Lease source produced paired evidence")
+	}
 }
 
 func TestGCReaderDiscoveryRequiresExplicitDecisionFields(t *testing.T) {

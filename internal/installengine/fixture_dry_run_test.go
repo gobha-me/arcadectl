@@ -31,6 +31,11 @@ import (
 func fixturePreviewFactory(t *testing.T) func(*testing.T) *fixtureWireTest {
 	t.Helper()
 	seed := newActorFixture(t)
+	return fixturePreviewFactoryFromActor(t, seed)
+}
+
+func fixturePreviewFactoryFromActor(t *testing.T, seed *actorFixture) func(*testing.T) *fixtureWireTest {
+	t.Helper()
 	plan, checkpoint := seed.v.f.plan, seed.request.Snapshot
 	ns, err := seed.v.f.access.client.CoreV1().Namespaces().Get(t.Context(), checkpoint.Anchor().Namespace, metav1.GetOptions{})
 	if err != nil {
@@ -140,6 +145,9 @@ func TestFixtureDryRunFixedSlotsNoOwnershipOrEffectGrant(t *testing.T) {
 		if err != nil || preview == nil || preview.GetResourceVersion() != "" || !nativeFixtureUID(string(preview.GetUID())) {
 			t.Fatal("closed preview refused", slot, err)
 		}
+		if f.wire.previewDiagnostic() != fixturePreviewAccepted {
+			t.Fatal("accepted preview diagnostic disagrees")
+		}
 		unchanged()
 		if _, absent, err := f.wire.get(ctx, slot); err != nil || !absent || f.creates != slot {
 			t.Fatal("preview persisted an object", slot, err)
@@ -197,6 +205,9 @@ func TestFixtureDryRunRejectsNonOriginalStateBeforeHTTP(t *testing.T) {
 			}
 			if _, err := f.wire.dryRun(t.Context(), slot); err != ErrFixtures || calls != 0 || f.previews != 0 {
 				t.Fatal("unsafe preview reached any HTTP", err)
+			}
+			if f.wire.previewDiagnostic() != fixturePreviewReadiness {
+				t.Fatal("readiness refusal diagnostic disagrees")
 			}
 			if _, err := f.wire.request(t.Context(), slot, fixtureDryRunRequest); err != ErrFixtures || calls != 0 {
 				t.Fatal("inner preview bypassed state gate", err)
@@ -353,6 +364,13 @@ func TestFixtureDryRunWholeReplyRefusalLeavesOriginalLedger(t *testing.T) {
 			if o, err := f.wire.dryRun(t.Context(), 0); err != ErrFixtures || o != nil || f.previews != 1 || f.creates != 0 {
 				t.Fatal("unproved reply accepted or retried", err)
 			}
+			expectedStage := fixturePreviewRequest
+			if scenario == "spec" || scenario == "owner" || scenario == "status" || scenario == "rv" {
+				expectedStage = fixturePreviewWholeShape
+			}
+			if stage := f.wire.previewDiagnostic(); stage != expectedStage || strings.Contains(stage.String(), "CANARY") {
+				t.Fatal("reply refusal diagnostic disagrees or exposed raw data")
+			}
 			unchanged()
 		})
 	}
@@ -436,6 +454,13 @@ func TestFixtureDryRunRefusesPostWitnessAndAuthorizationDrift(t *testing.T) {
 			originalIdentity := f.wire.ledger.identity
 			if o, err := f.wire.dryRun(t.Context(), slot); err != ErrFixtures || o != nil || f.previews != expected {
 				t.Fatal("drift or denial accepted", err)
+			}
+			expectedStage := fixturePreviewPostWitness
+			if expected == 0 {
+				expectedStage = fixturePreviewPrepare
+			}
+			if f.wire.previewDiagnostic() != expectedStage {
+				t.Fatal("witness/authorization refusal diagnostic disagrees")
 			}
 			if scenario == "post-wal" {
 				f.wire.ledger.identity = originalIdentity

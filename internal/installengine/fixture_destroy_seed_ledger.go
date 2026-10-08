@@ -5,6 +5,13 @@ package installengine
 
 type fixtureDestroySeedState string
 
+type fixtureDestroySeedMode string
+
+const (
+	fixtureDestroySeedCold          fixtureDestroySeedMode = ""
+	fixtureDestroySeedWarmCancelled fixtureDestroySeedMode = "warm-cancelled-v1"
+)
+
 const (
 	fixtureDestroySeedAttempted    fixtureDestroySeedState = "attempted"
 	fixtureDestroySeedAcknowledged fixtureDestroySeedState = "acknowledged"
@@ -14,7 +21,11 @@ const (
 // address derive ONLY from slot9, not this receipt or an observed matching name.
 // This is durability bookkeeping, not status transport/shape/cold/cleanup proof.
 // A lost status result must remain attempted; a later GET cannot become an ACK.
+// Mode is chosen by the closed workflow BEFORE intent, never from a GET shape.
+// Omitted cold preserves legacy bytes; the distinct warm intent cannot use cold
+// routes. Neither mode nor its durable receipt grants an effect by itself.
 type fixtureDestroySeedReceipt struct {
+	Mode                        fixtureDestroySeedMode  `json:"mode,omitempty"`
 	State                       fixtureDestroySeedState `json:"state"`
 	BeforeResourceVersion       string                  `json:"beforeResourceVersion"`
 	AcknowledgedResourceVersion string                  `json:"acknowledgedResourceVersion"`
@@ -25,7 +36,10 @@ func validFixtureDestroySeedDocument(d fixtureLedgerDocument) bool {
 		return true
 	}
 	r := d.DestroySeed
-	if len(d.Entries) != len(fixtureCatalog) || !fixtureRV(r.BeforeResourceVersion) {
+	if r.Mode != fixtureDestroySeedCold && r.Mode != fixtureDestroySeedWarmCancelled {
+		return false
+	}
+	if !validFixtureRecipe(d) || !fixtureRV(r.BeforeResourceVersion) {
 		return false
 	}
 	for _, entry := range d.Entries {
@@ -52,5 +66,5 @@ func validFixtureDestroySeedTransition(before, after fixtureLedgerDocument) bool
 	if before.DestroySeed == nil {
 		return after.DestroySeed.State == fixtureDestroySeedAttempted
 	}
-	return before.DestroySeed.State == fixtureDestroySeedAttempted && after.DestroySeed.State == fixtureDestroySeedAcknowledged && before.DestroySeed.BeforeResourceVersion == after.DestroySeed.BeforeResourceVersion
+	return before.DestroySeed.State == fixtureDestroySeedAttempted && after.DestroySeed.State == fixtureDestroySeedAcknowledged && before.DestroySeed.Mode == after.DestroySeed.Mode && before.DestroySeed.BeforeResourceVersion == after.DestroySeed.BeforeResourceVersion
 }

@@ -48,6 +48,12 @@ var (
 type Contract struct {
 	plan      *installrender.Plan
 	resources map[installstate.Key]installrender.Resource
+	templates map[templateKey]*Template
+}
+
+type templateKey struct {
+	key    installstate.Key
+	paused bool
 }
 
 // Template is a sealed signed desired state. Paused variants exist only for the
@@ -65,13 +71,20 @@ func New(plan *installrender.Plan) (*Contract, error) {
 	if !plan.IsTrusted() {
 		return nil, ErrInvalid
 	}
-	c := &Contract{plan: plan, resources: map[installstate.Key]installrender.Resource{}}
+	c := &Contract{plan: plan, resources: map[installstate.Key]installrender.Resource{}, templates: map[templateKey]*Template{}}
 	for _, r := range plan.Resources() {
 		o := r.Object
 		key := installstate.Key{APIVersion: o.GetAPIVersion(), Kind: o.GetKind(), Namespace: o.GetNamespace(), Name: o.GetName()}
 		c.resources[key] = r
-		if _, err := c.Template(key, false); err != nil {
-			return nil, err
+		for _, paused := range []bool{false, true} {
+			if paused && (key.Kind != "Deployment" || r.Phase != installrender.Controllers) {
+				continue
+			}
+			template, err := c.compileTemplate(key, paused)
+			if err != nil {
+				return nil, err
+			}
+			c.templates[templateKey{key, paused}] = template
 		}
 	}
 	return c, nil
@@ -81,6 +94,17 @@ func (c *Contract) Template(key installstate.Key, paused bool) (*Template, error
 	if c == nil || !c.plan.IsTrusted() {
 		return nil, ErrInvalid
 	}
+	t := c.templates[templateKey{key, paused}]
+	if t == nil {
+		return nil, ErrInvalid
+	}
+	// Only immutable signed compilation is shared. Public object accessors
+	// return defensive copies; actual live objects and observations are NEVER
+	// cached. All maps are completed before publication and read-only thereafter.
+	return t, nil
+}
+
+func (c *Contract) compileTemplate(key installstate.Key, paused bool) (*Template, error) {
 	r, exists := c.resources[key]
 	if !exists || paused && (key.Kind != "Deployment" || r.Phase != installrender.Controllers) {
 		return nil, ErrInvalid

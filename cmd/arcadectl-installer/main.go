@@ -1,9 +1,8 @@
 // Copyright 2026 gobha-me
 // SPDX-License-Identifier: Apache-2.0
 
-// arcadectl-installer is a separate Kubernetes administrator boundary. At this
-// checkpoint only read-only recovery inspection is available; lifecycle effects
-// require the complete closed proof provider, never partial successful checks.
+// arcadectl-installer is a separate Kubernetes administrator boundary. Its
+// lifecycle effects use the complete closed proof provider, never partial checks.
 package main
 
 import (
@@ -32,7 +31,7 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-const usage = "usage: arcadectl-installer inspect --namespace NAME --profile ID --bootstrap-package ABS_PATH --package ABS_PATH [--package ABS_PATH ...] --trust-key ABS_PATH --state-dir ABS_PATH --bootstrap-receipt NAME --kubeconfig ABS_PATH --context NAME [--timeout 5m]\nRead-only recovery inspection; lifecycle mutation commands remain unavailable.\n"
+const usage = "usage: arcadectl-installer COMMAND --namespace NAME --profile ID --bootstrap-package ABS_PATH --package ABS_PATH [--package ABS_PATH ...] --trust-key ABS_PATH --state-dir ABS_PATH --bootstrap-receipt NAME --kubeconfig ABS_PATH --context NAME [--timeout DURATION]\nCommands: inspect (read-only), install, upgrade, rollback, uninstall, resume.\nMutation commands require --api-ca ABS_PATH. Install requires --api-certificate ABS_PATH --api-key ABS_PATH; install/upgrade/rollback require --target-package ABS_PATH from the signed --package inputs. Optional --client-credential ABS_PATH selects current protected credentials, never inline secrets. Uninstall retains namespace, worlds, credentials and protections.\n"
 
 var errArguments = errors.New("invalid installation inspection arguments")
 var errInputs = errors.New("trusted installation inspection inputs are unavailable or invalid")
@@ -49,6 +48,7 @@ func (p *packagePaths) Set(value string) error {
 }
 
 type options struct {
+	command, targetPackage, apiCertificate, apiKey, apiCA, clientCredential                    string
 	namespace, profile, bootstrapPackage, trustKey, stateDir, receipt, kubeconfig, kubeContext string
 	packages                                                                                   packagePaths
 	timeout                                                                                    time.Duration
@@ -83,6 +83,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		_, _ = io.WriteString(stderr, installengine.ErrRecovery.Error()+"\n")
 		return 4
 	}
+	if o.command != "inspect" {
+		return runMutation(ctx, o, stdout, stderr)
+	}
 	reporter, receipt, files, err := loadReporter(o)
 	if err != nil {
 		_, _ = io.WriteString(stderr, errInputs.Error()+"\n")
@@ -108,10 +111,16 @@ func absolutePath(value string) bool {
 
 func parseOptions(args []string) (options, error) {
 	o := options{}
-	if len(args) == 0 || args[0] != "inspect" {
+	if len(args) == 0 {
 		return o, errArguments
 	}
-	set := flag.NewFlagSet("inspect", flag.ContinueOnError)
+	switch args[0] {
+	case "inspect", "install", "upgrade", "rollback", "uninstall", "resume":
+		o.command = args[0]
+	default:
+		return o, errArguments
+	}
+	set := flag.NewFlagSet(o.command, flag.ContinueOnError)
 	set.SetOutput(io.Discard)
 	set.StringVar(&o.namespace, "namespace", "", "explicit original installation namespace")
 	set.StringVar(&o.profile, "profile", "", "explicit signed profile")
@@ -122,14 +131,26 @@ func parseOptions(args []string) (options, error) {
 	set.StringVar(&o.receipt, "bootstrap-receipt", "", "original receipt filename")
 	set.StringVar(&o.kubeconfig, "kubeconfig", "", "explicit protected static Kubernetes configuration")
 	set.StringVar(&o.kubeContext, "context", "", "explicit Kubernetes context")
-	set.DurationVar(&o.timeout, "timeout", 5*time.Minute, "bounded inspection timeout")
-	if set.Parse(args[1:]) != nil || set.NArg() != 0 || !installrender.ValidNamespace(o.namespace) || o.profile == "" || o.kubeContext == "" || o.receipt == "" || len(o.packages) == 0 || o.timeout < time.Second || o.timeout > 5*time.Minute {
+	defaultTimeout, maxTimeout := 5*time.Minute, 5*time.Minute
+	if o.command != "inspect" {
+		defaultTimeout, maxTimeout = 2*time.Hour, 24*time.Hour
+		set.StringVar(&o.targetPackage, "target-package", "", "explicit signed target among package inputs")
+		set.StringVar(&o.apiCertificate, "api-certificate", "", "protected API certificate file")
+		set.StringVar(&o.apiKey, "api-key", "", "protected API private key file")
+		set.StringVar(&o.apiCA, "api-ca", "", "protected API trust file")
+		set.StringVar(&o.clientCredential, "client-credential", "", "current protected client credential file")
+	}
+	set.DurationVar(&o.timeout, "timeout", defaultTimeout, "bounded operation timeout")
+	if set.Parse(args[1:]) != nil || set.NArg() != 0 || !installrender.ValidNamespace(o.namespace) || o.profile == "" || o.kubeContext == "" || o.receipt == "" || len(o.packages) == 0 || o.timeout < time.Second || o.timeout > maxTimeout {
 		return options{}, errArguments
 	}
 	for _, path := range []string{o.bootstrapPackage, o.trustKey, o.stateDir, o.kubeconfig} {
 		if !absolutePath(path) {
 			return options{}, errArguments
 		}
+	}
+	if o.command != "inspect" && !validMutationOptions(o) {
+		return options{}, errArguments
 	}
 	return o, nil
 }

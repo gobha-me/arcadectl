@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/gobha-me/arcadectl/internal/installpackage"
@@ -20,6 +21,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	crdv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -87,6 +89,68 @@ func mustTemplate(t *testing.T, c *Contract, kind, name string, paused bool) *Te
 	}
 	t.Fatal("missing template")
 	return nil
+}
+
+func TestTemplateImmutableCompilationSharedWithDefensiveObjects(t *testing.T) {
+	c := testContract(t, false)
+	for key := range c.resources {
+		original, err := c.Template(key, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 3; i++ {
+			got, err := c.Template(key, false)
+			if err != nil || got != original {
+				t.Fatal("immutable signed template was recompiled")
+			}
+		}
+		want, err := c.compileTemplate(key, false)
+		if err != nil || original.Hash() != want.Hash() || !apiequality.Semantic.DeepEqual(original.expected, want.expected) {
+			t.Fatal("cached signed compilation changed the contract")
+		}
+	}
+	controller := mustTemplate(t, c, "Deployment", "arcadectl-controller", false)
+	paused := mustTemplate(t, c, "Deployment", "arcadectl-controller", true)
+	if controller == paused || controller.Hash() == paused.Hash() {
+		t.Fatal("paused and active signed variants aliased")
+	}
+	pausedFresh, err := c.compileTemplate(paused.Key(), true)
+	if err != nil || paused.Hash() != pausedFresh.Hash() || !apiequality.Semantic.DeepEqual(paused.expected, pausedFresh.expected) {
+		t.Fatal("cached paused compilation changed the signed variant")
+	}
+	if _, err := c.Template(mustTemplate(t, c, "Deployment", "arcadectl-api", false).Key(), true); err != ErrInvalid {
+		t.Fatal("API acquired an unapproved paused variant")
+	}
+	var workers sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for j := 0; j < 16; j++ {
+				shared, err := c.Template(controller.Key(), false)
+				if err != nil || shared != controller {
+					t.Error("concurrent immutable lookup changed the template")
+					return
+				}
+				candidate, err := controller.Candidate(strings.Repeat("a", 32))
+				pod, podErr := controller.PodTemplate()
+				if err != nil || podErr != nil {
+					t.Error("defensive signed objects unavailable")
+					return
+				}
+				candidate.SetName("foreign")
+				pod.Spec.Containers[0].Image = "foreign"
+			}
+		}()
+	}
+	workers.Wait()
+	if candidate, err := controller.Candidate(strings.Repeat("a", 32)); err != nil || candidate.GetName() != controller.Key().Name {
+		t.Fatal("candidate mutation escaped into the shared signed template")
+	}
+	pod, err := controller.PodTemplate()
+	if err != nil || pod.Spec.Containers[0].Image == "foreign" {
+		t.Fatal("pod mutation escaped into the shared signed template")
+	}
 }
 
 func liveObject(t *testing.T, template *Template) *unstructured.Unstructured {

@@ -18,17 +18,30 @@ var ErrInvalid = errors.New("invalid bounded JSON")
 
 const MaxBytes = 65536
 
+// Only immutable public-identity evidence uses this larger, explicit bound.
+// Settings, credentials and ordinary CanonicalJSON callers keep MaxBytes.
+const MaxEvidenceBytes = 32 * 1024 * 1024
+
 // CanonicalJSON rejects duplicate keys recursively and preserves exact numeric
 // values without float64 rounding. Equivalent number spellings canonicalize to
 // the same bounded exact representation. Integers retain integer JSON syntax
 // so adapter decoders with typed integer fields can consume them. Depth is bounded.
 func CanonicalJSON(input []byte) ([]byte, error) {
-	if len(input) == 0 || len(input) > MaxBytes || !utf8.Valid(input) {
+	return canonicalBounded(input, MaxBytes)
+}
+
+func CanonicalEvidenceJSON(input []byte) ([]byte, error) {
+	return canonicalBounded(input, MaxEvidenceBytes)
+}
+
+func canonicalBounded(input []byte, limit int) ([]byte, error) {
+	if len(input) == 0 || len(input) > limit || !utf8.Valid(input) {
 		return nil, ErrInvalid
 	}
 	decoder := json.NewDecoder(bytes.NewReader(input))
 	decoder.UseNumber()
-	value, err := decodeValue(decoder, 0)
+	budget := limit
+	value, err := decodeValue(decoder, 0, &budget)
 	if err != nil {
 		return nil, ErrInvalid
 	}
@@ -36,13 +49,29 @@ func CanonicalJSON(input []byte) ([]byte, error) {
 		return nil, ErrInvalid
 	}
 	output, err := json.Marshal(value)
-	if err != nil || len(output) > MaxBytes {
+	if err != nil || len(output) > limit {
 		return nil, ErrInvalid
 	}
 	return output, nil
 }
 
-func decodeValue(decoder *json.Decoder, depth int) (any, error) {
+// Charge canonical output while decoding, not after allocating an expanded
+// value graph. Short exponent spellings can otherwise amplify a bounded input
+// by orders of magnitude before Marshal's final output check.
+func spend(budget *int, size int) bool {
+	if budget == nil || size < 0 || *budget < size {
+		return false
+	}
+	*budget -= size
+	return true
+}
+
+func spendString(budget *int, value string) bool {
+	encoded, err := json.Marshal(value)
+	return err == nil && spend(budget, len(encoded))
+}
+
+func decodeValue(decoder *json.Decoder, depth int, budget *int) (any, error) {
 	if depth > 32 {
 		return nil, ErrInvalid
 	}
@@ -54,6 +83,9 @@ func decodeValue(decoder *json.Decoder, depth int) (any, error) {
 	case json.Delim:
 		switch value {
 		case '{':
+			if !spend(budget, 2) {
+				return nil, ErrInvalid
+			}
 			object := make(map[string]any)
 			for decoder.More() {
 				key, err := decoder.Token()
@@ -64,7 +96,10 @@ func decodeValue(decoder *json.Decoder, depth int) (any, error) {
 				if _, exists := object[name]; exists {
 					return nil, ErrInvalid
 				}
-				child, err := decodeValue(decoder, depth+1)
+				if !spendString(budget, name) || !spend(budget, 1) || len(object) != 0 && !spend(budget, 1) {
+					return nil, ErrInvalid
+				}
+				child, err := decodeValue(decoder, depth+1, budget)
 				if err != nil {
 					return nil, err
 				}
@@ -76,9 +111,15 @@ func decodeValue(decoder *json.Decoder, depth int) (any, error) {
 			}
 			return object, nil
 		case '[':
+			if !spend(budget, 2) {
+				return nil, ErrInvalid
+			}
 			array := make([]any, 0)
 			for decoder.More() {
-				child, err := decodeValue(decoder, depth+1)
+				if len(array) != 0 && !spend(budget, 1) {
+					return nil, ErrInvalid
+				}
+				child, err := decodeValue(decoder, depth+1, budget)
 				if err != nil {
 					return nil, err
 				}
@@ -92,9 +133,30 @@ func decodeValue(decoder *json.Decoder, depth int) (any, error) {
 		}
 		return nil, ErrInvalid
 	case json.Number:
-		return canonicalNumber(string(value))
-	case string, bool, nil:
+		number, err := canonicalNumber(string(value))
+		if err != nil || !spend(budget, len(number)) {
+			return nil, ErrInvalid
+		}
+		return number, nil
+	case string:
+		if !spendString(budget, value) {
+			return nil, ErrInvalid
+		}
 		return value, nil
+	case bool:
+		size := 5
+		if value {
+			size = 4
+		}
+		if !spend(budget, size) {
+			return nil, ErrInvalid
+		}
+		return value, nil
+	case nil:
+		if !spend(budget, 4) {
+			return nil, ErrInvalid
+		}
+		return nil, nil
 	default:
 		return nil, ErrInvalid
 	}

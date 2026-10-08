@@ -38,7 +38,7 @@ Fixed guidance requires preserving original signed packages, protected receipts
 and client/CA files; it forbids deleting the Namespace/PVCs or replaying an
 uncertain effect with a fresh candidate. This is observation and recovery
 guidance, **not** backup, coldness, detach, deletion or full lifecycle proof.
-The separate administrator boundary now exposes only read-only inspection:
+The separate administrator boundary exposes read-only inspection:
 
 ```sh
 GOMAXPROCS=2 GOMEMLIMIT=1GiB go build -p 1 ./cmd/arcadectl-installer
@@ -70,8 +70,90 @@ in-cluster credentials, system/default CA selection, environment kubeconfig
 merges/proxy routing, credential refresh or persistence. A stdout failure is an
 error and never leads to a mutation or retry. This command is not an API-client
 fallback; the ordinary CLI remains API-only and the package command offline.
-Lifecycle mutation commands and integrated runtime certification remain in
-development.
+The development binary also exposes `install`, `upgrade`, `rollback`, retaining
+`uninstall`, and explicit `resume`. These are **not production certified**;
+the full signed-binary lifecycle acceptance gate remains unfinished. Use only
+in an owned isolated test cluster until issue #27's acceptance evidence exists.
+
+Mutation commands use the same strict static kubeconfig/trust boundary and the
+closed production checkpoint provider. Add `--api-ca ABS_PATH`; for initial
+installation also supply `--api-certificate ABS_PATH --api-key ABS_PATH`.
+`install`, `upgrade` and `rollback` require `--target-package ABS_PATH`, which
+must be one of the independently signed `--package` inputs. `resume` continues
+the sealed journal's operation and target; it cannot turn an interrupted
+upgrade into a rollback. Rollback requires the declared, completed predecessor.
+
+Generated initial client/CA files are exported privately before Secret effects.
+Retained operations can select a current rotated protected client file with
+`--client-credential ABS_PATH`; they never regenerate a used candidate or bind
+activation to the old bootstrap credential. Fresh installation refuses a
+caller-selected client credential. The existing state directory must be safe
+mode 0700 with non-writable ancestors. The operation timeout defaults to two
+hours and is explicitly bounded to at most 24 hours. Failed effects are not
+automatically retried; read-only `inspect` precedes an explicit `resume`.
+
+The closed production provider waits up to five minutes for CRD establishment,
+healthy original admission-policy status, controller readiness and API/runtime shutdown using only the existing strict
+read-only proofs, fenced by the unchanged original journal on every attempt.
+It also waits for the complete initial phase before creating an admission
+fixture WAL, allowing an already-created original controller to finish startup
+and election while preserving absent/not-yet-created family semantics.
+After a reliably acknowledged original UID/RV foreground DELETE, the lifecycle
+only observes that exact intent for up to five minutes and independently
+CAS-settles actual absence. Lost responses, replacement UIDs, journal drift or
+read refusal remain pending; no DELETE is replayed by that wait. The lower-level
+single-attempt primitive and explicit uncertain-effect recovery are unchanged.
+Before the single authentication attempt, the complete original API serving
+fingerprint must remain unchanged across observations for five seconds within
+a three-minute bound. The caller's shorter deadline always wins. No effect,
+behavioral admission run or authentication is retried by these readiness waits;
+an incomplete or foreign observation never authorizes the next mutation.
+
+Retaining uninstall leaves the original namespace, world claims, administrator
+credentials and admission protections. It prints recovery guidance and has no
+world-destroy command. Explicit `resume` first uses the closed original-fixture
+recovery path: recorded attempted DELETEs are observation-only, while untouched
+originals require newly validated UID/RV cleanup. Unknown CREATE, status-seed or
+marker outcomes, and incomplete planned fixture runs remain fenced. Retirement
+never substitutes for a new admission proof. This integration still requires
+final tests and actual signed-binary lifecycle certification.
+
+Read-only SDK observers share a bounded 100-request/second, burst-20 budget when
+the original administrator configuration supplies no limiter, QPS or burst.
+Explicit settings remain unchanged. This avoids resetting an independent burst
+for every reconstructed observer. It changes neither mutation transports nor
+authorization, scan completeness, response/page/memory limits or retry rules.
+
+The complete admission phase brackets EACH of its two full read-only passes
+with fresh original actor/policy/journal witnesses. Within a pass, pinned
+durable WAL/world identity is checked at every intermediate boundary, while
+all native discovery/SSAR, typed and metadata pages, named GETs, storage checks,
+paired whole Leases and final GC rediscoveries remain mandatory. The closing
+remote witness and post-read local checks must succeed before its evidence or
+phase floor advances. This private read boundary grants no effect, recovery,
+retirement or reusable authorization; unbound GC and Lease observations keep
+their full intermediate remote guards. These repeated observations are not an
+atomic namespace snapshot or a continuous authorization guarantee.
+
+The development native gates are separate and mandatory in the proposed CI:
+four complete public admission runs (profiles 135/137, cold/warm) and three actual
+signed-installer executable runs. Both profiles exercise current-package fresh
+install and retaining uninstall. A separate profile-137 transition run installs
+the exact declared legacy package, upgrades to the current package, rolls back
+and retains worlds on uninstall. Its predecessor runtime images are built from the pinned original
+Git tree, not current code carrying predecessor labels; that CI job fetches the
+original tracked history. The binary harness creates no Arcade resource before
+invoking the installer and does not directly bind/fabricate a journal stage.
+Each binary fixture has a finite 330-minute outer budget, below its 340-minute
+Go test and 350-minute CI job bounds. Every individual command and behavioral
+proof still has its own shorter deadline; no old result replaces current proof.
+
+Those executable tests also preserve the exact namespace, retained protection
+and Secret identities, unchanged local client/CA bytes, and two nonbinding
+Pending namespace claims (managed and unlabeled). This is claim retention, not
+new physical-world/backup evidence; the existing real Factorio/CSI lifecycle and
+recovery jobs remain required separately. These gates are still local additions
+pending compilation/native execution and do not certify this development tree.
 
 ```sh
 GOMAXPROCS=2 GOMEMLIMIT=1GiB go build -p 1 ./cmd/arcadectl-package

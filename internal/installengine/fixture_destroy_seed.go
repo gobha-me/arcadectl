@@ -24,6 +24,9 @@ const (
 // no confirmation is persisted. Cancelled status alone does not prove coldness:
 // a running controller may still add a finalizer and perform terminal cleanup.
 func (f *fixtureLedger) destroySeedStatus() (map[string]any, error) {
+	if f == nil || f.document.DestroySeed != nil && f.document.DestroySeed.Mode != fixtureDestroySeedCold {
+		return nil, ErrFixtures
+	}
 	if _, err := f.object(fixtureCancelledDestroy); err != nil {
 		return nil, ErrFixtures
 	}
@@ -54,7 +57,7 @@ func fixtureDestroySeedFieldset() map[string]any {
 // settle an unknown effect or relax the active fixture WAL fence.
 func (f *fixtureLedger) validateDestroySeedResult(result *unstructured.Unstructured, observedAt time.Time) error {
 	expiry := time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC)
-	if result == nil || observedAt.Year() > 9999 || !observedAt.After(expiry) {
+	if f == nil || f.document.DestroySeed != nil && f.document.DestroySeed.Mode != fixtureDestroySeedCold || result == nil || observedAt.Year() > 9999 || !observedAt.After(expiry) {
 		return ErrFixtures
 	}
 	status, err := f.destroySeedStatus()

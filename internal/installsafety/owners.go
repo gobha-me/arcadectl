@@ -39,6 +39,21 @@ type ownerObservation struct {
 	deleting bool
 }
 
+// ValidateRetainedOwnerClosure is only the pure retention/ancestor portion of
+// safety, shared by the full admission phase over its COMPLETE observation.
+// It grants no fixture exemption, mutation, domain/worker settlement or cold
+// checkpoint. The inventory must remain the original signed journal inventory.
+func ValidateRetainedOwnerClosure(plan *installrender.Plan, s *Snapshot, inventory []installstate.Resource) error {
+	if !plan.IsTrusted() || !complete(s) {
+		return ErrInvalid
+	}
+	owned, removable, err := inventoryContract(plan, inventory)
+	if err != nil {
+		return err
+	}
+	return validateOwnerClosure(plan, s, inventory, owned, removable)
+}
+
 func validateOwnerClosure(plan *installrender.Plan, s *Snapshot, inventory []installstate.Resource, owned map[installstate.Key]types.UID, removable map[types.UID]bool) error {
 	if len(s.Owners) > MaxOwnerGraphNodes {
 		return ErrInvalid

@@ -210,6 +210,9 @@ func proveKindFixtureGCMetadata(t *testing.T, ctx context.Context, wire *fixture
 	if len(selected) != 2 || !selected[bridge.GetUID()] || !selected[child.GetUID()] {
 		t.Fatal("native custom intermediary omitted or benign custom objects selected")
 	}
+	if settled, err := wire.settledFixtures(ctx); err != ErrFixtures || settled != nil {
+		t.Fatal("native original fixture composition ignored the custom descendant chain")
+	}
 	durable, gotIdentity, err := ledger.engine.files.Read(ledger.name, fixtureLedgerMaxBytes)
 	if err != nil || !bytes.Equal(wal, durable) || !bytes.Equal(wal, ledger.body) || gotIdentity != identity || ledger.identity != identity || ledger.document.Revision != revision || ledger.ackSlot != ack || ledger.effectSlot != effect || ledger.engine.fixtureFence(wire.actors.request.Snapshot) != ErrFixtures {
 		t.Fatal("native GC reads changed protected WAL/capabilities/fence")

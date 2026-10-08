@@ -16,7 +16,7 @@ import (
 // The provider must pair distinct-admin acceptance with exact controller policy
 // denial and uncached byte-exact original observation after EVERY dry-run.
 func (f *fixtureLedger) validateDestroyConfirmationResult(result *unstructured.Unstructured, observedAt time.Time) error {
-	if result == nil || f == nil || f.document.DestroySeed == nil || f.document.DestroySeed.State != fixtureDestroySeedAcknowledged || result.GetResourceVersion() != f.document.DestroySeed.AcknowledgedResourceVersion || result.GetGeneration() != 2 {
+	if result == nil || f == nil || f.document.DestroySeed == nil || f.document.DestroySeed.Mode != fixtureDestroySeedCold || f.document.DestroySeed.State != fixtureDestroySeedAcknowledged || result.GetResourceVersion() != f.document.DestroySeed.AcknowledgedResourceVersion || result.GetGeneration() != 2 {
 		return ErrFixtures
 	}
 	want, err := f.object(fixtureCancelledDestroy)

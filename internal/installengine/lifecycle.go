@@ -459,7 +459,7 @@ func (l *Lifecycle) quiesce(ctx context.Context, s *installstate.Snapshot, opts 
 	}
 	api := installstate.Key{APIVersion: "apps/v1", Kind: "Deployment", Namespace: d.Namespace, Name: "arcadectl-api"}
 	if r, _ := l.engine.inventory(d, api); r != nil {
-		return l.engine.Delete(ctx, s, api)
+		return l.engine.delete(ctx, s, api, true)
 	}
 	if err := l.check(ctx, APIStopped, s, opts); err != nil {
 		return s, err
@@ -659,5 +659,5 @@ func (l *Lifecycle) uninstall(ctx context.Context, s *installstate.Snapshot, opt
 	if accessRetirementKey(runtime[0].Key) && s.Document().AdmissionRetirementRevision == 0 {
 		return l.retireAdmission(ctx, s, opts)
 	}
-	return l.engine.Delete(ctx, s, runtime[0].Key)
+	return l.engine.delete(ctx, s, runtime[0].Key, true)
 }

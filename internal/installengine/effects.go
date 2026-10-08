@@ -284,6 +284,12 @@ func effectMatches(t *installcontract.Template, p *installstate.Pending, live *u
 // deletion acceptance is not completion: settlement waits for actual absence.
 // The caller MUST already prove GC retention closure and lifecycle quiescence.
 func (e *Engine) Delete(ctx context.Context, s *installstate.Snapshot, key installstate.Key) (*installstate.Snapshot, error) {
+	return e.delete(ctx, s, key, false)
+}
+
+// Only lifecycle orchestration requests waiting for a reliably acknowledged
+// DELETE. The public single-attempt primitive retains its recovery contract.
+func (e *Engine) delete(ctx context.Context, s *installstate.Snapshot, key installstate.Key, awaitAcknowledgement bool) (*installstate.Snapshot, error) {
 	fresh, err := e.current(ctx, s)
 	if err != nil {
 		return nil, err
@@ -316,7 +322,10 @@ func (e *Engine) Delete(ctx context.Context, s *installstate.Snapshot, key insta
 	}
 	uid, rv := p.BeforeUID, p.BeforeResourceVersion
 	foreground := metav1.DeletePropagationForeground
-	_ = e.access.Delete(ctx, key, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &rv}, PropagationPolicy: &foreground})
+	deleteErr := e.access.Delete(ctx, key, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &rv}, PropagationPolicy: &foreground})
+	if awaitAcknowledgement && deleteErr == nil {
+		return e.waitAcknowledgedDelete(ctx, intent)
+	}
 	return e.recover(ctx, intent, nil, false, false)
 }
 

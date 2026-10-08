@@ -23,15 +23,22 @@ import (
 	"github.com/gobha-me/arcadectl/internal/installstate"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
 	strictjson "sigs.k8s.io/json"
 )
 
 type probeCapture struct {
-	method   string
-	url      string
-	body     []byte
-	expected map[string]any
-	denied   atomic.Bool
+	method                  string
+	url                     string
+	body                    []byte
+	expected                map[string]any
+	denied                  atomic.Bool
+	operation               admissionProbeOperation
+	key                     installstate.Key
+	originalUID             types.UID
+	originalResourceVersion string
+	reply                   *unstructured.Unstructured
+	accepted                atomic.Bool
 }
 
 // guard runs BELOW wrappers and BEFORE the wire. A wrapper cannot turn a
@@ -201,7 +208,7 @@ func (a *HTTPAccess) probeOperation(ctx context.Context, operation admissionProb
 	if err != nil || len(body) > 65536 {
 		return nil, ErrInvalid
 	}
-	capture := &probeCapture{method: method, url: u.String(), body: body}
+	capture := &probeCapture{method: method, url: u.String(), body: body, operation: operation, key: key, originalUID: object.GetUID(), originalResourceVersion: object.GetResourceVersion()}
 	if negative {
 		expected, err := expectedProbeDenial(key, plural, policy, binding, validation)
 		if err != nil {
@@ -242,16 +249,13 @@ func (a *HTTPAccess) probeOperation(ctx context.Context, operation admissionProb
 	if err != nil || typ != "application/json" {
 		return nil, ErrAdmission
 	}
-	raw, err := io.ReadAll(io.LimitReader(response.Body, 1024*1024+1))
-	if err != nil || len(raw) == 0 || len(raw) > 1024*1024 || !utf8.Valid(raw) || !boundedJSON(raw) {
+	// The inner single-attempt guard captured and bounded the native reply
+	// BEFORE client-go/debug/identity wrappers. Their body cannot substitute
+	// evidence or fabricate a success without the exact underlying request.
+	result := capture.positiveResult()
+	if result == nil {
 		return nil, ErrAdmission
 	}
-	var fields map[string]any
-	strictErrors, err := strictjson.UnmarshalStrict(raw, &fields)
-	if err != nil || len(strictErrors) != 0 || fields == nil {
-		return nil, ErrAdmission
-	}
-	result := &unstructured.Unstructured{Object: fields}
 	if result.GetAPIVersion() != key.APIVersion || result.GetKind() != key.Kind || result.GetNamespace() != key.Namespace || result.GetName() != key.Name {
 		return nil, ErrAdmission
 	}

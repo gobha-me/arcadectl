@@ -28,6 +28,7 @@ func TestInstallerRaceShardsDiscoverUnicodeTestsAndKeepCompleteTrees(t *testing.
     printf '%s\n' "$*"
   fi
 }
+
 export -f go
 exec bash "$@"`
 	combined := []string{}

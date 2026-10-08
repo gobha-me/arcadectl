@@ -25,7 +25,7 @@ import (
 	strictjson "sigs.k8s.io/json"
 )
 
-// proofRequest is private and used only by fixed version, discovery, named PV and
+// proofRequest is private and used only by fixed version, discovery, named PV,
 // authorization methods below. It exposes neither arbitrary routes nor retrying
 // SDK clients. Authorization POSTs are nonpersistent evaluations, not effects.
 func (a *HTTPAccess) proofRequest(ctx context.Context, method, path string, body any, out any) (map[string]any, error) {

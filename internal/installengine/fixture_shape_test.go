@@ -32,10 +32,18 @@ func captureNativeFixtureShape(f *fixtureLedger, slot int, stage string, o *unst
 	if dir == "" {
 		return nil
 	}
-	if f == nil || o == nil || slot < 0 || slot >= len(fixtureCatalog) || stage != "ack" && stage != "live" && (stage != "seed" || slot != fixtureCancelledDestroy) {
+	markerStage := stage == "retained-marker-learning" && slot == fixtureRetainedPVC
+	warmCancelledStage := stage == "warm-cancelled" && (slot == fixtureCancelledDestroy || slot == fixtureVerifiedCancelledDestroy)
+	if f == nil || o == nil || slot < 0 || slot >= len(fixtureCatalogFor(f.document)) || !markerStage && !warmCancelledStage && stage != "ack" && stage != "live" && (stage != "seed" && stage != "warm-seed-learning" && stage != "warm-seeded" && stage != "warm-confirmation" || slot != fixtureCancelledDestroy) {
 		return ErrFixtures
 	}
 	want, err := f.object(slot)
+	if markerStage && err == nil {
+		want, err = retainedMarkerLearningRecipe(f)
+	}
+	if stage == "warm-confirmation" && err == nil {
+		err = unstructured.SetNestedField(want.Object, f.document.RunID, "spec", "confirmationChallenge")
+	}
 	if err != nil || !reflect.DeepEqual(o.Object["spec"], want.Object["spec"]) || !reflect.DeepEqual(o.GetLabels(), want.GetLabels()) || !reflect.DeepEqual(o.GetAnnotations(), want.GetAnnotations()) || !reflect.DeepEqual(o.GetOwnerReferences(), want.GetOwnerReferences()) || o.GetAPIVersion() != want.GetAPIVersion() || o.GetKind() != want.GetKind() || o.GetName() != want.GetName() || o.GetNamespace() != want.GetNamespace() || o.GetUID() != f.document.Entries[slot].OriginalUID || !nativeFixtureUID(string(o.GetUID())) {
 		return ErrFixtures
 	}
@@ -64,6 +72,21 @@ func captureNativeFixtureShape(f *fixtureLedger, slot int, stage string, o *unst
 		if err != nil || !reflect.DeepEqual(o.Object["status"], status) {
 			return ErrFixtures
 		}
+	}
+	if stage == "warm-cancelled" && f.validateWarmCancelledDestroySlotResult(slot, o, time.Now().UTC()) != nil {
+		return ErrFixtures
+	}
+	if stage == "warm-seed-learning" && warmSeedLearningPublic(f, o, time.Now().UTC()) != nil {
+		return ErrFixtures
+	}
+	if stage == "warm-seeded" && f.validateWarmDestroySeedResult(o, time.Now().UTC()) != nil {
+		return ErrFixtures
+	}
+	if stage == "warm-confirmation" && f.validateWarmDestroyConfirmationResult(o, time.Now().UTC()) != nil {
+		return ErrFixtures
+	}
+	if markerStage && retainedMarkerLearningPublic(f, o, time.Now().UTC()) != nil {
+		return ErrFixtures
 	}
 	shape := map[string]any{"apiVersion": o.Object["apiVersion"], "kind": o.Object["kind"], "metadata": o.Object["metadata"]}
 	if status, present := o.Object["status"]; present {
@@ -100,6 +123,14 @@ func captureNativeFixtureShape(f *fixtureLedger, slot int, stage string, o *unst
 		return ErrFixtures
 	}
 	return nil
+}
+
+// Test-only diagnostic boundary for learning native warm bookkeeping. It
+// accepts only the public fixed cancellation status and sole native finalizer;
+// it is NOT a whole managedFields validator, effect authority or cold proof.
+// The production cold/seed validators are deliberately unchanged.
+func nativeWarmCancellationStatus(o *unstructured.Unstructured, observed time.Time) error {
+	return fixtureWarmCancellationStatus(o, observed)
 }
 
 func TestNativeFixtureShapeCaptureIsPrivateClosedAndOffByDefault(t *testing.T) {
