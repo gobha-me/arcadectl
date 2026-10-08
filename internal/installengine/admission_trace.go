@@ -126,6 +126,15 @@ const (
 	admissionPhaseFixtureCorrelation
 	admissionPhaseFinalConfigured
 	admissionPhaseFinalPublic
+	admissionPhaseGCOpening
+	admissionPhaseGCMetadataPages
+	admissionPhaseGCMetadataShape
+	admissionPhaseGCMetadataUIDs
+	admissionPhaseGCLeasePages
+	admissionPhaseGCLeaseMembership
+	admissionPhaseGCLeaseCorrelation
+	admissionPhaseGCLeaseSource
+	admissionPhaseGCClosing
 	admissionPhaseComplete
 )
 
@@ -165,6 +174,24 @@ func (step admissionPhaseStep) String() string {
 		return "final-configured"
 	case admissionPhaseFinalPublic:
 		return "final-public"
+	case admissionPhaseGCOpening:
+		return "gc-opening"
+	case admissionPhaseGCMetadataPages:
+		return "gc-metadata-pages"
+	case admissionPhaseGCMetadataShape:
+		return "gc-metadata-shape"
+	case admissionPhaseGCMetadataUIDs:
+		return "gc-metadata-uid-correlation"
+	case admissionPhaseGCLeasePages:
+		return "gc-lease-pages"
+	case admissionPhaseGCLeaseMembership:
+		return "gc-lease-membership"
+	case admissionPhaseGCLeaseCorrelation:
+		return "gc-lease-correlation"
+	case admissionPhaseGCLeaseSource:
+		return "gc-lease-source"
+	case admissionPhaseGCClosing:
+		return "gc-closing"
 	case admissionPhaseComplete:
 		return "complete"
 	}

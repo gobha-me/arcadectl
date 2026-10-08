@@ -377,6 +377,12 @@ func TestGCReaderLeasePagesReadLastWithoutChangingSealedCatalogue(t *testing.T) 
 }
 
 func TestGCReaderPairedLeasesCompleteStrictAndSealed(t *testing.T) {
+	stages := map[string]string{
+		"": "complete", "late-denial": "lease-pages", "page-rv": "lease-pages",
+		"missing": "lease-membership", "rv": "lease-correlation", "uid": "lease-correlation",
+		"name": "lease-correlation", "owner": "lease-correlation", "unknown-field": "lease-pages",
+		"post-discovery": "closing", "post-journal": "closing",
+	}
 	for _, fault := range []string{"", "late-denial", "page-rv", "missing", "rv", "uid", "name", "owner", "unknown-field", "post-discovery", "post-journal"} {
 		t.Run("paired-"+fault, func(t *testing.T) {
 			h := newGCHTTPFixture(t, "lease-last")
@@ -404,6 +410,9 @@ func TestGCReaderPairedLeasesCompleteStrictAndSealed(t *testing.T) {
 			observation, err := h.g.CollectWithLeases(t.Context(), discovery)
 			if (err == nil) != (fault == "") || err != nil && observation != nil {
 				t.Fatal("incomplete/inconsistent whole Lease pages became sealed evidence", err)
+			}
+			if h.g.DiagnosticStage() != stages[fault] {
+				t.Fatal("fixed diagnostic did not identify the actual collection boundary", h.g.DiagnosticStage())
 			}
 			if err != nil {
 				return
@@ -437,6 +446,9 @@ func TestGCReaderPairedLeasesRequiresCanonicalDiscoveredSource(t *testing.T) {
 	if observation, err := h.g.CollectWithLeases(t.Context(), discovery); err == nil || observation != nil || h.wholeReads != 0 {
 		t.Fatal("missing canonical Lease source produced paired evidence")
 	}
+	if h.g.DiagnosticStage() != "lease-source" {
+		t.Fatal("missing Lease source diagnostic unavailable")
+	}
 }
 
 func TestGCReaderDiscoveryRequiresExplicitDecisionFields(t *testing.T) {
@@ -466,12 +478,48 @@ func TestGCReaderEventsRequireExactKnownAliasMetadata(t *testing.T) {
 				if err == nil || observation != nil {
 					t.Fatal("conflicting alias or same-source duplicate accepted")
 				}
+				expected := "metadata-uid-correlation"
+				if fault == "event-duplicate" {
+					expected = "metadata-shape"
+				}
+				if h.g.DiagnosticStage() != expected {
+					t.Fatal("Event refusal diagnostic unavailable", h.g.DiagnosticStage())
+				}
 				return
 			}
 			if err != nil || observation == nil || len(observation.Objects()) != 134 || h.lists != 6 {
 				t.Fatal("identical known Event alias was not completely observed", err)
 			}
 		})
+	}
+}
+
+func TestGCReaderDiagnosticClosedStagesAndInvalidAttemptReset(t *testing.T) {
+	labels := map[uint32]string{
+		gcStageOpening: "opening", gcStageMetadataPages: "metadata-pages",
+		gcStageMetadataShape: "metadata-shape", gcStageMetadataUIDs: "metadata-uid-correlation",
+		gcStageLeasePages: "lease-pages", gcStageLeaseMembership: "lease-membership",
+		gcStageLeaseCorrelation: "lease-correlation", gcStageLeaseSource: "lease-source",
+		gcStageClosing: "closing", gcStageComplete: "complete",
+	}
+	g := &GCReader{}
+	for value := range uint32(256) {
+		g.diagnostic.Store(value)
+		expected := labels[value]
+		if expected == "" {
+			expected = "unknown"
+		}
+		if g.DiagnosticStage() != expected {
+			t.Fatal("diagnostic escaped its fixed labels")
+		}
+	}
+	g.diagnostic.Store(^uint32(0))
+	if g.DiagnosticStage() != "unknown" || (*GCReader)(nil).DiagnosticStage() != "unknown" {
+		t.Fatal("corrupt or absent diagnostic manufactured a label")
+	}
+	g.diagnostic.Store(gcStageComplete)
+	if observation, err := g.Collect(nil, nil); observation != nil || err != ErrInvalid || g.DiagnosticStage() != "unknown" {
+		t.Fatal("invalid attempt retained stale progress or changed public refusal")
 	}
 }
 

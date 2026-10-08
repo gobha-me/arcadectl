@@ -169,6 +169,12 @@ or replay. A diagnostic identifies an attempted/refused boundary, not its sole
 cause or successful certification; all public errors and mandatory reads stay
 unchanged.
 
+Collection refusals further distinguish fixed opening/closing barriers,
+metadata pages/shape/UID correlation, and whole Lease pages/membership/metadata
+correlation. These labels do not disclose resource names, versions, paths or
+responses, and do not distinguish a benign renewal from an unsafe replacement.
+They cannot authorize retries or relaxation of ownership checks.
+
 The development native gates are separate and mandatory in the committed CI:
 four complete public admission runs (profiles 135/137, cold/warm) and three actual
 signed-installer executable runs. Both profiles exercise current-package fresh

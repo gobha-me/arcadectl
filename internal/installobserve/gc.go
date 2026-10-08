@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -43,10 +44,56 @@ type GCObject struct {
 // The engine must independently authorize each exact namespace LIST using its
 // frozen administrator, then bind these reads to its WAL/actor/world witnesses.
 type GCReader struct {
-	observer *Observer
-	root     *http.Client
-	base     *url.URL
+	observer   *Observer
+	root       *http.Client
+	base       *url.URL
+	diagnostic atomic.Uint32
 }
+
+// DiagnosticStage reports only a fixed collection boundary, never an object,
+// source, identity, response or raw error. Read it after Collect returns; it is
+// not evidence, an authority, a retry classification or a concurrent snapshot.
+func (g *GCReader) DiagnosticStage() string {
+	if g == nil {
+		return "unknown"
+	}
+	switch g.diagnostic.Load() {
+	case gcStageOpening:
+		return "opening"
+	case gcStageMetadataPages:
+		return "metadata-pages"
+	case gcStageMetadataShape:
+		return "metadata-shape"
+	case gcStageMetadataUIDs:
+		return "metadata-uid-correlation"
+	case gcStageLeasePages:
+		return "lease-pages"
+	case gcStageLeaseMembership:
+		return "lease-membership"
+	case gcStageLeaseCorrelation:
+		return "lease-correlation"
+	case gcStageLeaseSource:
+		return "lease-source"
+	case gcStageClosing:
+		return "closing"
+	case gcStageComplete:
+		return "complete"
+	}
+	return "unknown"
+}
+
+const (
+	gcStageOpening uint32 = iota + 1
+	gcStageMetadataPages
+	gcStageMetadataShape
+	gcStageMetadataUIDs
+	gcStageLeasePages
+	gcStageLeaseMembership
+	gcStageLeaseCorrelation
+	gcStageLeaseSource
+	gcStageClosing
+	gcStageComplete
+)
 
 // GCDiscovery is sealed to its reader and original journal. Its public source
 // copies let the engine establish exact LIST SSARs before Collect. Neither a
@@ -208,6 +255,9 @@ func (g *GCReader) CollectWithLeases(ctx context.Context, discovery *GCDiscovery
 }
 
 func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeases bool) (*GCObservation, error) {
+	if g != nil {
+		g.diagnostic.Store(0)
+	}
 	if ctx == nil || g == nil || discovery == nil || discovery.reader != g || discovery.journal == nil {
 		return nil, ErrInvalid
 	}
@@ -217,6 +267,7 @@ func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeas
 		fresh, err := g.Discover(ctx, discovery.journal.Anchor())
 		return err == nil && sameGCJournal(discovery.journal, fresh.journal) && reflect.DeepEqual(discovery.catalogue, fresh.catalogue) && reflect.DeepEqual(discovery.resources, fresh.resources)
 	}
+	g.diagnostic.Store(gcStageOpening)
 	if !current() {
 		return nil, ErrConcurrent
 	}
@@ -241,6 +292,7 @@ func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeas
 	}
 	for _, source := range readOrder {
 		start := len(objects)
+		g.diagnostic.Store(gcStageMetadataPages)
 		items, _, err := boundedPages(ctx, func(ctx context.Context, opts metav1.ListOptions) (runtime.Object, error) {
 			return g.observer.clients.Metadata.Resource(source.GVR).Namespace(discovery.journal.Anchor().Namespace).List(ctx, opts)
 		}, &budget)
@@ -249,6 +301,7 @@ func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeas
 		}
 		seen := map[string]bool{}
 		for _, item := range items {
+			g.diagnostic.Store(gcStageMetadataShape)
 			m, ok := item.(*metav1.PartialObjectMetadata)
 			key := installstate.Key{APIVersion: source.GVR.GroupVersion().String(), Kind: source.Kind, Namespace: discovery.journal.Anchor().Namespace}
 			if !ok || m == nil {
@@ -265,6 +318,7 @@ func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeas
 			}
 			seen[m.Name] = true
 			object := GCObject{source, publicMetadata(m)}
+			g.diagnostic.Store(gcStageMetadataUIDs)
 			if prior, exists := identities[m.UID]; exists && !gcEventAlias(prior, object) {
 				return nil, ErrOwnership
 			}
@@ -275,15 +329,18 @@ func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeas
 			}
 		}
 		if pairLeases && source.GVR.Group == "coordination.k8s.io" && source.GVR.Resource == "leases" {
+			g.diagnostic.Store(gcStageLeaseSource)
 			if source.GVR.Version != "v1" || source.Kind != "Lease" || leases != nil {
 				return nil, ErrRead
 			}
 			leases = &coordinationv1.LeaseList{}
 			c := collection{"coordination.k8s.io/v1", "Lease", "leases", true, leases}
+			g.diagnostic.Store(gcStageLeasePages)
 			if g.observer.collectList(ctx, c, newOwnerGraph(g.observer, nil, []collection{c}), &budget) != nil {
 				return nil, ErrRead
 			}
 			leasesReadAt = time.Now().UTC()
+			g.diagnostic.Store(gcStageLeaseMembership)
 			if len(leases.Items) != len(objects)-start {
 				return nil, ErrConcurrent
 			}
@@ -291,6 +348,7 @@ func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeas
 			for _, row := range objects[start:] {
 				byUID[row.Metadata.UID] = row.Metadata
 			}
+			g.diagnostic.Store(gcStageLeaseCorrelation)
 			for index := range leases.Items {
 				lease := &leases.Items[index]
 				m, ok := byUID[lease.UID]
@@ -300,19 +358,23 @@ func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeas
 				delete(byUID, lease.UID)
 			}
 			if len(byUID) != 0 {
+				g.diagnostic.Store(gcStageLeaseMembership)
 				return nil, ErrConcurrent
 			}
 		}
 	}
 	if pairLeases && leases == nil {
+		g.diagnostic.Store(gcStageLeaseSource)
 		return nil, ErrRead
 	}
+	g.diagnostic.Store(gcStageClosing)
 	if !current() {
 		return nil, ErrConcurrent
 	}
 	// Preserve the public observation's original canonical source order despite
 	// scheduling Lease requests last; within-source page/item order is unchanged.
 	slices.SortStableFunc(objects, func(a, b GCObject) int { return strings.Compare(a.Source.GVR.String(), b.Source.GVR.String()) })
+	g.diagnostic.Store(gcStageComplete)
 	return &GCObservation{journal: discovery.journal, objects: objects, leases: leases, leasesReadAt: leasesReadAt}, nil
 }
 

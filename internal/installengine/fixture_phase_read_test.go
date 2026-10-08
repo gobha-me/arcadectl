@@ -105,6 +105,12 @@ func TestFixturePhaseReadPassKeepsCompleteCollectionsAndNativeRefusals(t *testin
 					t.Fatal("read pass accepted native refusal or late remote drift", fault, err)
 				}
 				expected := "gc-collections"
+				if fault == "metadata-forbidden" {
+					expected = "gc-metadata-pages"
+				}
+				if fault == "final-discovery-refused" {
+					expected = "gc-closing"
+				}
 				if fault == "late-policy-restored" {
 					expected = "public-after"
 				}

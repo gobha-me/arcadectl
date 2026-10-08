@@ -114,6 +114,11 @@ func TestAdmissionPhaseTraceClosedStagesAndNoArbitraryValues(t *testing.T) {
 		admissionPhaseStorage: "storage", admissionPhaseGC: "gc-collections", admissionPhaseLeaders: "original-leaders",
 		admissionPhaseOwners: "owner-closure", admissionPhasePublicAfter: "public-after", admissionPhaseFixtureCorrelation: "fixture-correlation",
 		admissionPhaseFinalConfigured: "final-configured", admissionPhaseFinalPublic: "final-public", admissionPhaseComplete: "complete",
+		admissionPhaseGCOpening: "gc-opening", admissionPhaseGCMetadataPages: "gc-metadata-pages",
+		admissionPhaseGCMetadataShape: "gc-metadata-shape", admissionPhaseGCMetadataUIDs: "gc-metadata-uid-correlation",
+		admissionPhaseGCLeasePages: "gc-lease-pages", admissionPhaseGCLeaseMembership: "gc-lease-membership",
+		admissionPhaseGCLeaseCorrelation: "gc-lease-correlation", admissionPhaseGCLeaseSource: "gc-lease-source",
+		admissionPhaseGCClosing: "gc-closing",
 	}
 	for value := range 256 {
 		step := admissionPhaseStep(value)

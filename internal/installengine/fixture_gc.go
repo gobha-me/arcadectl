@@ -68,6 +68,30 @@ func (w *fixtureWire) gcMetadataReadLocked(ctx context.Context, pairLeases bool,
 		observation, err = reader.Collect(ctx, discovery)
 	}
 	if err != nil || observation == nil {
+		// Fixed same-attempt diagnostics only. The public refusal and every
+		// required read remain unchanged; this is not a retry decision.
+		var step admissionPhaseStep
+		switch reader.DiagnosticStage() {
+		case "opening":
+			step = admissionPhaseGCOpening
+		case "metadata-pages":
+			step = admissionPhaseGCMetadataPages
+		case "metadata-shape":
+			step = admissionPhaseGCMetadataShape
+		case "metadata-uid-correlation":
+			step = admissionPhaseGCMetadataUIDs
+		case "lease-pages":
+			step = admissionPhaseGCLeasePages
+		case "lease-membership":
+			step = admissionPhaseGCLeaseMembership
+		case "lease-correlation":
+			step = admissionPhaseGCLeaseCorrelation
+		case "lease-source":
+			step = admissionPhaseGCLeaseSource
+		case "closing":
+			step = admissionPhaseGCClosing
+		}
+		traceAdmissionPhase(ctx, step, -1)
 		return nil, ErrFixtures
 	}
 	journal := observation.Journal()
