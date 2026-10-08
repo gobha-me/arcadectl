@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gobha-me/arcadectl/internal/installstate"
 	"github.com/gobha-me/arcadectl/internal/privatefs"
@@ -42,7 +43,11 @@ func TestAdmissionRetirementForegroundDeletionRemainsPendingUntilAbsent(t *testi
 		v.f.access.objects[key].SetFinalizers([]string{metav1.FinalizerDeleteDependents})
 		return nil, nil
 	}
-	next, err := v.l.Step(context.Background(), s, v.opts)
+	// Simulated GC cannot remove the original until this call returns. Bound
+	// only the ACK-observation wait, not the later explicit recovery checks.
+	ctx, cancel := context.WithTimeout(t.Context(), 2500*time.Millisecond)
+	defer cancel()
+	next, err := v.l.Step(ctx, s, v.opts)
 	if err == nil || next == nil || next.Document().Pending == nil {
 		t.Fatal("foreground acceptance was treated as completed removal")
 	}
