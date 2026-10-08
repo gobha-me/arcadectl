@@ -5,6 +5,7 @@ package installengine
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -96,12 +97,24 @@ func TestFixturePhaseReadPassKeepsCompleteCollectionsAndNativeRefusals(t *testin
 				}
 			}
 			body, identity := bytes.Clone(ledger.body), ledger.identity
-			result, err := f.wire.observePhase(t.Context())
+			trace := &admissionTrace{}
+			result, err := f.wire.observePhase(context.WithValue(t.Context(), admissionTraceKey{}, trace))
+			stage, slot := trace.phaseSnapshot()
 			if fault != "healthy" {
 				if result != nil || err != ErrFixtures || !injected || ledger.phaseFloor != nil {
 					t.Fatal("read pass accepted native refusal or late remote drift", fault, err)
 				}
+				expected := "gc-collections"
+				if fault == "late-policy-restored" {
+					expected = "public-after"
+				}
+				if stage != expected || slot != -1 {
+					t.Fatal("fixed phase diagnostic did not identify the actual refusal boundary", stage, slot)
+				}
 			} else {
+				if stage != "complete" || slot != -1 {
+					t.Fatal("complete paired reads did not retain their fixed diagnostic")
+				}
 				if result == nil || err != nil || catalogues != 6 || h.gets != 2*len(ledger.document.Entries) {
 					t.Fatalf("complete paired read passes unavailable: %v catalogues=%d gets=%d", err, catalogues, h.gets)
 				}

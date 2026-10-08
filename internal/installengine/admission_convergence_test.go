@@ -178,6 +178,16 @@ func TestAdmissionInitialPhaseConvergenceBeforeWALForPartialAndFullFamilies(t *t
 			if result, err := a.waitInitialPhase(t.Context(), bad); result != nil || err != ErrInvalid || observations() != before {
 				t.Fatal("invalid lifecycle mode waited or observed instead of immediate refusal")
 			}
+			trace := &admissionTrace{}
+			if a.VerifyEffective(context.WithValue(t.Context(), admissionTraceKey{}, trace), bad) != ErrFixtures || observations() != before || v.f.access.writes != writes {
+				t.Fatal("traced public admission changed refusal, observation or effect counts")
+			}
+			if stage, index := trace.snapshot(); stage != "initial-phase" || index != -1 {
+				t.Fatal("traced public refusal did not identify its bounded stage")
+			}
+			if _, _, err := engine.files.Read(fixtureLedgerName(s), fixtureLedgerMaxBytes); !errors.Is(err, privatefs.ErrNotFound) {
+				t.Fatal("traced invalid public proof prepared fixture WAL")
+			}
 		})
 	}
 }

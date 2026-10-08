@@ -37,6 +37,7 @@ func (driver *fixtureAdmissionDriver) complete(ctx context.Context) error {
 		return ErrFixtures // incomplete/uncertain originals remain durably fenced
 	}
 	for slot := len(f.document.Entries) - 1; slot >= 0; slot-- {
+		traceAdmission(ctx, admissionCleanup, slot)
 		err := driver.wire.removeAcknowledgedMarkerOriginal(ctx, slot)
 		if err != nil {
 			if f.document.Entries[slot].State != fixtureDeleteAttempted {
@@ -51,12 +52,15 @@ func (driver *fixtureAdmissionDriver) complete(ctx context.Context) error {
 			}
 		}
 	}
+	traceAdmission(ctx, admissionRetire, -1)
 	if driver.wire.retireDrained(ctx) != nil {
 		return ErrFixtures
 	}
 	a, request := driver.wire.actors.admission, driver.wire.actors.request
+	traceAdmission(ctx, admissionFinalWitness, -1)
 	if _, err := a.configured(ctx, request); err != nil || a.prerequisites.original(ctx, request.Snapshot) != nil || a.prerequisites.engine.fixtureFence(request.Snapshot) != nil {
 		return ErrAdmission
 	}
+	traceAdmission(ctx, admissionComplete, -1)
 	return nil
 }

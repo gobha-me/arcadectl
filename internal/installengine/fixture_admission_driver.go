@@ -33,22 +33,27 @@ type fixtureDriverSeal struct {
 }
 
 func (a *ClusterAdmission) newAdmissionDriver(ctx context.Context, request LifecycleCheck) (*fixtureAdmissionDriver, error) {
+	traceAdmission(ctx, admissionInitialPhase, -1)
 	initial, err := a.waitInitialPhase(ctx, request)
 	if err != nil {
 		return nil, ErrFixtures
 	}
+	traceAdmission(ctx, admissionActorWitnesses, -1)
 	actors, err := a.newActors(ctx, request, existingScopedImpersonation)
 	if err != nil {
 		return nil, ErrFixtures
 	}
+	traceAdmission(ctx, admissionLedger, -1)
 	f, err := a.prerequisites.engine.prepareFixtureLedgerV2(ctx, request.Snapshot)
 	if err != nil {
 		return nil, err
 	}
+	traceAdmission(ctx, admissionInitialSeal, -1)
 	if initial.seal(f) != nil {
 		_ = f.close()
 		return nil, ErrFixtures // uncertain preparation remains durably fenced
 	}
+	traceAdmission(ctx, admissionWire, -1)
 	w, err := actors.fixtures(ctx, f)
 	if err != nil {
 		_ = f.close()
@@ -121,11 +126,13 @@ func (d *fixtureAdmissionDriver) run(ctx context.Context) (err error) {
 	}
 	for d.next < fixtureAdmissionCaseCount {
 		if d.next == 39 {
+			traceAdmission(ctx, admissionSeed, int(d.next))
 			if err = d.seedLocked(ctx); err != nil {
 				return err
 			}
 		}
 		if d.next == 45 {
+			traceAdmission(ctx, admissionMarker, int(d.next))
 			if err = d.markerLocked(ctx); err != nil {
 				return err
 			}
@@ -134,16 +141,19 @@ func (d *fixtureAdmissionDriver) run(ctx context.Context) (err error) {
 			return err
 		}
 	}
+	traceAdmission(ctx, admissionFinish, -1)
 	return d.finishLocked(ctx)
 }
 
 func (d *fixtureAdmissionDriver) createOriginalsLocked(ctx context.Context) error {
 	w, f := d.wire, d.wire.ledger
+	traceAdmission(ctx, admissionSetupObservation, -1)
 	before, err := w.observePhaseLocked(ctx)
 	if err != nil || before == nil || !samePhaseBaseline(d.initial.baseline, before.phase) {
 		return ErrFixtures
 	}
 	for slot := range f.document.Entries {
+		traceAdmission(ctx, admissionSetupObservation, slot)
 		if f.document.Entries[slot].State != fixturePlanned || before.objects[slot] != nil {
 			return ErrFixtures
 		}
@@ -151,11 +161,13 @@ func (d *fixtureAdmissionDriver) createOriginalsLocked(ctx context.Context) erro
 		if err != nil || d.unchangedLocked(ctx, seal) != nil {
 			return ErrFixtures
 		}
+		traceAdmission(ctx, admissionSetupPreview, slot)
 		_, previewErr := w.dryRunLocked(ctx, slot)
 		afterPreview, phaseErr := w.observePhaseLocked(ctx) // mandatory even refusal
 		if previewErr != nil || phaseErr != nil || !fixtureSameObservation(before, afterPreview) || d.unchangedLocked(ctx, seal) != nil {
 			return ErrFixtures
 		}
+		traceAdmission(ctx, admissionSetupCreate, slot)
 		next, err := f.nextDocument()
 		if err != nil {
 			return ErrFixtures
@@ -176,6 +188,7 @@ func (d *fixtureAdmissionDriver) createOriginalsLocked(ctx context.Context) erro
 			return ErrFixtures
 		}
 		var accepted *fixturePhaseObservation
+		traceAdmission(ctx, admissionSetupSettle, slot)
 		// Observation-only convergence is bounded; no send is retried. The
 		// original sealed domain and all earlier fixtures remain byte-exact.
 		if wait.PollUntilContextTimeout(ctx, 200*time.Millisecond, 90*time.Second, true, func(ctx context.Context) (bool, error) {
@@ -238,10 +251,12 @@ func (d *fixtureAdmissionDriver) runCaseLocked(ctx context.Context, number fixtu
 	if err != nil {
 		return err
 	}
+	traceAdmission(ctx, admissionCaseObservation, int(number))
 	before, err := w.observePhaseLocked(ctx)
 	if err != nil || !fixtureSameObservation(d.previous, before) || d.unchangedLocked(ctx, seal) != nil {
 		return ErrFixtures
 	}
+	traceAdmission(ctx, admissionCaseRequest, int(number))
 	r, err := w.admissionRequest(number, before)
 	if err != nil {
 		return err
@@ -249,6 +264,7 @@ func (d *fixtureAdmissionDriver) runCaseLocked(ctx context.Context, number fixtu
 	if r.slot == -1 && w.counterpartAbsentLocked(ctx, number, before) != nil {
 		return ErrFixtures
 	}
+	traceAdmission(ctx, admissionCaseAuthorization, int(number))
 	key := fixtureObjectKey(r.object)
 	operation := r.operation
 	if operation == probeEphemeralOperation || operation == probeResizeOperation {
@@ -294,6 +310,7 @@ func (d *fixtureAdmissionDriver) runCaseLocked(ctx context.Context, number fixtu
 	started := time.Now().UTC()
 	var reply *unstructured.Unstructured
 	var replyErr error
+	traceAdmission(ctx, admissionCaseProbe, int(number))
 	if r.actor == 0 {
 		reply, replyErr = parent.probeOperation(ctx, r.operation, r.object, r.policy, binding, message)
 	} else {
@@ -301,6 +318,7 @@ func (d *fixtureAdmissionDriver) runCaseLocked(ctx context.Context, number fixtu
 	}
 	// Do not short-circuit this observation or named absence read on send
 	// errors. Neither a partial proof nor transport success grants a case bit.
+	traceAdmission(ctx, admissionCasePostObservation, int(number))
 	after, phaseErr := w.observePhaseLocked(ctx)
 	counterpartErr := error(nil)
 	if r.slot == -1 {
@@ -308,8 +326,14 @@ func (d *fixtureAdmissionDriver) runCaseLocked(ctx context.Context, number fixtu
 	}
 	observed := time.Now().UTC()
 	if phaseErr != nil || !fixtureSameObservation(before, after) || counterpartErr != nil || d.unchangedLocked(ctx, seal) != nil || replyErr != nil {
+		if replyErr != nil {
+			// Prefer the known probe refusal AFTER mandatory post-observations.
+			// This is a diagnostic stage, not the sole cause or last read.
+			traceAdmission(ctx, admissionCaseProbe, int(number))
+		}
 		return ErrFixtures
 	}
+	traceAdmission(ctx, admissionCaseShape, int(number))
 	if r.policy != "" {
 		if reply != nil { // exact native denial capture returns nil, nil
 			return ErrFixtures

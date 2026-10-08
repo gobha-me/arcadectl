@@ -1,9 +1,36 @@
 # Signed installation package development
 
 The offline package command builds and verifies versioned installation bytes.
-The integrated installer, upgrade/rollback runtime certification, and package
-lifecycle CI remain in development under issue #27. This is not a released
-package or a declaration of production-supported Kubernetes profiles.
+The integrated installer and its mandatory native lifecycle CI are implemented
+under issue #27. Compilation, focused race tests and static review do not replace
+the complete exact-commit CI run: native certification remains pending until all
+required gates pass for that commit. This is not a released package or a
+declaration of production-supported Kubernetes profiles.
+
+## Compatibility declarations and certification boundary
+
+The signed `manifest.json` contains the exact source SHA/epoch, controller/API
+image digests, renderer/package versions, Kubernetes profiles, prerequisites,
+CRD contracts and supported predecessor. These are authenticated declarations,
+not proof that a cluster satisfies them or that a release has been published.
+
+| Declared Kubernetes profile | Mandatory executable lifecycle cases | Mandatory full admission cases |
+| --- | --- | --- |
+| 1.35.8 | Current fresh install and retaining uninstall | Cold and warm |
+| 1.37.0 | Current fresh install and retaining uninstall; pinned predecessor install, upgrade, rollback and retaining uninstall | Cold and warm |
+
+The supported predecessor is the exact source identified below, only on 1.37.0.
+The supported transition changes no CRD schema/storage version and uses `None`
+conversion. Neither a profile declaration nor a passing component test certifies
+that transition. Certification requires all native cases, race/static checks,
+and the separate real Factorio lifecycle/recovery gates for the exact candidate;
+after merge, required CI must also pass for the exact main SHA. Storage/network
+prerequisites remain explicit and are not provisioned by the installer.
+
+The native harness signs with a temporary test-only key and uses a disposable
+registry. Its packages are not release artifacts and its trust key is not a
+release trust identity. Release supply-chain work (#39) and the release go/no-go
+gate (#41) must establish actual artifact publication and production support.
 
 ## Read-only retained-world recovery reporting
 
@@ -72,7 +99,7 @@ error and never leads to a mutation or retry. This command is not an API-client
 fallback; the ordinary CLI remains API-only and the package command offline.
 The development binary also exposes `install`, `upgrade`, `rollback`, retaining
 `uninstall`, and explicit `resume`. These are **not production certified**;
-the full signed-binary lifecycle acceptance gate remains unfinished. Use only
+the full signed-binary lifecycle acceptance evidence remains pending. Use only
 in an owned isolated test cluster until issue #27's acceptance evidence exists.
 
 Mutation commands use the same strict static kubeconfig/trust boundary and the
@@ -135,7 +162,14 @@ retirement or reusable authorization; unbound GC and Lease observations keep
 their full intermediate remote guards. These repeated observations are not an
 atomic namespace snapshot or a continuous authorization guarantee.
 
-The development native gates are separate and mandatory in the proposed CI:
+The native full-admission harness can opt into private fixed stage/index and
+read-phase/slot diagnostics for its single actual attempt. These retain no
+objects, raw errors, identities or credentials and grant no callback, recovery
+or replay. A diagnostic identifies an attempted/refused boundary, not its sole
+cause or successful certification; all public errors and mandatory reads stay
+unchanged.
+
+The development native gates are separate and mandatory in the committed CI:
 four complete public admission runs (profiles 135/137, cold/warm) and three actual
 signed-installer executable runs. Both profiles exercise current-package fresh
 install and retaining uninstall. A separate profile-137 transition run installs
@@ -152,8 +186,9 @@ Those executable tests also preserve the exact namespace, retained protection
 and Secret identities, unchanged local client/CA bytes, and two nonbinding
 Pending namespace claims (managed and unlabeled). This is claim retention, not
 new physical-world/backup evidence; the existing real Factorio/CSI lifecycle and
-recovery jobs remain required separately. These gates are still local additions
-pending compilation/native execution and do not certify this development tree.
+recovery jobs remain required separately. These gates are committed CI jobs,
+not optional local additions. Their presence and successful compilation do not
+certify this development tree; the complete exact-commit run must succeed.
 
 ```sh
 GOMAXPROCS=2 GOMEMLIMIT=1GiB go build -p 1 ./cmd/arcadectl-package
@@ -167,6 +202,24 @@ Supply a PKCS#8 Ed25519 private-key PEM and the independently trusted matching
 PKIX Ed25519 public-key PEM. The private key must have mode 0600 under a
 current-user-owned 0700 directory. Public trust keys must not be group/other
 writable. Paths must be clean and absolute, without symlinks or hardlinked keys.
+
+### Release-candidate handoff
+
+For a release candidate, the later release workflow must supply a clean, exact
+source commit and its Git commit timestamp, actual published controller/API
+image digests built from that source, and an external release signing identity
+with an independently distributed trust key. A disposable test registry,
+random native-test key, mutable tag or signed declaration alone cannot supply
+that provenance. Signing keys must never be supplied to untrusted PR code.
+
+Build twice into separate new protected directories using identical explicit
+metadata and keys. Compare every package file byte-for-byte, independently
+verify both outputs, and retain the signed manifest, detached signature,
+payloads and checksums with the candidate. Any predecessor must additionally
+resolve to its exact previously verified package and source/image identities.
+The commands below implement generation and verification, not these publication
+or provenance gates. Required exact-main CI must be green before tagging or
+publishing; #39/#41 supply the remaining release automation and evidence.
 
 After assigning the explicit public metadata and private key paths locally:
 
@@ -286,9 +339,10 @@ page-count, per-response, recursive-evidence, and deadline bounds also apply.
 
 These unit and TLS HTTP tests do not certify a live cluster package lifecycle.
 The observation is not atomic across Kubernetes collections, an admission
-denial proof, or a lock. The unfinished engine must still prove runtime-owned
-templates, stop API admission and controller Pods, repeat the safety barrier,
-and preserve worlds and recovery credentials through upgrade/rollback/uninstall.
+denial proof, or a lock. The integrated engine additionally checks runtime-owned
+templates, stops API admission and controller Pods, repeats the safety barrier,
+and preserves worlds and recovery credentials through upgrade/rollback/uninstall.
+Only the complete native lifecycle gates can certify that composition.
 
 ## Signed live-resource contracts
 
@@ -380,11 +434,12 @@ ReplicaSet and Pod with ServiceAccount admission enabled to check native Pod
 defaults and token projection. No kubelet or workload binary runs; this does
 not prove a full installation, upgrade, rollback or retaining uninstall.
 
-This is not a user-facing installer or permission/safety proof. Lifecycle
-orchestration must still establish prerequisites, CRD status/discovery,
-behavioral admission denials, owner/GC retention closure, real API/controller
-quiescence, credential/TLS activation, repeated safety barriers and recovery
-guidance before issuing effects. Full binary lifecycle CI remains unfinished.
+This effect layer alone is not a user-facing installer or permission/safety
+proof. The integrated lifecycle orchestration establishes prerequisites, CRD
+status/discovery, behavioral admission denials, owner/GC retention closure, real
+API/controller quiescence, credential/TLS activation, repeated safety barriers
+and recovery guidance before issuing effects. Full binary lifecycle acceptance
+still requires the complete exact-commit CI evidence described above.
 
 ## Private administrator and TLS candidates
 
@@ -630,7 +685,8 @@ controller descendant evidence and forwarded authentication. There is no
 permissive production provider, shell-status fallback or user-configurable
 callback. The closed production provider, administrator installer command,
 retained-claim recovery output and full isolated package/binary lifecycle CI
-are still required; this coordinator is not a usable certified installer yet.
+are implemented. This coordinator's fixture tests alone do not certify that
+composition; the complete exact-commit native gates must pass.
 
 Tests exercise the real journal CAS/effect/private-file/Secret machinery with
 fixture Kubernetes/proof providers. They cover ordered install, retaining
@@ -816,9 +872,10 @@ both sealed safety and recovery observer reads. Isolated native API-server
 tests use the same closed actor transport and actual operation authorization
 on both declared profiles, but do not manufacture policy status or claim the
 full factory/provider is certified there. The durable state/fence and native
-storage-candidate evidence below are additional foundations; production fixture
+storage-candidate evidence below are additional foundations. Production fixture
 effects, whole named accepted shapes, cleanup/recovery and complete lifecycle
-checkpoint composition remain separate unfinished requirements.
+checkpoint composition have separate implemented gates; this factory's tests
+alone do not certify those gates.
 
 ### Durable inert-fixture intent and installer fence
 
@@ -1101,8 +1158,9 @@ counting a changed result version as precondition enforcement.
 The operations accept only native HTTP 200 and the same resource identity, never
 201/202, a generic Success Status, 404/409, another policy denial or a retry.
 The transport validates identity, not the complete accepted defaulted shape;
-a future production provider must independently certify that shape and bracket
-all probes with original-object, policy, account and journal barriers.
+the production provider independently checks that shape and brackets all probes
+with original-object, policy, account and journal barriers. These checks still
+require the complete native certification, not just transport-test success.
 
 DELETE constructs a fixed `DeleteOptions` body containing `dryRun: [All]` and
 both original UID/resource-version preconditions. Kubernetes does not decode
@@ -1143,8 +1201,8 @@ post-removal administrator-observation split described above. It does not run
 live actor probes after their permissions/accounts are removed. Original
 accounts are never silently retained, recreated or adopted. Fresh-bootstrap
 behavioral authorization, production fixture lifecycle and the complete closed
-lifecycle-provider composition remain separate unfinished obligations; this
-retirement checkpoint is not full install/upgrade/rollback/uninstall acceptance.
+lifecycle-provider composition have separate mandatory native gates; this
+retirement checkpoint alone is not full install/upgrade/rollback/uninstall acceptance.
 
 ## Original CRD discovery and bound safety reads
 

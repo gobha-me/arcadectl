@@ -105,9 +105,11 @@ func (w *fixtureWire) observePhaseLocked(ctx context.Context) (*fixturePhaseObse
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	f := w.ledger
+	traceAdmissionPhase(ctx, admissionPhaseOriginal, -1)
 	if !w.phaseReadable() || w.current(ctx) != nil {
 		return nil, ErrFixtures
 	}
+	traceAdmissionPhase(ctx, admissionPhaseWorlds, -1)
 	worlds, err := f.readOriginalWorlds(false)
 	if err != nil || worlds.Phase == nil || worlds.Phase.Public == nil {
 		return nil, ErrFixtures // never promote a legacy world-only companion
@@ -117,6 +119,7 @@ func (w *fixtureWire) observePhaseLocked(ctx context.Context) (*fixturePhaseObse
 	current := func() bool { return reads.current(ctx) == nil }
 	local := func() bool { return reads.local(ctx, w) == nil }
 	a, request := w.actors.admission, w.actors.request
+	traceAdmissionPhase(ctx, admissionPhaseConfigured, -1)
 	before, err := a.configured(ctx, request)
 	if err != nil || !current() {
 		return nil, ErrFixtures
@@ -133,15 +136,19 @@ func (w *fixtureWire) observePhaseLocked(ctx context.Context) (*fixturePhaseObse
 		// FULL remote original witnesses bracket each complete pass. Within
 		// this closed GET/LIST-only interval every old boundary still checks
 		// pinned durable local evidence; no observation is accepted early.
+		traceAdmissionPhase(ctx, admissionPhaseOpening, -1)
 		if !current() {
 			return nil, ErrFixtures
 		}
+		traceAdmissionPhase(ctx, admissionPhaseTyped, -1)
 		o, err := a.prerequisites.observe(ctx, request)
 		if err != nil || !local() {
 			return nil, ErrFixtures
 		}
+		traceAdmissionPhase(ctx, admissionPhaseRows, -1)
 		phase, objects, err := f.accountPhase(o, floor, time.Now().UTC())
 		if err == nil {
+			traceAdmissionPhase(ctx, admissionPhasePublicBefore, -1)
 			phase.Public, err = a.phasePublicInventory(ctx, request)
 			if err == nil && !samePhaseBaseline(floor, phase) {
 				err = ErrFixtures
@@ -156,6 +163,7 @@ func (w *fixtureWire) observePhaseLocked(ctx context.Context) (*fixturePhaseObse
 		var live [fixtureMaxSlots]*unstructured.Unstructured
 		for slot := range f.document.Entries {
 			listed := objects[slot]
+			traceAdmissionPhase(ctx, admissionPhaseNamedGet, slot)
 			object, absent, err := w.getPhaseLocked(ctx, slot)
 			if err != nil || absent != (listed == nil) || identity != f.identity || !bytes.Equal(body, f.body) || !w.phaseReadable() || w.localCurrent() != nil {
 				return nil, ErrFixtures
@@ -163,6 +171,7 @@ func (w *fixtureWire) observePhaseLocked(ctx context.Context) (*fixturePhaseObse
 			if absent {
 				continue
 			}
+			traceAdmissionPhase(ctx, admissionPhaseWholeFixture, slot)
 			if f.validatePhaseFixture(slot, object, &phase, time.Now().UTC()) != nil {
 				return nil, ErrFixtures
 			}
@@ -178,6 +187,7 @@ func (w *fixtureWire) observePhaseLocked(ctx context.Context) (*fixturePhaseObse
 		if !local() {
 			return nil, ErrFixtures
 		}
+		traceAdmissionPhase(ctx, admissionPhaseStorage, -1)
 		s, r := o.Snapshot(), o.Runtime()
 		volumes, err := a.prerequisites.coldVolumes(ctx, s, r)
 		if err != nil || installsafety.ValidateCSIDetachment(s.Claims, r.Attachments, volumes) != nil || installsafety.ValidateRetainedOwnerClosure(request.Target, s, request.Snapshot.Document().Resources) != nil || !local() {
@@ -186,6 +196,7 @@ func (w *fixtureWire) observePhaseLocked(ctx context.Context) (*fixturePhaseObse
 		if phaseVolumesMatch(worlds, phase, live, volumes) != nil {
 			return nil, ErrFixtures
 		}
+		traceAdmissionPhase(ctx, admissionPhaseGC, -1)
 		gc, err := w.gcMetadataReadLocked(ctx, len(phase.Leaders) != 0, reads)
 		if err != nil || !local() {
 			return nil, ErrFixtures
@@ -193,13 +204,16 @@ func (w *fixtureWire) observePhaseLocked(ctx context.Context) (*fixturePhaseObse
 		// Running original controller Leases may renew after the typed LIST.
 		// A paired whole LIST must exactly correlate the later metadata read and
 		// advance only that same sealed controller chain's bookkeeping floor.
+		traceAdmissionPhase(ctx, admissionPhaseLeaders, -1)
 		phase, refreshed, err := w.refreshPhaseLeadersRead(ctx, o, phase, gc, reads)
 		if err != nil {
 			return nil, ErrFixtures
 		}
+		traceAdmissionPhase(ctx, admissionPhaseOwners, -1)
 		if f.phaseGC(o, live, gc, refreshed) != nil || !local() {
 			return nil, ErrFixtures
 		}
+		traceAdmissionPhase(ctx, admissionPhasePublicAfter, -1)
 		publicAfter, err := a.phasePublicInventory(ctx, request)
 		if err != nil || !reflect.DeepEqual(phase.Public, publicAfter) || !current() {
 			return nil, ErrFixtures
@@ -207,6 +221,7 @@ func (w *fixtureWire) observePhaseLocked(ctx context.Context) (*fixturePhaseObse
 		// A second complete pass must correlate every live fixture's WHOLE
 		// object, not just its UID. Normal controller transitions are observed
 		// on a later invocation, never silently waived within this interval.
+		traceAdmissionPhase(ctx, admissionPhaseFixtureCorrelation, -1)
 		if accepted != nil {
 			for slot, old := range accepted.objects {
 				if !reflect.DeepEqual(old, live[slot]) {
@@ -228,14 +243,17 @@ func (w *fixtureWire) observePhaseLocked(ctx context.Context) (*fixturePhaseObse
 		}
 		f.phaseFloor = &copy
 	}
+	traceAdmissionPhase(ctx, admissionPhaseFinalConfigured, -1)
 	after, err := a.configured(ctx, request)
 	if err != nil || !sameAdmissionConfiguration(before, after) || !current() {
 		return nil, ErrFixtures
 	}
+	traceAdmissionPhase(ctx, admissionPhaseFinalPublic, -1)
 	publicAfter, err := a.phasePublicInventory(ctx, request)
 	if err != nil || !reflect.DeepEqual(accepted.phase.Public, publicAfter) || !current() {
 		return nil, ErrFixtures
 	}
+	traceAdmissionPhase(ctx, admissionPhaseComplete, -1)
 	return accepted, nil
 }
 

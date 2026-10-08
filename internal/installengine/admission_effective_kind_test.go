@@ -67,8 +67,11 @@ func TestKindAdmissionEffectiveFullMatrix(t *testing.T) {
 						t.Fatal("original admission unavailable")
 					}
 					t.Log("running all 55 production cases, persistent setups, original-only cleanup and retirement")
-					if err := admission.VerifyEffective(ctx, request); err != nil {
-						t.Fatal("public full production admission refused")
+					trace := &admissionTrace{}
+					if err := admission.VerifyEffective(context.WithValue(ctx, admissionTraceKey{}, trace), request); err != nil {
+						stage, index := trace.snapshot()
+						phase, slot := trace.phaseSnapshot()
+						t.Fatalf("public full production admission refused: diagnostic stage=%s index=%d phase=%s slot=%d", stage, index, phase, slot)
 					}
 					retirement, err := engine.readFixtureRetirement(snapshot.Anchor())
 					if err != nil || retirement.record.State != fixtureRetired {
