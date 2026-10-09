@@ -123,6 +123,14 @@ func TestBaselineBehaviorWholeProviderRuntimeFinalCloseOrderParent(t *testing.T)
 
 func testBaselineBehaviorWholeProvider(t *testing.T, scenario string) {
 	t.Helper()
+	testBaselineBehaviorWholeProviderWithProtocol(t, scenario, nil)
+}
+
+// Test-only protocol substitution shares the complete independent responder
+// and final literal request oracle. Existing scenario wrappers still exercise
+// their original dispatch unchanged; this seam creates no production hook.
+func testBaselineBehaviorWholeProviderWithProtocol(t *testing.T, scenario string, protocol func(*Engine, *installstate.Snapshot, *ClusterSecurityBaseline, func() int) error) {
+	t.Helper()
 	runtime := strings.HasPrefix(scenario, "runtime-")
 	mode := strings.TrimPrefix(scenario, "runtime-")
 	closeOrder := mode == "final-close-order-service" || mode == "final-close-order-parent"
@@ -248,6 +256,11 @@ func testBaselineBehaviorWholeProvider(t *testing.T, scenario string) {
 		}
 		installstate.SortResources(d.Resources)
 	}
+	if protocol != nil {
+		// Explicitly synthetic settled Verifying inventory. This is not a
+		// native installer, enrollment or successful authentication claim.
+		d.Stage = installstate.Verifying
+	}
 	d.Revision++
 	seedBaselineAccessUnitDocument(t, f, d)
 	if complete {
@@ -288,6 +301,7 @@ func testBaselineBehaviorWholeProvider(t *testing.T, scenario string) {
 		objectPaths[path] = key
 	}
 	var mu sync.Mutex
+	requests := 0
 	var probes, positives, podProbes, persistent int
 	var injected, proxyGrant bool
 	rules := map[string]int{}
@@ -297,6 +311,7 @@ func testBaselineBehaviorWholeProvider(t *testing.T, scenario string) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
+		requests++
 		w.Header().Set("Content-Type", "application/json")
 		user := r.Header.Get("Impersonate-User")
 		actor := strings.TrimPrefix(user, "system:serviceaccount:"+d.Namespace+":")
@@ -564,7 +579,7 @@ func testBaselineBehaviorWholeProvider(t *testing.T, scenario string) {
 		t.Fatal("closed behavior provider unavailable")
 	}
 	guard := &baselineParentRefusingRuntimeGuard{}
-	if runtime {
+	if runtime || protocol != nil {
 		lifecycle, constructorErr := NewClusterLifecycle(engine, access)
 		closed, ok := engine.baseline.runtimeGuard.(*ClusterSecurityBaseline)
 		if constructorErr != nil || lifecycle == nil || !ok || closed == nil || closed != engine.baseline.prerequisites || closed.engine != engine || closed.access != access {
@@ -595,7 +610,13 @@ func testBaselineBehaviorWholeProvider(t *testing.T, scenario string) {
 	}
 	// The actual dispatch reconstructs the complete proof rather than
 	// trusting the separately inspected constructor result above.
-	if runtime {
+	if protocol != nil {
+		err = protocol(engine, snapshot, provider, func() int {
+			mu.Lock()
+			defer mu.Unlock()
+			return requests
+		})
+	} else if runtime {
 		current, currentErr := engine.current(t.Context(), snapshot)
 		err = currentErr
 		if positive && (current == nil || current.ResourceVersion() != snapshot.ResourceVersion() || current.Anchor() != snapshot.Anchor() || !bytes.Equal(current.Bytes(), snapshot.Bytes())) || !positive && (current != nil || err != ErrSecurityBaseline) {
