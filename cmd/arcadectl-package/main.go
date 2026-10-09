@@ -17,7 +17,7 @@ import (
 	"github.com/gobha-me/arcadectl/internal/installrender"
 )
 
-const usage = "usage: arcadectl-package build --output ABS_PATH --signing-key ABS_PATH --trust-key ABS_PATH --version VERSION --source-sha SHA --source-epoch UNIX_SECONDS --controller-image IMAGE@sha256:DIGEST --api-image IMAGE@sha256:DIGEST [--legacy-source] [--predecessor ABS_PATH --predecessor-id ID]\n       arcadectl-package verify --package ABS_PATH --trust-key ABS_PATH\n"
+const usage = "usage: arcadectl-package build --output ABS_PATH --signing-key ABS_PATH --trust-key ABS_PATH --version VERSION --source-sha SHA --source-epoch UNIX_SECONDS --controller-image IMAGE@sha256:DIGEST --api-image IMAGE@sha256:DIGEST [--legacy-source] [--predecessor ABS_PATH --predecessor-id ID]\n       arcadectl-package verify --package ABS_PATH --trust-key ABS_PATH\n       arcadectl-package build-baseline --output ABS_PATH --signing-key ABS_PATH --trust-key ABS_PATH --source-sha SHA --source-epoch UNIX_SECONDS\n       arcadectl-package verify-baseline --baseline ABS_PATH --trust-key ABS_PATH\n"
 
 var errArguments = errors.New("invalid package command arguments")
 
@@ -34,6 +34,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
 		_, _ = fmt.Fprintln(stderr, errArguments)
 		return 2
+	}
+	if args[0] == "build-baseline" || args[0] == "verify-baseline" {
+		return runBaseline(args, stdout, stderr)
 	}
 	var pkg *installpackage.VerifiedPackage
 	var err error
