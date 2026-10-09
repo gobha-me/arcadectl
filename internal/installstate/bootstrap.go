@@ -14,6 +14,7 @@ import (
 	"regexp"
 
 	"github.com/gobha-me/arcadectl/internal/canonicaljson"
+	"github.com/gobha-me/arcadectl/internal/installbaseline"
 	"github.com/gobha-me/arcadectl/internal/installrender"
 	"github.com/gobha-me/arcadectl/internal/privatefs"
 	corev1 "k8s.io/api/core/v1"
@@ -32,6 +33,7 @@ type BootstrapReceipt struct {
 	name     string
 	identity privatefs.FileIdentity
 	plan     *installrender.Plan
+	baseline *installbaseline.Plan
 	document bootstrapDocument
 }
 type bootstrapDocument struct {
@@ -42,11 +44,26 @@ type bootstrapDocument struct {
 	CreateAttempted bool      `json:"createAttempted"`
 	PackageSHA256   string    `json:"packageSha256"`
 	ProfileID       string    `json:"profileId"`
+	BaselineVersion string    `json:"baselineVersion,omitempty"`
+	BaselineSHA256  string    `json:"baselineSha256,omitempty"`
 }
 
 var receiptName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,111}$`)
 
 func PrepareBootstrap(store *privatefs.Store, name string, plan *installrender.Plan) (*BootstrapReceipt, error) {
+	return prepareBootstrap(store, name, plan, nil)
+}
+
+// PrepareBootstrapWithBaseline pins the separately signed security identity
+// durably BEFORE any namespace mutation. It does not install or certify guards.
+func PrepareBootstrapWithBaseline(store *privatefs.Store, name string, plan *installrender.Plan, baseline *installbaseline.Plan) (*BootstrapReceipt, error) {
+	if !baseline.IsTrusted() {
+		return nil, ErrInvalid
+	}
+	return prepareBootstrap(store, name, plan, baseline)
+}
+
+func prepareBootstrap(store *privatefs.Store, name string, plan *installrender.Plan, baseline *installbaseline.Plan) (*BootstrapReceipt, error) {
 	if store == nil || !receiptName.MatchString(name) || !plan.IsTrusted() {
 		return nil, ErrInvalid
 	}
@@ -55,7 +72,10 @@ func PrepareBootstrap(store *privatefs.Store, name string, plan *installrender.P
 		return nil, err
 	}
 	d := bootstrapDocument{Version: Version, InstallationID: id, Namespace: plan.Namespace(), PackageSHA256: plan.Digest(), ProfileID: plan.Profile().ID}
-	body, err := encodeBootstrap(d, plan)
+	if baseline != nil {
+		d.BaselineVersion, d.BaselineSHA256 = installbaseline.Version, baseline.Digest()
+	}
+	body, err := encodeBootstrapWithBaseline(d, plan, baseline)
 	if err != nil {
 		return nil, err
 	}
@@ -63,10 +83,24 @@ func PrepareBootstrap(store *privatefs.Store, name string, plan *installrender.P
 	if err != nil {
 		return nil, privateError(err)
 	}
-	return &BootstrapReceipt{store: store, name: name, identity: identity, plan: plan, document: d}, nil
+	return &BootstrapReceipt{store: store, name: name, identity: identity, plan: plan, baseline: baseline, document: d}, nil
 }
 
 func LoadBootstrap(store *privatefs.Store, name string, plan *installrender.Plan) (*BootstrapReceipt, error) {
+	return loadBootstrap(store, name, plan, nil)
+}
+
+// LoadBootstrapWithBaseline may read authentic original legacy receipts for
+// PinnedAnchor/enrollment without rewriting them. EnsureNamespace refuses an
+// absent baseline pin in this context; legacy evidence is not fresh authority.
+func LoadBootstrapWithBaseline(store *privatefs.Store, name string, plan *installrender.Plan, baseline *installbaseline.Plan) (*BootstrapReceipt, error) {
+	if !baseline.IsTrusted() {
+		return nil, ErrInvalid
+	}
+	return loadBootstrap(store, name, plan, baseline)
+}
+
+func loadBootstrap(store *privatefs.Store, name string, plan *installrender.Plan, baseline *installbaseline.Plan) (*BootstrapReceipt, error) {
 	if store == nil || !receiptName.MatchString(name) || !plan.IsTrusted() {
 		return nil, ErrInvalid
 	}
@@ -74,19 +108,31 @@ func LoadBootstrap(store *privatefs.Store, name string, plan *installrender.Plan
 	if err != nil {
 		return nil, privateError(err)
 	}
-	d, err := decodeBootstrap(body, plan)
+	d, err := decodeBootstrapWithBaseline(body, plan, baseline)
 	if err != nil {
 		return nil, err
 	}
 	if err := store.ConfirmDurable(name, identity); err != nil {
 		return nil, privateError(err)
 	}
-	return &BootstrapReceipt{store: store, name: name, identity: identity, plan: plan, document: d}, nil
+	return &BootstrapReceipt{store: store, name: name, identity: identity, plan: plan, baseline: baseline, document: d}, nil
 }
 
 func encodeBootstrap(d bootstrapDocument, plan *installrender.Plan) ([]byte, error) {
+	return encodeBootstrapWithBaseline(d, plan, nil)
+}
+
+func encodeBootstrapWithBaseline(d bootstrapDocument, plan *installrender.Plan, baseline *installbaseline.Plan) ([]byte, error) {
 	if !plan.IsTrusted() || d.Version != Version || !hexID.MatchString(d.InstallationID) || d.Namespace != plan.Namespace() || d.PackageSHA256 != plan.Digest() || d.ProfileID != plan.Profile().ID || d.NamespaceUID != "" && (!validIdentity(string(d.NamespaceUID)) || !d.CreateAttempted) {
 		return nil, ErrInvalid
+	}
+	if baseline != nil && (!baseline.IsTrusted() || baseline.Namespace() != d.Namespace || baseline.Profile() != d.ProfileID) {
+		return nil, ErrInvalid
+	}
+	if d.BaselineVersion != "" || d.BaselineSHA256 != "" {
+		if !baseline.IsTrusted() || d.BaselineVersion != installbaseline.Version || d.BaselineSHA256 != baseline.Digest() {
+			return nil, ErrInvalid
+		}
 	}
 	body, err := json.Marshal(d)
 	if err != nil {
@@ -99,6 +145,10 @@ func encodeBootstrap(d bootstrapDocument, plan *installrender.Plan) ([]byte, err
 	return body, nil
 }
 func decodeBootstrap(body []byte, plan *installrender.Plan) (bootstrapDocument, error) {
+	return decodeBootstrapWithBaseline(body, plan, nil)
+}
+
+func decodeBootstrapWithBaseline(body []byte, plan *installrender.Plan, baseline *installbaseline.Plan) (bootstrapDocument, error) {
 	var d bootstrapDocument
 	if len(body) == 0 || len(body) > MaxBytes {
 		return d, ErrInvalid
@@ -108,7 +158,7 @@ func decodeBootstrap(body []byte, plan *installrender.Plan) (bootstrapDocument, 
 	if decoder.Decode(&d) != nil {
 		return bootstrapDocument{}, ErrInvalid
 	}
-	canonical, err := encodeBootstrap(d, plan)
+	canonical, err := encodeBootstrapWithBaseline(d, plan, baseline)
 	if err != nil || !bytes.Equal(body, canonical) {
 		return bootstrapDocument{}, ErrInvalid
 	}
@@ -142,6 +192,9 @@ func (r *BootstrapReceipt) EnsureNamespace(ctx context.Context, namespaces Names
 	if r == nil || r.store == nil || !r.plan.IsTrusted() || namespaces == nil || reflect.ValueOf(namespaces).Kind() == reflect.Pointer && reflect.ValueOf(namespaces).IsNil() {
 		return nil, ErrInvalid
 	}
+	if r.baseline != nil && (r.document.BaselineSHA256 != r.baseline.Digest() || r.document.BaselineVersion != installbaseline.Version) {
+		return nil, ErrInvalid
+	}
 	lock, err := r.store.Lock(ctx, r.name+".lock")
 	if err != nil {
 		return nil, privateError(err)
@@ -155,7 +208,7 @@ func (r *BootstrapReceipt) EnsureNamespace(ctx context.Context, namespaces Names
 	if identity != r.identity {
 		return nil, ErrConflict
 	}
-	d, err := decodeBootstrap(body, r.plan)
+	d, err := decodeBootstrapWithBaseline(body, r.plan, r.baseline)
 	if err != nil {
 		return nil, err
 	}
@@ -185,7 +238,7 @@ func (r *BootstrapReceipt) EnsureNamespace(ctx context.Context, namespaces Names
 		// so explicit resume without a pinned UID must neither replay Create
 		// nor establish ownership from a copied public nonce.
 		d.CreateAttempted = true
-		candidate, encodeErr := encodeBootstrap(d, r.plan)
+		candidate, encodeErr := encodeBootstrapWithBaseline(d, r.plan, r.baseline)
 		if encodeErr != nil {
 			return nil, encodeErr
 		}
@@ -233,7 +286,12 @@ func (r *BootstrapReceipt) EnsureNamespace(ctx context.Context, namespaces Names
 		return nil, privateError(err)
 	}
 	anchor := Anchor{d.Namespace, d.NamespaceUID, d.InstallationID}
-	store, err := New(namespaces, r.plan)
+	var store *Store
+	if r.baseline != nil {
+		store, err = NewWithBaseline(namespaces, r.baseline, r.plan)
+	} else {
+		store, err = New(namespaces, r.plan)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -241,6 +299,12 @@ func (r *BootstrapReceipt) EnsureNamespace(ctx context.Context, namespaces Names
 		return store.Load(ctx, anchor)
 	}
 	initial := Document{Version: Version, InstallationID: d.InstallationID, Namespace: d.Namespace, NamespaceUID: d.NamespaceUID, ProfileID: d.ProfileID, Revision: 1, Mode: Install, Stage: Preparing, TargetPackage: d.PackageSHA256, Resources: []Resource{{Key: Key{"v1", "Namespace", "", d.Namespace}, UID: d.NamespaceUID, TemplateSHA256: templateDigest, Retained: true, Phase: installrender.Anchors}}}
+	if r.baseline != nil {
+		initial.SecurityBaseline, err = PinnedSecurityBaseline(r.baseline)
+		if err != nil {
+			return nil, ErrInvalid
+		}
+	}
 	return store.Bind(ctx, anchor, initial)
 }
 
@@ -250,7 +314,7 @@ func (r *BootstrapReceipt) pinUID(d *bootstrapDocument, uid types.UID) error {
 	}
 	next := *d
 	next.NamespaceUID = uid
-	body, err := encodeBootstrap(next, r.plan)
+	body, err := encodeBootstrapWithBaseline(next, r.plan, r.baseline)
 	if err != nil {
 		return err
 	}

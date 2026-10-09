@@ -35,7 +35,7 @@ func fixtureDestroySeedExample(t *testing.T, ledger *fixtureLedger, created time
 
 func acknowledgeAllRecipeFixtures(t *testing.T, ledger *fixtureLedger) {
 	t.Helper()
-	for slot := range fixtureCatalogFor(ledger.document) {
+	for _, slot := range fixtureCreationOrder(ledger.document) {
 		acknowledgeRecipeFixture(t, ledger, slot, types.UID(fmt.Sprintf("a0000000-0000-4000-8000-%012x", slot+1)))
 	}
 }

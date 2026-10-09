@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gobha-me/arcadectl/internal/installbaseline"
 	"github.com/gobha-me/arcadectl/internal/installrender"
 	"github.com/gobha-me/arcadectl/internal/installstate"
 	admissionv1 "k8s.io/api/admissionregistration/v1"
@@ -47,6 +48,7 @@ var (
 
 type Contract struct {
 	plan      *installrender.Plan
+	baseline  *installbaseline.Plan
 	resources map[installstate.Key]installrender.Resource
 	templates map[templateKey]*Template
 }
@@ -91,7 +93,7 @@ func New(plan *installrender.Plan) (*Contract, error) {
 }
 
 func (c *Contract) Template(key installstate.Key, paused bool) (*Template, error) {
-	if c == nil || !c.plan.IsTrusted() {
+	if c == nil || !c.plan.IsTrusted() && !c.baseline.IsTrusted() {
 		return nil, ErrInvalid
 	}
 	t := c.templates[templateKey{key, paused}]
@@ -304,7 +306,7 @@ func (t *Template) match(object *unstructured.Unstructured, journal *installstat
 // and validated Service allocation. It does not copy unknown live fields.
 // The previous template must independently match before construction.
 func (t *Template) UpdateCandidate(previous *Template, live *unstructured.Unstructured, originalUID types.UID, nonce string) (*unstructured.Unstructured, error) {
-	if t == nil || previous == nil || t.contract == nil || previous.contract == nil || t.key != previous.key || t.contract.plan.Namespace() != previous.contract.plan.Namespace() || t.contract.plan.Profile().ID != previous.contract.plan.Profile().ID || previous.MatchLive(live, originalUID) != nil {
+	if t == nil || previous == nil || t.contract == nil || previous.contract == nil || t.contract.baseline != nil || previous.contract.baseline != nil || t.key != previous.key || t.contract.plan.Namespace() != previous.contract.plan.Namespace() || t.contract.plan.Profile().ID != previous.contract.plan.Profile().ID || previous.MatchLive(live, originalUID) != nil {
 		return nil, ErrDrift
 	}
 	if t.key.Kind == "CustomResourceDefinition" && !sameCRDSpec(previous.resource.Object, t.resource.Object) {

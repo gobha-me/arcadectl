@@ -51,8 +51,14 @@ func (a *HTTPAccess) proofRequest(ctx context.Context, method, path string, body
 	}
 	attempt := &requestAttempt{method: method}
 	if a.actor != nil {
-		review, ok := body.(*authv1.SelfSubjectAccessReview)
-		if method != http.MethodPost || path != "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews" || !ok || !a.actor.allowsReview(review) {
+		allowed := false
+		switch review := body.(type) {
+		case *authv1.SelfSubjectAccessReview:
+			allowed = path == "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews" && a.actor.allowsReview(review)
+		case *authv1.SelfSubjectRulesReview:
+			allowed = path == "/apis/authorization.k8s.io/v1/selfsubjectrulesreviews" && a.actor.allowsRulesReview(review)
+		}
+		if method != http.MethodPost || !allowed {
 			return nil, ErrInvalid
 		}
 		attempt.actor = &actorRequestCapture{identity: *a.actor, method: method, url: u.String(), body: encoded}
@@ -211,6 +217,14 @@ func (a *HTTPAccess) discover(ctx context.Context, gv string) (*metav1.APIResour
 // authorize accepts only specs constructed by the sealed operation permission
 // derivation, never a user/group/selector supplied by a configuration file.
 func (a *HTTPAccess) authorize(ctx context.Context, spec authv1.SelfSubjectAccessReviewSpec) error {
+	return a.authorizationDecision(ctx, spec, true)
+}
+
+// Negative authorization is distinct evidence, not a failed positive review.
+// Only an exact successful SSAR with an explicit allowed:false and no
+// evaluation error can prove containment. Transport/401/403/parse failures do
+// not establish that an actor lacks maintenance or additional mutation rights.
+func (a *HTTPAccess) authorizationDecision(ctx context.Context, spec authv1.SelfSubjectAccessReviewSpec, allowed bool) error {
 	if (spec.ResourceAttributes == nil) == (spec.NonResourceAttributes == nil) {
 		return ErrInvalid
 	}
@@ -229,11 +243,14 @@ func (a *HTTPAccess) authorize(ctx context.Context, spec authv1.SelfSubjectAcces
 		return ErrRead
 	}
 	status, ok := fields["status"].(map[string]any)
-	if !ok || status["allowed"] != true {
+	if !ok || status["allowed"] != allowed {
 		return ErrRead
 	}
-	if denied, present := status["denied"]; present && denied != false {
-		return ErrRead
+	if denied, present := status["denied"]; present {
+		value, ok := denied.(bool)
+		if !ok || allowed && value {
+			return ErrRead
+		}
 	}
 	if failure, present := status["evaluationError"]; present && failure != "" {
 		return ErrRead

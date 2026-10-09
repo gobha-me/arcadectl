@@ -182,8 +182,8 @@ func TestFixtureDecodeCachePinsEntireRegistryAndCatalogs(t *testing.T) {
 	if _, err := f.decodeCurrentWAL(f.body); err != nil {
 		t.Fatal("restored original engine refused")
 	}
-	oldV1, oldV2 := fixtureCatalog, fixtureCatalogV2
-	defer func() { fixtureCatalog, fixtureCatalogV2 = oldV1, oldV2 }()
+	oldV1, oldV2, oldV3 := fixtureCatalog, fixtureCatalogV2, fixtureCatalogV3
+	defer func() { fixtureCatalog, fixtureCatalogV2, fixtureCatalogV3 = oldV1, oldV2, oldV3 }()
 	fixtureCatalog[0].suffix = "foreign"
 	if _, err := f.decodeCurrentWAL(f.body); err != ErrFixtures {
 		t.Fatal("changed recipe reused decode")
@@ -196,6 +196,15 @@ func TestFixtureDecodeCachePinsEntireRegistryAndCatalogs(t *testing.T) {
 	fixtureCatalogV2[10].suffix = "foreign"
 	if _, err := f.decodeCurrentWAL(f.body); err != nil || &f.decodeCache.walBody[0] == oldPin {
 		t.Fatal("other catalog change was hidden by cache")
+	}
+	fixtureCatalogV2 = oldV2
+	if _, err := f.decodeCurrentWAL(f.body); err != nil {
+		t.Fatal("restored v2 catalogue refused")
+	}
+	oldPin = &f.decodeCache.walBody[0]
+	fixtureCatalogV3[11].suffix = "foreign"
+	if _, err := f.decodeCurrentWAL(f.body); err != nil || &f.decodeCache.walBody[0] == oldPin {
+		t.Fatal("v3 catalogue change was hidden by cache")
 	}
 }
 
@@ -241,11 +250,95 @@ func TestFixtureDecodeCacheCannotSubstituteInMemoryWALOrGrantCapabilities(t *tes
 }
 
 func TestFixtureJournalCloneDoesNotAliasPending(t *testing.T) {
-	d := installstate.Document{Resources: []installstate.Resource{{UID: "original"}}, Pending: &installstate.Pending{BeforeUID: "original"}}
+	d := installstate.Document{Resources: []installstate.Resource{{UID: "original"}}, Pending: &installstate.Pending{BeforeUID: "original"}, SecurityBaseline: &installstate.SecurityBaseline{Resources: []installstate.BaselineResource{{UID: "baseline-original"}}, Pending: &installstate.Pending{BeforeUID: "baseline-original"}}}
 	copy := cloneFixtureJournalDocument(d)
 	copy.Resources[0].UID = "foreign"
 	copy.Pending.BeforeUID = "foreign"
-	if d.Resources[0].UID != "original" || d.Pending.BeforeUID != "original" {
+	copy.SecurityBaseline.Resources[0].UID = "foreign"
+	copy.SecurityBaseline.Pending.BeforeUID = "foreign"
+	copy.SecurityBaseline.Stage = installstate.BaselineRecovery
+	if d.Resources[0].UID != "original" || d.Pending.BeforeUID != "original" || d.SecurityBaseline.Resources[0].UID != "baseline-original" || d.SecurityBaseline.Pending.BeforeUID != "baseline-original" || d.SecurityBaseline.Stage != "" {
 		t.Fatal("journal clone retained aliases")
+	}
+}
+
+func TestFixtureDecodeCachePinsBaselineAndCopiesItsEvidence(t *testing.T) {
+	h := newBaselineFixture(t)
+	completeBaselineFixture(t, h)
+	lock, err := h.engine.files.Lock(t.Context(), "decode-only-baseline")
+	if err != nil {
+		t.Fatal("decode-only lock unavailable")
+	}
+	f := &fixtureLedger{engine: h.engine, lock: lock}
+	defer f.close()
+	body := h.snapshot.Bytes()
+	document, err := f.decodeCurrentJournal(body)
+	if err != nil || !reflect.DeepEqual(document, h.snapshot.Document()) {
+		t.Fatal("baseline-aware strict decode failed")
+	}
+	pin := &f.decodeCache.journalBody[0]
+	document.SecurityBaseline.Resources[0].UID = "foreign"
+	document.SecurityBaseline.ArtifactDigest = "foreign"
+	again, err := f.decodeCurrentJournal(body)
+	if err != nil || !reflect.DeepEqual(again, h.snapshot.Document()) || &f.decodeCache.journalBody[0] != pin {
+		t.Fatal("baseline decode hit aliased evidence or was not reused")
+	}
+	// Pending ownership evidence is also independently copied on cache hits.
+	incomplete := h.snapshot.Document()
+	incomplete.SecurityBaseline.Stage = installstate.BaselineApplying
+	resource := incomplete.SecurityBaseline.Resources[0]
+	incomplete.SecurityBaseline.Resources = incomplete.SecurityBaseline.Resources[1:]
+	incomplete.SecurityBaseline.Pending = &installstate.Pending{Action: installstate.Create, Key: resource.Key, CreateNonce: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", AfterSHA256: resource.TemplateSHA256}
+	incompleteBody, err := installstate.EncodeWithBaseline(incomplete, h.engine.baselinePlan(), h.plan)
+	if err != nil {
+		t.Fatal("pending baseline encoding unavailable")
+	}
+	decoded, err := f.decodeCurrentJournal(incompleteBody)
+	if err != nil {
+		t.Fatal("pending baseline strict decode failed")
+	}
+	decoded.SecurityBaseline.Pending.CreateNonce = "foreign"
+	if got, err := f.decodeCurrentJournal(incompleteBody); err != nil || !reflect.DeepEqual(got, incomplete) {
+		t.Fatal("pending baseline decode retained aliases")
+	}
+	// A fixture WAL must never make an incomplete baseline executable. This
+	// validates pure schema only; no production guard or effects are fabricated.
+	wal := fixtureLedgerDocument{Version: "v1", Recipe: fixtureRecipeV1, Revision: 1, RunID: "cccccccccccccccccccccccccccccccc", Journal: body, JournalResourceVersion: h.snapshot.ResourceVersion()}
+	for _, recipe := range fixtureCatalog {
+		wal.Entries = append(wal.Entries, fixtureEntry{Key: installstate.Key{APIVersion: recipe.version, Kind: recipe.kind, Namespace: h.plan.Namespace(), Name: "arcadectl-probe-" + wal.RunID + "-" + recipe.suffix}, State: fixturePlanned})
+	}
+	walBody, err := h.engine.fixtureLedgerBody(wal)
+	if err != nil {
+		t.Fatal("verified baseline WAL schema refused")
+	}
+	if _, err := f.decodeCurrentWAL(walBody); err != nil {
+		t.Fatal("baseline WAL decode failed")
+	}
+	wal.Journal = incompleteBody
+	if _, err := h.engine.fixtureLedgerBody(wal); err != ErrFixtures {
+		t.Fatal("incomplete baseline became fixture authority")
+	}
+	// Equivalent but distinct sealed plans force a fresh strict decode; a
+	// different signed artifact cannot reuse the prior cached authority.
+	original := h.engine.baseline.plan
+	h.engine.baseline.plan = baselineFixturePlan(t, h.plan.Namespace(), h.plan.Profile().ID, 'd')
+	if _, err := f.decodeCurrentJournal(body); err != nil {
+		t.Fatal("equivalent sealed baseline refused")
+	}
+	pin = &f.decodeCache.journalBody[0]
+	h.engine.baseline.plan = original
+	if _, err := f.decodeCurrentJournal(body); err != nil || &f.decodeCache.journalBody[0] == pin {
+		t.Fatal("new sealed baseline owner reused cache")
+	}
+	h.engine.baseline.plan = baselineFixturePlan(t, h.plan.Namespace(), h.plan.Profile().ID, 'e')
+	if _, err := f.decodeCurrentJournal(body); err != ErrFixtures || f.decodeCache.journalBody != nil || f.decodeCache.walBody != nil {
+		t.Fatal("foreign artifact reused cached baseline authority")
+	}
+	if _, err := f.decodeCurrentWAL(walBody); err != ErrFixtures {
+		t.Fatal("foreign artifact reused cached WAL authority")
+	}
+	h.engine.baseline.plan = original
+	if f.close() != nil || f.decodeCache.baseline != nil {
+		t.Fatal("closed ledger retained baseline authority")
 	}
 }

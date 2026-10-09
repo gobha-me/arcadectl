@@ -86,11 +86,14 @@ func (c *clusterLifecycleChecks) waitServing(ctx context.Context, request Lifecy
 }
 
 // Shared READ-only original-serving convergence. Admission invokes this only
-// before capturing/sealing its initial phase in non-uninstall Verifying; the
-// activation wrapper retains its own checkpoint/target validation. ObserveServing
-// still enforces the original Verifying/mode/target/whole-shape contract. No WAL,
+// before capturing/sealing its initial phase. The activation wrapper retains
+// its Verifying/checkpoint/target validation. No WAL,
 // Secret, forwarding channel or authentication is created by this wait.
 func (p *ClusterPrerequisites) waitOriginalServing(ctx context.Context, snapshot *installstate.Snapshot) error {
+	return p.waitOriginalServingStage(ctx, snapshot, false)
+}
+
+func (p *ClusterPrerequisites) waitOriginalServingStage(ctx context.Context, snapshot *installstate.Snapshot, admissionApplying bool) error {
 	if p == nil || p.engine == nil || p.access == nil || ctx == nil || snapshot == nil {
 		return ErrInvalid
 	}
@@ -100,7 +103,7 @@ func (p *ClusterPrerequisites) waitOriginalServing(ctx context.Context, snapshot
 		if p.engine.fixtureFence(snapshot) != nil || p.original(ctx, snapshot) != nil {
 			return false, ErrActivation
 		}
-		fresh, err := p.engine.ObserveServing(ctx, snapshot, p.access.Serving())
+		fresh, err := p.engine.observeServing(ctx, snapshot, p.access.Serving(), admissionApplying)
 		if p.original(ctx, snapshot) != nil || p.engine.fixtureFence(snapshot) != nil {
 			return false, ErrActivation
 		}

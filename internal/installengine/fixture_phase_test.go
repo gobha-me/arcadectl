@@ -5,6 +5,7 @@ package installengine
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -25,16 +26,17 @@ import (
 // Real sealed observer, immutable companion and original actor/WAL transport;
 // fake HTTPS objects are NOT native admission, effect or lifecycle certification.
 type fixturePhaseTest struct {
-	test           *testing.T
-	f              *fixtureWireTest
-	lists, gets    int
-	hide           map[int]bool
-	gcRows         func(installobserve.GCResource, []metav1.PartialObjectMetadata) []metav1.PartialObjectMetadata
-	afterList      func(int)
-	afterGet       func(int)
-	publicGets     int
-	afterPublicGet func(int)
-	extra          []*unstructured.Unstructured
+	test             *testing.T
+	f                *fixtureWireTest
+	lists, gets      int
+	hide             map[int]bool
+	gcRows           func(installobserve.GCResource, []metav1.PartialObjectMetadata) []metav1.PartialObjectMetadata
+	afterList        func(int)
+	afterAccountList func()
+	afterGet         func(int)
+	publicGets       int
+	afterPublicGet   func(int)
+	extra            []*unstructured.Unstructured
 }
 
 func fixturePhaseFactory(t *testing.T) func(*testing.T) *fixturePhaseTest {
@@ -155,6 +157,21 @@ func fixturePhaseFactoryFromWireFactory(t *testing.T, newPreview func(*testing.T
 					_ = json.NewEncoder(w).Encode(review)
 					return true
 				}
+				if attrs := review.Spec.ResourceAttributes; attrs != nil && attrs.Verb == "get" && attrs.Group == "" && attrs.Version == "v1" && attrs.Resource == "serviceaccounts" && attrs.Namespace == ns && r.Header.Get("Impersonate-User") == "" {
+					known := false
+					for key := range f.actor.v.f.access.objects {
+						known = known || key.Kind == "ServiceAccount" && key.Name == attrs.Name
+					}
+					for _, entry := range f.wire.ledger.document.Entries {
+						known = known || entry.Key.Kind == "ServiceAccount" && entry.Key.Name == attrs.Name
+					}
+					for _, object := range h.extra {
+						known = known || object.GetKind() == "ServiceAccount" && object.GetName() == attrs.Name
+					}
+					review.Status.Allowed = known
+					_ = json.NewEncoder(w).Encode(review)
+					return true
+				}
 			}
 			for gv, resources := range groups {
 				prefix := "/apis/" + gv
@@ -201,6 +218,9 @@ func fixturePhaseFactoryFromWireFactory(t *testing.T, newPreview func(*testing.T
 						_ = json.NewEncoder(w).Encode(metav1.PartialObjectMetadataList{TypeMeta: metav1.TypeMeta{APIVersion: "meta.k8s.io/v1", Kind: "PartialObjectMetadataList"}, ListMeta: metav1.ListMeta{ResourceVersion: "100"}, Items: metadata})
 					} else {
 						_ = json.NewEncoder(w).Encode(map[string]any{"apiVersion": gv, "kind": resource.Kind + "List", "metadata": map[string]any{"resourceVersion": "100"}, "items": items})
+						if resource.Kind == "ServiceAccount" && h.afterAccountList != nil {
+							h.afterAccountList()
+						}
 					}
 					h.lists++
 					if h.afterList != nil {
@@ -217,6 +237,21 @@ func fixturePhaseFactoryFromWireFactory(t *testing.T, newPreview func(*testing.T
 					if h.afterPublicGet != nil {
 						h.afterPublicGet(h.publicGets)
 					}
+					return true
+				}
+			}
+			for _, original := range h.extra {
+				key := resourceKeyFromObject(original)
+				fixture := false
+				for _, entry := range f.wire.ledger.document.Entries {
+					fixture = fixture || entry.Key == key
+				}
+				if fixture {
+					continue
+				} // LIST-only missing-GET control stays meaningful
+				path, err := resourcePath(key, false)
+				if err == nil && r.Method == http.MethodGet && r.URL.Path == path {
+					encodeStoppedObject(t, w, r, original.DeepCopy())
 					return true
 				}
 			}
@@ -238,7 +273,27 @@ func fixturePhaseFactoryFromWireFactory(t *testing.T, newPreview func(*testing.T
 			setup(h)
 		}
 		initial, err := f.actor.admission.captureInitialPhase(t.Context(), f.actor.request)
-		if err != nil || initial.seal(f.wire.ledger) != nil {
+		if err != nil {
+			t.Fatal("initial sealed phase unavailable", err)
+		}
+		if f.wire.ledger.document.Recipe == fixtureRecipeV3 {
+			// Test-only recipe selection on the legacy engine. The complete
+			// production reader still supplies both exact initial collections;
+			// this is not baseline runtime-guard or native certification.
+			first, err := f.actor.admission.collectPhaseServiceAccounts(t.Context(), f.actor.request)
+			if err != nil {
+				t.Fatal("initial account collection unavailable", err)
+			}
+			second, err := f.actor.admission.collectPhaseServiceAccounts(t.Context(), f.actor.request)
+			if err != nil || !samePhaseServiceAccounts(first, second) {
+				t.Fatal("initial accounts changed", err)
+			}
+			initial.baseline.Accounts, err = second.baseline(initial.baseline.Public, nil)
+			if err != nil {
+				t.Fatal("initial accounts floor unavailable", err)
+			}
+		}
+		if initial.seal(f.wire.ledger) != nil {
 			t.Fatal("initial sealed phase unavailable", err)
 		}
 		h.lists = 0
@@ -342,10 +397,17 @@ func TestFixturePhaseCompleteOriginalAndFixedFixtureAccounting(t *testing.T) {
 			}
 			body := bytes.Clone(ledger.body)
 			identity := ledger.identity
-			o, err := f.wire.observePhase(t.Context())
+			trace := &admissionTrace{}
+			o, err := f.wire.observePhase(context.WithValue(t.Context(), admissionTraceKey{}, trace))
 			valid := scenario == "planned" || scenario == "original" || scenario == "deleted"
 			if valid && (err != nil || o == nil) || !valid && err != ErrFixtures {
 				t.Fatalf("phase %s acceptance incorrect: %v", scenario, err)
+			}
+			wantRows := map[string]string{"missing-list": "original-row-missing-fixture", "foreign-same-name": "original-row-fixture-identity", "extra-workload": "original-row-floor", "delete-present": "original-row-fixture-identity"}
+			if wanted := wantRows[scenario]; wanted != "" {
+				if stage, slot := trace.phaseSnapshot(); stage != wanted || slot != -1 {
+					t.Fatal("same-attempt row refusal did not retain its closed predicate classification", scenario, stage, slot)
+				}
 			}
 			if !bytes.Equal(body, ledger.body) || identity != ledger.identity || f.creates != 0 || f.deletes != 0 || f.seeds != 0 {
 				t.Fatal("observation mutated WAL or issued an effect")

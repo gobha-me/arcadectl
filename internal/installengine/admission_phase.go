@@ -27,10 +27,18 @@ import (
 // Attachment and arbitrary-GVR GC safety remain FRESH obligations throughout
 // fixture execution; hashing public builtin rows cannot inherit those facts.
 type fixturePhaseBaseline struct {
-	Version string               `json:"version"`
-	Rows    []fixtureWorldRow    `json:"rows"`
-	Leaders []fixturePhaseLeader `json:"leaders"`
-	Public  []fixtureWorldRow    `json:"public,omitempty"`
+	Version  string                  `json:"version"`
+	Rows     []fixtureWorldRow       `json:"rows"`
+	Leaders  []fixturePhaseLeader    `json:"leaders"`
+	Public   []fixtureWorldRow       `json:"public,omitempty"`
+	Accounts *fixtureAccountBaseline `json:"accounts,omitempty"`
+}
+
+// Present only in the v3 companion. Empty rows still encode an explicit
+// complete floor; absence never means that the collection was observed empty.
+type fixtureAccountBaseline struct {
+	Version string            `json:"version"`
+	Rows    []fixtureWorldRow `json:"rows"`
 }
 
 type fixturePhaseLeader struct {
@@ -57,6 +65,9 @@ func (initial *initialAdmissionPhase) seal(f *fixtureLedger) error {
 	}
 	rows, err := initial.worlds.fixtureWorldRows()
 	if err != nil {
+		return ErrFixtures
+	}
+	if !fixtureAccountsRecipeMatches(f.document, &initial.baseline) {
 		return ErrFixtures
 	}
 	d := fixtureWorldsDocument{Version: "original-worlds-v1", RunID: f.document.RunID, Journal: bytes.Clone(f.document.Journal), JournalResourceVersion: f.document.JournalResourceVersion, Rows: rows, Phase: &initial.baseline}
@@ -108,6 +119,18 @@ func (b *fixturePhaseBaseline) validate(namespace string) error {
 		}
 		publicUIDs[row.UID], previous = true, fixtureWorldOrder(row.Key)
 		addresses[row.Key] = true
+	}
+	previous = ""
+	if b.Accounts != nil {
+		if b.Accounts.Version != "service-accounts-v1" || b.Accounts.Rows == nil || len(b.Accounts.Rows) > installsafety.MaxObjectsPerList {
+			return ErrFixtures
+		}
+		for _, row := range b.Accounts.Rows {
+			if !rowValid(row) || row.Key.APIVersion != "v1" || row.Key.Kind != "ServiceAccount" || row.Key.Namespace != namespace || uids[row.UID].UID != "" || publicUIDs[row.UID] || addresses[row.Key] || fixtureWorldOrder(row.Key) <= previous {
+				return ErrFixtures
+			}
+			previous, uids[row.UID], addresses[row.Key] = fixtureWorldOrder(row.Key), row, true
+		}
 	}
 	previous = ""
 	for _, leader := range b.Leaders {
@@ -164,6 +187,7 @@ func (a *ClusterAdmission) captureInitialPhase(ctx context.Context, request Life
 	}
 	coldRequest := request
 	coldRequest.Checkpoint = ColdSafety
+	var lastAccounts *phaseServiceAccounts
 	collect := func() (*coldWorldTuple, [32]byte, fixturePhaseBaseline, error) {
 		tuple, observation, _, hash, err := cold.collectEvidence(ctx, coldRequest)
 		if err != nil {
@@ -176,6 +200,15 @@ func (a *ClusterAdmission) captureInitialPhase(ctx context.Context, request Life
 		baseline, err := capturePhaseBaseline(observation, families, time.Now().UTC())
 		if err == nil {
 			baseline.Public, err = a.phasePublicInventory(ctx, request)
+		}
+		if err == nil && a.prerequisites.engine.baseline != nil {
+			accounts, readErr := a.collectPhaseServiceAccounts(ctx, request)
+			if readErr != nil {
+				err = ErrFixtures
+			} else {
+				baseline.Accounts, err = accounts.baseline(baseline.Public, nil)
+				lastAccounts = accounts
+			}
 		}
 		return tuple, hash, baseline, err
 	}
@@ -190,6 +223,12 @@ func (a *ClusterAdmission) captureInitialPhase(ctx context.Context, request Life
 	after, err := a.configured(ctx, request)
 	if err != nil || !sameAdmissionConfiguration(before, after) || a.prerequisites.original(ctx, request.Snapshot) != nil {
 		return nil, ErrAdmission
+	}
+	if lastAccounts != nil {
+		closing, err := a.collectPhaseServiceAccounts(ctx, request)
+		if err != nil || !samePhaseServiceAccounts(lastAccounts, closing) || a.prerequisites.original(ctx, request.Snapshot) != nil {
+			return nil, ErrAdmission
+		}
 	}
 	// The second read is the latest accepted renewal/RV/managed-field floor.
 	// Sealing the first would permit regression to an already superseded read.
@@ -338,7 +377,7 @@ func capturePhaseLeader(namespace string, lease *coordinationv1.Lease, state adm
 }
 
 func samePhaseBaseline(before, after fixturePhaseBaseline) bool {
-	if before.Version != "admission-phase-v1" || after.Version != before.Version || !reflect.DeepEqual(before.Rows, after.Rows) || !reflect.DeepEqual(before.Public, after.Public) || len(before.Leaders) != len(after.Leaders) {
+	if before.Version != "admission-phase-v1" || after.Version != before.Version || !reflect.DeepEqual(before.Rows, after.Rows) || !reflect.DeepEqual(before.Public, after.Public) || !reflect.DeepEqual(before.Accounts, after.Accounts) || len(before.Leaders) != len(after.Leaders) {
 		return false
 	}
 	for index, original := range before.Leaders {

@@ -4,6 +4,7 @@
 package installengine
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -99,6 +100,15 @@ func (c *ClusterCold) collectEvidence(ctx context.Context, request LifecycleChec
 	var zero [32]byte
 	observation, err := c.prerequisites.observe(ctx, request)
 	if err != nil {
+		return nil, nil, nil, zero, ErrColdSafety
+	}
+	return c.evaluateEvidence(ctx, request, observation)
+}
+
+func (c *ClusterCold) evaluateEvidence(ctx context.Context, request LifecycleCheck, observation *installobserve.Observation) (*coldWorldTuple, *installobserve.Observation, []*corev1.PersistentVolume, [32]byte, error) {
+	var zero [32]byte
+	if c == nil || c.prerequisites == nil || c.games == nil || ctx == nil || ctx.Err() != nil || request.Snapshot == nil || observation == nil || observation.Journal() == nil ||
+		observation.Journal().Anchor() != request.Snapshot.Anchor() || observation.Journal().ResourceVersion() != request.Snapshot.ResourceVersion() || !bytes.Equal(observation.Journal().Bytes(), request.Snapshot.Bytes()) {
 		return nil, nil, nil, zero, ErrColdSafety
 	}
 	s := observation.Snapshot()

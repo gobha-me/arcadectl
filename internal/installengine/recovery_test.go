@@ -191,6 +191,66 @@ func TestRecoveryReportAllowsListRevisionChurnAndRedactsPrivateMetadata(t *testi
 	}
 }
 
+func TestRecoveryReportShowsSeparateBaselinePendingWithoutPrivateEvidence(t *testing.T) {
+	x := newRecoveryFixtureRouting(t, true)
+	engine, access := x.reporter.engine, x.reporter.access
+	var plan *installrender.Plan
+	for _, registered := range engine.plans {
+		plan = registered
+	}
+	baseline := baselineFixturePlan(t, plan.Namespace(), plan.Profile().ID, 'd')
+	document, err := installstate.Decode([]byte(x.ns.Annotations[installstate.Annotation]), plan)
+	if err != nil {
+		t.Fatal("original recovery fixture journal unavailable")
+	}
+	document.SecurityBaseline, err = installstate.PinnedSecurityBaseline(baseline)
+	if err != nil {
+		t.Fatal("baseline recovery pin unavailable")
+	}
+	resource := baseline.Resources()[0]
+	document.SecurityBaseline.Stage = installstate.BaselineApplying
+	document.SecurityBaseline.Pending = &installstate.Pending{Action: installstate.Create, Key: installstate.Key{APIVersion: resource.Object.GetAPIVersion(), Kind: resource.Object.GetKind(), Name: resource.Object.GetName()}, CreateNonce: strings.Repeat("b", 32), AfterSHA256: resource.TemplateSHA256}
+	body, err := installstate.EncodeWithBaseline(document, baseline, plan)
+	if err != nil {
+		t.Fatal("baseline recovery encoding failed")
+	}
+	x.ns.Annotations[installstate.Annotation] = string(body)
+	store, err := installstate.NewWithBaseline(access.Namespaces(), baseline, plan)
+	if err != nil {
+		t.Fatal("baseline recovery store unavailable")
+	}
+	engine, err = NewWithBaselineAccess(access, store, engine.files, baseline, plan)
+	if err != nil {
+		t.Fatal("baseline recovery engine unavailable")
+	}
+	x.reporter, err = NewRecoveryReporter(engine, access)
+	if err != nil {
+		t.Fatal("baseline recovery reporter unavailable")
+	}
+	// Original historical receipt remains byte-exact, loaded with explicit
+	// baseline context only to READ its pinned identity; it cannot bootstrap.
+	x.receipt, err = installstate.LoadBootstrapWithBaseline(engine.files, "recovery-bootstrap.json", plan, baseline)
+	if err != nil {
+		t.Fatal("original legacy receipt unavailable for read-only recovery")
+	}
+	report, err := x.reporter.Collect(t.Context(), x.receipt)
+	if err != nil {
+		t.Fatal("baseline recovery report refused")
+	}
+	var public recoveryDocument
+	if json.Unmarshal(report.Bytes(), &public) != nil || public.Pending != nil || public.SecurityBaseline == nil || public.SecurityBaseline.Pending == nil || public.SecurityBaseline.OwnershipStage != installstate.BaselineApplying || public.SecurityBaseline.ArtifactDigest != baseline.Digest() || public.SecurityBaseline.OriginalResourceCount != 0 || public.SecurityBaseline.Pending.Key != document.SecurityBaseline.Pending.Key {
+		t.Fatal("separate pending baseline evidence was omitted or mislabeled")
+	}
+	for _, private := range []string{"PRIVATE-CANARY", document.SecurityBaseline.Pending.CreateNonce, document.SecurityBaseline.Pending.AfterSHA256, x.privateDir} {
+		if bytes.Contains(report.Bytes(), []byte(private)) {
+			t.Fatal("baseline recovery output leaked non-allowlisted evidence")
+		}
+	}
+	if !bytes.Equal([]byte(x.ns.Annotations[installstate.Annotation]), body) {
+		t.Fatal("read-only baseline recovery mutated journal")
+	}
+}
+
 func TestRecoveryReportRefusesDriftAndIncompleteReads(t *testing.T) {
 	for _, fault := range []string{"claim-uid", "claim-rv", "claim-shape", "claim-membership", "namespace-uid", "namespace-shape", "journal-rv", "receipt-missing", "receipt-late", "unknown-phase", "cancelled", "nil-context"} {
 		t.Run(fault, func(t *testing.T) {

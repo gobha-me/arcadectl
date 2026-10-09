@@ -34,9 +34,9 @@ func fixtureResultExample(t *testing.T, ledger *fixtureLedger, slot int, phase f
 	if phase != fixtureDryRunResult {
 		o.SetResourceVersion("101")
 	}
-	if o.GetKind() != "PersistentVolumeClaim" {
+	if o.GetKind() != "PersistentVolumeClaim" && o.GetKind() != "ServiceAccount" {
 		o.SetGeneration(1)
-	} else {
+	} else if o.GetKind() == "PersistentVolumeClaim" {
 		o.SetFinalizers([]string{"kubernetes.io/pvc-protection"})
 	}
 	fields := []any{map[string]any{"manager": "arcadectl-installer", "operation": "Update", "apiVersion": o.GetAPIVersion(), "fieldsType": "FieldsV1", "fieldsV1": fixtureResultFieldset(o), "time": created.Add(time.Second).Format(time.RFC3339)}}
@@ -175,6 +175,26 @@ func fixtureResultRefusals(t *testing.T, ledger *fixtureLedger, slot int, phase 
 		"managed-null":   func(x *unstructured.Unstructured) { x.Object["metadata"].(map[string]any)["managedFields"] = nil },
 		"status-null":    func(x *unstructured.Unstructured) { x.Object["status"] = nil },
 		"status-unknown": func(x *unstructured.Unstructured) { x.Object["status"] = map[string]any{"private": "PRIVATE-CANARY"} },
+	}
+	if o.GetKind() == "ServiceAccount" {
+		mutations["spec"] = func(x *unstructured.Unstructured) { x.Object["spec"] = map[string]any{} }
+		mutations["automount-missing"] = func(x *unstructured.Unstructured) { delete(x.Object, "automountServiceAccountToken") }
+		for name, value := range map[string]any{"null": nil, "true": true, "string": "false", "zero": int64(0)} {
+			mutations["automount-"+name] = func(x *unstructured.Unstructured) { x.Object["automountServiceAccountToken"] = value }
+		}
+		for _, key := range []string{"secrets", "imagePullSecrets", "spec", "status"} {
+			for name, value := range map[string]any{"null": nil, "empty-list": []any{}, "empty-map": map[string]any{}} {
+				mutations[key+"-"+name] = func(x *unstructured.Unstructured) { x.Object[key] = value }
+			}
+		}
+		for name, value := range map[string]any{"zero": int64(0), "one": int64(1), "null": nil} {
+			mutations["generation-"+name] = func(x *unstructured.Unstructured) { x.Object["metadata"].(map[string]any)["generation"] = value }
+		}
+		for _, key := range []string{"f:spec", "f:status", "f:secrets", "f:imagePullSecrets"} {
+			mutations["managed-authority-"+key] = func(x *unstructured.Unstructured) {
+				x.Object["metadata"].(map[string]any)["managedFields"].([]any)[0].(map[string]any)["fieldsV1"] = map[string]any{key: map[string]any{}}
+			}
+		}
 	}
 	for _, field := range []string{"manager", "operation", "apiVersion", "fieldsType", "fieldsV1", "subresource", "time"} {
 		mutations["managed-"+field] = func(x *unstructured.Unstructured) {

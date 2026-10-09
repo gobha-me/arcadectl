@@ -10,9 +10,53 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gobha-me/arcadectl/internal/installstate"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
+
+// Predicate-only catalogue tests; synthetic seals here are not observations or
+// production authority. HTTP/native tests separately construct actual seals.
+func TestGCDiscoveryNamespaceListCoverageIsStricterThanNativeGC(t *testing.T) {
+	for _, scenario := range []string{"complete", "no-delete", "no-watch", "list-only", "create-only-virtual", "cluster-list-only", "preferred-not-gc"} {
+		t.Run(scenario, func(t *testing.T) {
+			catalogue := gcTestCatalogue(t)
+			list := catalogue.Lists["example.test/v2"]
+			extra := metav1.APIResource{Name: "extra", Kind: "Extra", Namespaced: true, Verbs: metav1.Verbs{"create", "delete", "list", "watch"}}
+			switch scenario {
+			case "no-delete":
+				extra.Verbs = metav1.Verbs{"create", "list", "watch"}
+			case "no-watch":
+				extra.Verbs = metav1.Verbs{"create", "delete", "list"}
+			case "list-only":
+				extra.Verbs = metav1.Verbs{"list"}
+			case "create-only-virtual":
+				extra.Verbs = metav1.Verbs{"create"}
+			case "cluster-list-only":
+				extra.Namespaced = false
+				extra.Verbs = metav1.Verbs{"list"}
+			case "preferred-not-gc":
+				list.APIResources[0].Verbs = metav1.Verbs{"get", "list"}
+			}
+			list.APIResources = append(list.APIResources, extra)
+			catalogue.Lists["example.test/v2"] = list
+			resources, err := gcResources(catalogue)
+			if err != nil {
+				t.Fatal("coverage fixture catalogue invalid")
+			}
+			discovery := &GCDiscovery{reader: &GCReader{}, journal: new(installstate.Snapshot), catalogue: catalogue, resources: resources}
+			want := scenario == "complete" || scenario == "create-only-virtual" || scenario == "cluster-list-only"
+			if discovery.CoversNamespaceLists() != want {
+				t.Fatal("GC subset was misrepresented as complete namespace LIST coverage")
+			}
+		})
+	}
+	for _, discovery := range []*GCDiscovery{nil, {}, {reader: &GCReader{}}, {journal: new(installstate.Snapshot)}} {
+		if discovery.CoversNamespaceLists() {
+			t.Fatal("unsealed catalogue supplied namespace coverage")
+		}
+	}
+}
 
 func gcTestCatalogue(t *testing.T) gcCatalogue {
 	t.Helper()

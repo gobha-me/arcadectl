@@ -37,6 +37,123 @@ registry. Its packages are not release artifacts and its trust key is not a
 release trust identity. Release supply-chain work (#39) and the release go/no-go
 gate (#41) must establish actual artifact publication and production support.
 
+### Installation-identity protection under development
+
+PR #62 is not merge-ready. Native review reproduced an ordinary controller
+launching a workload under a privileged installation identity. The separately
+signed, non-rollback security baseline and its lifecycle enforcement are being
+integrated; offline artifact verification or an individual passing test does
+not certify the production runtime boundary. The closed production lifecycle
+now wires the complete live/retired verifier to runtime effects and the distinct
+nonexecuting prerequisite protocol. Full exact-commit native certification and
+explicit enrollment of already-installed historical records remain required.
+
+The private baseline proof checks the CEL maintenance permission with explicit
+API version `*`, matching both declared Kubernetes profiles. It also checks a
+fixed thirteen-row wildcard-authorization catalog for all four reserved
+installation accounts, the controller-manager and eight producer identities
+under each original software actor, between unchanged original
+access and policy observations. These nonpersistent reviews mint no account,
+token or permission and add no mutation or producer-impersonation route.
+
+These reviews must not be described as universal impersonation containment.
+The native impersonation filter uses an empty authorization version, whereas
+both supported access-review handlers normalize an empty version to `*`.
+Changing the review's version to empty therefore cannot prove that separate
+header decision. The native catalog tests currently certify RBAC/wildcard
+decisions, not arbitrary version- or credential-sensitive external authorizers.
+As elsewhere in the architecture, the cluster administrator and Kubernetes
+control plane are trusted; this does not exempt a compromised ordinary
+controller from the required namespace, identity and workload protections.
+The development enforcement model relies on native Kubernetes RBAC for these
+identity decisions; the finite review catalog is not an attestation of an
+arbitrary external authorizer or a guarantee against future administrator
+changes. No additional actor credentials are required by that model.
+
+The private dry-run transport also has finite, negatively attributed identity
+CREATE/DELETE and ordinary-controller Service UPDATE/PATCH and Deployment
+PATCH routes. PATCH bytes are internally constructed metadata-only merge
+patches bound to observed UID/resource version; arbitrary caller patches,
+persistent writes, token minting and RBAC escalation have no mutation route.
+Both capture layers pin the exact per-operation content type and request body.
+These primitives alone are not effective runtime certification.
+
+The original-parent reader covers the API and both software controllers without
+requiring Ready. It binds complete executable observations to the original
+Namespace/journal revision and distinguishes absent pre-CREATE state, protected
+CREATE acknowledgement, signed before/after UPDATE, and authorized original
+foreground DELETE. Unknown CREATE responses without a protected original UID
+acknowledgement remain unresolved; a public nonce is not adopted as ownership.
+This reader does not itself classify descendants, establish coldness, complete
+garbage collection, or authorize a runtime effect. The complete guard must
+close whole executable/parent/access/policy evidence and protected receipt file
+identity/durability after its last remote observation.
+
+The separate reserved-metadata witness reads all sixteen fixed addresses: the
+four reserved names across ServiceAccounts, Roles, RoleBindings and Services.
+Only the API Service has a sealed signed template; the other three Service
+addresses must remain explicitly absent. Every address, including absence,
+requires discovery and a named administrator GET review in both uncached passes.
+Recorded objects require original UID and sealed shape. Pending CREATE requires
+the protected original acknowledgement, UPDATE admits only its precise signed
+before/after states, and authorized DELETE admits its original before state,
+narrow native foreground envelope or actual HTTP 404. Whole replies, including
+allocation/status/dynamic metadata, must agree across the passes. The opening
+receipt inode, bytes and durability are rechecked after the final journal read.
+This private component does not grant effects or wire the full runtime guard.
+
+The private behavioral composition is now written around those observations:
+three inert positive producer CREATE rows; reserved account/name producer and
+identity CREATE denials; named metadata, parent and classified Pod denials;
+independent exact whole reads before/after each request; and final complete
+effective-rule/executable, metadata, parent/descendant, journal and opening
+receipt closure. It never persists seeds to fill absent named-operation cells.
+The closed UPDATE constructor preserves the whole original and adds one fixed
+annotation; unsupported tuples remain explicit negative permission reviews.
+Actual constructor/current HTTPS race tests exercise active and retired runtime
+integration, classified Pods and late cross-component drift. Their native
+responses are synthetic: they do not substitute for full signed executable
+certification with actual Kubernetes admission and runtime controllers.
+
+The private descendant classifier now covers original Deployment → ReplicaSet
+→ admitted Pod chains for the API and both controllers over all eight complete
+native executable collections. It accepts only exact original owner identities
+and signed active/target/previous execution templates, including stalled mixed
+rollouts and validated native drain metadata. Unknown historical sets can only
+be inert; they cannot authorize executing Pods. Readiness, minimum Pod counts
+and deletion metadata do not establish identity or stoppedness. Repository-only
+matches are not family identity; independent cold/stop checks retain their wider
+absence obligations. The classifier preserves whole raw evidence, grants no
+cleanup authority, and still requires full opening/closing guard integration.
+
+The private forbidden-permission provider builds a finite, copied catalog from
+original signed namespace/cluster access and all guarded generated executable
+names. Both original software actors must return successful explicit negative
+SSAR decisions for every row in two complete passes. Whole unfiltered native
+LISTs and independent whole GETs, including unrelated executables, must remain
+unchanged across the checks; dropped membership, changed ports, late grants,
+access/policy drift and an unavailable negative review fail closed. Its
+SSAR-only client cannot perform the reviewed operations.
+
+Canonical proxy addresses alone are not exhaustive: native authorization keeps
+raw colon-qualified names, including noncanonical numeric spellings. A separate
+namespace-only, SSRR-only client therefore collects each actor's complete
+effective native-RBAC rules, including inherited group and cluster grants.
+Incomplete/error-bearing reviews refuse without fallback. Every actual finite
+`resourceNames` address selecting a protected Pod or Service is examined,
+including wildcard group/resource/verb grants and noncanonical port strings;
+unrestricted proxy grants refuse. Raw rules and duplicate multiplicity are
+preserved in order-independent opening/closing multisets. A literal `*` name is
+not treated as a native RBAC name wildcard. This evidence does not adopt ambient
+RBAC objects or replace original signed UID/resource-version witnesses. Neither
+review-only purpose grants generic actor reads, mutations or credentials.
+
+The complete effective guard and retained-reinstall protocol are implemented;
+explicit legacy enrollment and native signed fresh/upgrade/authentic-rollback/
+retaining-uninstall certification remain required. Original runtime predecessor
+bytes are not rewritten to claim that they contained the newer non-rollback
+protection.
+
 ## Read-only retained-world recovery reporting
 
 The internal closed `RecoveryReporter` reads only the original Namespace and
@@ -108,7 +225,27 @@ the full signed-binary lifecycle acceptance evidence remains pending. Use only
 in an owned isolated test cluster until issue #27's acceptance evidence exists.
 
 Mutation commands use the same strict static kubeconfig/trust boundary and the
-closed production checkpoint provider. Add `--api-ca ABS_PATH`; for initial
+closed production checkpoint provider. Every mutation requires an explicit
+`--security-baseline ABS_PATH`: its separate artifact is authenticated against
+the external trust key and compiled for the exact namespace/profile before any
+cluster transport or protected installation state is opened. Fresh bootstrap
+durably pins that digest before Namespace creation; resume cannot swap a valid
+but different signed artifact or regenerate the original receipt. Historical
+read-only `inspect` remains available without the flag. Historical receipt
+readability does not authorize implicit enrollment or mutation.
+
+The closed lifecycle constructor binds the same complete live/retired baseline
+verifier to ordinary runtime effects and the separate nonexecuting prerequisite
+protocol. Completed baseline ownership alone is not current enforcement proof.
+Fresh ownership uses bounded lifecycle Steps with prerequisites before every
+ownership/recovery operation, no runtime effects in an enrollment Step, and
+production reconstruction on restart. Native API-server tests on both exact
+profiles cover this path, occupied policy/binding address refusal and missing
+TLS input refusal. API-server ownership is not controller-manager typechecking
+health or full effective enforcement. Explicit legacy enrollment and full signed
+lifecycle certification remain mandatory; these changes do not certify deployment.
+
+Add `--api-ca ABS_PATH`; for initial
 installation also supply `--api-certificate ABS_PATH --api-key ABS_PATH`.
 `install`, `upgrade` and `rollback` require `--target-package ABS_PATH`, which
 must be one of the independently signed `--package` inputs. `resume` continues

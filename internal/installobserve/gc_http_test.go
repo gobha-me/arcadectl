@@ -23,15 +23,16 @@ import (
 )
 
 type gcHTTPFixture struct {
-	f          *fixture
-	g          *GCReader
-	lists      int
-	reads      map[string]int
-	fault      string
-	afterRead  func(string)
-	wholeFault string
-	wholeReads int
-	eventRV    int
+	f               *fixture
+	g               *GCReader
+	lists           int
+	reads           map[string]int
+	fault           string
+	afterRead       func(string)
+	wholeFault      string
+	wholeReads      int
+	eventRV         int
+	eventSnapshotRV int
 }
 
 func newGCHTTPFixture(t *testing.T, fault string) *gcHTTPFixture {
@@ -50,6 +51,13 @@ func newGCHTTPFixture(t *testing.T, fault string) *gcHTTPFixture {
 		version := metav1.GroupVersionForDiscovery{GroupVersion: "events.k8s.io/v1", Version: "v1"}
 		catalogue.Groups = append(catalogue.Groups, gcGroup{Name: "events.k8s.io", Versions: []metav1.GroupVersionForDiscovery{version}, Preferred: version})
 		catalogue.Lists[version.GroupVersion] = metav1.APIResourceList{TypeMeta: metav1.TypeMeta{Kind: "APIResourceList", APIVersion: "v1"}, GroupVersion: version.GroupVersion, APIResources: []metav1.APIResource{{Name: "events", Kind: "Event", Namespaced: true, Verbs: metav1.Verbs{"delete", "list", "watch"}}}}
+		if fault == "event-core-only" {
+			catalogue.Groups = catalogue.Groups[:len(catalogue.Groups)-1]
+			delete(catalogue.Lists, version.GroupVersion)
+		} else if fault == "event-new-only" {
+			core.APIResources = core.APIResources[:len(core.APIResources)-1]
+			catalogue.Lists["v1"] = core
+		}
 	}
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.reads[r.URL.Path]++
@@ -97,7 +105,7 @@ func newGCHTTPFixture(t *testing.T, fault string) *gcHTTPFixture {
 				_, _ = io.WriteString(w, "PRIVATE-GC-CANARY")
 				return
 			}
-			if (h.fault == "discovery-drift" && h.reads[path] > 2 || strings.HasSuffix(h.wholeFault, "post-discovery") && h.wholeReads > 0) && gv == "v1" {
+			if (h.fault == "discovery-drift" && h.reads[path] > 2 || h.fault == "event-post-discovery" && h.eventSnapshotRV != 0 || strings.HasSuffix(h.wholeFault, "post-discovery") && h.wholeReads > 0) && gv == "v1" {
 				list.APIResources[0].Verbs = metav1.Verbs{"get", "list"}
 			}
 			_ = json.NewEncoder(w).Encode(list)
@@ -107,10 +115,14 @@ func newGCHTTPFixture(t *testing.T, fault string) *gcHTTPFixture {
 		// The real metadata client carries the constructor's bounded timeout
 		// alongside Limit and (on later pages) Continue. Admit no other query.
 		queryValid := q.Get("limit") == "128" && (!q.Has("timeout") || q.Get("timeout") == "30s")
+		pinnedEvent := h.fault != "event-new-only" && strings.HasPrefix(path, "/apis/events.k8s.io/") && strings.HasSuffix(path, "/events") && q.Get("continue") == ""
 		for key, values := range q {
-			if key != "limit" && key != "continue" && key != "timeout" || len(values) != 1 {
+			if key != "limit" && key != "continue" && key != "timeout" && !(pinnedEvent && (key == "resourceVersion" || key == "resourceVersionMatch")) || len(values) != 1 {
 				queryValid = false
 			}
+		}
+		if pinnedEvent && (q.Get("resourceVersion") != "11" || q.Get("resourceVersionMatch") != "Exact") {
+			queryValid = false
 		}
 		wholeLease := strings.HasSuffix(path, "/leases") && r.Header.Get("Accept") == "application/json"
 		if !wholeLease && r.Header.Get("Accept") != "application/json;as=PartialObjectMetadataList;g=meta.k8s.io;v=v1" || !queryValid || !strings.Contains(path, "/namespaces/"+h.f.anchor.Namespace+"/") {
@@ -220,8 +232,26 @@ func newGCHTTPFixture(t *testing.T, fault string) *gcHTTPFixture {
 		case strings.HasSuffix(path, "/events"):
 			page.Items = append(page.Items, makeObject("event", "event-uid"))
 			page.Items[0].ResourceVersion = strconv.Itoa(h.eventRV)
+			if !strings.HasPrefix(path, "/apis/events.k8s.io/") && q.Get("continue") == "" {
+				h.eventSnapshotRV = h.eventRV
+			}
 			if strings.HasPrefix(path, "/apis/events.k8s.io/") {
+				if h.fault != "event-new-only" {
+					page.Items[0].ResourceVersion = strconv.Itoa(h.eventSnapshotRV)
+				}
 				switch h.fault {
+				case "event-snapshot-expired":
+					w.WriteHeader(410)
+					return
+				case "event-snapshot-unsupported":
+					w.WriteHeader(400)
+					return
+				case "event-snapshot-wrong-rv":
+					page.ResourceVersion = "12"
+				case "event-missing":
+					page.Items = nil
+				case "event-extra":
+					page.Items = append(page.Items, makeObject("extra-event", "extra-event-uid"))
 				case "event-rv":
 					page.Items[0].ResourceVersion = "22"
 				case "event-owner":
@@ -230,6 +260,35 @@ func newGCHTTPFixture(t *testing.T, fault string) *gcHTTPFixture {
 					page.Items[0].Name = "other"
 				case "event-duplicate":
 					page.Items = append(page.Items, page.Items[0])
+				}
+			}
+			if h.fault == "event-empty" {
+				page.Items = nil
+			}
+			if h.fault == "event-pagination" || h.fault == "event-pagination-page-rv" || h.fault == "event-pagination-expired" {
+				page.Items = nil
+				start, end := 0, 128
+				if q.Get("continue") == "events-next" {
+					start, end = 128, 129
+				} else if q.Get("continue") != "" {
+					t.Error("unknown Event continuation")
+					w.WriteHeader(400)
+					return
+				}
+				for index := start; index < end; index++ {
+					page.Items = append(page.Items, makeObject("event-"+strconv.Itoa(index), "event-uid-"+strconv.Itoa(index)))
+				}
+				if end == 128 {
+					page.Continue = "events-next"
+				}
+				if strings.HasPrefix(path, "/apis/events.k8s.io/") && start == 128 {
+					if h.fault == "event-pagination-page-rv" {
+						page.ResourceVersion = "12"
+					}
+					if h.fault == "event-pagination-expired" {
+						w.WriteHeader(410)
+						return
+					}
 				}
 			}
 		case strings.HasSuffix(path, "/secrets"):
@@ -487,8 +546,8 @@ func TestGCReaderEventsRequireExactKnownAliasMetadata(t *testing.T) {
 					order = append(order, path)
 					if strings.HasSuffix(path, "/events") {
 						eventReads++
-						// An actual update after the first response and before
-						// the second snapshot must still refuse, even adjacent.
+						// A real intervening update is hidden ONLY by the server's
+						// exact original collection snapshot, not RV normalization.
 						if fault == "event-between-aliases" && eventReads == 2 {
 							h.eventRV++
 						}
@@ -513,23 +572,20 @@ func TestGCReaderEventsRequireExactKnownAliasMetadata(t *testing.T) {
 			} else {
 				observation, err = h.g.Collect(t.Context(), discovery)
 			}
-			if fault != "event-identical" && !churn {
+			if fault != "event-identical" && fault != "event-between-aliases" && !churn {
 				if err != ErrOwnership || observation != nil {
 					t.Fatal("conflicting alias or same-source duplicate accepted")
 				}
 				expected := "metadata-uid-correlation"
 				if fault == "event-duplicate" {
 					expected = "metadata-shape"
-				} else if fault == "event-rv" || fault == "event-between-aliases" {
+				} else if fault == "event-rv" {
 					expected = "event-alias-rv-conflict"
 				} else if fault == "event-name" || fault == "event-owner" {
 					expected = "event-alias-metadata-conflict"
 				}
 				if h.g.DiagnosticStage() != expected {
 					t.Fatal("Event refusal diagnostic unavailable", h.g.DiagnosticStage())
-				}
-				if fault == "event-between-aliases" && (eventReads != 2 || h.lists != 6 || h.eventRV != 22 || !strings.HasSuffix(order[len(order)-1], "/events") || !strings.HasSuffix(order[len(order)-2], "/events")) {
-					t.Fatal("adjacent alias conflict was retried, separated or normalized")
 				}
 				return
 			}
@@ -540,6 +596,9 @@ func TestGCReaderEventsRequireExactKnownAliasMetadata(t *testing.T) {
 			}
 			if err != nil || observation == nil || len(observation.Objects()) != objects || h.lists != lists {
 				t.Fatal("identical known Event alias was not completely observed", err)
+			}
+			if fault == "event-between-aliases" && (eventReads != 2 || h.eventRV != 22 || h.eventSnapshotRV != 21 || !strings.HasSuffix(order[len(order)-1], "/events") || !strings.HasSuffix(order[len(order)-2], "/events")) {
+				t.Fatal("exact Event snapshot was retried, separated or normalized")
 			}
 			if !reflect.DeepEqual(original, discovery.Resources()) {
 				t.Fatal("read scheduling changed the original sealed catalogue")
@@ -583,6 +642,100 @@ func TestGCReaderEventsRequireExactKnownAliasMetadata(t *testing.T) {
 						}
 					}
 				}
+			}
+		})
+	}
+}
+
+func TestGCReaderEventSnapshotCompleteOrRefusedWithoutFallback(t *testing.T) {
+	for _, test := range []struct {
+		fault   string
+		wantErr error
+		stage   string
+		pages   int
+		objects int
+	}{
+		{"event-pagination", nil, "complete", 8, 390},
+		{"event-empty", nil, "complete", 6, 132},
+		{"event-core-only", nil, "complete", 5, 133},
+		{"event-new-only", nil, "complete", 5, 133},
+		{"event-snapshot-expired", ErrRead, "metadata-pages", 6, 0},
+		{"event-snapshot-unsupported", ErrRead, "metadata-pages", 6, 0},
+		{"event-snapshot-wrong-rv", ErrOwnership, "event-alias-metadata-conflict", 6, 0},
+		{"event-missing", ErrOwnership, "event-alias-metadata-conflict", 6, 0},
+		{"event-extra", ErrOwnership, "event-alias-metadata-conflict", 6, 0},
+		{"event-pagination-page-rv", ErrRead, "metadata-pages", 8, 0},
+		{"event-pagination-expired", ErrRead, "metadata-pages", 8, 0},
+		{"event-post-discovery", ErrConcurrent, "closing", 6, 0},
+	} {
+		t.Run(test.fault, func(t *testing.T) {
+			h := newGCHTTPFixture(t, test.fault)
+			discovery, err := h.g.Discover(t.Context(), h.f.anchor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			original := discovery.Resources()
+			observation, err := h.g.Collect(t.Context(), discovery)
+			if err != test.wantErr || h.g.DiagnosticStage() != test.stage || h.lists != test.pages || !reflect.DeepEqual(original, discovery.Resources()) {
+				t.Fatal("exact snapshot protocol changed, retried or accepted incomplete evidence", err, h.g.DiagnosticStage(), h.lists)
+			}
+			if test.wantErr != nil {
+				if observation != nil {
+					t.Fatal("refused snapshot supplied observation authority")
+				}
+				return
+			}
+			if observation == nil || len(observation.Objects()) != test.objects {
+				t.Fatal("complete Event membership was lost")
+			}
+			counts := map[string]int{}
+			for _, object := range observation.Objects() {
+				if object.Source.Kind == "Event" {
+					counts[object.Source.GVR.Group]++
+					if object.Metadata.ResourceVersion != "21" {
+						t.Fatal("collector replaced individual Event resourceVersion")
+					}
+				}
+			}
+			if test.fault == "event-pagination" && (counts[""] != 129 || counts["events.k8s.io"] != 129) || test.fault == "event-core-only" && (counts[""] != 1 || counts["events.k8s.io"] != 0) || test.fault == "event-new-only" && (counts[""] != 0 || counts["events.k8s.io"] != 1) {
+				t.Fatal("collector invented or omitted an Event alias")
+			}
+		})
+	}
+}
+
+func TestGCReaderEventSnapshotPreservesFinalJournalAndCancellationBarriers(t *testing.T) {
+	for _, barrier := range []string{"post-journal", "cancel-second-alias"} {
+		t.Run(barrier, func(t *testing.T) {
+			h := newGCHTTPFixture(t, "event-identical")
+			discovery, err := h.g.Discover(t.Context(), h.f.anchor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			h.afterRead = func(path string) {
+				if barrier == "cancel-second-alias" && strings.HasPrefix(path, "/apis/events.k8s.io/") && strings.HasSuffix(path, "/events") {
+					cancel()
+				}
+				if barrier == "post-journal" && path == "/api" && h.eventSnapshotRV != 0 {
+					ns, err := h.f.core.CoreV1().Namespaces().Get(t.Context(), h.f.anchor.Namespace, metav1.GetOptions{})
+					if err != nil {
+						t.Error("test Namespace observation unavailable")
+						return
+					}
+					ns.ResourceVersion = "2"
+					if _, err := h.f.core.CoreV1().Namespaces().Update(t.Context(), ns, metav1.UpdateOptions{}); err != nil {
+						t.Error("test Namespace drift unavailable")
+					}
+				}
+			}
+			observation, err := h.g.Collect(ctx, discovery)
+			// Cancellation may return while the server finishes the rejected
+			// request; do not race its counters. Completed requests are counted
+			// in the table above, including every no-fallback refusal.
+			if err == nil || observation != nil || barrier == "post-journal" && h.lists != 6 {
+				t.Fatal("snapshot replaced journal/cancellation barrier or retried", err)
 			}
 		})
 	}

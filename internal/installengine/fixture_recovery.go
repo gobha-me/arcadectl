@@ -95,7 +95,7 @@ func (a *ClusterAdmission) resumeFixtures(ctx context.Context, request Lifecycle
 	// A DeleteAttempted original still present is deliberately rejected by
 	// complete phase accounting. The first reverse cleanup call may only wait
 	// for its disappearance; never normalize presence or refresh its RV.
-	for slot := len(f.document.Entries) - 1; slot >= 0; slot-- {
+	for _, slot := range fixtureDeletionOrder(f.document) {
 		if f.document.Entries[slot].State == fixtureAbsent {
 			continue
 		}

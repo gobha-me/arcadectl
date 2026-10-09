@@ -38,6 +38,12 @@ func TestAdmissionInitialPhaseConvergenceBeforeWALForPartialAndFullFamilies(t *t
 			if err != nil {
 				t.Fatal(err)
 			}
+			if scenario.mode == installstate.Install {
+				d.Stage = installstate.Applying
+				if entry, _ := v.f.engine.inventory(d, deploymentKey(ns.Name, apiFamily)); entry != nil {
+					t.Fatal("partial Applying control unexpectedly has API inventory")
+				}
+			}
 			if scenario.mode == installstate.Uninstall {
 				d.Mode, d.Stage, d.ActivePackage, d.Installed = installstate.Uninstall, installstate.Preparing, plan.Digest(), true
 			}
@@ -123,7 +129,10 @@ func TestAdmissionInitialPhaseConvergenceBeforeWALForPartialAndFullFamilies(t *t
 				if n == 3 {
 					lists["Lease"] = leases
 				}
-			}, "", func(_ http.ResponseWriter, _ *http.Request) bool {
+			}, "", func(_ http.ResponseWriter, request *http.Request) bool {
+				if request.Method == http.MethodGet && request.URL.Path == "/apis/apps/v1/namespaces/"+ns.Name+"/deployments/arcadectl-api" {
+					t.Error("partial Applying without an API attempted a serving wait")
+				}
 				walChecks++
 				if _, _, err := v.f.engine.files.Read(fixtureLedgerName(v.f.snapshot), fixtureLedgerMaxBytes); !errors.Is(err, privatefs.ErrNotFound) {
 					t.Error("startup/election wait created fixture WAL before complete proof")

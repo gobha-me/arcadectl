@@ -21,6 +21,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 var (
@@ -32,6 +33,7 @@ var (
 )
 
 type Engine struct {
+	baseline  *baselineWorkflow
 	access    Access
 	journal   *installstate.Store
 	files     *privatefs.Store
@@ -43,6 +45,13 @@ type Engine struct {
 // NewWithAccess is a trusted instrumentation seam. Production must use
 // HTTPAccess for both the resource access and journal NamespaceAccess.
 func NewWithAccess(access Access, journal *installstate.Store, files *privatefs.Store, plans ...*installrender.Plan) (*Engine, error) {
+	if journal != nil && journal.BaselineDigest() != "" {
+		return nil, ErrInvalid
+	}
+	return newWithAccess(access, journal, files, plans...)
+}
+
+func newWithAccess(access Access, journal *installstate.Store, files *privatefs.Store, plans ...*installrender.Plan) (*Engine, error) {
 	if access == nil || reflect.ValueOf(access).Kind() == reflect.Pointer && reflect.ValueOf(access).IsNil() || journal == nil || files == nil || len(plans) < 1 || len(plans) > 3 {
 		return nil, ErrInvalid
 	}
@@ -102,6 +111,15 @@ func (e *Engine) current(ctx context.Context, s *installstate.Snapshot) (*instal
 	live, err := e.access.Get(ctx, key)
 	if err != nil || t.MatchNamespace(live, fresh) != nil {
 		return nil, ErrOwnership
+	}
+	// Close ordinary Namespace/compatibility reads BEFORE the final whole
+	// runtime proof. Its private original witnesses remain owned through its
+	// own last remote fence. No remote read may trail their release here.
+	if e.baseline != nil && e.baseline.verifyRuntime(ctx, fresh) != nil {
+		return nil, ErrSecurityBaseline
+	}
+	if ctx.Err() != nil {
+		return nil, ErrConcurrent
 	}
 	return fresh, nil
 }
@@ -179,7 +197,11 @@ func deletionAllowed(d installstate.Document, r *installstate.Resource, t *insta
 // or update. Dry-run is independently checked against signed desired defaults.
 // An existing unowned object is never adopted, even when its shape matches.
 func (e *Engine) Apply(ctx context.Context, s *installstate.Snapshot, key installstate.Key, digest string, paused bool) (*installstate.Snapshot, error) {
-	fresh, err := e.current(ctx, s)
+	return e.apply(ctx, s, key, digest, paused, nil)
+}
+
+func (e *Engine) apply(ctx context.Context, s *installstate.Snapshot, key installstate.Key, digest string, paused bool, operation *baselinePrerequisite) (*installstate.Snapshot, error) {
+	fresh, err := e.currentEffect(ctx, s, operation)
 	if err != nil {
 		return nil, err
 	}
@@ -189,11 +211,19 @@ func (e *Engine) Apply(ctx context.Context, s *installstate.Snapshot, key instal
 		return nil, err
 	}
 	r, old := e.inventory(d, key)
+	if operation != nil && (paused || key != operation.key || digest != operation.digest || t.Hash() != operation.hash || r != nil) {
+		return fresh, ErrSecurityBaseline
+	}
 	nonce, err := installstate.NewID()
 	if err != nil {
 		return nil, ErrInvalid
 	}
 	p := &installstate.Pending{Key: key, CreateNonce: nonce, AfterSHA256: t.Hash()}
+	if operation != nil {
+		bound := *operation
+		bound.nonce = nonce
+		operation = &bound
+	}
 	var candidate *unstructured.Unstructured
 	live, readErr := e.access.Get(ctx, key)
 	if r == nil {
@@ -225,7 +255,7 @@ func (e *Engine) Apply(ctx context.Context, s *installstate.Snapshot, key instal
 		return nil, ErrRead
 	}
 	// Refuse a stale Namespace even when dry-run itself succeeded.
-	fresh, err = e.current(ctx, fresh)
+	fresh, err = e.currentEffect(ctx, fresh, operation)
 	if err != nil {
 		return nil, err
 	}
@@ -240,7 +270,7 @@ func (e *Engine) Apply(ctx context.Context, s *installstate.Snapshot, key instal
 			return intent, ErrOutcomeUnknown
 		}
 	}
-	if _, err = e.current(ctx, intent); err != nil {
+	if _, err = e.currentEffect(ctx, intent, operation); err != nil {
 		return intent, ErrOutcomeUnknown
 	}
 	var ack *unstructured.Unstructured
@@ -259,7 +289,7 @@ func (e *Engine) Apply(ctx context.Context, s *installstate.Snapshot, key instal
 	if err == nil && (ack == nil || !effectMatches(t, p, ack)) {
 		return intent, ErrOutcomeUnknown
 	}
-	return e.recover(ctx, intent, ack, err == nil, ambiguousCreateResponse(err))
+	return e.recoverWithOperation(ctx, intent, ack, err == nil, ambiguousCreateResponse(err), operation)
 }
 
 func ambiguousCreateResponse(err error) bool {
@@ -334,10 +364,45 @@ func (e *Engine) delete(ctx context.Context, s *installstate.Snapshot, key insta
 // before-state, or a deleting object leaves the intent pending: the original
 // request may still finish later. Same-name replacements are not adopted.
 func (e *Engine) Recover(ctx context.Context, s *installstate.Snapshot) (*installstate.Snapshot, error) {
+	return e.recoverOwned(ctx, s, nil)
+}
+
+func (e *Engine) recoverOwned(ctx context.Context, s *installstate.Snapshot, secrets *retainedBootstrapSecrets) (*installstate.Snapshot, error) {
+	if e != nil && e.baseline != nil && s != nil {
+		d := s.Document()
+		if d.Pending != nil && d.Mode == installstate.Install && baselinePrerequisiteKey(d.Pending.Key, d.Namespace) {
+			operation, err := e.prerequisiteOperation(s, d.Pending.Key, d.TargetPackage)
+			if err != nil {
+				return s, ErrOutcomeUnknown
+			}
+			operation.secrets = secrets
+			// Observation-only: never enter Apply or perform dry-run/CREATE.
+			return e.recoverWithOperation(ctx, s, nil, false, false, operation)
+		}
+	}
 	return e.recover(ctx, s, nil, false, false)
 }
 func (e *Engine) recover(ctx context.Context, s *installstate.Snapshot, ack *unstructured.Unstructured, hasAck, allowInitialObservation bool) (*installstate.Snapshot, error) {
-	fresh, err := e.current(ctx, s)
+	return e.recoverWithOperation(ctx, s, ack, hasAck, allowInitialObservation, nil)
+}
+
+func (e *Engine) recoverWithOperation(ctx context.Context, s *installstate.Snapshot, ack *unstructured.Unstructured, hasAck, allowInitialObservation bool, operation *baselinePrerequisite) (*installstate.Snapshot, error) {
+	var receipt *prerequisiteReceiptWitness
+	var fresh *installstate.Snapshot
+	var err error
+	if operation != nil {
+		if ctx == nil || ctx.Err() != nil {
+			return s, ErrOutcomeUnknown
+		}
+		receipt, err = e.openPrerequisiteReceipt(s, operation)
+		if err != nil {
+			return s, ErrOutcomeUnknown
+		}
+		defer receipt.release()
+		fresh, err = e.currentPrerequisiteEffect(ctx, s, operation, receipt)
+	} else {
+		fresh, err = e.currentEffect(ctx, s, nil)
+	}
 	if err != nil {
 		return s, ErrOutcomeUnknown
 	}
@@ -388,13 +453,24 @@ func (e *Engine) recover(ctx context.Context, s *installstate.Snapshot, ack *uns
 			// A restarted invocation cannot know whether an acknowledged UID
 			// was lost before receipt fsync. Only the original call may establish
 			// first identity from a genuinely lost response's immediate readback.
-			if allowInitialObservation {
+			// Prerequisite recovery requires an already-protected original UID.
+			// An uncertain response's late readback cannot establish that identity:
+			// the object may appear after the complete absence proof, including a
+			// same-name replacement carrying the public intent nonce.
+			if allowInitialObservation && operation == nil {
 				if err := e.saveCreateUID(d, live.GetUID()); err != nil {
 					return fresh, ErrOutcomeUnknown
 				}
 			}
-			originalUID, err := e.loadCreateUID(d)
-			if err != nil || originalUID != live.GetUID() {
+			var originalUID types.UID
+			if operation != nil {
+				if receipt != nil {
+					originalUID = receipt.uid
+				}
+			} else {
+				originalUID, err = e.loadCreateUID(d)
+			}
+			if err != nil || originalUID == "" || originalUID != live.GetUID() {
 				return fresh, ErrOutcomeUnknown
 			}
 			d.Resources = append(d.Resources, installstate.Resource{Key: p.Key, UID: live.GetUID(), TemplateSHA256: t.Hash(), Retained: t.Retained(), Phase: t.Phase()})
@@ -407,6 +483,11 @@ func (e *Engine) recover(ctx context.Context, s *installstate.Snapshot, ack *uns
 	installstate.SortResources(d.Resources)
 	d.Revision++
 	d.Pending = nil
+	if operation != nil {
+		if _, err := (&Lifecycle{engine: e}).original(ctx, fresh); err != nil || e.confirmPrerequisiteReceipt(fresh, operation, receipt) != nil || ctx.Err() != nil {
+			return fresh, ErrOutcomeUnknown
+		}
+	}
 	settled, err := e.journal.Commit(ctx, fresh, d)
 	if err != nil {
 		return fresh, ErrOutcomeUnknown

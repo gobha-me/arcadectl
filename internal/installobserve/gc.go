@@ -122,6 +122,33 @@ func (d *GCDiscovery) Resources() []GCResource {
 	return slices.Clone(d.resources)
 }
 
+// CoversNamespaceLists is a sealed coverage check, not emptiness evidence.
+// Native GC intentionally excludes root resources lacking delete/list/watch.
+// A caller proving namespace absence must additionally refuse any advertised
+// namespaced root LIST source omitted from the complete GC collection. CREATE-
+// only virtual endpoints/subresources are not persistent list inventories.
+func (d *GCDiscovery) CoversNamespaceLists() bool {
+	if d == nil || d.reader == nil || d.journal == nil {
+		return false
+	}
+	selected := make(map[schema.GroupResource]string, len(d.resources))
+	for _, source := range d.resources {
+		selected[source.GVR.GroupResource()] = source.Kind
+	}
+	for version, list := range d.catalogue.Lists {
+		gv, err := schema.ParseGroupVersion(version)
+		if err != nil {
+			return false
+		}
+		for _, resource := range list.APIResources {
+			if resource.Namespaced && !strings.Contains(resource.Name, "/") && slices.Contains(resource.Verbs, "list") && selected[schema.GroupResource{Group: gv.Group, Resource: resource.Name}] != resource.Kind {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 type GCObservation struct {
 	journal      *installstate.Snapshot
 	objects      []GCObject
@@ -290,14 +317,29 @@ func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeas
 	identities := map[types.UID]GCObject{}
 	var leases *coordinationv1.LeaseList
 	var leasesReadAt time.Time
+	eventSources := []GCResource{}
+	for _, source := range discovery.resources {
+		if gcNativeEvent(source) {
+			eventSources = append(eventSources, source)
+		}
+	}
+	pairedEvents := len(eventSources) == 2
+	if pairedEvents && (eventSources[0].GVR.Group == eventSources[1].GVR.Group || eventSources[0].GVR.Version != "v1" || eventSources[1].GVR.Version != "v1") {
+		return nil, ErrOwnership
+	}
+	var eventSnapshotRV string
+	eventOriginals := make(map[types.UID]GCObject)
 	// Continuously renewed Leases must not age behind every other SDK LIST's
 	// rate limiter before whole-object correlation. Reorder READS only; never
 	// mutate the sealed catalogue, skip a source/page, change the supplied
 	// read limiter/QPS (including the installer's bounded shared default) or weaken
 	// the final fresh discovery/journal barrier. Read the known Event aliases
 	// adjacently before Leases so unrelated SDK requests do not unnecessarily
-	// separate their exact metadata correlation. This is not an atomic snapshot:
-	// any observed alias mismatch still refuses without retry or normalization.
+	// separate their exact metadata correlation. Only the two known native v1
+	// Event aliases additionally share ONE exact collection snapshot. Their
+	// membership and every actual object RV still match; no normalization,
+	// fallback, source omission or retry is permitted. This does not make the
+	// whole namespace atomic. Other sources keep their original read protocol.
 	// Preserve canonical order inside each scheduling class and in the result.
 	readOrder := make([]GCResource, 0, len(discovery.resources))
 	for class := range 3 {
@@ -316,11 +358,22 @@ func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeas
 	for _, source := range readOrder {
 		start := len(objects)
 		g.diagnostic.Store(gcStageMetadataPages)
-		items, _, err := boundedPages(ctx, func(ctx context.Context, opts metav1.ListOptions) (runtime.Object, error) {
+		secondEventAlias := pairedEvents && gcNativeEvent(source) && eventSnapshotRV != ""
+		items, collectionRV, err := boundedPages(ctx, func(ctx context.Context, opts metav1.ListOptions) (runtime.Object, error) {
+			if secondEventAlias && opts.Continue == "" {
+				// Pin the COLLECTION version, never an individual Event RV.
+				// Continuations carry their own exact snapshot and must not
+				// also receive resourceVersion/resourceVersionMatch.
+				opts.ResourceVersion, opts.ResourceVersionMatch = eventSnapshotRV, metav1.ResourceVersionMatchExact
+			}
 			return g.observer.clients.Metadata.Resource(source.GVR).Namespace(discovery.journal.Anchor().Namespace).List(ctx, opts)
 		}, sharedBudget)
 		if err != nil {
 			return nil, ErrRead
+		}
+		if secondEventAlias && collectionRV != eventSnapshotRV {
+			g.diagnostic.Store(gcStageEventAliasMetadata)
+			return nil, ErrOwnership // unsupported/ignored Exact never falls back
 		}
 		seen := map[string]bool{}
 		for _, item := range items {
@@ -342,6 +395,10 @@ func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeas
 			seen[m.Name] = true
 			object := GCObject{source, publicMetadata(m)}
 			g.diagnostic.Store(gcStageMetadataUIDs)
+			if secondEventAlias && eventOriginals[m.UID].Metadata.UID == "" {
+				g.diagnostic.Store(gcStageEventAliasMetadata)
+				return nil, ErrOwnership // extra/changed alias membership
+			}
 			if prior, exists := identities[m.UID]; exists && !gcEventAlias(prior, object) {
 				// Fixed diagnostics only: never feed this distinction into
 				// acceptance, a retry decision, or a new collection capability.
@@ -354,10 +411,23 @@ func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeas
 				return nil, ErrOwnership
 			}
 			identities[m.UID] = object
+			if pairedEvents && gcNativeEvent(source) && !secondEventAlias {
+				eventOriginals[m.UID] = object
+			}
 			objects = append(objects, object)
 			if len(objects) > installsafety.MaxOwnerGraphNodes {
 				g.diagnostic.Store(gcStageGraphBound)
 				return nil, ErrRead
+			}
+		}
+		if pairedEvents && gcNativeEvent(source) {
+			if secondEventAlias {
+				if len(items) != len(eventOriginals) {
+					g.diagnostic.Store(gcStageEventAliasMetadata)
+					return nil, ErrOwnership
+				}
+			} else {
+				eventSnapshotRV = collectionRV
 			}
 		}
 		if pairLeases && source.GVR.Group == "coordination.k8s.io" && source.GVR.Resource == "leases" {

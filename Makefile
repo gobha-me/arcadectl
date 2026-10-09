@@ -1,4 +1,4 @@
-.PHONY: generate generate-openapi generate-cli verify-cli render-api render-controller test-envtest test-kind-api test-kind-install-auth test-kind-install-admission test-kind-install-binary test-kind-factorio test-kind-lifecycle test-kind-recovery verify-generated verify-openapi verify-runtime-assets
+.PHONY: generate generate-openapi generate-cli verify-cli render-api render-controller test-envtest test-kind-api test-kind-install-auth test-kind-install-admission test-kind-install-admission-v3 test-kind-install-baseline test-kind-install-binary test-kind-factorio test-kind-lifecycle test-kind-recovery verify-generated verify-openapi verify-runtime-assets
 
 CANONICAL_CONTROLLER_IMAGE := ghcr.io/gobha-me/arcadectl-controller@sha256:0000000000000000000000000000000000000000000000000000000000000000
 
@@ -50,6 +50,18 @@ test-kind-install-admission:
 	@test "$(INSTALL_ADMISSION_PROFILE)" = 135 || test "$(INSTALL_ADMISSION_PROFILE)" = 137
 	@test "$(INSTALL_ADMISSION_MODE)" = cold || test "$(INSTALL_ADMISSION_MODE)" = warm
 	GOMAXPROCS=2 GOMEMLIMIT=1GiB go test -tags=kindinstall -p 1 -timeout=45m -v ./internal/installengine -run '^TestKindAdmissionEffectiveFullMatrix$$/^kubernetes-1[.]$(if $(filter 135,$(INSTALL_ADMISSION_PROFILE)),35[.]8,37[.]0)$$/^$(INSTALL_ADMISSION_MODE)$$' -count=1
+
+# Independent baseline-active v3 matrix; historical v2 remains required above.
+test-kind-install-admission-v3:
+	@test "$(INSTALL_ADMISSION_PROFILE)" = 135 || test "$(INSTALL_ADMISSION_PROFILE)" = 137
+	@test "$(INSTALL_ADMISSION_MODE)" = cold || test "$(INSTALL_ADMISSION_MODE)" = warm
+	GOMAXPROCS=2 GOMEMLIMIT=1GiB go test -tags=kindinstall -p 1 -timeout=45m -v ./internal/installengine -run '^TestKindAdmissionEffectiveV3WithBaseline$$/^kubernetes-1[.]$(if $(filter 135,$(INSTALL_ADMISSION_PROFILE)),35[.]8,37[.]0)$$/^$(INSTALL_ADMISSION_MODE)$$' -count=1
+
+# Actual controller-manager typechecking and original prerequisite effects.
+# A component gate, never a substitute for full admission or binary lifecycle.
+test-kind-install-baseline:
+	@test "$(INSTALL_BASELINE_PROFILE)" = 135 || test "$(INSTALL_BASELINE_PROFILE)" = 137
+	GOMAXPROCS=2 GOMEMLIMIT=1GiB go test -tags=kindinstall -p 1 -timeout=24m -v ./internal/installengine -run '^TestKindBaselinePrerequisiteCreateNative$$/^kubernetes-1[.]$(if $(filter 135,$(INSTALL_BASELINE_PROFILE)),35[.]8,37[.]0)$$' -count=1
 
 # Actual signed installer executable, never direct-effect fixture bootstrap.
 # Both profiles prove current fresh install/retaining uninstall. The additional

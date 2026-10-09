@@ -22,7 +22,7 @@ import (
 // including manager order/timestamps and warm cancellation status. Native
 // certification on both profiles is still required before producer activation.
 func (f *fixtureLedger) validateVerifiedCancelledUnchangedUpdate(before, after *unstructured.Unstructured, phase *fixturePhaseBaseline, observed time.Time) error {
-	if f == nil || f.document.Recipe != fixtureRecipeV2 || before == nil || after == nil || phase == nil || f.validatePhaseFixture(fixtureVerifiedCancelledDestroy, before, phase, observed) != nil {
+	if f == nil || !fixtureMatrixRecipe(f.document) || before == nil || after == nil || phase == nil || f.validatePhaseFixture(fixtureVerifiedCancelledDestroy, before, phase, observed) != nil {
 		return ErrFixtures
 	}
 	var typed arcadev1.GameDestroy

@@ -138,11 +138,58 @@ const (
 	admissionPhaseGCEventAliasRV
 	admissionPhaseGCEventAliasMetadata
 	admissionPhaseGCGraphBound
+	admissionPhaseRowInput
+	admissionPhaseRowLists
+	admissionPhaseRowFloor
+	admissionPhaseRowCollection
+	admissionPhaseRowUID
+	admissionPhaseRowAddress
+	admissionPhaseRowFixtureIdentity
+	admissionPhaseRowFixtureMissing
+	admissionPhaseRowLeaderChain
+	admissionPhaseRowLeaderShape
+	admissionPhaseRowShape
 	admissionPhaseComplete
+	admissionPhasePreviewUnavailable
+	admissionPhasePreviewReadiness
+	admissionPhasePreviewPrepare
+	admissionPhasePreviewPreparedReadiness
+	admissionPhasePreviewRequest
+	admissionPhasePreviewReply
+	admissionPhasePreviewPostWitness
+	admissionPhasePreviewPostReadiness
+	admissionPhasePreviewWholeShape
+	admissionPhasePreviewAccepted
+	admissionPhasePreviewObservation
+	admissionPhasePreviewSeal
 )
 
 func (step admissionPhaseStep) String() string {
 	switch step {
+	case admissionPhasePreviewUnavailable:
+		return "preview-unavailable"
+	case admissionPhasePreviewReadiness:
+		return "preview-readiness"
+	case admissionPhasePreviewPrepare:
+		return "preview-prepare"
+	case admissionPhasePreviewPreparedReadiness:
+		return "preview-prepared-readiness"
+	case admissionPhasePreviewRequest:
+		return "preview-request"
+	case admissionPhasePreviewReply:
+		return "preview-reply"
+	case admissionPhasePreviewPostWitness:
+		return "preview-post-witness"
+	case admissionPhasePreviewPostReadiness:
+		return "preview-post-readiness"
+	case admissionPhasePreviewWholeShape:
+		return "preview-whole-shape"
+	case admissionPhasePreviewAccepted:
+		return "preview-refused-after-accepted"
+	case admissionPhasePreviewObservation:
+		return "preview-whole-observation-changed"
+	case admissionPhasePreviewSeal:
+		return "preview-original-seal-refused"
 	case admissionPhaseOriginal:
 		return "original-witness"
 	case admissionPhaseWorlds:
@@ -201,17 +248,64 @@ func (step admissionPhaseStep) String() string {
 		return "gc-event-alias-metadata-conflict"
 	case admissionPhaseGCGraphBound:
 		return "gc-metadata-graph-bound"
+	case admissionPhaseRowInput:
+		return "original-row-input"
+	case admissionPhaseRowLists:
+		return "original-row-incomplete-lists"
+	case admissionPhaseRowFloor:
+		return "original-row-floor"
+	case admissionPhaseRowCollection:
+		return "original-row-collection"
+	case admissionPhaseRowUID:
+		return "original-row-duplicate-uid"
+	case admissionPhaseRowAddress:
+		return "original-row-duplicate-address"
+	case admissionPhaseRowFixtureIdentity:
+		return "original-row-fixture-identity"
+	case admissionPhaseRowFixtureMissing:
+		return "original-row-missing-fixture"
+	case admissionPhaseRowLeaderChain:
+		return "original-row-leader-chain"
+	case admissionPhaseRowLeaderShape:
+		return "original-row-leader-shape"
+	case admissionPhaseRowShape:
+		return "original-row-shape"
 	case admissionPhaseComplete:
 		return "complete"
 	}
 	return "unknown"
 }
 
+func traceAdmissionPreviewRefusal(ctx context.Context, stage fixturePreviewStage) {
+	phase := admissionPhasePreviewUnavailable
+	switch stage {
+	case fixturePreviewReadiness:
+		phase = admissionPhasePreviewReadiness
+	case fixturePreviewPrepare:
+		phase = admissionPhasePreviewPrepare
+	case fixturePreviewPreparedReadiness:
+		phase = admissionPhasePreviewPreparedReadiness
+	case fixturePreviewRequest:
+		phase = admissionPhasePreviewRequest
+	case fixturePreviewReply:
+		phase = admissionPhasePreviewReply
+	case fixturePreviewPostWitness:
+		phase = admissionPhasePreviewPostWitness
+	case fixturePreviewPostReadiness:
+		phase = admissionPhasePreviewPostReadiness
+	case fixturePreviewWholeShape:
+		phase = admissionPhasePreviewWholeShape
+	case fixturePreviewAccepted:
+		phase = admissionPhasePreviewAccepted
+	}
+	traceAdmissionPhase(ctx, phase, -1)
+}
+
 func validAdmissionPhasePosition(step admissionPhaseStep, slot int) bool {
 	if step == admissionPhaseNamedGet || step == admissionPhaseWholeFixture {
-		return slot >= 0 && slot < len(fixtureCatalogV2)
+		return slot >= 0 && slot < fixtureMaxSlots
 	}
-	return step >= admissionPhaseOriginal && step <= admissionPhaseComplete && slot == -1
+	return step >= admissionPhaseOriginal && step <= admissionPhasePreviewSeal && slot == -1
 }
 
 func traceAdmissionPhase(ctx context.Context, step admissionPhaseStep, slot int) {
@@ -252,9 +346,9 @@ func validAdmissionPosition(step admissionStep, index int) bool {
 	case admissionInitialPhase, admissionActorWitnesses, admissionLedger, admissionInitialSeal, admissionWire, admissionFinish, admissionRetire, admissionFinalWitness, admissionComplete:
 		return index == -1
 	case admissionSetupObservation:
-		return index >= -1 && index < len(fixtureCatalogV2)
+		return index >= -1 && index < fixtureMaxSlots
 	case admissionSetupPreview, admissionSetupCreate, admissionSetupSettle, admissionCleanup:
-		return index >= 0 && index < len(fixtureCatalogV2)
+		return index >= 0 && index < fixtureMaxSlots
 	case admissionCaseObservation, admissionCaseRequest, admissionCaseAuthorization, admissionCaseProbe, admissionCasePostObservation, admissionCaseShape:
 		return index >= 0 && index < int(fixtureAdmissionCaseCount)
 	case admissionSeed:

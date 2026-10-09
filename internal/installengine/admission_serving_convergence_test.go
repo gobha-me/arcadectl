@@ -29,6 +29,10 @@ import (
 // readiness result. This fixture exposes only observation/authorization reads;
 // the tests do not invoke an actor effect or authenticate the administrator.
 func initialServingPhaseFixture(t *testing.T, fault string) (*ClusterAdmission, LifecycleCheck, func() int, *atomic.Int64, *atomic.Bool) {
+	return initialServingPhaseFixtureStage(t, fault, installstate.Verifying)
+}
+
+func initialServingPhaseFixtureStage(t *testing.T, fault string, stage installstate.Stage) (*ClusterAdmission, LifecycleCheck, func() int, *atomic.Int64, *atomic.Bool) {
 	t.Helper()
 	plan := fixturePlan(t)
 	v, ns, lists := readyControllerFixture(t, plan)
@@ -36,7 +40,7 @@ func initialServingPhaseFixture(t *testing.T, fault string) (*ClusterAdmission, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	d.Stage = installstate.Verifying
+	d.Stage = stage
 	d.Revision++
 	key := deploymentKey(ns.Name, apiFamily)
 	template, err := v.f.engine.contracts[plan.Digest()].Template(key, false)
@@ -180,47 +184,77 @@ func initialServingPhaseFixture(t *testing.T, fault string) (*ClusterAdmission, 
 	return a, request, func() int { return int(reads.Load()) }, changedAt, drift
 }
 
+func TestAdmissionApplyingRecordedAPIConvergesBeforeSealing(t *testing.T) {
+	a, request, reads, changedAt, _ := initialServingPhaseFixtureStage(t, "delayed-ready", installstate.Applying)
+	if proof, err := a.prerequisites.engine.ObserveServing(t.Context(), request.Snapshot, a.prerequisites.access.Serving()); err != ErrServing || proof != nil {
+		t.Fatal("public activation observation accepted Applying")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 12*time.Second)
+	defer cancel()
+	initial, err := a.waitInitialPhase(ctx, request)
+	if err != nil || initial == nil || reads() < 6 || changedAt.Load() == 0 || time.Since(time.Unix(0, changedAt.Load())) < 5*time.Second {
+		t.Fatal("Applying sealed a recorded API's transient startup rows before complete original serving convergence")
+	}
+	if _, _, err := a.prerequisites.engine.files.Read(fixtureLedgerName(request.Snapshot), fixtureLedgerMaxBytes); !errors.Is(err, privatefs.ErrNotFound) {
+		t.Fatal("Applying convergence created fixture effects or WAL")
+	}
+	fresh, err := a.prerequisites.engine.journal.Load(t.Context(), request.Snapshot.Anchor())
+	if err != nil || !sameRecoveryJournal(fresh, request.Snapshot) {
+		t.Fatal("Applying convergence changed original journal identity")
+	}
+}
+
 func TestAdmissionInitialServingConvergenceBeforeWAL(t *testing.T) {
-	for _, fault := range []string{"healthy", "delayed-ready", "fingerprint-changed", "foreign-pod", "foreign-owner", "journal-changed", "late-wal", "missing-recorded-api", "cancelled"} {
-		t.Run(fault, func(t *testing.T) {
-			a, request, reads, changedAt, _ := initialServingPhaseFixture(t, fault)
-			budget := 12 * time.Second
-			wantSuccess := slices.Contains([]string{"healthy", "delayed-ready", "fingerprint-changed"}, fault)
-			if !wantSuccess {
-				budget = 2 * time.Second
-			}
-			ctx, cancel := context.WithTimeout(t.Context(), budget)
-			defer cancel()
-			if fault == "cancelled" {
-				cancel()
-			}
-			start := time.Now()
-			initial, err := a.waitInitialPhase(ctx, request)
-			if wantSuccess {
-				if err != nil || initial == nil || reads() < 6 || time.Since(start) < 5*time.Second {
-					t.Fatal("initial admission sealed before complete original serving convergence", err, reads())
+	for _, stage := range []installstate.Stage{installstate.Applying, installstate.Verifying} {
+		t.Run(string(stage), func(t *testing.T) {
+			for _, fault := range []string{"healthy", "delayed-ready", "fingerprint-changed", "foreign-pod", "foreign-owner", "journal-changed", "late-wal", "missing-recorded-api", "cancelled"} {
+				// Verifying requires API inventory. Applying intentionally has
+				// partial no-API states, exercised with actual absent API rows in
+				// TestAdmissionInitialPhaseConvergenceBeforeWALForPartialAndFullFamilies.
+				if stage == installstate.Applying && fault == "missing-recorded-api" {
+					continue
 				}
-				if fault != "healthy" && (changedAt.Load() == 0 || time.Since(time.Unix(0, changedAt.Load())) < 5*time.Second) {
-					t.Fatal("original readiness/fingerprint change did not restart the quiet interval")
-				}
-			} else if err != ErrAdmission || initial != nil {
-				t.Fatal("invalid/cancelled original API became an initial admission phase")
-			}
-			fresh, err := a.prerequisites.engine.journal.Load(t.Context(), request.Snapshot.Anchor())
-			wantRV := request.Snapshot.ResourceVersion()
-			if fault == "journal-changed" {
-				wantRV = "999" // deliberately injected external drift must not be repaired
-			}
-			if err != nil || !bytes.Equal(fresh.Bytes(), request.Snapshot.Bytes()) || fresh.ResourceVersion() != wantRV {
-				t.Fatal("read-only serving convergence changed the original journal")
-			}
-			wal, _, err := a.prerequisites.engine.files.Read(fixtureLedgerName(request.Snapshot), fixtureLedgerMaxBytes)
-			if fault == "late-wal" {
-				if err != nil || !bytes.Equal(wal, []byte("uncertain fixture run")) || reads() != 1 {
-					t.Fatal("late fixture fence was retried, removed, or repaired")
-				}
-			} else if !errors.Is(err, privatefs.ErrNotFound) {
-				t.Fatal("initial serving convergence created a fixture WAL")
+				t.Run(fault, func(t *testing.T) {
+					a, request, reads, changedAt, _ := initialServingPhaseFixtureStage(t, fault, stage)
+					budget := 12 * time.Second
+					wantSuccess := slices.Contains([]string{"healthy", "delayed-ready", "fingerprint-changed"}, fault)
+					if !wantSuccess {
+						budget = 2 * time.Second
+					}
+					ctx, cancel := context.WithTimeout(t.Context(), budget)
+					defer cancel()
+					if fault == "cancelled" {
+						cancel()
+					}
+					start := time.Now()
+					initial, err := a.waitInitialPhase(ctx, request)
+					if wantSuccess {
+						if err != nil || initial == nil || reads() < 6 || time.Since(start) < 5*time.Second {
+							t.Fatal("initial admission sealed before complete original serving convergence", err, reads())
+						}
+						if fault != "healthy" && (changedAt.Load() == 0 || time.Since(time.Unix(0, changedAt.Load())) < 5*time.Second) {
+							t.Fatal("original readiness/fingerprint change did not restart the quiet interval")
+						}
+					} else if err != ErrAdmission || initial != nil {
+						t.Fatal("invalid/cancelled original API became an initial admission phase")
+					}
+					fresh, err := a.prerequisites.engine.journal.Load(t.Context(), request.Snapshot.Anchor())
+					wantRV := request.Snapshot.ResourceVersion()
+					if fault == "journal-changed" {
+						wantRV = "999" // deliberately injected external drift must not be repaired
+					}
+					if err != nil || !bytes.Equal(fresh.Bytes(), request.Snapshot.Bytes()) || fresh.ResourceVersion() != wantRV {
+						t.Fatal("read-only serving convergence changed the original journal")
+					}
+					wal, _, err := a.prerequisites.engine.files.Read(fixtureLedgerName(request.Snapshot), fixtureLedgerMaxBytes)
+					if fault == "late-wal" {
+						if err != nil || !bytes.Equal(wal, []byte("uncertain fixture run")) || reads() != 1 {
+							t.Fatal("late fixture fence was retried, removed, or repaired")
+						}
+					} else if !errors.Is(err, privatefs.ErrNotFound) {
+						t.Fatal("initial serving convergence created a fixture WAL")
+					}
+				})
 			}
 		})
 	}

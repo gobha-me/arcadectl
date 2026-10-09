@@ -201,6 +201,11 @@ func TestSelectedReferenceFilesRemainProtectedBeforeAnySDKOpen(t *testing.T) {
 				if err := os.WriteFile(path, []byte("PRIVATE-CANARY"), 0644); err != nil {
 					t.Fatal(err)
 				}
+				// The negative fixture must remain world-readable even when
+				// tests run under the administrator's protective umask.
+				if err := os.Chmod(path, 0644); err != nil {
+					t.Fatal(err)
+				}
 			}
 			raw.AuthInfos[0].AuthInfo.Token = ""
 			raw.AuthInfos[0].AuthInfo.TokenFile = path

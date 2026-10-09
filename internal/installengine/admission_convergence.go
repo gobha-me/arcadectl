@@ -26,16 +26,17 @@ func (a *ClusterAdmission) waitInitialPhase(ctx context.Context, request Lifecyc
 		return nil, ErrInvalid // invalid target/mode never consumes a readiness wait
 	}
 	d := request.Snapshot.Document()
-	if d.Stage == installstate.Verifying && d.Mode != installstate.Uninstall {
-		// Final admission includes the original API's WHOLE Deployment/RS/Pod/
-		// EndpointSlice rows. A CREATE ACK or two briefly identical Pending
-		// observations cannot seal its initial baseline before native startup.
-		// Partial Applying and uninstall retain their existing phase contracts.
-		api, template := p.engine.inventory(d, deploymentKey(d.Namespace, apiFamily))
+	api, template := p.engine.inventory(d, deploymentKey(d.Namespace, apiFamily))
+	if d.Mode != installstate.Uninstall && (d.Stage == installstate.Verifying || d.Stage == installstate.Applying && api != nil) {
+		// Once Applying has acknowledged the original API, the next admission
+		// proof also includes its WHOLE Deployment/RS/Pod/EndpointSlice rows.
+		// Waiting only in Verifying seals transient startup rows one step too
+		// early. An ACK or briefly identical Pending reads do not prove serving.
+		// Partial Applying without an API and uninstall keep their contracts.
 		if api == nil || template == nil || p.engine.fixtureFence(request.Snapshot) != nil || p.original(ctx, request.Snapshot) != nil {
 			return nil, ErrAdmission
 		}
-		if p.waitOriginalServing(ctx, request.Snapshot) != nil {
+		if p.waitOriginalServingStage(ctx, request.Snapshot, true) != nil {
 			return nil, ErrAdmission
 		}
 	}

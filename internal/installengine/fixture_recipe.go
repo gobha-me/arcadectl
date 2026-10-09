@@ -22,7 +22,22 @@ const (
 	fixturePlainPVC
 	fixtureCancelledDestroy
 	fixtureVerifiedCancelledDestroy
+	fixtureTokenlessAccount
 )
+
+func (f *fixtureLedger) fixtureAccount(legacy string) (string, error) {
+	if f == nil || !validFixtureRecipe(f.document) {
+		return "", ErrFixtures
+	}
+	if f.document.Recipe != fixtureRecipeV3 {
+		return legacy, nil
+	}
+	entry := f.document.Entries[fixtureTokenlessAccount]
+	if entry.State != fixtureOriginal || !nativeFixtureUID(string(entry.OriginalUID)) {
+		return "", ErrFixtures
+	}
+	return entry.Key.Name, nil
+}
 
 // Pure, closed construction from the protected original recipe. This does not
 // authorize CREATE, validate an acknowledgement or adopt a matching live name.
@@ -56,6 +71,10 @@ func (f *fixtureLedger) object(slot int) (*unstructured.Unstructured, error) {
 		}
 		if slot == fixtureDestroyJob || slot == fixtureDestroyPod {
 			worker, account = "destroy", destroyControllerActor.account()
+		}
+		account, err = f.fixtureAccount(account)
+		if err != nil {
+			return nil, ErrFixtures
 		}
 		policy := ""
 		stem := "arcadectl-" + worker + "-worker-gate"
@@ -104,6 +123,11 @@ func (f *fixtureLedger) object(slot int) (*unstructured.Unstructured, error) {
 				meta["ownerReferences"] = []any{map[string]any{"apiVersion": "batch/v1", "kind": "Job", "name": owner.Key.Name, "uid": string(owner.OriginalUID), "controller": false, "blockOwnerDeletion": true}}
 			}
 		}
+	case fixtureTokenlessAccount:
+		if d.Recipe != fixtureRecipeV3 {
+			return nil, ErrFixtures
+		}
+		o.Object["automountServiceAccountToken"] = false
 	case fixtureRetainedPVC, fixturePlainPVC:
 		// Certified only on the declared pinned native PV controllers. Empty
 		// class or a random selector alone would not prevent static/prebinding.

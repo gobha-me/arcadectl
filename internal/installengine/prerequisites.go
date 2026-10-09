@@ -100,6 +100,10 @@ func (p *ClusterPrerequisites) permissions(request LifecycleCheck) ([]proofPermi
 // documentPermissions also derives fresh bootstrap authorization without
 // manufacturing a sealed namespace snapshot before the namespace exists.
 func (p *ClusterPrerequisites) documentPermissions(d installstate.Document, mode installstate.Mode, target *installrender.Plan) ([]proofPermission, error) {
+	return p.documentPermissionsWithBootstrap(d, mode, target, false)
+}
+
+func (p *ClusterPrerequisites) documentPermissionsWithBootstrap(d installstate.Document, mode installstate.Mode, target *installrender.Plan, bootstrap bool) ([]proofPermission, error) {
 	if !target.IsTrusted() || p.engine.plans[target.Digest()] != target || target.Namespace() != d.Namespace || target.Profile().ID != d.ProfileID {
 		return nil, ErrInvalid
 	}
@@ -119,6 +123,11 @@ func (p *ClusterPrerequisites) documentPermissions(d installstate.Document, mode
 	if err := addPublic(namespaceKey(d.Namespace), "update"); err != nil {
 		return nil, err
 	}
+	baselinePermissions, err := p.baselineEnrollmentPermissions(d, bootstrap)
+	if err != nil {
+		return nil, err
+	}
+	permissions = append(permissions, baselinePermissions...)
 	quiescing := d.Stage == installstate.Complete || d.Stage == installstate.Preparing || d.Stage == installstate.Quiescing || d.Stage == installstate.RecoveryRequired
 	// Permission derivation needs only signed addresses. Whole templates stay
 	// independently compiled/validated below; copying every CRD schema here
@@ -231,6 +240,57 @@ func (p *ClusterPrerequisites) documentPermissions(d installstate.Document, mode
 		result = append(result, unique[key])
 	}
 	return result, nil
+}
+
+// Extra baseline authority is derived solely from the sealed independent plan.
+// Bootstrap is an explicit private pre-Namespace path, not an interpretation of
+// a historical nil baseline. Recovery adds no baseline CREATE authority.
+func (p *ClusterPrerequisites) baselineEnrollmentPermissions(d installstate.Document, bootstrap bool) ([]proofPermission, error) {
+	if p == nil || p.engine == nil {
+		return nil, ErrInvalid
+	}
+	if p.engine.baseline == nil {
+		return nil, nil
+	}
+	plan := p.engine.baselinePlan()
+	if !plan.IsTrusted() || plan.Namespace() != d.Namespace || plan.Profile() != d.ProfileID {
+		return nil, ErrSecurityBaseline
+	}
+	baseline := d.SecurityBaseline
+	if bootstrap {
+		if d.Mode != installstate.Install || d.ActivePackage != "" || d.Installed || d.Pending != nil || d.SecurityBaseline != nil || len(d.Resources) != 0 || d.Stage != installstate.Preparing {
+			return nil, ErrSecurityBaseline
+		}
+	} else {
+		if baseline == nil || baseline.ArtifactDigest != plan.Digest() {
+			return nil, ErrSecurityBaseline
+		}
+		if baseline.Stage == installstate.BaselineVerified && baseline.Pending == nil {
+			return nil, nil // Full ordinary guard independently proves baseline reads.
+		}
+		if !freshBaselineEnrollment(d) {
+			return nil, ErrSecurityBaseline
+		}
+	}
+	var permissions []proofPermission
+	for _, resource := range plan.Resources() {
+		object := resource.Object
+		key := installstate.Key{APIVersion: object.GetAPIVersion(), Kind: object.GetKind(), Namespace: object.GetNamespace(), Name: object.GetName()}
+		read, err := publicPermission(key, "get")
+		if err != nil {
+			return nil, err
+		}
+		permissions = append(permissions, read)
+		if !bootstrap && (baseline.Pending != nil || slices.ContainsFunc(baseline.Resources, func(row installstate.BaselineResource) bool { return row.Key == key })) {
+			continue
+		}
+		create, err := publicPermission(key, "create")
+		if err != nil {
+			return nil, err
+		}
+		permissions = append(permissions, create)
+	}
+	return permissions, nil
 }
 
 func (p *ClusterPrerequisites) original(ctx context.Context, s *installstate.Snapshot) error {
@@ -361,7 +421,7 @@ func (p *ClusterPrerequisites) VerifyBootstrap(ctx context.Context, target *inst
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	d := installstate.Document{Namespace: target.Namespace(), ProfileID: target.Profile().ID, Mode: installstate.Install, TargetPackage: target.Digest(), Stage: installstate.Preparing}
-	permissions, err := p.documentPermissions(d, installstate.Install, target)
+	permissions, err := p.documentPermissionsWithBootstrap(d, installstate.Install, target, true)
 	create, createErr := publicPermission(namespaceKey(d.Namespace), "create")
 	permissions = append(permissions, create)
 	if err != nil || createErr != nil || p.access.native == nil || verifyInitialTLS(d.Namespace, options) != nil || p.verifyAccess(ctx, target, permissions) != nil {
@@ -370,6 +430,15 @@ func (p *ClusterPrerequisites) VerifyBootstrap(ctx context.Context, target *inst
 	for _, resource := range target.Resources() {
 		if _, err := p.access.Get(ctx, resourceKey(resource)); !apierrors.IsNotFound(err) {
 			return ErrPrerequisites
+		}
+	}
+	if p.engine.baseline != nil {
+		for _, resource := range p.engine.baselinePlan().Resources() {
+			object := resource.Object
+			key := installstate.Key{APIVersion: object.GetAPIVersion(), Kind: object.GetKind(), Namespace: object.GetNamespace(), Name: object.GetName()}
+			if _, err := p.access.Get(ctx, key); !apierrors.IsNotFound(err) {
+				return ErrPrerequisites
+			}
 		}
 	}
 	// Check the namespace again after all cluster-scoped address reads. The

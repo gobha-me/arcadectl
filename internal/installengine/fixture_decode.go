@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/gobha-me/arcadectl/internal/installbaseline"
 	"github.com/gobha-me/arcadectl/internal/installrender"
 	"github.com/gobha-me/arcadectl/internal/installstate"
 )
@@ -21,8 +22,10 @@ type fixtureDecodeCache struct {
 	mu          sync.Mutex
 	engine      *Engine
 	plans       map[string]*installrender.Plan
+	baseline    *installbaseline.Plan
 	v1          [len(fixtureCatalog)]fixtureRecipe
 	v2          [len(fixtureCatalogV2)]fixtureRecipe
+	v3          [len(fixtureCatalogV3)]fixtureRecipe
 	walBody     []byte
 	wal         fixtureLedgerDocument
 	journalBody []byte
@@ -30,7 +33,7 @@ type fixtureDecodeCache struct {
 }
 
 func (c *fixtureDecodeCache) bind(e *Engine) {
-	match := c.engine == e && len(c.plans) == len(e.plans) && c.v1 == fixtureCatalog && c.v2 == fixtureCatalogV2
+	match := c.engine == e && c.baseline == e.baselinePlan() && len(c.plans) == len(e.plans) && c.v1 == fixtureCatalog && c.v2 == fixtureCatalogV2 && c.v3 == fixtureCatalogV3
 	if match {
 		for key, plan := range e.plans {
 			old, present := c.plans[key]
@@ -44,6 +47,8 @@ func (c *fixtureDecodeCache) bind(e *Engine) {
 		return
 	}
 	c.engine, c.v1, c.v2 = e, fixtureCatalog, fixtureCatalogV2
+	c.v3 = fixtureCatalogV3
+	c.baseline = e.baselinePlan()
 	c.plans = make(map[string]*installrender.Plan, len(e.plans))
 	for key, plan := range e.plans {
 		c.plans[key] = plan
@@ -75,6 +80,15 @@ func cloneFixtureJournalDocument(d installstate.Document) installstate.Document 
 	if d.Pending != nil {
 		copy := *d.Pending
 		d.Pending = &copy
+	}
+	if d.SecurityBaseline != nil {
+		copy := *d.SecurityBaseline
+		copy.Resources = slices.Clone(copy.Resources)
+		if copy.Pending != nil {
+			pending := *copy.Pending
+			copy.Pending = &pending
+		}
+		d.SecurityBaseline = &copy
 	}
 	return d
 }
@@ -113,7 +127,7 @@ func (f *fixtureLedger) decodeCurrentJournal(body []byte) (installstate.Document
 	for _, plan := range f.engine.plans {
 		plans = append(plans, plan)
 	}
-	d, err := installstate.Decode(body, plans...)
+	d, err := installstate.DecodeWithBaseline(body, f.engine.baselinePlan(), plans...)
 	if err != nil {
 		return installstate.Document{}, ErrFixtures
 	}
@@ -131,7 +145,9 @@ func (c *fixtureDecodeCache) clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.engine, c.plans = nil, nil
+	c.baseline = nil
 	c.v1, c.v2 = [len(fixtureCatalog)]fixtureRecipe{}, [len(fixtureCatalogV2)]fixtureRecipe{}
+	c.v3 = [len(fixtureCatalogV3)]fixtureRecipe{}
 	c.walBody, c.wal = nil, fixtureLedgerDocument{}
 	c.journalBody, c.journal = nil, installstate.Document{}
 }

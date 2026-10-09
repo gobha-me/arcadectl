@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gobha-me/arcadectl/internal/installbaseline"
 	"github.com/gobha-me/arcadectl/internal/installengine"
 	"github.com/gobha-me/arcadectl/internal/installfiles"
 	"github.com/gobha-me/arcadectl/internal/installrender"
@@ -31,7 +32,7 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-const usage = "usage: arcadectl-installer COMMAND --namespace NAME --profile ID --bootstrap-package ABS_PATH --package ABS_PATH [--package ABS_PATH ...] --trust-key ABS_PATH --state-dir ABS_PATH --bootstrap-receipt NAME --kubeconfig ABS_PATH --context NAME [--timeout DURATION]\nCommands: inspect (read-only), install, upgrade, rollback, uninstall, resume.\nMutation commands require --api-ca ABS_PATH. Install requires --api-certificate ABS_PATH --api-key ABS_PATH; install/upgrade/rollback require --target-package ABS_PATH from the signed --package inputs. Optional --client-credential ABS_PATH selects current protected credentials, never inline secrets. Uninstall retains namespace, worlds, credentials and protections.\n"
+const usage = "usage: arcadectl-installer COMMAND --namespace NAME --profile ID --bootstrap-package ABS_PATH --package ABS_PATH [--package ABS_PATH ...] --trust-key ABS_PATH --state-dir ABS_PATH --bootstrap-receipt NAME --kubeconfig ABS_PATH --context NAME [--timeout DURATION]\nCommands: inspect (read-only), install, upgrade, rollback, uninstall, resume.\nInspect accepts optional --security-baseline ABS_PATH for explicitly trusted baseline-aware records; this reports ownership progress, not current enforcement health.\nMutation commands require --security-baseline ABS_PATH and --api-ca ABS_PATH. The baseline is separately signed, namespace/profile-bound and never rolled back with runtime packages. Install requires --api-certificate ABS_PATH --api-key ABS_PATH; install/upgrade/rollback require --target-package ABS_PATH from the signed --package inputs. Optional --client-credential ABS_PATH selects current protected credentials, never inline secrets. Uninstall retains namespace, worlds, credentials and protections.\n"
 
 var errArguments = errors.New("invalid installation inspection arguments")
 var errInputs = errors.New("trusted installation inspection inputs are unavailable or invalid")
@@ -50,6 +51,7 @@ func (p *packagePaths) Set(value string) error {
 type options struct {
 	command, targetPackage, apiCertificate, apiKey, apiCA, clientCredential                    string
 	namespace, profile, bootstrapPackage, trustKey, stateDir, receipt, kubeconfig, kubeContext string
+	securityBaseline                                                                           string
 	packages                                                                                   packagePaths
 	timeout                                                                                    time.Duration
 }
@@ -131,6 +133,7 @@ func parseOptions(args []string) (options, error) {
 	set.StringVar(&o.receipt, "bootstrap-receipt", "", "original receipt filename")
 	set.StringVar(&o.kubeconfig, "kubeconfig", "", "explicit protected static Kubernetes configuration")
 	set.StringVar(&o.kubeContext, "context", "", "explicit Kubernetes context")
+	set.StringVar(&o.securityBaseline, "security-baseline", "", "explicit separately signed security baseline; required for mutations")
 	defaultTimeout, maxTimeout := 5*time.Minute, 5*time.Minute
 	if o.command != "inspect" {
 		defaultTimeout, maxTimeout = 2*time.Hour, 24*time.Hour
@@ -148,6 +151,9 @@ func parseOptions(args []string) (options, error) {
 		if !absolutePath(path) {
 			return options{}, errArguments
 		}
+	}
+	if o.securityBaseline != "" && !absolutePath(o.securityBaseline) {
+		return options{}, errArguments
 	}
 	if o.command != "inspect" && !validMutationOptions(o) {
 		return options{}, errArguments
@@ -167,6 +173,17 @@ func loadReporter(o options) (*installengine.RecoveryReporter, *installstate.Boo
 	original, err := installrender.Compile(bootstrap, o.namespace, o.profile)
 	if err != nil {
 		return nil, nil, nil, errInputs
+	}
+	var baseline *installbaseline.Plan
+	if o.securityBaseline != "" {
+		artifact, err := installfiles.LoadBaseline(o.securityBaseline, trust)
+		if err != nil {
+			return nil, nil, nil, errInputs
+		}
+		baseline, err = installbaseline.Compile(artifact, o.namespace, o.profile)
+		if err != nil {
+			return nil, nil, nil, errInputs
+		}
 	}
 	plans := []*installrender.Plan{}
 	for _, path := range o.packages {
@@ -196,15 +213,30 @@ func loadReporter(o options) (*installengine.RecoveryReporter, *installstate.Boo
 		_ = files.Close()
 		return nil, nil, nil, errInputs
 	}
-	receipt, err := installstate.LoadBootstrap(files, o.receipt, original)
+	var receipt *installstate.BootstrapReceipt
+	if baseline == nil {
+		receipt, err = installstate.LoadBootstrap(files, o.receipt, original)
+	} else {
+		receipt, err = installstate.LoadBootstrapWithBaseline(files, o.receipt, original, baseline)
+	}
 	if err != nil {
 		return fail()
 	}
-	store, err := installstate.New(access.Namespaces(), plans...)
+	var store *installstate.Store
+	if baseline == nil {
+		store, err = installstate.New(access.Namespaces(), plans...)
+	} else {
+		store, err = installstate.NewWithBaseline(access.Namespaces(), baseline, plans...)
+	}
 	if err != nil {
 		return fail()
 	}
-	engine, err := installengine.NewWithAccess(access, store, files, plans...)
+	var engine *installengine.Engine
+	if baseline == nil {
+		engine, err = installengine.NewWithAccess(access, store, files, plans...)
+	} else {
+		engine, err = installengine.NewWithBaselineAccess(access, store, files, baseline, plans...)
+	}
 	if err != nil {
 		return fail()
 	}

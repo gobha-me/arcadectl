@@ -119,12 +119,34 @@ func (a *HTTPAccess) actorCompatible() bool {
 // Private transport construction, not authorization or original-inventory
 // evidence. Only newActors grants production use after independent proofs.
 func (a *HTTPAccess) actorClient(actor admissionActor, namespace string) (*HTTPAccess, error) {
-	if !a.actorCompatible() || actor.account() == "" || !installrender.ValidNamespace(namespace) {
+	return a.actorClientForPurpose(actor, namespace, runtimeAdmissionPurpose)
+}
+
+// Separate finite protocols share authentication and the inner one-attempt
+// wire guard, not operation authority. Existing runtime clients retain exactly
+// their historical routes; baseline clients cannot use those runtime routes.
+func (a *HTTPAccess) actorClientForPurpose(actor admissionActor, namespace string, purpose actorWirePurpose) (*HTTPAccess, error) {
+	if !a.actorCompatible() || actor.account() == "" || !installrender.ValidNamespace(namespace) ||
+		purpose != runtimeAdmissionPurpose && purpose != baselineAdmissionPurpose ||
+		purpose == baselineAdmissionPurpose && actor != ordinaryControllerActor && actor != destroyControllerActor {
+		return nil, ErrInvalid
+	}
+	return a.frozenActorClient(actor, namespace, purpose, nil)
+}
+
+// Private shared authentication machinery, not a public actor/scope selector.
+// Each entrypoint validates its own finite purpose before arriving here.
+func (a *HTTPAccess) frozenActorClient(actor admissionActor, namespace string, purpose actorWirePurpose, scope *baselineDeniedScope) (*HTTPAccess, error) {
+	if !a.actorCompatible() || !installrender.ValidNamespace(namespace) || actor.account() == "" ||
+		purpose != runtimeAdmissionPurpose && purpose != baselineAdmissionPurpose && purpose != baselineDeniedReviewPurpose && purpose != baselineRulesReviewPurpose ||
+		(purpose == baselineAdmissionPurpose || purpose == baselineRulesReviewPurpose) && actor != ordinaryControllerActor && actor != destroyControllerActor ||
+		purpose == baselineDeniedReviewPurpose && (scope == nil || scope.namespace != namespace || actor != ordinaryControllerActor && actor != destroyControllerActor) ||
+		purpose != baselineDeniedReviewPurpose && scope != nil {
 		return nil, ErrInvalid
 	}
 	c := a.frozen
 	config := rest.CopyConfig(c) // already-frozen credentials; no file reload
-	identity := actorWireIdentity{actor: actor, namespace: namespace, username: "system:serviceaccount:" + namespace + ":" + actor.account()}
+	identity := actorWireIdentity{actor: actor, purpose: purpose, namespace: namespace, username: "system:serviceaccount:" + namespace + ":" + actor.account(), deniedScope: scope}
 	if c.BearerToken != "" {
 		identity.authorization = "Bearer " + c.BearerToken
 	} else if c.Username != "" || c.Password != "" {
@@ -274,12 +296,20 @@ func actorOperationVerb(operation admissionProbeOperation) string {
 
 type actorWireIdentity struct {
 	actor               admissionActor
+	purpose             actorWirePurpose
 	namespace, username string
-	authorization       string // confidential, never logged/persisted/reported
+	authorization       string               // confidential, never logged/persisted/reported
+	deniedScope         *baselineDeniedScope // immutable private finite SSAR descriptors
 }
 
 func (identity actorWireIdentity) allows(key installstate.Key, operation admissionProbeOperation) bool {
 	if identity.actor.account() == "" || key.Namespace != identity.namespace || !addressPart(key.Name) {
+		return false
+	}
+	if identity.purpose == baselineAdmissionPurpose {
+		return identity.baselineAllows(key, operation)
+	}
+	if identity.purpose != runtimeAdmissionPurpose {
 		return false
 	}
 	if key.APIVersion == "v1" && key.Kind == "Pod" && operation == probeUpdateOperation {
@@ -296,7 +326,18 @@ func (identity actorWireIdentity) allowsReview(review *authv1.SelfSubjectAccessR
 		return false
 	}
 	a := review.Spec.ResourceAttributes
+	if identity.purpose == baselineDeniedReviewPurpose {
+		return identity.deniedScope.allows(identity, a)
+	}
 	if a.Namespace != identity.namespace || a.Subresource != "" || a.FieldSelector != nil || a.LabelSelector != nil {
+		if identity.purpose != baselineAdmissionPurpose {
+			return false
+		}
+	}
+	if identity.purpose == baselineAdmissionPurpose {
+		return identity.baselineAllowsReview(a)
+	}
+	if identity.purpose != runtimeAdmissionPurpose {
 		return false
 	}
 	operation := probeUpdateOperation
@@ -328,6 +369,7 @@ type actorRequestCapture struct {
 	identity    actorWireIdentity
 	method, url string
 	body        []byte
+	contentType string // empty preserves historical JSON-only captures
 }
 
 type actorWireTransport struct {
@@ -347,7 +389,17 @@ func (transport actorWireTransport) RoundTrip(request *http.Request) (*http.Resp
 }
 
 func (capture *actorRequestCapture) guard(request *http.Request) bool {
-	if capture == nil || request == nil || request.URL == nil || request.Host != request.URL.Host || request.RequestURI != "" || request.Method != capture.method || request.URL.String() != capture.url || request.GetBody != nil || request.Body == nil || request.ContentLength != int64(len(capture.body)) || len(request.TransferEncoding) != 0 || request.Header.Get("Accept") != "application/json" || request.Header.Get("Content-Type") != "application/json" {
+	if capture == nil {
+		return false
+	}
+	contentType := capture.contentType
+	if contentType == "" {
+		contentType = "application/json"
+	}
+	if contentType != "application/json" && (contentType != "application/merge-patch+json" || capture.identity.purpose != baselineAdmissionPurpose || capture.method != http.MethodPatch) {
+		return false
+	}
+	if request == nil || request.URL == nil || request.Host != request.URL.Host || request.RequestURI != "" || request.Method != capture.method || request.URL.String() != capture.url || request.GetBody != nil || request.Body == nil || request.ContentLength != int64(len(capture.body)) || len(request.TransferEncoding) != 0 || !exactProbeHeader(request.Header, "Accept", "application/json") || !exactProbeHeader(request.Header, "Content-Type", contentType) {
 		return false
 	}
 	userSeen, authSeen := false, false

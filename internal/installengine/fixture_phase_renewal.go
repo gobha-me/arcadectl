@@ -18,6 +18,10 @@ import (
 // No driver, setup, probe or effect is retried. A successful collection still
 // requires exact metadata/whole agreement; a refusal cannot become evidence.
 func (w *fixtureWire) phaseGCWithRenewals(ctx context.Context, o *installobserve.Observation, phase fixturePhaseBaseline, objects [fixtureMaxSlots]*unstructured.Unstructured, reads *fixturePhaseRead) (*installobserve.GCObservation, fixturePhaseBaseline, error) {
+	return w.phaseGCWithAccountRenewals(ctx, o, phase, objects, reads, nil)
+}
+
+func (w *fixtureWire) phaseGCWithAccountRenewals(ctx context.Context, o *installobserve.Observation, phase fixturePhaseBaseline, objects [fixtureMaxSlots]*unstructured.Unstructured, reads *fixturePhaseRead, accounts *phaseServiceAccounts) (*installobserve.GCObservation, fixturePhaseBaseline, error) {
 	if len(phase.Leaders) == 0 {
 		gc, err := w.gcMetadataReadLocked(ctx, false, reads)
 		return gc, phase, err
@@ -38,7 +42,7 @@ func (w *fixtureWire) phaseGCWithRenewals(ctx context.Context, o *installobserve
 		if refusal == nil {
 			return nil, phase, ErrFixtures
 		}
-		next, err := w.classifyLeaseRVConflict(ctx, o, highWater, objects, refusal, reads)
+		next, err := w.classifyLeaseRVConflictAccounts(ctx, o, highWater, objects, refusal, reads, accounts)
 		if err != nil || reads.current(ctx) != nil {
 			return nil, phase, ErrFixtures
 		}
@@ -58,6 +62,10 @@ type fixtureRenewalRows struct {
 func (r *fixtureRenewalRows) Objects() []installobserve.GCObject { return r.rows }
 
 func (w *fixtureWire) classifyLeaseRVConflict(ctx context.Context, o *installobserve.Observation, before fixturePhaseBaseline, objects [fixtureMaxSlots]*unstructured.Unstructured, refusal *installobserve.LeaseRVConflict, reads *fixturePhaseRead) (fixturePhaseBaseline, error) {
+	return w.classifyLeaseRVConflictAccounts(ctx, o, before, objects, refusal, reads, nil)
+}
+
+func (w *fixtureWire) classifyLeaseRVConflictAccounts(ctx context.Context, o *installobserve.Observation, before fixturePhaseBaseline, objects [fixtureMaxSlots]*unstructured.Unstructured, refusal *installobserve.LeaseRVConflict, reads *fixturePhaseRead, accounts *phaseServiceAccounts) (fixturePhaseBaseline, error) {
 	zero := fixturePhaseBaseline{}
 	if refusal == nil || o == nil || o.Snapshot() == nil || reads == nil || reads.local(ctx, w) != nil || before.validate(w.actors.request.Snapshot.Anchor().Namespace) != nil {
 		return zero, ErrFixtures
@@ -135,7 +143,7 @@ func (w *fixtureWire) classifyLeaseRVConflict(ctx context.Context, o *installobs
 		}
 		rows[index].Metadata.ResourceVersion = lease.ResourceVersion
 	}
-	if w.ledger.phaseGCRows(o, objects, &fixtureRenewalRows{refusal, rows}, refreshed) != nil || reads.local(ctx, w) != nil {
+	if w.ledger.phaseGCRowsWithAccounts(o, objects, &fixtureRenewalRows{refusal, rows}, refreshed, accounts) != nil || reads.local(ctx, w) != nil {
 		return zero, ErrFixtures
 	}
 	// Do not discard a signed Service/ConfigMap/RBAC change observed in a

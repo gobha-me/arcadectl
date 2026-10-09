@@ -53,7 +53,22 @@ func NewClusterLifecycle(e *Engine, access *HTTPAccess) (*Lifecycle, error) {
 		return nil, err
 	}
 	checks := &clusterLifecycleChecks{p, a, cold, quiescence, controllers, activation}
-	return NewLifecycleWithChecks(e, secrets, checks)
+	lifecycle, err := NewLifecycleWithChecks(e, secrets, checks)
+	if err != nil {
+		return nil, err
+	}
+	if e.baseline != nil {
+		baseline, err := NewClusterSecurityBaseline(e, access)
+		if err != nil {
+			return nil, err
+		}
+		// The SAME closed provider fences ordinary runtime effects and proves
+		// the distinct nonexecuting bootstrap protocol. Ownership/stage alone
+		// never substitutes for its complete current live/retired proof.
+		e.baseline.prerequisites = baseline
+		e.baseline.runtimeGuard = baseline
+	}
+	return lifecycle, nil
 }
 
 func (c *clusterLifecycleChecks) Check(ctx context.Context, request LifecycleCheck) error {

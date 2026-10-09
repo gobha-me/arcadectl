@@ -61,7 +61,7 @@ func fixtureObjectKey(o *unstructured.Unstructured) installstate.Key {
 // whole-validated original and change ONLY their fixed case's declared fields.
 func (w *fixtureWire) admissionRequest(number fixtureAdmissionCase, phase *fixturePhaseObservation) (fixtureAdmissionRequest, error) {
 	r := fixtureAdmissionRequest{slot: -1, operation: probeCreateOperation}
-	if w == nil || w.ledger == nil || w.actors == nil || phase == nil || number >= fixtureAdmissionCaseCount || w.ledger.document.Recipe != fixtureRecipeV2 {
+	if w == nil || w.ledger == nil || w.actors == nil || phase == nil || number >= fixtureAdmissionCaseCount || !fixtureMatrixRecipe(w.ledger.document) {
 		return r, ErrFixtures
 	}
 	f := w.ledger
@@ -76,7 +76,11 @@ func (w *fixtureWire) admissionRequest(number fixtureAdmissionCase, phase *fixtu
 		if err != nil {
 			return r, err
 		}
-		positive, negative, index, err := admissionCreateProbe(w.actors.request.Target, policy, ordinaryControllerActor.account(), "arcadectl-probe-"+f.document.RunID)
+		account, err := f.fixtureAccount(ordinaryControllerActor.account())
+		if err != nil {
+			return r, ErrFixtures
+		}
+		positive, negative, index, err := admissionCreateProbe(w.actors.request.Target, policy, account, "arcadectl-probe-"+f.document.RunID)
 		if err != nil {
 			return r, ErrFixtures
 		}

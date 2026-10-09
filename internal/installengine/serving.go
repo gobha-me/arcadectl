@@ -77,6 +77,14 @@ func servingMetadata(meta metav1.ObjectMeta, namespace string) bool {
 // matching webhook or accepted by wildcard. Original journal barriers surround
 // all reads. Callers must repeat this evidence around authenticated activation.
 func (e *Engine) ObserveServing(ctx context.Context, s *installstate.Snapshot, access ServingAccess) (*Serving, error) {
+	return e.observeServing(ctx, s, access, false)
+}
+
+// Only the closed admission pre-WAL readiness barrier may observe an already
+// acknowledged Applying API. The public activation observation remains strictly
+// Verifying. Whole target templates, original identities and all route checks
+// below are identical; no journal stage is rewritten to manufacture authority.
+func (e *Engine) observeServing(ctx context.Context, s *installstate.Snapshot, access ServingAccess, admissionApplying bool) (*Serving, error) {
 	if nilAccess(access) || ctx == nil {
 		return nil, ErrServing
 	}
@@ -87,7 +95,7 @@ func (e *Engine) ObserveServing(ctx context.Context, s *installstate.Snapshot, a
 		return nil, ErrServing
 	}
 	d := fresh.Document()
-	if d.Pending != nil || d.Stage != installstate.Verifying || d.Mode == installstate.Uninstall {
+	if d.Pending != nil || d.Stage != installstate.Verifying && !(admissionApplying && d.Stage == installstate.Applying) || d.Mode == installstate.Uninstall {
 		return nil, ErrServing
 	}
 	objects := make([]*unstructured.Unstructured, 0, 3)

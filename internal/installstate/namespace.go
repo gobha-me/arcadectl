@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"slices"
 
+	"github.com/gobha-me/arcadectl/internal/installbaseline"
 	"github.com/gobha-me/arcadectl/internal/installrender"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -27,6 +28,7 @@ type Anchor struct {
 type Store struct {
 	namespaces NamespaceAccess
 	plans      []*installrender.Plan
+	baseline   *installbaseline.Plan
 }
 
 // NamespaceAccess is deliberately narrow. Production installers must supply a
@@ -88,6 +90,27 @@ func New(namespaces NamespaceAccess, plans ...*installrender.Plan) (*Store, erro
 	return &Store{namespaces: namespaces, plans: slices.Clone(plans)}, nil
 }
 
+// NewWithBaseline keeps the independent security inventory in the SAME
+// namespace UID/RV CAS journal. Legacy absence may be read for explicit
+// enrollment, but it is never reclassified as verified security evidence.
+func NewWithBaseline(namespaces NamespaceAccess, baseline *installbaseline.Plan, plans ...*installrender.Plan) (*Store, error) {
+	store, err := New(namespaces, plans...)
+	if err != nil || !baseline.IsTrusted() || baseline.Namespace() != plans[0].Namespace() || baseline.Profile() != plans[0].Profile().ID {
+		return nil, ErrInvalid
+	}
+	store.baseline = baseline
+	return store, nil
+}
+
+// BaselineDigest identifies the immutable security contract supplied at store
+// construction. It is not an observation of installed or healthy protection.
+func (s *Store) BaselineDigest() string {
+	if s == nil || s.baseline == nil {
+		return ""
+	}
+	return s.baseline.Digest()
+}
+
 func (s *Store) validAnchor(anchor Anchor) bool {
 	return s != nil && s.namespaces != nil && len(s.plans) > 0 && anchor.Namespace == s.plans[0].Namespace() && validIdentity(string(anchor.UID)) && hexID.MatchString(anchor.InstallationID)
 }
@@ -107,7 +130,7 @@ func (s *Store) observe(namespace *corev1.Namespace, anchor Anchor) (*Snapshot, 
 		return nil, ErrOwnership
 	}
 	body := []byte(namespace.Annotations[Annotation])
-	d, err := Decode(body, s.plans...)
+	d, err := DecodeWithBaseline(body, s.baseline, s.plans...)
 	if err != nil || d.NamespaceUID != anchor.UID || d.Namespace != anchor.Namespace || d.InstallationID != anchor.InstallationID {
 		return nil, ErrOwnership
 	}
@@ -119,10 +142,13 @@ func (s *Store) observe(namespace *corev1.Namespace, anchor Anchor) (*Snapshot, 
 // caller must retain its private bootstrap evidence until this CAS is confirmed.
 // No pre-existing installation is adopted or overwritten here.
 func (s *Store) Bind(ctx context.Context, anchor Anchor, initial Document) (*Snapshot, error) {
-	if !s.validAnchor(anchor) || initial.Namespace != anchor.Namespace || initial.NamespaceUID != anchor.UID || initial.InstallationID != anchor.InstallationID || initial.Revision != 1 || initial.Mode != Install || initial.Stage != Preparing || initial.ActivePackage != "" || initial.Pending != nil || len(initial.Resources) != 1 || initial.Resources[0].Key.Kind != "Namespace" {
+	if !s.validAnchor(anchor) || initial.Namespace != anchor.Namespace || initial.NamespaceUID != anchor.UID || initial.InstallationID != anchor.InstallationID || initial.Revision != 1 || initial.Mode != Install || initial.Stage != Preparing || initial.ActivePackage != "" || initial.Pending != nil || initial.AdmissionReinstall != nil || len(initial.Resources) != 1 || initial.Resources[0].Key.Kind != "Namespace" {
 		return nil, ErrInvalid
 	}
-	body, err := Encode(initial, s.plans...)
+	if s.baseline != nil && (initial.SecurityBaseline == nil || initial.SecurityBaseline.Stage != BaselinePreparing) {
+		return nil, ErrInvalid
+	}
+	body, err := EncodeWithBaseline(initial, s.baseline, s.plans...)
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +168,16 @@ func (s *Store) Commit(ctx context.Context, snapshot *Snapshot, next Document) (
 	if snapshot == nil || snapshot.store != s || !s.validAnchor(snapshot.Anchor()) || !validTransition(snapshot.document, next) {
 		return nil, ErrInvalid
 	}
-	body, err := Encode(next, s.plans...)
+	if s.baseline != nil && snapshot.document.SecurityBaseline == nil && next.SecurityBaseline == nil {
+		// Loading historical omission is not authority to advance runtime work.
+		// Only explicit baseline enrollment can mutate such a journal here.
+		return nil, ErrInvalid
+	}
+	if snapshot.document.AdmissionReinstall == nil && next.AdmissionReinstall != nil &&
+		(next.AdmissionReinstall.SourceRevision != snapshot.document.Revision || next.AdmissionReinstall.SourceJournalSHA256 != journalSHA256(snapshot.body)) {
+		return nil, ErrInvalid // Pin the sealed source bytes, not reconstructed caller data.
+	}
+	body, err := EncodeWithBaseline(next, s.baseline, s.plans...)
 	if err != nil {
 		return nil, err
 	}
@@ -197,6 +232,17 @@ func safeNamespace(namespace *corev1.Namespace, anchor Anchor, plan *installrend
 
 func validTransition(before, next Document) bool {
 	if next.Version != before.Version || next.InstallationID != before.InstallationID || next.Namespace != before.Namespace || next.NamespaceUID != before.NamespaceUID || next.ProfileID != before.ProfileID || next.Revision != before.Revision+1 {
+		return false
+	}
+	if !validReinstallTransition(before, next) {
+		return false
+	}
+	if !reflect.DeepEqual(before.SecurityBaseline, next.SecurityBaseline) {
+		return validSecurityTransition(before, next)
+	}
+	// Runtime effects cannot begin while a pinned baseline remains incomplete.
+	// Legacy absence is left readable for enrollment, never treated as verified.
+	if before.SecurityBaseline != nil && before.SecurityBaseline.Stage != BaselineVerified {
 		return false
 	}
 	if before.Stage == Complete {

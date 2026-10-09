@@ -77,6 +77,9 @@ func (f *fixtureLedger) worldsBody(d fixtureWorldsDocument) ([]byte, error) {
 	if err != nil || d.Version != "original-worlds-v1" || d.RunID != f.document.RunID || !bytes.Equal(d.Journal, f.document.Journal) || d.JournalResourceVersion != f.document.JournalResourceVersion || d.Rows == nil || len(d.Rows) > 3*installsafety.MaxObjectsPerList {
 		return nil, ErrFixtures
 	}
+	if d.Phase != nil && !fixtureAccountsRecipeMatches(f.document, d.Phase) || d.Phase == nil && f.document.Recipe == fixtureRecipeV3 {
+		return nil, ErrFixtures
+	}
 	return fixtureWorldsShapeBody(d, journal.Namespace)
 }
 
@@ -144,6 +147,13 @@ func fixtureWorldsShapeBody(d fixtureWorldsDocument, namespace string) ([]byte, 
 		for _, row := range d.Phase.Public {
 			if _, found := identities[row.UID]; found {
 				return nil, ErrFixtures
+			}
+		}
+		if d.Phase.Accounts != nil {
+			for _, row := range d.Phase.Accounts.Rows {
+				if _, found := identities[row.UID]; found {
+					return nil, ErrFixtures
+				}
 			}
 		}
 	}
@@ -251,7 +261,7 @@ func (f *fixtureLedger) readOriginalWorlds(pin bool) (fixtureWorldsDocument, err
 		return fixtureWorldsDocument{}, ErrFixtures
 	}
 	d, err := f.decodeWorlds(body)
-	if err != nil || f.originalWorldsWALCurrent() != nil {
+	if err != nil || d.Phase != nil && !fixtureAccountsRecipeMatches(f.document, d.Phase) || d.Phase == nil && f.document.Recipe == fixtureRecipeV3 || f.originalWorldsWALCurrent() != nil {
 		return fixtureWorldsDocument{}, ErrFixtures
 	}
 	if pin {

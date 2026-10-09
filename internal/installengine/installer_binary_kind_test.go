@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/gobha-me/arcadectl/internal/adminauth"
+	"github.com/gobha-me/arcadectl/internal/installbaseline"
+	"github.com/gobha-me/arcadectl/internal/installcontract"
 	"github.com/gobha-me/arcadectl/internal/installfiles"
 	"github.com/gobha-me/arcadectl/internal/installpackage"
 	"github.com/gobha-me/arcadectl/internal/installrender"
@@ -145,6 +147,29 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 						original, originalPath = previous, previousPath
 						plans, paths = append(plans, previous), append(paths, previousPath)
 					}
+					// One independent non-rollback security artifact protects every
+					// runtime package, including the byte-authentic predecessor.
+					epoch, err := strconv.ParseInt(git("show", "-s", "--format=%ct", "HEAD"), 10, 64)
+					if err != nil {
+						t.Fatal("baseline source epoch unavailable")
+					}
+					manifest, payload, err := installbaseline.Build(git("rev-parse", "HEAD"), epoch)
+					if err != nil {
+						t.Fatal("separate baseline rendering refused")
+					}
+					signature, err := installbaseline.Sign(manifest, keyPrivate)
+					baselinePath := filepath.Join(base, "security-baseline")
+					if err != nil || installfiles.WriteBaseline(baselinePath, manifest, signature, payload, keyPublic) != nil {
+						t.Fatal("separate signed baseline publication refused")
+					}
+					artifact, err := installfiles.LoadBaseline(baselinePath, keyPublic)
+					if err != nil {
+						t.Fatal("independent baseline authentication refused")
+					}
+					baseline, err := installbaseline.Compile(artifact, original.Namespace(), profile.id)
+					if err != nil {
+						t.Fatal("independent baseline scope compilation refused")
+					}
 					state := filepath.Join(base, "state")
 					if os.Mkdir(state, 0700) != nil {
 						t.Fatal("protected initial state directory unavailable")
@@ -165,7 +190,7 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 					tls := fixtureTLS(t, original.Namespace(), time.Now().UTC())
 					run := func(command, target string) {
 						t.Helper()
-						args := []string{command, "--namespace", original.Namespace(), "--profile", profile.id, "--bootstrap-package", originalPath, "--trust-key", trust, "--state-dir", state, "--bootstrap-receipt", "bootstrap.json", "--kubeconfig", kubeconfig, "--context", "owned-installer", "--api-ca", tls.CAFile, "--timeout", "2h"}
+						args := []string{command, "--namespace", original.Namespace(), "--profile", profile.id, "--bootstrap-package", originalPath, "--trust-key", trust, "--state-dir", state, "--bootstrap-receipt", "bootstrap.json", "--kubeconfig", kubeconfig, "--context", "owned-installer", "--api-ca", tls.CAFile, "--security-baseline", baselinePath, "--timeout", "2h"}
 						for _, path := range paths {
 							args = append(args, "--package", path)
 						}
@@ -193,7 +218,7 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 					if err != nil {
 						t.Fatal("owned observer unavailable")
 					}
-					store, err := installstate.New(access.Namespaces(), plans...)
+					store, err := installstate.NewWithBaseline(access.Namespaces(), baseline, plans...)
 					if err != nil {
 						t.Fatal("independent journal reader unavailable")
 					}
@@ -206,6 +231,7 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 					retainedSecretRV := map[string]string{}
 					retainedFiles := map[string][]byte{}
 					originalRetained := map[installstate.Key]types.UID{}
+					var originalBaseline []installstate.BaselineResource
 					checkComplete := func(mode installstate.Mode, target *installrender.Plan, installed bool) *installstate.Snapshot {
 						t.Helper()
 						files, err := privatefs.Open(state, false)
@@ -213,7 +239,7 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 							t.Fatal("protected original state unavailable")
 						}
 						defer files.Close()
-						receipt, err := installstate.LoadBootstrap(files, "bootstrap.json", original)
+						receipt, err := installstate.LoadBootstrapWithBaseline(files, "bootstrap.json", original, baseline)
 						if err != nil {
 							t.Fatal("original signed bootstrap receipt unavailable")
 						}
@@ -229,6 +255,25 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 						d := s.Document()
 						if d.Stage != installstate.Complete || d.Pending != nil || d.Mode != mode || d.TargetPackage != target.Digest() || d.ActivePackage != target.Digest() || d.Installed != installed {
 							t.Fatal("actual binary did not finish the exact signed lifecycle operation")
+						}
+						if d.SecurityBaseline == nil || d.SecurityBaseline.Version != installbaseline.Version || d.SecurityBaseline.ArtifactDigest != baseline.Digest() || d.SecurityBaseline.Stage != installstate.BaselineVerified || d.SecurityBaseline.Pending != nil || len(d.SecurityBaseline.Resources) != installbaseline.ResourceCount {
+							t.Fatal("actual binary did not retain its separate complete baseline identity")
+						}
+						if originalBaseline == nil {
+							originalBaseline = append([]installstate.BaselineResource{}, d.SecurityBaseline.Resources...)
+						} else if !reflect.DeepEqual(originalBaseline, d.SecurityBaseline.Resources) {
+							t.Fatal("runtime operation rolled back or replaced baseline UID/hash inventory")
+						}
+						baselineContract, err := installcontract.NewBaseline(baseline)
+						if err != nil {
+							t.Fatal("independent baseline contract unavailable")
+						}
+						for _, row := range originalBaseline {
+							template, templateErr := baselineContract.Template(row.Key, false)
+							live, readErr := access.Get(ctx, row.Key)
+							if templateErr != nil || readErr != nil || row.TemplateSHA256 != template.Hash() || template.MatchLive(live, row.UID) != nil {
+								t.Fatal("binary baseline journal identity differs from original signed live resource")
+							}
 						}
 						if len(originalRetained) == 0 {
 							for _, r := range d.Resources {
@@ -263,7 +308,7 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 							}
 							retainedFiles[name] = bytes.Clone(body)
 						}
-						engine, err := NewWithAccess(access, store, files, plans...)
+						engine, err := NewWithBaselineAccess(access, store, files, baseline, plans...)
 						if err != nil || engine.fixtureFence(s) != nil {
 							t.Fatal("binary left unresolved original fixture evidence")
 						}

@@ -45,7 +45,7 @@ type probeCapture struct {
 // nonpersistent probe into a real write, a different route or a different
 // operation. In particular DELETE needs dryRun in its BODY, not just its URL.
 func (p *probeCapture) guard(r *http.Request) bool {
-	if p == nil || r == nil || r.URL == nil || r.Host != r.URL.Host || r.RequestURI != "" || r.Method != p.method || r.URL.String() != p.url || r.GetBody != nil || r.Body == nil || r.ContentLength != int64(len(p.body)) || len(r.TransferEncoding) != 0 || r.Header.Get("Accept") != "application/json" || r.Header.Get("Content-Type") != "application/json" {
+	if p == nil || r == nil || r.URL == nil || r.Host != r.URL.Host || r.RequestURI != "" || r.Method != p.method || r.URL.String() != p.url || r.GetBody != nil || r.Body == nil || r.ContentLength != int64(len(p.body)) || len(r.TransferEncoding) != 0 || !exactProbeHeader(r.Header, "Accept", "application/json") || !exactProbeHeader(r.Header, "Content-Type", probeContentType(p.operation)) {
 		return false
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 65537))
@@ -55,6 +55,27 @@ func (p *probeCapture) guard(r *http.Request) bool {
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	return true
+}
+
+func exactProbeHeader(header http.Header, name, value string) bool {
+	seen := false
+	for key, values := range header {
+		if !strings.EqualFold(key, name) {
+			continue
+		}
+		if seen || key != name || len(values) != 1 || values[0] != value {
+			return false
+		}
+		seen = true
+	}
+	return seen
+}
+
+func probeContentType(operation admissionProbeOperation) string {
+	if operation == probePatchMetadataOperation {
+		return "application/merge-patch+json"
+	}
+	return "application/json"
 }
 
 // classify runs inside the inner transport, before SDK wrappers can see any
@@ -103,12 +124,16 @@ func probePath(key installstate.Key) (string, string, error) {
 }
 
 func expectedProbeDenial(key installstate.Key, plural, policy, binding, validation string) (map[string]any, error) {
-	if !addressPart(policy) || !addressPart(binding) || validation == "" || len(validation) > 2048 {
-		return nil, ErrInvalid
-	}
 	group := ""
 	if key.Kind == "GameDestroy" {
 		group = "arcade.gobha.me"
+	}
+	return expectedProbeDenialGroup(key, plural, group, policy, binding, validation)
+}
+
+func expectedProbeDenialGroup(key installstate.Key, plural, group, policy, binding, validation string) (map[string]any, error) {
+	if !addressPart(policy) || !addressPart(binding) || validation == "" || len(validation) > 2048 {
+		return nil, ErrInvalid
 	}
 	cause := fmt.Sprintf("ValidatingAdmissionPolicy '%s' with binding '%s' denied request: %s", policy, binding, validation)
 	resource := plural
@@ -139,6 +164,10 @@ const (
 	probeEphemeralOperation
 	probeResizeOperation
 	probeDeletePVCOperation
+	probeDeleteAccountOperation    // baseline-only, never a PVC-delete route
+	probeDeleteExecutableOperation // baseline-only exact denial; no accepted DELETE
+	probeDeleteIdentityOperation   // baseline-only Role/RoleBinding/Service denial
+	probePatchMetadataOperation    // baseline-only internally built metadata denial
 )
 
 // This seam is private and dry-run ONLY. It does not authorize persistent
@@ -152,6 +181,9 @@ func (a *HTTPAccess) probeOperation(ctx context.Context, operation admissionProb
 	}
 	key := installstate.Key{APIVersion: object.GetAPIVersion(), Kind: object.GetKind(), Namespace: object.GetNamespace(), Name: object.GetName()}
 	path, plural, err := probePath(key)
+	if a.actor != nil && a.actor.purpose == baselineAdmissionPurpose {
+		path, plural, err = baselineProbePath(key)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +198,7 @@ func (a *HTTPAccess) probeOperation(ctx context.Context, operation admissionProb
 		if object.GetUID() != "" || object.GetResourceVersion() != "" {
 			return nil, ErrInvalid
 		}
-	case probeUpdateOperation, probeEphemeralOperation, probeResizeOperation, probeDeletePVCOperation:
+	case probeUpdateOperation, probeEphemeralOperation, probeResizeOperation, probeDeletePVCOperation, probeDeleteAccountOperation, probeDeleteExecutableOperation, probeDeleteIdentityOperation, probePatchMetadataOperation:
 		// The two declared native storage profiles encode RV as uint64.
 		// Zero (including zero-padded spellings) selects unconditional UPDATE,
 		// so it must never count as a pinned oldObject, even on a VAP denial.
@@ -177,6 +209,14 @@ func (a *HTTPAccess) probeOperation(ctx context.Context, operation admissionProb
 		path += "/" + key.Name
 		method, successCode = http.MethodPut, http.StatusOK
 		switch operation {
+		case probePatchMetadataOperation:
+			if a.actor == nil || a.actor.purpose != baselineAdmissionPurpose || key.Kind != "Deployment" && key.Kind != "Service" {
+				return nil, ErrInvalid
+			}
+			method = http.MethodPatch
+			// No caller-supplied patch or object/spec fields are forwarded.
+			// Whole original witnesses still bracket this dry-run denial.
+			payload = map[string]any{"metadata": map[string]any{"uid": string(object.GetUID()), "resourceVersion": object.GetResourceVersion(), "annotations": map[string]any{"arcade.gobha.me/identity-probe": "dry-run"}}}
 		case probeEphemeralOperation, probeResizeOperation:
 			if key.Kind != "Pod" {
 				return nil, ErrInvalid
@@ -186,8 +226,11 @@ func (a *HTTPAccess) probeOperation(ctx context.Context, operation admissionProb
 			} else {
 				path += "/resize"
 			}
-		case probeDeletePVCOperation:
-			if key.Kind != "PersistentVolumeClaim" {
+		case probeDeletePVCOperation, probeDeleteAccountOperation, probeDeleteExecutableOperation, probeDeleteIdentityOperation:
+			if operation == probeDeletePVCOperation && key.Kind != "PersistentVolumeClaim" ||
+				operation == probeDeleteAccountOperation && (key.Kind != "ServiceAccount" || a.actor == nil || a.actor.purpose != baselineAdmissionPurpose) ||
+				operation == probeDeleteExecutableOperation && (a.actor == nil || a.actor.purpose != baselineAdmissionPurpose || key.Kind != "Job" && key.Kind != "Deployment") ||
+				operation == probeDeleteIdentityOperation && (a.actor == nil || a.actor.purpose != baselineAdmissionPurpose || key.Kind != "Role" && key.Kind != "RoleBinding" && key.Kind != "Service") {
 				return nil, ErrInvalid
 			}
 			method, query = http.MethodDelete, "dryRun=All"
@@ -198,6 +241,9 @@ func (a *HTTPAccess) probeOperation(ctx context.Context, operation admissionProb
 		return nil, ErrInvalid
 	}
 	negative := policy != "" || binding != "" || validation != ""
+	if (operation == probeDeleteAccountOperation || operation == probeDeleteExecutableOperation || operation == probeDeleteIdentityOperation || operation == probePatchMetadataOperation || a.actor != nil && a.actor.purpose == baselineAdmissionPurpose && baselineIdentityKey(key)) && !negative {
+		return nil, ErrInvalid // identity/PATCH/DELETE never yields accepted authority
+	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	ctx = logr.NewContext(ctx, logr.Discard())
@@ -215,10 +261,16 @@ func (a *HTTPAccess) probeOperation(ctx context.Context, operation admissionProb
 			return nil, err
 		}
 		capture.expected = expected
+		if a.actor != nil && a.actor.purpose == baselineAdmissionPurpose {
+			capture.expected, err = expectedBaselineProbeDenial(key, plural, policy, binding, validation)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 	attempt := &requestAttempt{method: method, probe: capture}
 	if a.actor != nil {
-		attempt.actor = &actorRequestCapture{identity: *a.actor, method: method, url: u.String(), body: body}
+		attempt.actor = &actorRequestCapture{identity: *a.actor, method: method, url: u.String(), body: body, contentType: probeContentType(operation)}
 	}
 	ctx = context.WithValue(ctx, attemptKey{}, attempt)
 	request, err := http.NewRequestWithContext(ctx, method, u.String(), bytes.NewReader(body))
@@ -227,7 +279,7 @@ func (a *HTTPAccess) probeOperation(ctx context.Context, operation admissionProb
 	}
 	request.GetBody = nil
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Content-Type", probeContentType(operation))
 	response, err := a.client.Do(request)
 	if err != nil || response == nil || response.Body == nil {
 		if response != nil && response.Body != nil {

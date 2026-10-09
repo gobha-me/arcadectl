@@ -13,6 +13,24 @@ const fixtureBehaviorVersion = "admission-behavior-v1"
 
 const fixtureBehaviorVersionV2 = "admission-behavior-v2"
 
+const fixtureBehaviorVersionV3 = "admission-behavior-v3"
+
+func fixtureBehaviorRecipeVersion(d fixtureLedgerDocument) string {
+	if !validFixtureRecipe(d) {
+		return ""
+	}
+	switch d.Recipe {
+	case fixtureRecipeV1:
+		return fixtureBehaviorVersion
+	case fixtureRecipeV2:
+		return fixtureBehaviorVersionV2
+	case fixtureRecipeV3:
+		return fixtureBehaviorVersionV3
+	default:
+		return ""
+	}
+}
+
 // Historical completion of the entire fixed matrix in THIS original run,
 // before cleanup. The enclosing WAL binds the package/profile, journal, run,
 // original UIDs, seed/marker ACKs and original-world digest. This is never a
@@ -27,10 +45,7 @@ func validFixtureBehaviorDocument(d fixtureLedgerDocument) bool {
 		return true // exact legacy encoding and aborted-run cleanup remain valid
 	}
 	r := d.Behavior
-	version := fixtureBehaviorVersion
-	if d.Recipe == fixtureRecipeV2 {
-		version = fixtureBehaviorVersionV2
-	}
+	version := fixtureBehaviorRecipeVersion(d)
 	if !validFixtureRecipe(d) || r.Version != version || r.Revision == 0 || r.Revision > d.Revision || r.Revision > 9007199254740991 || !fixtureWorldsDigest.MatchString(d.OriginalWorldsSHA256) || !validFixtureDestroySeedDocument(d) || d.DestroySeed == nil || d.DestroySeed.State != fixtureDestroySeedAcknowledged || !validFixtureRetainedMarkerDocument(d) || d.RetainedMarker == nil || d.RetainedMarker.State != fixtureRetainedMarkerAcknowledged {
 		return false
 	}

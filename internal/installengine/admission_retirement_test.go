@@ -16,10 +16,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gobha-me/arcadectl/internal/canonicaljson"
+	"github.com/gobha-me/arcadectl/internal/installbaseline"
 	"github.com/gobha-me/arcadectl/internal/installstate"
 	"github.com/gobha-me/arcadectl/internal/privatefs"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 func retirementFixture(t *testing.T) (*lifecycleFixture, *installstate.Snapshot) {
@@ -30,6 +34,394 @@ func retirementFixture(t *testing.T) (*lifecycleFixture, *installstate.Snapshot)
 		t.Fatal("no durable access-retirement boundary")
 	}
 	return v, s
+}
+
+// Synthetic schema/read-path coverage only. This deliberately supplies no
+// native runtime guard: a matched baseline-aware receipt must reach and KEEP
+// that refusal, not report uninstall success or claim native enrollment.
+func TestAdmissionRetirementBaselineContextPreservesOriginalInventoryAndRuntimeGate(t *testing.T) {
+	for _, scenario := range []string{"matching", "legacy-v1", "omitted-baseline-rows", "extra-baseline-row", "swapped-baseline-rows", "duplicate-baseline-row", "foreign-baseline-row", "baseline-row-uid", "baseline-row-rv", "baseline-row-hash", "baseline-live-new-rv", "baseline-live-health", "baseline-binding-replaced", "omitted-receipt-baseline", "foreign-receipt-baseline", "changed-original-uid"} {
+		t.Run(scenario, func(t *testing.T) {
+			v, snapshot := retirementFixture(t)
+			baseline := baselineFixturePlan(t, v.f.plan.Namespace(), v.f.plan.Profile().ID, 'd')
+			document := snapshot.Document()
+			name := retirementName(document, document.AdmissionRetirementRevision)
+			body, identity, err := v.f.engine.files.Read(name, retirementMaxBytes)
+			if err != nil {
+				t.Fatal("original retirement receipt fixture unavailable")
+			}
+			var receipt retirementReceipt
+			if json.Unmarshal(body, &receipt) != nil {
+				t.Fatal("original retirement receipt fixture malformed")
+			}
+			original, err := installstate.Decode(receipt.Journal, v.f.plan)
+			if err != nil {
+				t.Fatal("historical retirement journal fixture unavailable")
+			}
+			security := &installstate.SecurityBaseline{Version: installbaseline.Version, ArtifactDigest: baseline.Digest(), Stage: installstate.BaselineVerified, Resources: []installstate.BaselineResource{}}
+			for index, resource := range baseline.Resources() {
+				object := resource.Object.DeepCopy()
+				entry := installstate.BaselineResource{
+					Key: installstate.Key{APIVersion: object.GetAPIVersion(), Kind: object.GetKind(), Namespace: object.GetNamespace(), Name: object.GetName()},
+					UID: types.UID(fmt.Sprintf("retirement-baseline-%d", index)), TemplateSHA256: resource.TemplateSHA256,
+				}
+				security.Resources = append(security.Resources, entry)
+				object.SetUID(entry.UID)
+				object.SetResourceVersion("100")
+				object.SetAnnotations(map[string]string{installstate.MutationAnnotation: strings.Repeat("a", 32)})
+				if entry.Key.Kind == "ValidatingAdmissionPolicy" {
+					object.SetGeneration(1)
+					object.Object["status"] = map[string]any{"observedGeneration": int64(1), "typeChecking": map[string]any{}}
+				}
+				v.f.access.objects[entry.Key] = object
+			}
+			installstate.SortBaselineResources(security.Resources)
+			receipt.Version = "v2"
+			receipt.Baseline = []retirementPolicy{}
+			for _, entry := range security.Resources {
+				receipt.Baseline = append(receipt.Baseline, retirementPolicy{entry.Key, admissionIdentity{entry.UID, "100", entry.TemplateSHA256}})
+			}
+			switch scenario {
+			case "legacy-v1":
+				receipt.Version, receipt.Baseline = "v1", nil
+			case "omitted-baseline-rows":
+				receipt.Baseline = nil
+			case "extra-baseline-row":
+				receipt.Baseline = append(receipt.Baseline, receipt.Baseline[0])
+			case "swapped-baseline-rows":
+				receipt.Baseline[0], receipt.Baseline[1] = receipt.Baseline[1], receipt.Baseline[0]
+			case "duplicate-baseline-row":
+				receipt.Baseline[0] = receipt.Baseline[1]
+			case "foreign-baseline-row":
+				receipt.Baseline[0].Key.Name = "foreign-baseline"
+			case "baseline-row-uid":
+				receipt.Baseline[0].Identity.UID = "foreign-baseline-uid"
+			case "baseline-row-rv":
+				receipt.Baseline[0].Identity.ResourceVersion = "101"
+			case "baseline-row-hash":
+				receipt.Baseline[0].Identity.TemplateSHA256 = strings.Repeat("e", 64)
+			case "baseline-live-new-rv":
+				v.f.access.objects[receipt.Baseline[0].Key].SetResourceVersion("101")
+			case "baseline-live-health":
+				for key, object := range v.f.access.objects {
+					if strings.HasPrefix(key.Name, "arcadectl-identity-") && key.Kind == "ValidatingAdmissionPolicy" {
+						unstructured.RemoveNestedField(object.Object, "status", "typeChecking")
+						break
+					}
+				}
+			case "baseline-binding-replaced":
+				for key, object := range v.f.access.objects {
+					if strings.HasPrefix(key.Name, "arcadectl-identity-") && key.Kind == "ValidatingAdmissionPolicyBinding" {
+						object.SetUID("replacement-baseline-binding")
+						break
+					}
+				}
+			}
+			document.SecurityBaseline, original.SecurityBaseline = security, security
+			if scenario == "omitted-receipt-baseline" {
+				original.SecurityBaseline = nil
+			}
+			body, err = installstate.EncodeWithBaseline(original, baseline, v.f.plan)
+			if err != nil {
+				t.Fatal("baseline-aware retirement journal fixture refused")
+			}
+			if scenario == "foreign-receipt-baseline" {
+				body = bytes.ReplaceAll(body, []byte(baseline.Digest()), []byte(strings.Repeat("e", 64)))
+			} else if scenario == "changed-original-uid" {
+				body = bytes.ReplaceAll(body, []byte("retirement-baseline-0"), []byte("foreign-retirement-baseline-0"))
+			}
+			receipt.Journal = body
+			body, err = json.Marshal(receipt)
+			if err != nil {
+				t.Fatal("baseline-aware retirement receipt fixture unavailable")
+			}
+			body, err = canonicaljson.CanonicalJSON(body)
+			if err != nil {
+				t.Fatal("canonical retirement receipt fixture unavailable")
+			}
+			if _, err := v.f.engine.files.AtomicWrite(name, body, &identity); err != nil {
+				t.Fatal("baseline-aware protected receipt fixture unavailable")
+			}
+			body, err = installstate.EncodeWithBaseline(document, baseline, v.f.plan)
+			if err != nil {
+				t.Fatal("baseline-aware current journal fixture unavailable")
+			}
+			namespace, err := v.f.access.client.CoreV1().Namespaces().Get(t.Context(), document.Namespace, metav1.GetOptions{})
+			if err != nil {
+				t.Fatal("original fixture Namespace unavailable")
+			}
+			namespace.Annotations[installstate.Annotation] = string(body)
+			if v.f.access.client.Tracker().Update(corev1.SchemeGroupVersion.WithResource("namespaces"), namespace, "") != nil {
+				t.Fatal("baseline-aware original Namespace fixture unavailable")
+			}
+			store, err := installstate.NewWithBaseline(v.f.access.client.CoreV1().Namespaces(), baseline, v.f.plan)
+			if err != nil {
+				t.Fatal("baseline-aware retirement store refused")
+			}
+			engine, err := NewWithBaselineAccess(v.f.access, store, v.f.engine.files, baseline, v.f.plan)
+			if err != nil {
+				t.Fatal("baseline-aware retirement engine refused")
+			}
+			snapshot, err = store.Load(t.Context(), snapshot.Anchor())
+			if err != nil {
+				t.Fatal("baseline-aware retirement original observation refused")
+			}
+			writes, namespaceWrites := v.f.access.writes, v.f.nsUpdates
+			want := ErrAdmission
+			guard := &retirementCoreCountingGuard{engine: engine}
+			engine.baseline.runtimeGuard = guard // refusal instrumentation ONLY
+			coreErr := engine.verifyRetiredAdmissionCore(t.Context(), snapshot)
+			if (coreErr == nil) != (scenario == "matching") || guard.calls != 0 {
+				t.Fatal("read-only core lost its fences or invoked runtime authority", coreErr)
+			}
+			if scenario == "matching" {
+				want = ErrSecurityBaseline
+			}
+			if err := engine.verifyRetiredAdmission(t.Context(), snapshot); err != want || v.f.access.writes != writes || v.f.nsUpdates != namespaceWrites {
+				t.Fatal("baseline receipt was lost, adopted, mutated or bypassed runtime security", err)
+			}
+			if scenario == "matching" && (guard.calls != 1 || guard.nested != nil) || scenario != "matching" && guard.calls != 0 {
+				t.Fatal("wrapper did not preserve exactly one nonrecursive runtime refusal", guard.calls, guard.nested)
+			}
+		})
+	}
+}
+
+type retirementCoreCountingGuard struct {
+	engine *Engine
+	calls  int
+	nested error
+}
+
+func (g *retirementCoreCountingGuard) Verify(ctx context.Context, snapshot *installstate.Snapshot) error {
+	g.calls++
+	if g.calls > 1 {
+		return ErrSecurityBaseline
+	}
+	g.nested = g.engine.verifyRetiredAdmissionCore(ctx, snapshot)
+	return ErrSecurityBaseline // never grants effects or claims behavior proof
+}
+
+func TestAdmissionRetirementLegacyV1LiteralReceiptBytesRemainUnchanged(t *testing.T) {
+	v, snapshot := retirementFixture(t)
+	document := snapshot.Document()
+	body, _, err := v.f.engine.files.Read(retirementName(document, document.AdmissionRetirementRevision), retirementMaxBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt retirementReceipt
+	if json.Unmarshal(body, &receipt) != nil || receipt.Version != "v1" || receipt.Baseline != nil {
+		t.Fatal("historical retirement encoding changed")
+	}
+	legacy := struct {
+		Version  string             `json:"version"`
+		Journal  json.RawMessage    `json:"journal"`
+		Policies []retirementPolicy `json:"policies"`
+	}{receipt.Version, receipt.Journal, receipt.Policies}
+	expected, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected, err = canonicaljson.CanonicalJSON(expected)
+	if err != nil || !bytes.Equal(expected, body) {
+		t.Fatal("legacy v1 receipt bytes were rewritten")
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(body, &fields) != nil {
+		t.Fatal("legacy receipt fixture unavailable")
+	}
+	fields["baseline"] = json.RawMessage("null")
+	changed, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, err = canonicaljson.CanonicalJSON(changed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := retirementName(document, document.AdmissionRetirementRevision)
+	_, identity, err := v.f.engine.files.Read(name, retirementMaxBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.f.engine.files.AtomicWrite(name, changed, &identity); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.f.engine.verifyRetiredAdmissionCore(t.Context(), snapshot); err != ErrAdmission {
+		t.Fatal("legacy receipt admitted a previously unknown explicit null field", err)
+	}
+}
+
+func TestAdmissionRetirementCoreClosesProtectedReceiptAfterRemoteReads(t *testing.T) {
+	for _, scenario := range []string{"healthy", "changed-body", "replaced-identical-body"} {
+		t.Run(scenario, func(t *testing.T) {
+			v, snapshot := retirementFixture(t)
+			document := snapshot.Document()
+			name := retirementName(document, document.AdmissionRetirementRevision)
+			body, identity, err := v.f.engine.files.Read(name, retirementMaxBytes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			injected := false
+			v.f.access.get = func(key installstate.Key) error {
+				if injected || key.Kind != "ValidatingAdmissionPolicy" || scenario == "healthy" {
+					return nil
+				}
+				injected = true
+				changed := bytes.Clone(body)
+				if scenario == "changed-body" {
+					changed = append(changed, '\n')
+				}
+				if _, err := v.f.engine.files.AtomicWrite(name, changed, &identity); err != nil {
+					t.Fatal("synthetic receipt replacement unavailable", err)
+				}
+				return nil
+			}
+			writes, dryRuns, namespaceWrites := v.f.access.writes, v.f.access.dryRuns, v.f.nsUpdates
+			err = v.f.engine.verifyRetiredAdmissionCore(t.Context(), snapshot)
+			if (err == nil) != (scenario == "healthy") || injected != (scenario != "healthy") || v.f.access.writes != writes || v.f.access.dryRuns != dryRuns || v.f.nsUpdates != namespaceWrites {
+				t.Fatal("core accepted changed protected evidence or mutated cluster state", err)
+			}
+		})
+	}
+}
+
+// Synthetic capture-path instrumentation only: deliberately permissive test
+// guards are NOT installed by production composition or native enforcement
+// evidence. Actual baseline guard integration remains independently required.
+func TestAdmissionRetirementBaselineV2CaptureClosesBothProtectionSets(t *testing.T) {
+	for _, scenario := range []string{"healthy", "missing-guard", "guard-1", "guard-2", "guard-3", "runtime-on-last-guard", "baseline-on-last-guard", "receipt-on-last-guard", "fixture-on-last-guard", "journal-on-last-guard"} {
+		t.Run(scenario, func(t *testing.T) {
+			v, snapshot := retirementReadyFixture(t)
+			baseline := baselineFixturePlan(t, v.f.plan.Namespace(), v.f.plan.Profile().ID, 'd')
+			document := snapshot.Document()
+			security := &installstate.SecurityBaseline{Version: installbaseline.Version, ArtifactDigest: baseline.Digest(), Stage: installstate.BaselineVerified, Resources: []installstate.BaselineResource{}}
+			for index, resource := range baseline.Resources() {
+				object := resource.Object.DeepCopy()
+				entry := installstate.BaselineResource{Key: installstate.Key{APIVersion: object.GetAPIVersion(), Kind: object.GetKind(), Name: object.GetName()}, UID: types.UID(fmt.Sprintf("capture-baseline-%d", index)), TemplateSHA256: resource.TemplateSHA256}
+				security.Resources = append(security.Resources, entry)
+				object.SetUID(entry.UID)
+				object.SetResourceVersion("100")
+				object.SetAnnotations(map[string]string{installstate.MutationAnnotation: strings.Repeat("a", 32)})
+				if entry.Key.Kind == "ValidatingAdmissionPolicy" {
+					object.SetGeneration(1)
+					object.Object["status"] = map[string]any{"observedGeneration": int64(1), "typeChecking": map[string]any{}}
+				}
+				v.f.access.objects[entry.Key] = object
+			}
+			installstate.SortBaselineResources(security.Resources)
+			document.SecurityBaseline = security
+			body, err := installstate.EncodeWithBaseline(document, baseline, v.f.plan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ns, err := v.f.access.client.CoreV1().Namespaces().Get(t.Context(), document.Namespace, metav1.GetOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ns.Annotations[installstate.Annotation] = string(body)
+			if v.f.access.client.Tracker().Update(corev1.SchemeGroupVersion.WithResource("namespaces"), ns, "") != nil {
+				t.Fatal("synthetic baseline capture fixture unavailable")
+			}
+			store, err := installstate.NewWithBaseline(v.f.access.client.CoreV1().Namespaces(), baseline, v.f.plan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			engine, err := NewWithBaselineAccess(v.f.access, store, v.f.engine.files, baseline, v.f.plan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot, err = store.Load(t.Context(), snapshot.Anchor())
+			if err != nil {
+				t.Fatal(err)
+			}
+			secrets, err := NewSecretWorkflow(engine, v.private)
+			if err != nil {
+				t.Fatal(err)
+			}
+			v.f.engine, v.f.store = engine, store
+			v.l, err = NewLifecycleWithChecks(engine, secrets, v)
+			if err != nil {
+				t.Fatal(err)
+			}
+			guard := &retirementCaptureGuard{engine: engine, scenario: scenario, objects: v.f.access.objects}
+			engine.baseline.runtimeGuard = guard
+			if scenario == "missing-guard" {
+				engine.baseline.runtimeGuard = nil
+			}
+			writes, namespaceWrites := v.f.access.writes, v.f.nsUpdates
+			next, err := v.l.retireAdmission(t.Context(), snapshot, v.opts)
+			if scenario != "healthy" {
+				if err == nil || next == nil || next.Document().AdmissionRetirementRevision != 0 || !bytes.Equal(next.Bytes(), snapshot.Bytes()) || v.f.access.writes != writes || v.f.nsUpdates != namespaceWrites {
+					t.Fatal("failed baseline capture latched retirement or withdrew access", err)
+				}
+				return
+			}
+			if err != nil || next == nil || next.Document().AdmissionRetirementRevision != document.Revision || guard.calls != 3 || v.f.access.writes != writes || v.f.nsUpdates != namespaceWrites+1 {
+				t.Fatal("successful synthetic capture did not bind one retirement CAS", err, guard.calls)
+			}
+			body, _, err = engine.files.Read(retirementName(document, document.Revision), retirementMaxBytes)
+			var receipt retirementReceipt
+			if err != nil || json.Unmarshal(body, &receipt) != nil || receipt.Version != "v2" || len(receipt.Policies) != 12 || len(receipt.Baseline) != 12 || !bytes.Equal(receipt.Journal, snapshot.Bytes()) {
+				t.Fatal("capture did not publish exact v2 identity evidence")
+			}
+			if err := engine.verifyRetiredAdmissionCore(t.Context(), next); err != nil || guard.calls != 3 {
+				t.Fatal("captured evidence required recursive actor authority", err)
+			}
+		})
+	}
+}
+
+type retirementCaptureGuard struct {
+	engine   *Engine
+	scenario string
+	objects  map[installstate.Key]*unstructured.Unstructured
+	calls    int
+}
+
+func (g *retirementCaptureGuard) Verify(ctx context.Context, snapshot *installstate.Snapshot) error {
+	g.calls++
+	if g.scenario == fmt.Sprintf("guard-%d", g.calls) {
+		return ErrSecurityBaseline
+	}
+	if g.calls == 3 && (g.scenario == "runtime-on-last-guard" || g.scenario == "baseline-on-last-guard") {
+		baseline := g.scenario == "baseline-on-last-guard"
+		for key, object := range g.objects {
+			if key.Kind == "ValidatingAdmissionPolicy" && strings.HasPrefix(key.Name, "arcadectl-identity-") == baseline {
+				object.SetResourceVersion("9000")
+				break
+			}
+		}
+	}
+	if g.calls == 3 && g.scenario == "receipt-on-last-guard" {
+		document := snapshot.Document()
+		name := retirementName(document, document.Revision)
+		body, identity, err := g.engine.files.Read(name, retirementMaxBytes)
+		if err != nil {
+			return err
+		}
+		_, err = g.engine.files.AtomicWrite(name, append(body, '\n'), &identity)
+		if err != nil {
+			return err
+		}
+	}
+	if g.calls == 3 && g.scenario == "fixture-on-last-guard" {
+		if _, err := g.engine.files.CreateExclusive(fixtureLedgerName(snapshot), []byte("unresolved synthetic fixture")); err != nil {
+			return err
+		}
+	}
+	if g.calls == 3 && g.scenario == "journal-on-last-guard" {
+		client := g.engine.access.(*fixtureAccess).client
+		ns, err := client.CoreV1().Namespaces().Get(ctx, snapshot.Anchor().Namespace, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		ns.ResourceVersion = "9000"
+		if err := client.Tracker().Update(corev1.SchemeGroupVersion.WithResource("namespaces"), ns, ""); err != nil {
+			return err
+		}
+	}
+	return nil // explicit synthetic instrumentation, never production authority
 }
 
 func TestAdmissionRetirementForegroundDeletionRemainsPendingUntilAbsent(t *testing.T) {

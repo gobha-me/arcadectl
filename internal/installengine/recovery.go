@@ -63,23 +63,34 @@ type recoveryPending struct {
 	BeforeUID types.UID           `json:"beforeUid"`
 }
 
+// This is ownership progress, never a claim of current live admission health.
+// It deliberately omits public nonces/template hashes and private file/content.
+type recoverySecurityBaseline struct {
+	Version               string                     `json:"version"`
+	ArtifactDigest        string                     `json:"artifactDigest"`
+	OwnershipStage        installstate.BaselineStage `json:"ownershipStage"`
+	OriginalResourceCount int                        `json:"originalResourceCount"`
+	Pending               *recoveryPending           `json:"pending,omitempty"`
+}
+
 type recoveryDocument struct {
-	Version               string             `json:"version"`
-	Namespace             string             `json:"namespace"`
-	NamespaceUID          types.UID          `json:"namespaceUid"`
-	InstallationID        string             `json:"installationId"`
-	ProfileID             string             `json:"profileId"`
-	Revision              uint64             `json:"revision"`
-	Mode                  installstate.Mode  `json:"mode"`
-	Stage                 installstate.Stage `json:"stage"`
-	Installed             bool               `json:"installed"`
-	ActivePackage         string             `json:"activePackage"`
-	TargetPackage         string             `json:"targetPackage"`
-	PreviousPackage       string             `json:"previousPackage"`
-	Pending               *recoveryPending   `json:"pending,omitempty"`
-	ClaimsResourceVersion string             `json:"claimsResourceVersion"`
-	Claims                []recoveryClaim    `json:"claims"`
-	Guidance              []string           `json:"guidance"`
+	Version               string                    `json:"version"`
+	Namespace             string                    `json:"namespace"`
+	NamespaceUID          types.UID                 `json:"namespaceUid"`
+	InstallationID        string                    `json:"installationId"`
+	ProfileID             string                    `json:"profileId"`
+	Revision              uint64                    `json:"revision"`
+	Mode                  installstate.Mode         `json:"mode"`
+	Stage                 installstate.Stage        `json:"stage"`
+	Installed             bool                      `json:"installed"`
+	ActivePackage         string                    `json:"activePackage"`
+	TargetPackage         string                    `json:"targetPackage"`
+	PreviousPackage       string                    `json:"previousPackage"`
+	Pending               *recoveryPending          `json:"pending,omitempty"`
+	SecurityBaseline      *recoverySecurityBaseline `json:"securityBaseline,omitempty"`
+	ClaimsResourceVersion string                    `json:"claimsResourceVersion"`
+	Claims                []recoveryClaim           `json:"claims"`
+	Guidance              []string                  `json:"guidance"`
 }
 
 // Collect uses a durable ORIGINAL bootstrap receipt (which may predate all
@@ -150,6 +161,13 @@ func (r *RecoveryReporter) Collect(ctx context.Context, receipt *installstate.Bo
 		}}
 	if d.Pending != nil {
 		public.Pending = &recoveryPending{Action: d.Pending.Action, Key: d.Pending.Key, BeforeUID: d.Pending.BeforeUID}
+	}
+	if baseline := d.SecurityBaseline; baseline != nil {
+		public.SecurityBaseline = &recoverySecurityBaseline{Version: baseline.Version, ArtifactDigest: baseline.ArtifactDigest, OwnershipStage: baseline.Stage, OriginalResourceCount: len(baseline.Resources)}
+		if baseline.Pending != nil {
+			public.SecurityBaseline.Pending = &recoveryPending{Action: baseline.Pending.Action, Key: baseline.Pending.Key, BeforeUID: baseline.Pending.BeforeUID}
+		}
+		public.Guidance = append(public.Guidance, "Preserve the original signed security baseline and its protected create receipts. Baseline ownership stage is not current live security verification; do not recreate, adopt, remove or roll back its resources to recover an uncertain operation.")
 	}
 	for _, claim := range b.Items {
 		switch claim.Status.Phase {

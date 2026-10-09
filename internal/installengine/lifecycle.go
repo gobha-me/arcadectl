@@ -156,6 +156,52 @@ func (l *Lifecycle) Begin(ctx context.Context, s *installstate.Snapshot, mode in
 	if !l.engine.compatible(d) || mode == installstate.Install && d.Installed || mode != installstate.Install && !d.Installed {
 		return fresh, ErrInvalid
 	}
+	var reinstall *reinstallSourceWitness
+	var reinstallCA *privatefs.FilePin
+	var completingSource *reinstallSourceWitness
+	if l.engine.baseline != nil {
+		provider := l.engine.baseline.prerequisites
+		if provider == nil || provider.engine != l.engine {
+			return fresh, ErrSecurityBaseline
+		}
+		if !fresh.Document().Installed {
+			// Preserve the genuine completed-Uninstall state through every proof;
+			// only the final original Namespace CAS starts the new Install.
+			if mode != installstate.Install {
+				return fresh, ErrSecurityBaseline
+			}
+			// Helper-local CA ownership cannot close subsequent provider,
+			// preflight/inventory and final Begin observations. Hold the opening
+			// trust input across the entire Begin operation and its original CAS.
+			_, _, reinstallCA, err = privatefs.PinAbsolute(opts.Activation.CAFile, 65536, privatefs.TrustedPublic)
+			if err != nil {
+				return fresh, ErrCredentials
+			}
+			defer reinstallCA.Close()
+			if l.secrets.verifyCompletedRetirementSecrets(ctx, fresh, opts.Activation.CAFile, opts.Now) != nil || reinstallCA.Confirm() != nil {
+				return fresh, ErrSecurityBaseline
+			}
+			reinstall, err = provider.prepareReinstallSource(ctx, fresh)
+			if err != nil {
+				return fresh, err
+			}
+			defer reinstall.release()
+			pin := reinstall.provenance
+			d.AdmissionReinstall = &pin
+		} else {
+			if fresh.Document().AdmissionReinstall != nil {
+				completingSource, err = l.engine.openReinstallSource(fresh)
+				if err != nil {
+					return fresh, ErrSecurityBaseline
+				}
+				defer completingSource.release()
+			}
+			if provider.Verify(ctx, fresh) != nil {
+				return fresh, ErrSecurityBaseline
+			}
+			d.AdmissionReinstall = nil // Only after completed active proof, before new Begin CAS.
+		}
+	}
 	if err := l.checkOperation(ctx, Prerequisites, fresh, mode, target, opts); err != nil {
 		return fresh, err
 	}
@@ -163,19 +209,47 @@ func (l *Lifecycle) Begin(ctx context.Context, s *installstate.Snapshot, mode in
 	if err := l.inventory(ctx, fresh, true, false); err != nil {
 		return fresh, err
 	}
+	if l.engine.baseline != nil {
+		if reinstall != nil && l.secrets.verifyCompletedRetirementSecrets(ctx, fresh, opts.Activation.CAFile, opts.Now) != nil {
+			return fresh, ErrSecurityBaseline
+		}
+		if l.engine.baseline.prerequisites.Verify(ctx, fresh) != nil {
+			return fresh, ErrSecurityBaseline
+		}
+	}
 	if _, err := l.original(ctx, fresh); err != nil {
 		return fresh, err
+	}
+	if reinstall != nil && l.engine.closeReinstallSource(reinstall) != nil {
+		return fresh, ErrSecurityBaseline
+	}
+	if completingSource != nil && l.engine.closeReinstallSource(completingSource) != nil {
+		return fresh, ErrSecurityBaseline
+	}
+	if reinstall != nil && (reinstallCA == nil || reinstallCA.Confirm() != nil) {
+		return fresh, ErrCredentials
+	}
+	if ctx.Err() != nil {
+		return fresh, ErrConcurrent
 	}
 	d.Revision++
 	return l.engine.journal.Commit(ctx, fresh, d)
 }
 
 func (l *Lifecycle) check(ctx context.Context, kind Checkpoint, s *installstate.Snapshot, opts LifecycleOptions) error {
+	return l.checkOwned(ctx, kind, s, opts, nil)
+}
+
+func (l *Lifecycle) checkOwned(ctx context.Context, kind Checkpoint, s *installstate.Snapshot, opts LifecycleOptions, secrets *retainedBootstrapSecrets) error {
 	d := s.Document()
-	return l.checkOperation(ctx, kind, s, d.Mode, d.TargetPackage, opts)
+	return l.checkOperationOwned(ctx, kind, s, d.Mode, d.TargetPackage, opts, secrets)
 }
 
 func (l *Lifecycle) checkOperation(ctx context.Context, kind Checkpoint, s *installstate.Snapshot, mode installstate.Mode, target string, opts LifecycleOptions) (resultErr error) {
+	return l.checkOperationOwned(ctx, kind, s, mode, target, opts, nil)
+}
+
+func (l *Lifecycle) checkOperationOwned(ctx context.Context, kind Checkpoint, s *installstate.Snapshot, mode installstate.Mode, target string, opts LifecycleOptions, secrets *retainedBootstrapSecrets) (resultErr error) {
 	traceLifecycleCheckpoint(ctx, kind, lifecycleDiagnosticEntered)
 	defer func() {
 		state := lifecycleDiagnosticRefused
@@ -187,6 +261,9 @@ func (l *Lifecycle) checkOperation(ctx context.Context, kind Checkpoint, s *inst
 	plan := l.engine.plans[target]
 	if plan == nil {
 		return ErrInvalid
+	}
+	if secrets != nil && (secrets.workflow != l.secrets || secrets.verify(ctx, s) != nil) {
+		return ErrLifecycle
 	}
 	if kind == RetainedAdmission && (mode != installstate.Uninstall || l.engine.verifyRetiredAdmission(ctx, s) != nil) {
 		return ErrLifecycle
@@ -201,7 +278,7 @@ func (l *Lifecycle) checkOperation(ctx context.Context, kind Checkpoint, s *inst
 		if err != nil {
 			return ErrLifecycle
 		}
-		if s.Document().ActivePackage != "" && l.secrets.VerifyRetained(ctx, s, opts.Activation.CAFile, opts.Now) != nil {
+		if s.Document().ActivePackage != "" && secrets == nil && l.secrets.VerifyRetained(ctx, s, opts.Activation.CAFile, opts.Now) != nil {
 			return ErrLifecycle
 		}
 	}
@@ -216,11 +293,17 @@ func (l *Lifecycle) checkOperation(ctx context.Context, kind Checkpoint, s *inst
 		if err != nil || !reflect.DeepEqual(bootstrapWitness, current) {
 			return ErrLifecycle
 		}
-		if s.Document().ActivePackage != "" && l.secrets.VerifyRetained(ctx, s, opts.Activation.CAFile, opts.Now) != nil {
+		if s.Document().ActivePackage != "" && secrets == nil && l.secrets.VerifyRetained(ctx, s, opts.Activation.CAFile, opts.Now) != nil {
 			return ErrLifecycle
 		}
 	}
+	if secrets != nil && secrets.verify(ctx, s) != nil {
+		return ErrLifecycle
+	}
 	_, err := l.original(ctx, s)
+	if err == nil && secrets != nil {
+		err = secrets.confirm(s)
+	}
 	return err
 }
 
@@ -232,8 +315,18 @@ func uninstallAdmissionCheckpoint(d installstate.Document) Checkpoint {
 }
 
 func (l *Lifecycle) stage(ctx context.Context, s *installstate.Snapshot, stage installstate.Stage) (*installstate.Snapshot, error) {
+	return l.stageOwned(ctx, s, stage, nil)
+}
+
+func (l *Lifecycle) stageOwned(ctx context.Context, s *installstate.Snapshot, stage installstate.Stage, secrets *retainedBootstrapSecrets) (*installstate.Snapshot, error) {
+	if secrets != nil && (stage != installstate.Applying || secrets.workflow != l.secrets || secrets.verify(ctx, s) != nil) {
+		return s, ErrSecurityBaseline
+	}
 	if _, err := l.original(ctx, s); err != nil {
 		return s, err
+	}
+	if secrets != nil && secrets.confirm(s) != nil {
+		return s, ErrSecurityBaseline
 	}
 	d := s.Document()
 	d.Revision++
@@ -378,6 +471,26 @@ func (l *Lifecycle) Step(ctx context.Context, s *installstate.Snapshot, opts Lif
 	if d.Stage == installstate.Complete || opts.Now.IsZero() || !l.engine.compatible(d) {
 		return fresh, ErrInvalid
 	}
+	if l.engine.baseline != nil && (d.SecurityBaseline == nil || d.SecurityBaseline.Stage != installstate.BaselineVerified || d.SecurityBaseline.Pending != nil) {
+		if d.SecurityBaseline == nil || !freshBaselineEnrollment(d) {
+			return fresh, ErrSecurityBaseline
+		}
+		// Baseline ownership has its own durable intent and observation-only
+		// recovery. Never send it through ordinary pending/effect handling, or
+		// execute runtime work in the same invocation that finishes enrollment.
+		if err := l.check(ctx, Prerequisites, fresh, opts); err != nil {
+			return fresh, err
+		}
+		return l.engine.EstablishBaselineOwnership(ctx, fresh)
+	}
+	var bootstrapSecrets *retainedBootstrapSecrets
+	if l.engine.baseline != nil && retainedBootstrapPhase(d) {
+		bootstrapSecrets, err = l.secrets.openRetainedBootstrapSecrets(ctx, fresh, opts.Activation.CAFile, opts.Now)
+		if err != nil {
+			return fresh, err
+		}
+		defer bootstrapSecrets.release()
+	}
 	if d.Pending != nil {
 		if d.AdmissionRetirementRevision != 0 {
 			for _, kind := range []Checkpoint{RetainedAdmission, ColdSafety, RuntimeStopped} {
@@ -390,7 +503,7 @@ func (l *Lifecycle) Step(ctx context.Context, s *installstate.Snapshot, opts Lif
 			}
 		}
 		if d.Pending.Key.Kind != "Secret" {
-			return l.engine.Recover(ctx, fresh)
+			return l.engine.recoverOwned(ctx, fresh, bootstrapSecrets)
 		}
 		c, err := l.engine.LoadCredentials(ctx, fresh, opts.Now)
 		if err != nil {
@@ -400,7 +513,7 @@ func (l *Lifecycle) Step(ctx context.Context, s *installstate.Snapshot, opts Lif
 	}
 	// A new invocation can resume directly in Applying/Quiescing. Recheck the
 	// live capabilities before every non-pending step, not only at initial start.
-	if err := l.check(ctx, Prerequisites, fresh, opts); err != nil {
+	if err := l.checkOwned(ctx, Prerequisites, fresh, opts, bootstrapSecrets); err != nil {
 		return fresh, err
 	}
 	if err := l.inventory(ctx, fresh, d.Mode != installstate.Install, false); err != nil {
@@ -409,12 +522,12 @@ func (l *Lifecycle) Step(ctx context.Context, s *installstate.Snapshot, opts Lif
 	switch d.Stage {
 	case installstate.Preparing, installstate.RecoveryRequired:
 		if d.Mode == installstate.Install {
-			if d.ActivePackage != "" {
+			if d.ActivePackage != "" && bootstrapSecrets == nil {
 				if err := l.secrets.VerifyRetained(ctx, fresh, opts.Activation.CAFile, opts.Now); err != nil {
 					return fresh, err
 				}
 			}
-			return l.stage(ctx, fresh, installstate.Applying)
+			return l.stageOwned(ctx, fresh, installstate.Applying, bootstrapSecrets)
 		}
 		if err := l.secrets.VerifyRetained(ctx, fresh, opts.Activation.CAFile, opts.Now); err != nil {
 			return fresh, err
@@ -429,7 +542,7 @@ func (l *Lifecycle) Step(ctx context.Context, s *installstate.Snapshot, opts Lif
 		if d.Mode == installstate.Uninstall {
 			return l.uninstall(ctx, fresh, opts)
 		}
-		return l.apply(ctx, fresh, opts)
+		return l.applyOwned(ctx, fresh, opts, bootstrapSecrets)
 	case installstate.Verifying:
 		if d.Mode == installstate.Uninstall {
 			if d.AdmissionRetirementRevision == 0 {
@@ -507,6 +620,10 @@ func (l *Lifecycle) quiesce(ctx context.Context, s *installstate.Snapshot, opts 
 }
 
 func (l *Lifecycle) apply(ctx context.Context, s *installstate.Snapshot, opts LifecycleOptions) (*installstate.Snapshot, error) {
+	return l.applyOwned(ctx, s, opts, nil)
+}
+
+func (l *Lifecycle) applyOwned(ctx context.Context, s *installstate.Snapshot, opts LifecycleOptions, secrets *retainedBootstrapSecrets) (*installstate.Snapshot, error) {
 	d := s.Document()
 	if d.Mode != installstate.Install {
 		for _, kind := range []Checkpoint{AdmissionEffective, ColdSafety} {
@@ -532,7 +649,7 @@ func (l *Lifecycle) apply(ctx context.Context, s *installstate.Snapshot, opts Li
 			continue // inventory() has already checked its live original shape
 		}
 		if rank > 0 {
-			if err := l.check(ctx, CRDsAvailable, s, opts); err != nil {
+			if err := l.checkOwned(ctx, CRDsAvailable, s, opts, secrets); err != nil {
 				return s, err
 			}
 		}
@@ -543,7 +660,7 @@ func (l *Lifecycle) apply(ctx context.Context, s *installstate.Snapshot, opts Li
 			} else if d.Mode == installstate.Install && bootstrapRBACKey(key) {
 				gate = BootstrapAdmission
 			}
-			if err := l.check(ctx, gate, s, opts); err != nil {
+			if err := l.checkOwned(ctx, gate, s, opts, secrets); err != nil {
 				return s, err
 			}
 		}
@@ -563,6 +680,11 @@ func (l *Lifecycle) apply(ctx context.Context, s *installstate.Snapshot, opts Li
 			if err := l.check(ctx, RuntimeStopped, s, opts); err != nil {
 				return s, err
 			}
+		}
+		if l.engine.baseline != nil && d.Mode == installstate.Install && baselinePrerequisiteKey(key, d.Namespace) {
+			// applyPrerequisite authenticates the complete fresh inventory or
+			// retained-source union. Install/stage flags alone grant no exemption.
+			return l.engine.applyPrerequisiteOwned(ctx, s, key, d.TargetPackage, secrets)
 		}
 		return l.engine.Apply(ctx, s, key, d.TargetPackage, false)
 	}

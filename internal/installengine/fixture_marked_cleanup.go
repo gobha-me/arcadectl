@@ -44,7 +44,7 @@ func (w *fixtureWire) removeKnownOriginal(ctx context.Context, slot int, marked 
 		return ErrFixtures
 	}
 	nextSlot := -1
-	for index := len(f.document.Entries) - 1; index >= 0; index-- {
+	for _, index := range fixtureDeletionOrder(f.document) {
 		if f.document.Entries[index].State != fixtureAbsent {
 			nextSlot = index
 			break

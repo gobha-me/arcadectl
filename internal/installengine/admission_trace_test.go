@@ -34,9 +34,9 @@ func TestAdmissionTraceClosedStagesAndPositions(t *testing.T) {
 			case admissionInitialPhase, admissionActorWitnesses, admissionLedger, admissionInitialSeal, admissionWire, admissionFinish, admissionRetire, admissionFinalWitness, admissionComplete:
 				valid = index == -1
 			case admissionSetupObservation:
-				valid = index >= -1 && index <= 10
+				valid = index >= -1 && index <= 11
 			case admissionSetupPreview, admissionSetupCreate, admissionSetupSettle, admissionCleanup:
-				valid = index >= 0 && index <= 10
+				valid = index >= 0 && index <= 11
 			case admissionCaseObservation, admissionCaseRequest, admissionCaseAuthorization, admissionCaseProbe, admissionCasePostObservation, admissionCaseShape:
 				valid = index >= 0 && index <= 54
 			case admissionSeed:
@@ -122,6 +122,18 @@ func TestAdmissionPhaseTraceClosedStagesAndNoArbitraryValues(t *testing.T) {
 		admissionPhaseGCEventAliasRV:       "gc-event-alias-rv-conflict",
 		admissionPhaseGCEventAliasMetadata: "gc-event-alias-metadata-conflict",
 		admissionPhaseGCGraphBound:         "gc-metadata-graph-bound",
+		admissionPhaseRowInput:             "original-row-input", admissionPhaseRowLists: "original-row-incomplete-lists",
+		admissionPhaseRowFloor: "original-row-floor", admissionPhaseRowCollection: "original-row-collection",
+		admissionPhaseRowUID: "original-row-duplicate-uid", admissionPhaseRowAddress: "original-row-duplicate-address",
+		admissionPhaseRowFixtureIdentity: "original-row-fixture-identity", admissionPhaseRowFixtureMissing: "original-row-missing-fixture",
+		admissionPhaseRowLeaderChain: "original-row-leader-chain", admissionPhaseRowLeaderShape: "original-row-leader-shape",
+		admissionPhaseRowShape:           "original-row-shape",
+		admissionPhasePreviewUnavailable: "preview-unavailable", admissionPhasePreviewReadiness: "preview-readiness",
+		admissionPhasePreviewPrepare: "preview-prepare", admissionPhasePreviewPreparedReadiness: "preview-prepared-readiness",
+		admissionPhasePreviewRequest: "preview-request", admissionPhasePreviewReply: "preview-reply",
+		admissionPhasePreviewPostWitness: "preview-post-witness", admissionPhasePreviewPostReadiness: "preview-post-readiness",
+		admissionPhasePreviewWholeShape: "preview-whole-shape", admissionPhasePreviewAccepted: "preview-refused-after-accepted",
+		admissionPhasePreviewObservation: "preview-whole-observation-changed", admissionPhasePreviewSeal: "preview-original-seal-refused",
 	}
 	for value := range 256 {
 		step := admissionPhaseStep(value)
@@ -135,7 +147,7 @@ func TestAdmissionPhaseTraceClosedStagesAndNoArbitraryValues(t *testing.T) {
 		for slot := -2; slot <= 11; slot++ {
 			valid := known && slot == -1
 			if step == admissionPhaseNamedGet || step == admissionPhaseWholeFixture {
-				valid = slot >= 0 && slot <= 10
+				valid = slot >= 0 && slot <= 11
 			}
 			trace := &admissionTrace{}
 			traceAdmissionPhase(context.WithValue(t.Context(), admissionTraceKey{}, trace), step, slot)
@@ -158,7 +170,7 @@ func TestAdmissionPhaseTraceClosedStagesAndNoArbitraryValues(t *testing.T) {
 	traceAdmissionPhase(nil, admissionPhaseGC, -1)
 	traceAdmissionPhase(context.WithValue(t.Context(), admissionTraceKey{}, "private-token-canary"), admissionPhaseGC, -1)
 	traceAdmissionPhase(ctx, admissionPhaseGC, 1000000)
-	for _, position := range []uint32{0, 255, 0xffffffff, uint32(admissionPhaseGC)<<8 | 1, uint32(admissionPhaseNamedGet) << 8, uint32(admissionPhaseWholeFixture)<<8 | 12} {
+	for _, position := range []uint32{0, 255, 0xffffffff, uint32(admissionPhaseGC)<<8 | 1, uint32(admissionPhaseNamedGet) << 8, uint32(admissionPhaseWholeFixture)<<8 | 13} {
 		trace.phase.Store(position)
 		if stage, slot := trace.phaseSnapshot(); stage != "unknown" || slot != -1 {
 			t.Fatal("corrupted phase snapshot exposed an unbounded diagnostic")
@@ -169,4 +181,34 @@ func TestAdmissionPhaseTraceClosedStagesAndNoArbitraryValues(t *testing.T) {
 	if stage, slot := trace.phaseSnapshot(); stage != "unknown" || slot != -1 {
 		t.Fatal("new outer operation retained stale phase progress")
 	}
+}
+
+func TestAdmissionPreviewRefusalTraceUsesOnlyFixedSameAttemptStage(t *testing.T) {
+	labels := map[fixturePreviewStage]string{
+		fixturePreviewReadiness: "preview-readiness", fixturePreviewPrepare: "preview-prepare",
+		fixturePreviewPreparedReadiness: "preview-prepared-readiness", fixturePreviewRequest: "preview-request",
+		fixturePreviewReply: "preview-reply", fixturePreviewPostWitness: "preview-post-witness",
+		fixturePreviewPostReadiness: "preview-post-readiness", fixturePreviewWholeShape: "preview-whole-shape",
+		fixturePreviewAccepted: "preview-refused-after-accepted",
+	}
+	for value := range 256 {
+		trace := &admissionTrace{}
+		ctx := context.WithValue(t.Context(), admissionTraceKey{}, trace)
+		traceAdmission(ctx, admissionSetupPreview, 1)
+		// A successful mandatory observation would otherwise hide the failed
+		// preview's diagnostic. The error remains a refusal, never proof.
+		traceAdmissionPhase(ctx, admissionPhaseComplete, -1)
+		traceAdmissionPreviewRefusal(ctx, fixturePreviewStage(value))
+		want := labels[fixturePreviewStage(value)]
+		if want == "" {
+			want = "preview-unavailable"
+		}
+		phase, slot := trace.phaseSnapshot()
+		outer, index := trace.snapshot()
+		if phase != want || slot != -1 || outer != "setup-preview-and-witness" || index != 1 {
+			t.Fatal("preview diagnostic retained arbitrary values or lost original attempt position")
+		}
+	}
+	traceAdmissionPreviewRefusal(nil, fixturePreviewRequest)
+	traceAdmissionPreviewRefusal(context.WithValue(t.Context(), admissionTraceKey{}, "PRIVATE-CANARY"), fixturePreviewRequest)
 }

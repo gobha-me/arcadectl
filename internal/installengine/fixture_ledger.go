@@ -27,7 +27,8 @@ const fixtureLedgerMaxBytes = installstate.MaxBytes + 16384
 const (
 	fixtureRecipeV1 = "inert-admission-v1"
 	fixtureRecipeV2 = "inert-admission-v2"
-	fixtureMaxSlots = 11
+	fixtureRecipeV3 = "inert-admission-v3"
+	fixtureMaxSlots = 12
 )
 
 type fixtureRecipe struct {
@@ -62,6 +63,16 @@ var fixtureCatalogV2 = [...]fixtureRecipe{
 	{"arcade.gobha.me/v1alpha1", "GameDestroy", "verified-cancelled-destroy", -1},
 }
 
+// v3 keeps the historical slot addresses and appends a tokenless account.
+// Catalog order is not execution order: the original account precedes all
+// dependent bodies and is deleted only after every other slot is absent.
+var fixtureCatalogV3 = [...]fixtureRecipe{
+	fixtureCatalogV2[0], fixtureCatalogV2[1], fixtureCatalogV2[2], fixtureCatalogV2[3],
+	fixtureCatalogV2[4], fixtureCatalogV2[5], fixtureCatalogV2[6], fixtureCatalogV2[7],
+	fixtureCatalogV2[8], fixtureCatalogV2[9], fixtureCatalogV2[10],
+	{"v1", "ServiceAccount", "tokenless-account", -1},
+}
+
 // Only the sealed recipe selects a catalog, never a caller-supplied object,
 // count or cluster observation. Unknown and count-mismatched documents have
 // no addressable slots. In particular, an empty document is not a recipe.
@@ -72,6 +83,8 @@ func fixtureCatalogFor(d fixtureLedgerDocument) []fixtureRecipe {
 		catalog = fixtureCatalog[:]
 	case fixtureRecipeV2:
 		catalog = fixtureCatalogV2[:]
+	case fixtureRecipeV3:
+		catalog = fixtureCatalogV3[:]
 	default:
 		return nil
 	}
@@ -83,6 +96,34 @@ func fixtureCatalogFor(d fixtureLedgerDocument) []fixtureRecipe {
 
 func validFixtureRecipe(d fixtureLedgerDocument) bool {
 	return len(fixtureCatalogFor(d)) != 0
+}
+
+func fixtureMatrixRecipe(d fixtureLedgerDocument) bool {
+	return validFixtureRecipe(d) && (d.Recipe == fixtureRecipeV2 || d.Recipe == fixtureRecipeV3)
+}
+
+func fixtureCreationOrder(d fixtureLedgerDocument) []int {
+	if !validFixtureRecipe(d) {
+		return nil
+	}
+	order := make([]int, 0, len(d.Entries))
+	if d.Recipe == fixtureRecipeV3 {
+		order = append(order, fixtureTokenlessAccount)
+	}
+	for slot := range d.Entries {
+		if d.Recipe != fixtureRecipeV3 || slot != fixtureTokenlessAccount {
+			order = append(order, slot)
+		}
+	}
+	return order
+}
+
+func fixtureDeletionOrder(d fixtureLedgerDocument) []int {
+	order := fixtureCreationOrder(d)
+	for left, right := 0, len(order)-1; left < right; left, right = left+1, right-1 {
+		order[left], order[right] = order[right], order[left]
+	}
+	return order
 }
 
 type fixtureState string
@@ -161,13 +202,17 @@ func (e *Engine) validateFixtureLedger(d fixtureLedgerDocument) error {
 	for _, p := range e.plans {
 		plans = append(plans, p)
 	}
-	journal, err := installstate.Decode(d.Journal, plans...)
+	journal, err := installstate.DecodeWithBaseline(d.Journal, e.baselinePlan(), plans...)
 	if err != nil || journal.Pending != nil || journal.AdmissionRetirementRevision != 0 || journal.Stage == installstate.Complete {
+		return ErrFixtures
+	}
+	if journal.SecurityBaseline != nil && (journal.SecurityBaseline.Stage != installstate.BaselineVerified || journal.SecurityBaseline.Pending != nil) {
 		return ErrFixtures
 	}
 	uids := map[types.UID]bool{}
 	pending, deleting, createPending, neverCreated := 0, false, false, false
-	for i, entry := range d.Entries {
+	for _, i := range fixtureCreationOrder(d) {
+		entry := d.Entries[i]
 		recipe := fixtureCatalogFor(d)[i]
 		key := installstate.Key{APIVersion: recipe.version, Kind: recipe.kind, Namespace: journal.Namespace, Name: "arcadectl-probe-" + d.RunID + "-" + recipe.suffix}
 		if entry.Key != key {
@@ -217,11 +262,21 @@ func (e *Engine) validateFixtureLedger(d fixtureLedgerDocument) error {
 			}
 		}
 		if entry.State == fixtureDeleteAttempted || entry.State == fixtureAbsent {
+			if d.Recipe == fixtureRecipeV3 && i == fixtureTokenlessAccount {
+				for other, dependent := range d.Entries {
+					if other != i && dependent.State != fixtureAbsent {
+						return ErrFixtures
+					}
+				}
+			}
 			for child, childRecipe := range fixtureCatalogFor(d) {
 				if childRecipe.owner == i && d.Entries[child].State != fixtureAbsent {
 					return ErrFixtures // resumed evidence cannot invert GC ordering
 				}
 			}
+		}
+		if d.Recipe == fixtureRecipeV3 && (entry.Key.Kind == "Pod" || entry.Key.Kind == "Job") && entry.State != fixturePlanned && entry.State != fixtureAbsent && d.Entries[fixtureTokenlessAccount].State != fixtureOriginal {
+			return ErrFixtures // semantic use is not Kubernetes GC ownership
 		}
 	}
 	if pending > 1 || deleting && createPending {
@@ -313,13 +368,25 @@ func validFixtureTransition(before, after fixtureLedgerDocument) bool {
 			return false
 		}
 		if next.State == fixtureAbsent {
+			if before.Recipe == fixtureRecipeV3 && changed == fixtureTokenlessAccount {
+				for slot, entry := range before.Entries {
+					if slot != changed && entry.State != fixtureAbsent {
+						return false
+					}
+				}
+			}
 			return true // future provider must first prove exact-address absence
 		}
 		if next.State != fixtureCreateAttempted {
 			return false
 		}
-		for i, entry := range before.Entries {
-			if entry.State != fixturePlanned && entry.State != fixtureOriginal || i < changed && entry.State != fixtureOriginal {
+		preceding := true
+		for _, i := range fixtureCreationOrder(before) {
+			entry := before.Entries[i]
+			if i == changed {
+				preceding = false
+			}
+			if entry.State != fixturePlanned && entry.State != fixtureOriginal || preceding && entry.State != fixtureOriginal {
 				return false // no create during cleanup or after an unknown outcome
 			}
 		}
@@ -329,6 +396,13 @@ func validFixtureTransition(before, after fixtureLedgerDocument) bool {
 	case fixtureOriginal:
 		if next.State != fixtureDeleteAttempted || next.OriginalUID != old.OriginalUID || !fixtureRV(next.DeleteResourceVersion) {
 			return false
+		}
+		if before.Recipe == fixtureRecipeV3 && changed == fixtureTokenlessAccount {
+			for slot, entry := range before.Entries {
+				if slot != changed && entry.State != fixtureAbsent {
+					return false
+				}
+			}
 		}
 		for i, recipe := range fixtureCatalogFor(before) {
 			if recipe.owner == changed && before.Entries[i].State != fixtureAbsent {
@@ -376,17 +450,24 @@ type fixtureLedger struct {
 }
 
 func (e *Engine) prepareFixtureLedger(ctx context.Context, s *installstate.Snapshot) (*fixtureLedger, error) {
-	return e.prepareFixtureLedgerRecipe(ctx, s, false)
+	return e.prepareFixtureLedgerRecipe(ctx, s, fixtureRecipeV1)
 }
 
 // The complete closed driver creates a NEW v2 run. Loading an existing run
 // never calls this path and never changes its recipe or appends an original.
 func (e *Engine) prepareFixtureLedgerV2(ctx context.Context, s *installstate.Snapshot) (*fixtureLedger, error) {
-	return e.prepareFixtureLedgerRecipe(ctx, s, true)
+	return e.prepareFixtureLedgerRecipe(ctx, s, fixtureRecipeV2)
 }
 
-func (e *Engine) prepareFixtureLedgerRecipe(ctx context.Context, s *installstate.Snapshot, v2 bool) (*fixtureLedger, error) {
+func (e *Engine) prepareFixtureLedgerV3(ctx context.Context, s *installstate.Snapshot) (*fixtureLedger, error) {
+	return e.prepareFixtureLedgerRecipe(ctx, s, fixtureRecipeV3)
+}
+
+func (e *Engine) prepareFixtureLedgerRecipe(ctx context.Context, s *installstate.Snapshot, recipe string) (*fixtureLedger, error) {
 	if e == nil || ctx == nil || s == nil || s.Document().Pending != nil || s.Document().AdmissionRetirementRevision != 0 {
+		return nil, ErrInvalid
+	}
+	if recipe != fixtureRecipeV1 && recipe != fixtureRecipeV2 && recipe != fixtureRecipeV3 {
 		return nil, ErrInvalid
 	}
 	lock, err := e.files.Lock(ctx, fixtureLedgerName(s))
@@ -406,10 +487,12 @@ func (e *Engine) prepareFixtureLedgerRecipe(ctx context.Context, s *installstate
 	if err != nil {
 		return nil, ErrFixtures
 	}
-	d := fixtureLedgerDocument{Version: "v1", Recipe: fixtureRecipeV1, Revision: 1, RunID: runID, Journal: s.Bytes(), JournalResourceVersion: s.ResourceVersion()}
+	d := fixtureLedgerDocument{Version: "v1", Recipe: recipe, Revision: 1, RunID: runID, Journal: s.Bytes(), JournalResourceVersion: s.ResourceVersion()}
 	catalog := fixtureCatalog[:]
-	if v2 {
-		d.Recipe, catalog = fixtureRecipeV2, fixtureCatalogV2[:]
+	if recipe == fixtureRecipeV2 {
+		catalog = fixtureCatalogV2[:]
+	} else if recipe == fixtureRecipeV3 {
+		catalog = fixtureCatalogV3[:]
 	}
 	for _, recipe := range catalog {
 		d.Entries = append(d.Entries, fixtureEntry{Key: installstate.Key{APIVersion: recipe.version, Kind: recipe.kind, Namespace: s.Anchor().Namespace, Name: "arcadectl-probe-" + runID + "-" + recipe.suffix}, State: fixturePlanned})
@@ -423,7 +506,7 @@ func (e *Engine) prepareFixtureLedgerRecipe(ctx context.Context, s *installstate
 		return nil, ErrFixtures // never treat uncertain durability as absent intent
 	}
 	success = true
-	return &fixtureLedger{engine: e, name: fixtureLedgerName(s), lock: lock, identity: identity, body: body, document: d, ackSlot: -1, effectSlot: -1, driverFresh: v2}, nil
+	return &fixtureLedger{engine: e, name: fixtureLedgerName(s), lock: lock, identity: identity, body: body, document: d, ackSlot: -1, effectSlot: -1, driverFresh: recipe != fixtureRecipeV1}, nil
 }
 
 // Resume only this exact protected run and original journal. Reading a matching

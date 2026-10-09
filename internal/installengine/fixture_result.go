@@ -49,12 +49,25 @@ func (f *fixtureLedger) validateResult(slot int, phase fixtureResultPhase, resul
 		return ErrFixtures
 	}
 	for key := range result.Object {
+		if want.GetKind() == "ServiceAccount" {
+			if key != "apiVersion" && key != "kind" && key != "metadata" && key != "automountServiceAccountToken" {
+				return ErrFixtures
+			}
+			continue
+		}
 		if key != "apiVersion" && key != "kind" && key != "metadata" && key != "spec" && key != "status" {
 			return ErrFixtures
 		}
 	}
 	var meta metav1.ObjectMeta
 	switch result.GetKind() {
+	case "ServiceAccount":
+		value, ok := result.Object["automountServiceAccountToken"].(bool)
+		var typed corev1.ServiceAccount
+		if !ok || value || decodeServing(result, &typed) != nil || typed.AutomountServiceAccountToken == nil || *typed.AutomountServiceAccountToken {
+			return ErrFixtures
+		}
+		meta = typed.ObjectMeta
 	case "Pod":
 		var typed corev1.Pod
 		if decodeServing(result, &typed) != nil {
@@ -91,7 +104,7 @@ func (f *fixtureLedger) validateResult(slot int, phase fixtureResultPhase, resul
 	if err != nil {
 		return ErrFixtures
 	}
-	if result.GetKind() == "GameDestroy" {
+	if result.GetKind() == "GameDestroy" || result.GetKind() == "ServiceAccount" {
 		if _, present := result.Object["status"]; present {
 			return ErrFixtures
 		}
@@ -133,9 +146,9 @@ func (f *fixtureLedger) validateResult(slot int, phase fixtureResultPhase, resul
 	if phase != fixtureDryRunResult {
 		metadata["resourceVersion"] = result.GetResourceVersion()
 	}
-	if want.GetKind() != "PersistentVolumeClaim" {
+	if want.GetKind() != "PersistentVolumeClaim" && want.GetKind() != "ServiceAccount" {
 		metadata["generation"] = int64(1)
-	} else {
+	} else if want.GetKind() == "PersistentVolumeClaim" {
 		metadata["finalizers"] = []any{"kubernetes.io/pvc-protection"}
 	}
 	for _, key := range []string{"labels", "annotations", "ownerReferences"} {
@@ -162,7 +175,7 @@ func fixtureResultTime(raw any, earliest, latest time.Time) bool {
 
 func fixtureResultStatus(o *unstructured.Unstructured, phase fixtureResultPhase, creation, ceiling time.Time) (map[string]any, error) {
 	switch o.GetKind() {
-	case "GameDestroy":
+	case "GameDestroy", "ServiceAccount":
 		return nil, nil
 	case "PersistentVolumeClaim":
 		value := "Pending"
@@ -218,7 +231,9 @@ func fixtureResultFieldset(want *unstructured.Unstructured) map[string]any {
 		return nil
 	}
 	var fields map[string]any
-	if want.GetKind() == "Job" {
+	if want.GetKind() == "ServiceAccount" {
+		fields = fixtureFieldLeaves("automountServiceAccountToken")
+	} else if want.GetKind() == "Job" {
 		template, found, err := unstructured.NestedMap(want.Object, "spec", "template")
 		if err != nil || !found {
 			return nil

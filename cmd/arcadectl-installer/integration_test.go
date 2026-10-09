@@ -21,6 +21,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/gobha-me/arcadectl/internal/installbaseline"
 	"github.com/gobha-me/arcadectl/internal/installfiles"
 	"github.com/gobha-me/arcadectl/internal/installpackage"
 	"github.com/gobha-me/arcadectl/internal/installrender"
@@ -38,6 +39,12 @@ import (
 // the command entrypoint. Public cluster state is a mock; this does not claim
 // an actual-binary/kubelet or complete install/upgrade/uninstall proof.
 func TestInspectionCommandSignedInputsTLSRecoveryAndOutputFailure(t *testing.T) {
+	for _, mode := range []string{"historical", "historical-explicit-baseline", "baseline-bootstrap", "baseline-with-historical-anchor"} {
+		t.Run(mode, func(t *testing.T) { testInspectionCommandSignedInputsTLSRecoveryAndOutputFailure(t, mode) })
+	}
+}
+
+func testInspectionCommandSignedInputsTLSRecoveryAndOutputFailure(t *testing.T, mode string) {
 	base := t.TempDir()
 	if err := os.Chmod(base, 0700); err != nil {
 		t.Fatal(err)
@@ -88,7 +95,32 @@ func TestInspectionCommandSignedInputsTLSRecoveryAndOutputFailure(t *testing.T) 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = files.Close() })
-	receipt, err := installstate.PrepareBootstrap(files, "bootstrap.json", plan)
+	var baseline *installbaseline.Plan
+	baselinePath := filepath.Join(base, "security-baseline")
+	if mode != "historical" {
+		manifest, payload, err := installbaseline.Build(strings.Repeat("c", 40), 1)
+		if err != nil {
+			t.Fatal("signed baseline inspection fixture unavailable")
+		}
+		signature, err := installbaseline.Sign(manifest, key)
+		if err != nil || installfiles.WriteBaseline(baselinePath, manifest, signature, payload, trust) != nil {
+			t.Fatal("separate signed baseline inspection fixture refused")
+		}
+		artifact, err := installfiles.LoadBaseline(baselinePath, trust)
+		if err != nil {
+			t.Fatal("baseline inspection trust fixture unavailable")
+		}
+		baseline, err = installbaseline.Compile(artifact, plan.Namespace(), plan.Profile().ID)
+		if err != nil {
+			t.Fatal("baseline inspection scope fixture refused")
+		}
+	}
+	var receipt *installstate.BootstrapReceipt
+	if mode == "baseline-bootstrap" {
+		receipt, err = installstate.PrepareBootstrapWithBaseline(files, "bootstrap.json", plan, baseline)
+	} else {
+		receipt, err = installstate.PrepareBootstrap(files, "bootstrap.json", plan)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,6 +146,28 @@ func TestInspectionCommandSignedInputsTLSRecoveryAndOutputFailure(t *testing.T) 
 	s, err := receipt.EnsureNamespace(context.Background(), client.CoreV1().Namespaces())
 	if err != nil {
 		t.Fatal(err)
+	}
+	if mode == "baseline-with-historical-anchor" {
+		// Synthetic explicit-enrollment journal state for READ-only CLI
+		// coverage, not a native enrollment or mutation-workflow proof.
+		store, err := installstate.NewWithBaseline(client.CoreV1().Namespaces(), baseline, plan)
+		if err != nil {
+			t.Fatal("baseline-aware inspection store unavailable")
+		}
+		s, err = store.Load(t.Context(), s.Anchor())
+		if err != nil {
+			t.Fatal("historical inspection anchor unavailable")
+		}
+		document := s.Document()
+		document.SecurityBaseline, err = installstate.PinnedSecurityBaseline(baseline)
+		if err != nil {
+			t.Fatal("explicit inspection baseline fixture pin unavailable")
+		}
+		document.Revision++
+		s, err = store.Commit(t.Context(), s, document)
+		if err != nil {
+			t.Fatal("baseline-aware inspection journal fixture refused")
+		}
 	}
 	ns, err := client.CoreV1().Namespaces().Get(context.Background(), plan.Namespace(), metav1.GetOptions{})
 	if err != nil {
@@ -162,21 +216,120 @@ func TestInspectionCommandSignedInputsTLSRecoveryAndOutputFailure(t *testing.T) 
 		AuthInfos: []configv1.NamedAuthInfo{{Name: "admin", AuthInfo: configv1.AuthInfo{Token: "PRIVATE-CANARY"}}}})
 	args := []string{"inspect", "--namespace", ns.Name, "--profile", plan.Profile().ID, "--bootstrap-package", packagePath, "--package", packagePath, "--trust-key", trustPath,
 		"--state-dir", stateDir, "--bootstrap-receipt", "bootstrap.json", "--kubeconfig", o.kubeconfig, "--context", o.kubeContext}
+	if baseline != nil {
+		args = append(args, "--security-baseline", baselinePath)
+	}
 	var out, diagnostics bytes.Buffer
 	counts := func() (int, int) { mu.Lock(); defer mu.Unlock(); return requests, lists }
+	// Historical read-only inspection remains available without a baseline,
+	// but every mutation must refuse its absence before touching the cluster.
+	for _, command := range []string{"install", "upgrade", "rollback", "uninstall", "resume"} {
+		mutation := make([]string, 0, len(args))
+		for i := 0; i < len(args); i++ {
+			if args[i] == "--security-baseline" {
+				i++
+				continue
+			}
+			mutation = append(mutation, args[i])
+		}
+		mutation[0] = command
+		mutation = append(mutation, "--api-ca", trustPath)
+		if command == "install" || command == "upgrade" || command == "rollback" {
+			mutation = append(mutation, "--target-package", packagePath)
+		}
+		if command == "install" {
+			mutation = append(mutation, "--api-certificate", trustPath, "--api-key", trustPath)
+		}
+		out.Reset()
+		diagnostics.Reset()
+		before, _ := counts()
+		if code := run(t.Context(), mutation, &out, &diagnostics); code != 2 || out.Len() != 0 || strings.Contains(diagnostics.String(), "PRIVATE-CANARY") {
+			t.Fatal("mutation ignored missing mandatory baseline input")
+		}
+		after, _ := counts()
+		if before != after {
+			t.Fatal("mutation without baseline contacted the cluster")
+		}
+	}
+	out.Reset()
+	diagnostics.Reset()
 	if code := run(context.Background(), args, &out, &diagnostics); code != 0 || diagnostics.Len() != 0 || bytes.Contains(out.Bytes(), []byte("PRIVATE-CANARY")) {
 		t.Fatal("signed inspection failed or leaked private data", code, diagnostics.String())
 	}
 	var public struct {
-		NamespaceUID string `json:"namespaceUid"`
-		Stage        string `json:"stage"`
-		Claims       []struct {
+		NamespaceUID     string `json:"namespaceUid"`
+		Stage            string `json:"stage"`
+		SecurityBaseline *struct {
+			Version               string `json:"version"`
+			ArtifactDigest        string `json:"artifactDigest"`
+			OwnershipStage        string `json:"ownershipStage"`
+			OriginalResourceCount int    `json:"originalResourceCount"`
+		} `json:"securityBaseline"`
+		Claims []struct {
 			UID string `json:"uid"`
 		} `json:"claims"`
 	}
 	_, listCount := counts()
 	if json.Unmarshal(out.Bytes(), &public) != nil || public.NamespaceUID != string(s.Anchor().UID) || public.Stage != "preparing" || len(public.Claims) != 1 || public.Claims[0].UID != "original-world" || listCount != 2 {
 		t.Fatal("inspection lost public recovery identity")
+	}
+	baselineRecorded := mode == "baseline-bootstrap" || mode == "baseline-with-historical-anchor"
+	if !baselineRecorded && public.SecurityBaseline != nil || baselineRecorded && (public.SecurityBaseline == nil || public.SecurityBaseline.Version != installbaseline.Version || public.SecurityBaseline.ArtifactDigest != baseline.Digest() || public.SecurityBaseline.OwnershipStage != "preparing" || public.SecurityBaseline.OriginalResourceCount != 0) {
+		t.Fatal("inspection lost original baseline ownership progress or invented enforcement health")
+	}
+	if baseline != nil {
+		withoutBaseline := args[:len(args)-2]
+		out.Reset()
+		diagnostics.Reset()
+		code := run(t.Context(), withoutBaseline, &out, &diagnostics)
+		if baselineRecorded {
+			if (code != 3 && code != 4) || out.Len() != 0 || strings.Contains(diagnostics.String(), "PRIVATE-CANARY") {
+				t.Fatal("baseline-aware inspection silently adopted omitted trust context")
+			}
+		} else if code != 0 || diagnostics.Len() != 0 || bytes.Contains(out.Bytes(), []byte("securityBaseline")) || bytes.Contains(out.Bytes(), []byte("PRIVATE-CANARY")) {
+			t.Fatal("optional inspection context invented historical baseline enrollment")
+		}
+		badArgs := append([]string{}, args...)
+		badArgs[len(badArgs)-1] = "PRIVATE-CANARY"
+		beforeInvalid, _ := counts()
+		out.Reset()
+		diagnostics.Reset()
+		if code := run(t.Context(), badArgs, &out, &diagnostics); code != 2 || out.Len() != 0 || strings.Contains(diagnostics.String(), "PRIVATE-CANARY") {
+			t.Fatal("unsafe inspection baseline path was accepted or exposed")
+		}
+		afterInvalid, _ := counts()
+		if beforeInvalid != afterInvalid {
+			t.Fatal("invalid baseline path contacted the cluster")
+		}
+		badArgs = append([]string{}, args...)
+		badArgs[len(badArgs)-1] = packagePath
+		out.Reset()
+		diagnostics.Reset()
+		if code := run(t.Context(), badArgs, &out, &diagnostics); code != 3 || out.Len() != 0 || strings.Contains(diagnostics.String(), "PRIVATE-CANARY") {
+			t.Fatal("inspection treated runtime package as baseline")
+		}
+		afterCrossover, _ := counts()
+		if afterCrossover != afterInvalid {
+			t.Fatal("artifact crossover contacted the cluster")
+		}
+		if baselineRecorded {
+			manifest, payload, err := installbaseline.Build(strings.Repeat("d", 40), 1)
+			if err != nil {
+				t.Fatal("foreign signed baseline fixture unavailable")
+			}
+			signature, err := installbaseline.Sign(manifest, key)
+			foreignPath := filepath.Join(base, "foreign-baseline")
+			if err != nil || installfiles.WriteBaseline(foreignPath, manifest, signature, payload, trust) != nil {
+				t.Fatal("foreign signed baseline fixture publication refused")
+			}
+			badArgs = append([]string{}, args...)
+			badArgs[len(badArgs)-1] = foreignPath
+			out.Reset()
+			diagnostics.Reset()
+			if code := run(t.Context(), badArgs, &out, &diagnostics); (code != 3 && code != 4) || out.Len() != 0 || strings.Contains(diagnostics.String(), "PRIVATE-CANARY") {
+				t.Fatal("inspection adopted a different signed baseline identity")
+			}
+		}
 	}
 	for _, writer := range []io.Writer{shortWriter{}, brokenWriter{}} {
 		diagnostics.Reset()

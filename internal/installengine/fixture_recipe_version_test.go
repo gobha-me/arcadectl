@@ -43,6 +43,23 @@ func instrumentFreshFixtureRecipeV2(t *testing.T, f *fixtureLedger) {
 	f.document, f.body, f.identity = d, body, id
 }
 
+func instrumentFreshFixtureRecipeV3(t *testing.T, f *fixtureLedger) {
+	t.Helper()
+	instrumentFreshFixtureRecipeV2(t, f)
+	d := cloneFixtureLedgerDocument(f.document)
+	d.Recipe = fixtureRecipeV3
+	d.Entries = append(d.Entries, fixtureEntry{Key: installstate.Key{APIVersion: "v1", Kind: "ServiceAccount", Namespace: d.Entries[0].Key.Namespace, Name: "arcadectl-probe-" + d.RunID + "-tokenless-account"}, State: fixturePlanned})
+	body, err := f.engine.fixtureLedgerBody(d)
+	if err != nil {
+		t.Fatal("v3 schema unavailable", err)
+	}
+	id, err := f.engine.files.AtomicWrite(f.name, body, &f.identity)
+	if err != nil {
+		t.Fatal("test-only fresh v3 publication unavailable", err)
+	}
+	f.document, f.body, f.identity = d, body, id
+}
+
 func TestFixtureRecipeVersionsAreClosedAndImmutable(t *testing.T) {
 	f := newFixture(t, false)
 	ledger, err := f.engine.prepareFixtureLedger(t.Context(), f.snapshot)
@@ -59,7 +76,7 @@ func TestFixtureRecipeVersionsAreClosedAndImmutable(t *testing.T) {
 		{"v1", "PersistentVolumeClaim", "plain-pvc", -1},
 		{"arcade.gobha.me/v1alpha1", "GameDestroy", "cancelled-destroy", -1},
 	}
-	if legacy.Recipe != fixtureRecipeV1 || len(legacy.Entries) != len(wantCatalog) || !reflect.DeepEqual(fixtureCatalog[:], wantCatalog) || len(fixtureCatalogV2) != fixtureMaxSlots || !reflect.DeepEqual(fixtureCatalogV2[:len(fixtureCatalog)], wantCatalog) {
+	if legacy.Recipe != fixtureRecipeV1 || len(legacy.Entries) != len(wantCatalog) || !reflect.DeepEqual(fixtureCatalog[:], wantCatalog) || len(fixtureCatalogV2) != 11 || len(fixtureCatalogV3) != fixtureMaxSlots || !reflect.DeepEqual(fixtureCatalogV2[:len(fixtureCatalog)], wantCatalog) || !reflect.DeepEqual(fixtureCatalogV3[:len(fixtureCatalogV2)], fixtureCatalogV2[:]) {
 		t.Fatal("default producer or original v1 prefix changed")
 	}
 	for slot, recipe := range wantCatalog {
@@ -115,7 +132,7 @@ func TestFixtureRecipeVersionsAreClosedAndImmutable(t *testing.T) {
 		recipe string
 		count  int
 	}{
-		{"", 0}, {"future", 11}, {fixtureRecipeV1, 11}, {fixtureRecipeV2, 10}, {fixtureRecipeV2, 0},
+		{"", 0}, {"future", 11}, {fixtureRecipeV1, 11}, {fixtureRecipeV2, 10}, {fixtureRecipeV2, 0}, {fixtureRecipeV2, 12}, {fixtureRecipeV3, 11}, {fixtureRecipeV3, 13},
 	} {
 		d := v2
 		d.Recipe = invalid.recipe

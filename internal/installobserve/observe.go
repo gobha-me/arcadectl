@@ -39,6 +39,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/metadata"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/flowcontrol"
 )
 
 var (
@@ -68,6 +69,9 @@ type Observer struct {
 	clients Clients
 	journal *installstate.Store
 	plan    *installrender.Plan
+	// The opt-in executable reader preserves original page fields before
+	// the SDK's UnstructuredList decoder can synthesize item TypeMeta.
+	executablePage func(context.Context, collection, string, metav1.ListOptions) (*unstructured.UnstructuredList, error)
 }
 
 // Observation seals the complete reads and their original-identity journal.
@@ -144,7 +148,30 @@ func New(config *rest.Config, journal *installstate.Store, plan *installrender.P
 	if err != nil {
 		return nil, ErrInvalid
 	}
-	return NewWithClients(Clients{d, m, discover.ServerResourcesForGroupVersionWithContext}, journal, plan)
+	observer, err := NewWithClients(Clients{d, m, discover.ServerResourcesForGroupVersionWithContext}, journal, plan)
+	if err != nil {
+		return nil, err
+	}
+	limiter := c.RateLimiter
+	if limiter == nil {
+		qps, burst := c.QPS, c.Burst
+		if qps == 0 {
+			qps = rest.DefaultQPS
+		}
+		if burst == 0 {
+			burst = rest.DefaultBurst
+		}
+		if qps > 0 {
+			limiter = flowcontrol.NewTokenBucketRateLimiter(qps, burst)
+		}
+	}
+	observer.executablePage = func(ctx context.Context, collection collection, namespace string, options metav1.ListOptions) (*unstructured.UnstructuredList, error) {
+		if ctx == nil || limiter != nil && limiter.Wait(ctx) != nil {
+			return nil, ErrRead
+		}
+		return nativeExecutablePage(ctx, h, u, collection, namespace, options)
+	}
+	return observer, nil
 }
 
 func strictHTTPClient(config *rest.Config, metadataOnly bool) (*http.Client, error) {

@@ -23,7 +23,17 @@ func (p *ClusterPrerequisites) observe(ctx context.Context, request LifecycleChe
 	if p == nil || p.engine == nil || p.access == nil || p.engine.access != p.access || p.access.frozen == nil || ctx == nil || request.Snapshot == nil {
 		return nil, ErrInvalid
 	}
-	if _, err := p.permissions(request); err != nil || p.original(ctx, request.Snapshot) != nil {
+	if _, err := p.permissions(request); err != nil {
+		return nil, ErrPrerequisites
+	}
+	return p.collectOriginalObservation(ctx, request)
+}
+
+// Callers supply their distinct closed eligibility proof. The original sealed
+// Namespace/journal and complete owner-graph collection remain identical for
+// mutating-operation observation and completed-retirement read-only evidence.
+func (p *ClusterPrerequisites) collectOriginalObservation(ctx context.Context, request LifecycleCheck) (*installobserve.Observation, error) {
+	if p == nil || p.engine == nil || p.access == nil || p.engine.access != p.access || p.access.frozen == nil || ctx == nil || request.Snapshot == nil || p.original(ctx, request.Snapshot) != nil {
 		return nil, ErrPrerequisites
 	}
 	observer, err := installobserve.New(p.access.readConfig(), p.engine.journal, request.Target)

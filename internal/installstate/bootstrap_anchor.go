@@ -26,7 +26,7 @@ func (r *BootstrapReceipt) PinnedAnchor(ctx context.Context) (Anchor, error) {
 	if identity != r.identity {
 		return Anchor{}, ErrConflict
 	}
-	d, err := decodeBootstrap(body, r.plan)
+	d, err := decodeBootstrapWithBaseline(body, r.plan, r.baseline)
 	if err != nil {
 		return Anchor{}, err
 	}

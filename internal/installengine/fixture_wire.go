@@ -128,6 +128,8 @@ func fixturePath(key installstate.Key, collection bool) (string, string, error) 
 	switch key.APIVersion + "/" + key.Kind {
 	case "v1/Pod":
 		plural = "pods"
+	case "v1/ServiceAccount":
+		plural = "serviceaccounts"
 	case "v1/PersistentVolumeClaim":
 		plural = "persistentvolumeclaims"
 	case "batch/v1/Job":

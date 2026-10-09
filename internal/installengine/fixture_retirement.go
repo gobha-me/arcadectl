@@ -137,7 +137,8 @@ func (e *Engine) readFixtureRetirement(anchor installstate.Anchor) (*fixtureReti
 	}
 	seen := map[types.UID]bool{}
 	neverCreated := false
-	for slot, entry := range d.Entries {
+	for _, slot := range fixtureCreationOrder(d) {
+		entry := d.Entries[slot]
 		catalog := fixtureCatalogFor(d)[slot]
 		key := installstate.Key{APIVersion: catalog.version, Kind: catalog.kind, Namespace: anchor.Namespace, Name: "arcadectl-probe-" + r.RunID + "-" + catalog.suffix}
 		if entry.State != fixtureAbsent || entry.Key != key || entry.OriginalUID == "" && entry.DeleteResourceVersion != "" || entry.OriginalUID != "" && (neverCreated || !receiptUID.MatchString(string(entry.OriginalUID)) || !fixtureRV(entry.DeleteResourceVersion) || seen[entry.OriginalUID]) {
@@ -156,7 +157,7 @@ func (e *Engine) readFixtureRetirement(anchor installstate.Anchor) (*fixtureReti
 	var companion fixtureWorldsDocument
 	decoder = json.NewDecoder(bytes.NewReader(world))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&companion) != nil || companion.Version != "original-worlds-v1" || companion.RunID != r.RunID || companion.JournalResourceVersion != r.JournalResourceVersion || !bytes.Equal(companion.Journal, d.Journal) || companion.Rows == nil || companion.Phase == nil || companion.Phase.Public == nil || companion.Phase.validate(anchor.Namespace) != nil {
+	if decoder.Decode(&companion) != nil || companion.Version != "original-worlds-v1" || companion.RunID != r.RunID || companion.JournalResourceVersion != r.JournalResourceVersion || !bytes.Equal(companion.Journal, d.Journal) || companion.Rows == nil || companion.Phase == nil || companion.Phase.Public == nil || !fixtureAccountsRecipeMatches(d, companion.Phase) || companion.Phase.validate(anchor.Namespace) != nil {
 		return nil, ErrFixtures
 	}
 	canonical, err = fixtureWorldsShapeBody(companion, anchor.Namespace)

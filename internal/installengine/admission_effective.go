@@ -36,7 +36,7 @@ func (driver *fixtureAdmissionDriver) complete(ctx context.Context) error {
 	if driver.run(ctx) != nil {
 		return ErrFixtures // incomplete/uncertain originals remain durably fenced
 	}
-	for slot := len(f.document.Entries) - 1; slot >= 0; slot-- {
+	for _, slot := range fixtureDeletionOrder(f.document) {
 		traceAdmission(ctx, admissionCleanup, slot)
 		err := driver.wire.removeAcknowledgedMarkerOriginal(ctx, slot)
 		if err != nil {

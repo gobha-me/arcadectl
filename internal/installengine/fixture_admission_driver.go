@@ -44,7 +44,11 @@ func (a *ClusterAdmission) newAdmissionDriver(ctx context.Context, request Lifec
 		return nil, ErrFixtures
 	}
 	traceAdmission(ctx, admissionLedger, -1)
-	f, err := a.prerequisites.engine.prepareFixtureLedgerV2(ctx, request.Snapshot)
+	prepare := a.prerequisites.engine.prepareFixtureLedgerV2
+	if a.prerequisites.engine.baseline != nil {
+		prepare = a.prerequisites.engine.prepareFixtureLedgerV3
+	}
+	f, err := prepare(ctx, request.Snapshot)
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +65,7 @@ func (a *ClusterAdmission) newAdmissionDriver(ctx context.Context, request Lifec
 	}
 	f.wireMu.Lock()
 	defer f.wireMu.Unlock()
-	if !f.driverFresh || f.document.Recipe != fixtureRecipeV2 || f.document.DestroySeed != nil || f.document.RetainedMarker != nil || f.document.Behavior != nil {
+	if !f.driverFresh || !fixtureMatrixRecipe(f.document) || f.document.DestroySeed != nil || f.document.RetainedMarker != nil || f.document.Behavior != nil {
 		_ = f.close()
 		return nil, ErrFixtures
 	}
@@ -118,7 +122,7 @@ func (d *fixtureAdmissionDriver) run(ctx context.Context) (err error) {
 			f.behaviorCompletion = nil
 		}
 	}()
-	if d.failed || d.initial == nil || d.previous != nil || d.next != 0 || d.completed != 0 || f.document.Recipe != fixtureRecipeV2 || f.document.Behavior != nil {
+	if d.failed || d.initial == nil || d.previous != nil || d.next != 0 || d.completed != 0 || !fixtureMatrixRecipe(f.document) || f.document.Behavior != nil {
 		return ErrFixtures
 	}
 	if err = d.createOriginalsLocked(ctx); err != nil {
@@ -152,7 +156,7 @@ func (d *fixtureAdmissionDriver) createOriginalsLocked(ctx context.Context) erro
 	if err != nil || before == nil || !samePhaseBaseline(d.initial.baseline, before.phase) {
 		return ErrFixtures
 	}
-	for slot := range f.document.Entries {
+	for _, slot := range fixtureCreationOrder(f.document) {
 		traceAdmission(ctx, admissionSetupObservation, slot)
 		if f.document.Entries[slot].State != fixturePlanned || before.objects[slot] != nil {
 			return ErrFixtures
@@ -164,7 +168,21 @@ func (d *fixtureAdmissionDriver) createOriginalsLocked(ctx context.Context) erro
 		traceAdmission(ctx, admissionSetupPreview, slot)
 		_, previewErr := w.dryRunLocked(ctx, slot)
 		afterPreview, phaseErr := w.observePhaseLocked(ctx) // mandatory even refusal
-		if previewErr != nil || phaseErr != nil || !fixtureSameObservation(before, afterPreview) || d.unchangedLocked(ctx, seal) != nil {
+		if previewErr != nil {
+			// wireMu is already held: previewDiagnostic() would deadlock.
+			// Capture only the same attempt's finite diagnostic, never errors.
+			traceAdmissionPreviewRefusal(ctx, w.previewStage)
+			return ErrFixtures
+		}
+		if phaseErr != nil {
+			return ErrFixtures // preserve observePhaseLocked's fixed substage
+		}
+		if !fixtureSameObservation(before, afterPreview) {
+			traceAdmissionPhase(ctx, admissionPhasePreviewObservation, -1)
+			return ErrFixtures
+		}
+		if d.unchangedLocked(ctx, seal) != nil {
+			traceAdmissionPhase(ctx, admissionPhasePreviewSeal, -1)
 			return ErrFixtures
 		}
 		traceAdmission(ctx, admissionSetupCreate, slot)
@@ -239,7 +257,7 @@ func (d *fixtureAdmissionDriver) runCaseLocked(ctx context.Context, number fixtu
 		}
 	}()
 	w, f := d.wire, d.wire.ledger
-	if d.failed || number != d.next || number >= fixtureAdmissionCaseCount || d.completed != (uint64(1)<<number)-1 || f.document.Recipe != fixtureRecipeV2 || f.document.Behavior != nil || (number < 39) != (f.document.DestroySeed == nil) || (number < 45) != (f.document.RetainedMarker == nil) {
+	if d.failed || number != d.next || number >= fixtureAdmissionCaseCount || d.completed != (uint64(1)<<number)-1 || !fixtureMatrixRecipe(f.document) || f.document.Behavior != nil || (number < 39) != (f.document.DestroySeed == nil) || (number < 45) != (f.document.RetainedMarker == nil) {
 		return ErrFixtures
 	}
 	for _, entry := range f.document.Entries {
@@ -379,7 +397,7 @@ func (d *fixtureAdmissionDriver) validatePositive(number fixtureAdmissionCase, r
 
 func (d *fixtureAdmissionDriver) finishLocked(ctx context.Context) error {
 	w, f := d.wire, d.wire.ledger
-	if d.failed || d.next != fixtureAdmissionCaseCount || d.completed != fixtureAdmissionAllCases || f.document.Recipe != fixtureRecipeV2 || f.document.Behavior != nil || f.document.DestroySeed == nil || f.document.DestroySeed.State != fixtureDestroySeedAcknowledged || f.document.RetainedMarker == nil || f.document.RetainedMarker.State != fixtureRetainedMarkerAcknowledged {
+	if d.failed || d.next != fixtureAdmissionCaseCount || d.completed != fixtureAdmissionAllCases || !fixtureMatrixRecipe(f.document) || f.document.Behavior != nil || f.document.DestroySeed == nil || f.document.DestroySeed.State != fixtureDestroySeedAcknowledged || f.document.RetainedMarker == nil || f.document.RetainedMarker.State != fixtureRetainedMarkerAcknowledged {
 		return ErrFixtures
 	}
 	seal, err := d.sealLocked()
@@ -396,6 +414,6 @@ func (d *fixtureAdmissionDriver) finishLocked(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	next.Behavior = &fixtureBehaviorReceipt{Version: fixtureBehaviorVersionV2, Revision: next.Revision}
+	next.Behavior = &fixtureBehaviorReceipt{Version: fixtureBehaviorRecipeVersion(next), Revision: next.Revision}
 	return f.advance(next) // consumes capability BEFORE uncertain publication
 }

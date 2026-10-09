@@ -232,11 +232,30 @@ func (w *SecretWorkflow) retained(ctx context.Context, s *installstate.Snapshot,
 	if d.Pending != nil && (!retiringAccessDelete(d) || w.engine.verifyRetiredAdmission(ctx, fresh) != nil) {
 		return nil, caID, ErrInvalid
 	}
+	objects, caID, err = w.readRetainedObjects(ctx, fresh, caFile, now)
+	if err != nil {
+		return nil, caID, err
+	}
+	if _, err := w.engine.current(ctx, fresh); err != nil {
+		return nil, caID, ErrConcurrent
+	}
+	return objects, caID, nil
+}
+
+// Only the unchanged original-UID/format reader. Each closed caller supplies
+// its own opening/closing journal and admission obligations; this helper is
+// not authentication material authority, a mutation gate or an API endpoint.
+func (w *SecretWorkflow) readRetainedObjects(ctx context.Context, fresh *installstate.Snapshot, caFile string, now time.Time) (map[string]*corev1.Secret, privatefs.FileIdentity, error) {
+	var caID privatefs.FileIdentity
+	if w == nil || w.engine == nil || w.access == nil || ctx == nil || ctx.Err() != nil || fresh == nil {
+		return nil, caID, ErrInvalid
+	}
+	d := fresh.Document()
 	ca, caID, err := privatefs.ReadAbsolute(caFile, 65536, privatefs.TrustedPublic)
 	if err != nil {
 		return nil, caID, ErrCredentials
 	}
-	objects = make(map[string]*corev1.Secret, 2)
+	objects := make(map[string]*corev1.Secret, 2)
 	for _, name := range []string{adminauth.CredentialSecretName, "arcadectl-api-tls"} {
 		key := secretKey(d.Namespace, name)
 		index := slices.IndexFunc(d.Resources, func(r installstate.Resource) bool { return r.Key == key })
@@ -259,9 +278,6 @@ func (w *SecretWorkflow) retained(ctx context.Context, s *installstate.Snapshot,
 			return nil, caID, ErrCredentials
 		}
 		objects[name] = live.DeepCopy()
-	}
-	if _, err := w.engine.current(ctx, fresh); err != nil {
-		return nil, caID, ErrConcurrent
 	}
 	return objects, caID, nil
 }

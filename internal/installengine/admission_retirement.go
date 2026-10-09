@@ -12,7 +12,7 @@ import (
 	"strconv"
 
 	"github.com/gobha-me/arcadectl/internal/canonicaljson"
-	"github.com/gobha-me/arcadectl/internal/installrender"
+	"github.com/gobha-me/arcadectl/internal/installbaseline"
 	"github.com/gobha-me/arcadectl/internal/installstate"
 	"github.com/gobha-me/arcadectl/internal/privatefs"
 	admissionv1 "k8s.io/api/admissionregistration/v1"
@@ -32,6 +32,7 @@ type retirementReceipt struct {
 	Version  string             `json:"version"`
 	Journal  json.RawMessage    `json:"journal"`
 	Policies []retirementPolicy `json:"policies"`
+	Baseline []retirementPolicy `json:"baseline,omitempty"`
 }
 
 func accessRetirementKey(key installstate.Key) bool {
@@ -81,6 +82,43 @@ func (e *Engine) retirementPolicies(ctx context.Context, s *installstate.Snapsho
 	return result, nil
 }
 
+// Separate original non-rollback baseline evidence. This reader alone does
+// not prove behavior; capture requires the full runtime guard while all
+// original actors still exist. Verification remains read-only after retirement.
+func (e *Engine) retirementBaselinePolicies(ctx context.Context, s *installstate.Snapshot) ([]retirementPolicy, error) {
+	security := s.Document().SecurityBaseline
+	if security == nil {
+		if e.baseline != nil {
+			return nil, ErrAdmission
+		}
+		return nil, nil
+	}
+	if e.baseline == nil || security.Version != installbaseline.Version || security.Stage != installstate.BaselineVerified || security.Pending != nil || security.ArtifactDigest != e.baselinePlan().Digest() || len(security.Resources) != installbaseline.ResourceCount {
+		return nil, ErrAdmission
+	}
+	result := make([]retirementPolicy, 0, installbaseline.ResourceCount)
+	seen := map[installstate.Key]bool{}
+	for _, resource := range security.Resources {
+		template, err := e.baseline.contract.Template(resource.Key, false)
+		if err != nil || template.Hash() != resource.TemplateSHA256 || seen[resource.Key] {
+			return nil, ErrAdmission
+		}
+		live, err := e.access.Get(ctx, resource.Key)
+		if err != nil || template.MatchLive(live, resource.UID) != nil || !receiptUID.MatchString(live.GetResourceVersion()) {
+			return nil, ErrAdmission
+		}
+		if resource.Key.Kind == "ValidatingAdmissionPolicy" {
+			var policy admissionv1.ValidatingAdmissionPolicy
+			if decodeServing(live, &policy) != nil || !healthyAdmissionPolicy(&policy) {
+				return nil, ErrAdmission
+			}
+		}
+		seen[resource.Key] = true
+		result = append(result, retirementPolicy{resource.Key, admissionIdentity{resource.UID, live.GetResourceVersion(), resource.TemplateSHA256}})
+	}
+	return result, nil
+}
+
 func (l *Lifecycle) retireAdmission(ctx context.Context, s *installstate.Snapshot, opts LifecycleOptions) (*installstate.Snapshot, error) {
 	d := s.Document()
 	if d.Mode != installstate.Uninstall || d.Stage != installstate.Applying || d.Pending != nil || d.AdmissionRetirementRevision != 0 {
@@ -107,16 +145,34 @@ func (l *Lifecycle) retireAdmission(ctx context.Context, s *installstate.Snapsho
 	if err != nil {
 		return s, err
 	}
+	if d.SecurityBaseline != nil && l.engine.baseline.verifyRuntime(ctx, s) != nil {
+		return s, ErrSecurityBaseline
+	}
+	baselineBefore, err := l.engine.retirementBaselinePolicies(ctx, s)
+	if err != nil {
+		return s, err
+	}
 	for _, kind := range []Checkpoint{AdmissionEffective, ColdSafety, RuntimeStopped} {
 		if err := l.check(ctx, kind, s, opts); err != nil {
 			return s, err
 		}
 	}
+	if d.SecurityBaseline != nil && l.engine.baseline.verifyRuntime(ctx, s) != nil {
+		return s, ErrSecurityBaseline
+	}
 	after, err := l.engine.retirementPolicies(ctx, s)
 	if err != nil || !slices.Equal(before, after) {
 		return s, ErrAdmission
 	}
-	receipt := retirementReceipt{"v1", s.Bytes(), before}
+	baselineAfter, err := l.engine.retirementBaselinePolicies(ctx, s)
+	if err != nil || !slices.Equal(baselineBefore, baselineAfter) {
+		return s, ErrAdmission
+	}
+	version := "v1"
+	if d.SecurityBaseline != nil {
+		version = "v2"
+	}
+	receipt := retirementReceipt{Version: version, Journal: s.Bytes(), Policies: before, Baseline: baselineBefore}
 	body, err := json.Marshal(receipt)
 	if err != nil {
 		return s, ErrAdmission
@@ -131,16 +187,34 @@ func (l *Lifecycle) retireAdmission(ctx context.Context, s *installstate.Snapsho
 	}
 	// A lost fsync/CAS acknowledgement never allows overwrite or fresh proof
 	// adoption: the exact original receipt must be readable and durable.
-	saved, identity, err := l.engine.files.Read(name, retirementMaxBytes)
-	if err != nil || !bytes.Equal(saved, body) || l.engine.files.ConfirmDurable(name, identity) != nil {
+	saved, identity, pin, err := l.engine.files.Pin(name, retirementMaxBytes)
+	if err != nil {
+		return s, ErrOutcomeUnknown
+	}
+	defer pin.Close()
+	if !bytes.Equal(saved, body) || pin.Confirm() != nil {
 		return s, ErrOutcomeUnknown
 	}
 	if _, err := l.original(ctx, s); err != nil {
 		return s, err
 	}
+	if d.SecurityBaseline != nil && l.engine.baseline.verifyRuntime(ctx, s) != nil {
+		return s, ErrSecurityBaseline
+	}
 	after, err = l.engine.retirementPolicies(ctx, s)
 	if err != nil || !slices.Equal(before, after) {
 		return s, ErrAdmission
+	}
+	baselineAfter, err = l.engine.retirementBaselinePolicies(ctx, s)
+	if err != nil || !slices.Equal(baselineBefore, baselineAfter) {
+		return s, ErrAdmission
+	}
+	if _, err := l.original(ctx, s); err != nil {
+		return s, err
+	}
+	closedBody, closedIdentity, err := l.engine.files.Read(name, retirementMaxBytes)
+	if err != nil || closedIdentity != identity || !bytes.Equal(closedBody, body) || pin.Confirm() != nil {
+		return s, ErrOutcomeUnknown
 	}
 	d.AdmissionRetirementRevision = d.Revision
 	d.Revision++
@@ -151,38 +225,31 @@ func (l *Lifecycle) retireAdmission(ctx context.Context, s *installstate.Snapsho
 // original inventory subset. It does not claim live actor behavior or global
 // revocation of permissions granted independently by other administrators.
 func (e *Engine) verifyRetiredAdmission(ctx context.Context, s *installstate.Snapshot) error {
+	if err := e.verifyRetiredAdmissionCore(ctx, s); err != nil {
+		return err
+	}
+	_, err := e.current(ctx, s)
+	return err
+}
+
+// The runtime baseline guard must use this nonrecursive read-only core, not
+// the historical wrapper above: current itself invokes that guard. The core
+// still closes the exact original namespace/journal fence, but grants neither
+// runtime effect authority nor current actor-behavior evidence.
+func (e *Engine) verifyRetiredAdmissionCore(ctx context.Context, s *installstate.Snapshot) error {
+	if e == nil || e.journal == nil || e.access == nil || e.files == nil || ctx == nil || s == nil {
+		return ErrAdmission
+	}
 	d := s.Document()
 	if d.Mode != installstate.Uninstall || d.AdmissionRetirementRevision == 0 || d.AdmissionRetirementRevision >= d.Revision {
 		return ErrAdmission
 	}
-	body, identity, err := e.files.Read(retirementName(d, d.AdmissionRetirementRevision), retirementMaxBytes)
-	if err != nil || e.files.ConfirmDurable(retirementName(d, d.AdmissionRetirementRevision), identity) != nil {
+	witness, err := e.openRetirementEvidence(d)
+	if err != nil {
 		return ErrAdmission
 	}
-	canonical, err := canonicaljson.CanonicalJSON(body)
-	var receipt retirementReceipt
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.DisallowUnknownFields()
-	if err != nil || !bytes.Equal(canonical, body) || decoder.Decode(&receipt) != nil || receipt.Version != "v1" {
-		return ErrAdmission
-	}
-	plans := []*installrender.Plan{}
-	for _, plan := range e.plans {
-		plans = append(plans, plan)
-	}
-	original, err := installstate.Decode(receipt.Journal, plans...)
-	if err != nil || original.Mode != installstate.Uninstall || original.Stage != installstate.Applying || original.Pending != nil || original.AdmissionRetirementRevision != 0 ||
-		original.Revision != d.AdmissionRetirementRevision || original.Namespace != d.Namespace || original.NamespaceUID != d.NamespaceUID || original.InstallationID != d.InstallationID ||
-		original.ProfileID != d.ProfileID || original.TargetPackage != d.TargetPackage || original.ActivePackage != d.ActivePackage || original.PreviousPackage != d.PreviousPackage || !original.Installed {
-		return ErrAdmission
-	}
-	for _, resource := range e.plans[d.TargetPackage].Resources() {
-		key := resourceKey(resource)
-		entry, _ := e.inventory(original, key)
-		if !resource.Retained && (accessRetirementKey(key) != (entry != nil)) {
-			return ErrAdmission
-		}
-	}
+	defer witness.release()
+	original, receipt := witness.original, witness.receipt
 	for _, resource := range d.Resources {
 		entry, _ := e.inventory(original, resource.Key)
 		if entry == nil || *entry != resource {
@@ -214,6 +281,15 @@ func (e *Engine) verifyRetiredAdmission(ctx context.Context, s *installstate.Sna
 	if err != nil || !slices.Equal(policies, receipt.Policies) {
 		return ErrAdmission
 	}
-	_, err = e.current(ctx, s)
-	return err
+	baseline, err := e.retirementBaselinePolicies(ctx, s)
+	if err != nil || !slices.Equal(baseline, receipt.Baseline) {
+		return ErrAdmission
+	}
+	_, err = (&Lifecycle{engine: e}).original(ctx, s)
+	if err != nil {
+		return err
+	}
+	// Remote GETs must not leave a replaced local receipt accepted from an
+	// earlier copy, even when an atomic replacement writes identical bytes.
+	return e.closeRetirementEvidence(witness)
 }

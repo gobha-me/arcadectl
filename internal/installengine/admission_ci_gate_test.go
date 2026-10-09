@@ -51,7 +51,7 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	// Identical PR-merge/head trees do not have identical source SHA/epoch.
 	// Signed packages, image revision labels and lifecycle evidence must use
 	// the requested head (or exact main push), not a synthetic merge identity.
-	for _, name := range []string{"kind-install-binary", "kind-install-admission", "kind-install-auth", "kind-api", "kind-recovery", "install-engine-race", "go-and-policy", "kind-lifecycle"} {
+	for _, name := range []string{"kind-install-binary", "kind-install-baseline", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-api", "kind-recovery", "install-engine-race", "go-and-policy", "kind-lifecycle"} {
 		if _, present := workflow.Jobs[name]; !present {
 			t.Errorf("required exact-source CI job %s is absent", name)
 		}
@@ -100,6 +100,14 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 		fullRun = fullRun || step.Run == "make test-kind-install-admission INSTALL_ADMISSION_PROFILE='${{ matrix.profile }}' INSTALL_ADMISSION_MODE='${{ matrix.mode }}'"
 	}
 	gate := workflow.Jobs["go-and-policy"]
+	baseline := workflow.Jobs["kind-install-baseline"]
+	baselineRun := false
+	for _, step := range baseline.Steps {
+		baselineRun = baselineRun || step.Run == "make test-kind-install-baseline INSTALL_BASELINE_PROFILE='${{ matrix.profile }}'"
+	}
+	if !baselineRun || baseline.TimeoutMinutes != 30 || baseline.Strategy.FailFast == nil || *baseline.Strategy.FailFast || !slices.Equal(baseline.Strategy.Matrix.Profile, []int{135, 137}) || len(baseline.Strategy.Matrix.Exclude) != 0 || len(baseline.Strategy.Matrix.Mode) != 0 || !slices.Contains(gate.Needs, "kind-install-baseline") {
+		t.Fatal("native baseline profile or fail-closed dependency omitted")
+	}
 	nativeSuiteRuns := 0
 	for _, step := range gate.Steps {
 		if step.Run == "make test-envtest" {
@@ -111,6 +119,14 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 		t.Fatal("complete fresh API-server suite or its bounded CI envelope changed")
 	}
 	binary := workflow.Jobs["kind-install-binary"]
+	v3 := workflow.Jobs["kind-install-admission-v3"]
+	v3Run := false
+	for _, step := range v3.Steps {
+		v3Run = v3Run || step.Run == "make test-kind-install-admission-v3 INSTALL_ADMISSION_PROFILE='${{ matrix.profile }}' INSTALL_ADMISSION_MODE='${{ matrix.mode }}'"
+	}
+	if !v3Run || v3.If != "" || v3.TimeoutMinutes != 50 || v3.Strategy.FailFast == nil || *v3.Strategy.FailFast || !slices.Equal(v3.Strategy.Matrix.Profile, []int{135, 137}) || !slices.Equal(v3.Strategy.Matrix.Mode, []string{"cold", "warm"}) || len(v3.Strategy.Matrix.Exclude) != 0 || !slices.Contains(gate.Needs, "kind-install-admission-v3") || !strings.Contains(string(makefile), "^TestKindAdmissionEffectiveV3WithBaseline$$/") {
+		t.Fatal("complete baseline-active v3 matrix missing from required CI")
+	}
 	binaryRun := false
 	binaryHistory := false
 	for _, step := range binary.Steps {
@@ -126,7 +142,7 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	}
 	var command string
 	for _, step := range gate.Steps {
-		if step.Env["ENGINE_RACE_RESULT"] == "${{ needs.install-engine-race.result }}" && step.Env["INSTALL_ADMISSION_RESULT"] == "${{ needs.kind-install-admission.result }}" && step.Env["INSTALL_BINARY_RESULT"] == "${{ needs.kind-install-binary.result }}" {
+		if step.Env["ENGINE_RACE_RESULT"] == "${{ needs.install-engine-race.result }}" && step.Env["INSTALL_ADMISSION_RESULT"] == "${{ needs.kind-install-admission.result }}" && step.Env["INSTALL_BINARY_RESULT"] == "${{ needs.kind-install-binary.result }}" && step.Env["INSTALL_BASELINE_RESULT"] == "${{ needs.kind-install-baseline.result }}" && step.Env["INSTALL_ADMISSION_V3_RESULT"] == "${{ needs.kind-install-admission-v3.result }}" {
 			if command != "" {
 				t.Fatal("ambiguous required dependency gate")
 			}
@@ -139,11 +155,15 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	for _, races := range []string{"success", "failure", "cancelled", "skipped", ""} {
 		for _, native := range []string{"success", "failure", "cancelled", "skipped", ""} {
 			for _, binary := range []string{"success", "failure", "cancelled", "skipped", ""} {
-				c := exec.Command("sh", "-e", "-c", command)
-				c.Env = append(os.Environ(), "ENGINE_RACE_RESULT="+races, "INSTALL_ADMISSION_RESULT="+native, "INSTALL_BINARY_RESULT="+binary)
-				passed := c.Run() == nil
-				if passed != (races == "success" && native == "success" && binary == "success") {
-					t.Fatal("failed/cancelled/skipped/absent dependency became a green required gate")
+				for _, baseline := range []string{"success", "failure", "cancelled", "skipped", ""} {
+					for _, v3 := range []string{"success", "failure", "cancelled", "skipped", ""} {
+						c := exec.Command("sh", "-e", "-c", command)
+						c.Env = append(os.Environ(), "ENGINE_RACE_RESULT="+races, "INSTALL_ADMISSION_RESULT="+native, "INSTALL_BINARY_RESULT="+binary, "INSTALL_BASELINE_RESULT="+baseline, "INSTALL_ADMISSION_V3_RESULT="+v3)
+						passed := c.Run() == nil
+						if passed != (races == "success" && native == "success" && binary == "success" && baseline == "success" && v3 == "success") {
+							t.Fatal("failed/cancelled/skipped/absent dependency became a green required gate")
+						}
+					}
 				}
 			}
 		}

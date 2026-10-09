@@ -21,6 +21,7 @@ import (
 
 	"github.com/gobha-me/arcadectl/internal/adminauth"
 	"github.com/gobha-me/arcadectl/internal/canonicaljson"
+	"github.com/gobha-me/arcadectl/internal/installbaseline"
 	"github.com/gobha-me/arcadectl/internal/installrender"
 	"k8s.io/apimachinery/pkg/types"
 )
@@ -130,6 +131,14 @@ type Document struct {
 	// exact uninstall. Omission preserves canonical bytes of legacy journals.
 	// It is not permission to skip current retained-protection observations.
 	AdmissionRetirementRevision uint64 `json:"admissionRetirementRevision,omitempty"`
+	// AdmissionReinstall pins the exact completed-retirement source journal in
+	// a separate protected receipt. It is provenance, not CREATE authority.
+	// Omission preserves canonical bytes of historical journals.
+	AdmissionReinstall *ReinstallProvenance `json:"admissionReinstall,omitempty"`
+	// SecurityBaseline is a separately authenticated non-rollback inventory.
+	// Omission preserves authentic historical journal bytes; it is not proof
+	// that installation identity protection exists or has ever been verified.
+	SecurityBaseline *SecurityBaseline `json:"securityBaseline,omitempty"`
 }
 
 func NewID() (string, error) {
@@ -143,7 +152,11 @@ func NewID() (string, error) {
 // Encode derives a canonical representation without changing caller slices.
 // Validation always requires sealed renderer plans, not a schema-only decoder.
 func Encode(document Document, plans ...*installrender.Plan) ([]byte, error) {
-	if validate(document, plans) != nil {
+	return EncodeWithBaseline(document, nil, plans...)
+}
+
+func EncodeWithBaseline(document Document, baseline *installbaseline.Plan, plans ...*installrender.Plan) ([]byte, error) {
+	if validate(document, plans) != nil || validateSecurityBaseline(document, baseline) != nil {
 		return nil, ErrInvalid
 	}
 	body, err := json.Marshal(document)
@@ -158,6 +171,10 @@ func Encode(document Document, plans ...*installrender.Plan) ([]byte, error) {
 }
 
 func Decode(body []byte, plans ...*installrender.Plan) (Document, error) {
+	return DecodeWithBaseline(body, nil, plans...)
+}
+
+func DecodeWithBaseline(body []byte, baseline *installbaseline.Plan, plans ...*installrender.Plan) (Document, error) {
 	var document Document
 	if len(body) == 0 || len(body) > MaxBytes {
 		return document, ErrInvalid
@@ -175,7 +192,7 @@ func Decode(body []byte, plans ...*installrender.Plan) (Document, error) {
 	if !errors.Is(decoder.Decode(&extra), io.EOF) {
 		return Document{}, ErrInvalid
 	}
-	encoded, err := Encode(document, plans...)
+	encoded, err := EncodeWithBaseline(document, baseline, plans...)
 	if err != nil || !bytes.Equal(encoded, body) {
 		return Document{}, ErrInvalid
 	}

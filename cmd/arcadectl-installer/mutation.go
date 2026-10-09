@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/gobha-me/arcadectl/internal/installbaseline"
 	"github.com/gobha-me/arcadectl/internal/installengine"
 	"github.com/gobha-me/arcadectl/internal/installfiles"
 	"github.com/gobha-me/arcadectl/internal/installrender"
@@ -20,7 +21,7 @@ import (
 )
 
 func validMutationOptions(o options) bool {
-	if !absolutePath(o.apiCA) || o.clientCredential != "" && !absolutePath(o.clientCredential) {
+	if !absolutePath(o.securityBaseline) || !absolutePath(o.apiCA) || o.clientCredential != "" && !absolutePath(o.clientCredential) {
 		return false
 	}
 	if o.command == "install" {
@@ -57,11 +58,15 @@ type mutationInstallation struct {
 	target              *installrender.Plan
 	bootstrapRegistered bool
 	registeredBootstrap *installrender.Plan
+	baseline            *installbaseline.Plan
 }
 
 // All plans are independently signed/trusted. NewClusterLifecycle supplies the
 // closed production checks; this boundary accepts no provider/callback/URL.
 func loadMutationInstallation(o options) (*mutationInstallation, error) {
+	if !absolutePath(o.securityBaseline) {
+		return nil, errInputs
+	}
 	trust, err := installfiles.ReadTrustKey(o.trustKey)
 	if err != nil {
 		return nil, errInputs
@@ -71,6 +76,16 @@ func loadMutationInstallation(o options) (*mutationInstallation, error) {
 		return nil, errInputs
 	}
 	original, err := installrender.Compile(bootstrap, o.namespace, o.profile)
+	if err != nil {
+		return nil, errInputs
+	}
+	// Authenticate the independent, non-rollback baseline before constructing
+	// any cluster transport or opening mutable protected installation state.
+	artifact, err := installfiles.LoadBaseline(o.securityBaseline, trust)
+	if err != nil {
+		return nil, errInputs
+	}
+	baseline, err := installbaseline.Compile(artifact, o.namespace, o.profile)
 	if err != nil {
 		return nil, errInputs
 	}
@@ -112,11 +127,11 @@ func loadMutationInstallation(o options) (*mutationInstallation, error) {
 		_ = files.Close()
 		return nil, errInputs
 	}
-	journal, err := installstate.New(access.Namespaces(), plans...)
+	journal, err := installstate.NewWithBaseline(access.Namespaces(), baseline, plans...)
 	if err != nil {
 		return fail()
 	}
-	engine, err := installengine.NewWithAccess(access, journal, files, plans...)
+	engine, err := installengine.NewWithBaselineAccess(access, journal, files, baseline, plans...)
 	if err != nil {
 		return fail()
 	}
@@ -124,7 +139,7 @@ func loadMutationInstallation(o options) (*mutationInstallation, error) {
 	if err != nil {
 		return fail()
 	}
-	return &mutationInstallation{files: files, access: access, engine: engine, journal: journal, lifecycle: lifecycle, original: original, target: target, bootstrapRegistered: bootstrapRegistered, registeredBootstrap: registeredBootstrap}, nil
+	return &mutationInstallation{files: files, access: access, engine: engine, journal: journal, lifecycle: lifecycle, original: original, target: target, bootstrapRegistered: bootstrapRegistered, registeredBootstrap: registeredBootstrap, baseline: baseline}, nil
 }
 
 func mutationLifecycleOptions(o options, s *installstate.Snapshot) installengine.LifecycleOptions {
@@ -149,7 +164,7 @@ func (x *mutationInstallation) start(ctx context.Context, o options) (*installst
 		if err != nil || prerequisites.VerifyBootstrap(ctx, x.target, mutationLifecycleOptions(o, nil)) != nil {
 			return nil, installengine.ErrPrerequisites
 		}
-		receipt, err := installstate.PrepareBootstrap(x.files, o.receipt, x.original)
+		receipt, err := installstate.PrepareBootstrapWithBaseline(x.files, o.receipt, x.original, x.baseline)
 		if err != nil {
 			return nil, err
 		}
@@ -158,7 +173,7 @@ func (x *mutationInstallation) start(ctx context.Context, o options) (*installst
 	if readErr != nil {
 		return nil, installengine.ErrRecovery
 	}
-	receipt, err := installstate.LoadBootstrap(x.files, o.receipt, x.original)
+	receipt, err := installstate.LoadBootstrapWithBaseline(x.files, o.receipt, x.original, x.baseline)
 	if err != nil {
 		return nil, err
 	}
