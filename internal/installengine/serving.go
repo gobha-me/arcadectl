@@ -94,6 +94,23 @@ func (e *Engine) observeServing(ctx context.Context, s *installstate.Snapshot, a
 	if err != nil {
 		return nil, ErrServing
 	}
+	serving, err := e.readOriginalServing(ctx, fresh, access, admissionApplying)
+	if err != nil {
+		return nil, ErrServing
+	}
+	if _, err := e.current(ctx, fresh); err != nil {
+		return nil, ErrServing
+	}
+	return serving, nil
+}
+
+// The identical whole-shape reader, not an independently guarded observer.
+// Its caller owes the complete original journal/admission opening and closing
+// barriers; no effect or authentication may consume this reader alone.
+func (e *Engine) readOriginalServing(ctx context.Context, fresh *installstate.Snapshot, access ServingAccess, admissionApplying bool) (*Serving, error) {
+	if e == nil || ctx == nil || fresh == nil || nilAccess(access) {
+		return nil, ErrServing
+	}
 	d := fresh.Document()
 	if d.Pending != nil || d.Stage != installstate.Verifying && !(admissionApplying && d.Stage == installstate.Applying) || d.Mode == installstate.Uninstall {
 		return nil, ErrServing
@@ -166,9 +183,6 @@ func (e *Engine) observeServing(ctx context.Context, s *installstate.Snapshot, a
 	}
 	var rs appsv1.ReplicaSet
 	if decodeServing(rsObject, &rs) != nil || rs.APIVersion != "apps/v1" || rs.Kind != "ReplicaSet" || rs.UID != owner.UID || !validServingReplicaSet(&rs, &deployment) || !originalOwner(pod.ObjectMeta, "apps/v1", "ReplicaSet", rs.Name, rs.UID) || !validServingPodTemplate(&pod, &rs) {
-		return nil, ErrServing
-	}
-	if _, err := e.current(ctx, fresh); err != nil {
 		return nil, ErrServing
 	}
 	slices.SortFunc(selectedSlices, func(a, b discoveryv1.EndpointSlice) int { return strings.Compare(a.Name, b.Name) })

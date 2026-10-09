@@ -85,6 +85,26 @@ func newWithAccess(access Access, journal *installstate.Store, files *privatefs.
 // current binds a full Namespace read to the exact sealed original journal.
 // This is a CAS barrier, not a distributed lock or atomic cluster snapshot.
 func (e *Engine) current(ctx context.Context, s *installstate.Snapshot) (*installstate.Snapshot, error) {
+	fresh, err := e.currentOriginal(ctx, s)
+	if err != nil {
+		return nil, err
+	}
+	// Close ordinary Namespace/compatibility reads BEFORE the final whole
+	// runtime proof. Its private original witnesses remain owned through its
+	// own last remote fence. No remote read may trail their release here.
+	if e.baseline != nil && e.baseline.verifyRuntime(ctx, fresh) != nil {
+		return nil, ErrSecurityBaseline
+	}
+	if ctx.Err() != nil {
+		return nil, ErrConcurrent
+	}
+	return fresh, nil
+}
+
+// currentOriginal is only the exact journal/Namespace reader. It is NOT
+// admission effectiveness, runtime mutation authority or a public bypass.
+// Ordinary effects must continue to use current's complete baseline guard.
+func (e *Engine) currentOriginal(ctx context.Context, s *installstate.Snapshot) (*installstate.Snapshot, error) {
 	if e == nil || s == nil || ctx == nil {
 		return nil, ErrInvalid
 	}
@@ -111,15 +131,6 @@ func (e *Engine) current(ctx context.Context, s *installstate.Snapshot) (*instal
 	live, err := e.access.Get(ctx, key)
 	if err != nil || t.MatchNamespace(live, fresh) != nil {
 		return nil, ErrOwnership
-	}
-	// Close ordinary Namespace/compatibility reads BEFORE the final whole
-	// runtime proof. Its private original witnesses remain owned through its
-	// own last remote fence. No remote read may trail their release here.
-	if e.baseline != nil && e.baseline.verifyRuntime(ctx, fresh) != nil {
-		return nil, ErrSecurityBaseline
-	}
-	if ctx.Err() != nil {
-		return nil, ErrConcurrent
 	}
 	return fresh, nil
 }

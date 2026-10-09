@@ -16,6 +16,7 @@ import (
 	"github.com/gobha-me/arcadectl/internal/adminclient"
 	"github.com/gobha-me/arcadectl/internal/installstate"
 	"github.com/gobha-me/arcadectl/internal/privatefs"
+	corev1 "k8s.io/api/core/v1"
 )
 
 var ErrActivation = errors.New("original installation API authenticated activation is unproved")
@@ -59,6 +60,16 @@ func (a *Activation) binding(ctx context.Context, s *installstate.Snapshot, opts
 	}
 	retained, caID, err := w.retained(ctx, s, opts.CAFile, time.Now())
 	if err != nil {
+		return credentialBinding{}, ErrActivation
+	}
+	return a.bindOriginalCredentials(retained, caID, opts)
+}
+
+// Validation of bytes returned by the original guarded Secret reader. This
+// helper supplies no cluster-read, serving, admission or token-send authority;
+// a private owned protocol must hold and reclose its original read witnesses.
+func (a *Activation) bindOriginalCredentials(retained map[string]*corev1.Secret, caID privatefs.FileIdentity, opts ActivationOptions) (credentialBinding, error) {
+	if a == nil || a.engine == nil || retained[adminauth.CredentialSecretName] == nil || retained["arcadectl-api-tls"] == nil {
 		return credentialBinding{}, ErrActivation
 	}
 	raw, clientID, err := privatefs.ReadAbsolute(opts.CredentialFile, adminauth.MaxClientCredentialBytes, privatefs.Private)
