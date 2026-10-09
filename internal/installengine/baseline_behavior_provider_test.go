@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -141,6 +142,23 @@ func testBaselineBehaviorWholeProvider(t *testing.T, scenario string) {
 // and final literal request oracle. Existing scenario wrappers still exercise
 // their original dispatch unchanged; this seam creates no production hook.
 func testBaselineBehaviorWholeProviderWithProtocol(t *testing.T, scenario string, protocol func(*Engine, *installstate.Snapshot, *ClusterSecurityBaseline, func() int) error) {
+	testBaselineBehaviorWholeProviderWithActivation(t, scenario, protocol, nil)
+}
+
+// Opt-in fixture for actual owned activation. The original 23 scenarios and
+// their independent 97-row oracle remain unchanged when this is nil.
+type baselineBehaviorActivationFixture struct {
+	serving    *servingFixture
+	forwards   *atomic.Int32
+	apiCalls   *atomic.Int32
+	proofs     int
+	rulePasses int
+	onUpgrade  func()
+	onAPI      func()
+	onRead     func(string, map[installstate.Key]*unstructured.Unstructured)
+}
+
+func testBaselineBehaviorWholeProviderWithActivation(t *testing.T, scenario string, protocol func(*Engine, *installstate.Snapshot, *ClusterSecurityBaseline, func() int) error, activation *baselineBehaviorActivationFixture) {
 	t.Helper()
 	runtime := strings.HasPrefix(scenario, "runtime-")
 	mode := strings.TrimPrefix(scenario, "runtime-")
@@ -289,6 +307,53 @@ func testBaselineBehaviorWholeProviderWithProtocol(t *testing.T, scenario string
 		// native installer, enrollment or successful authentication claim.
 		d.Stage = installstate.Verifying
 	}
+	if activation != nil {
+		if mode != "healthy" || protocol == nil || complete || precontroller || pendingService || pendingParent {
+			t.Fatal("owned activation fixture escaped its explicit healthy scope")
+		}
+		x := newServingFixtureWithPlan(t, f.plan)
+		// The baseline family proof requires genuine creation-time metadata;
+		// legacy serving-only fixtures intentionally do not exercise that gate.
+		x.access.rs.CreationTimestamp = metav1.NewTime(time.Unix(100, 0).UTC())
+		x.access.pod.CreationTimestamp = metav1.NewTime(time.Unix(101, 0).UTC())
+		activation.serving = x
+		activation.apiCalls = activationServer(t, x, d.Namespace, activation.onAPI)
+		// Replace only the API family with independently ready whole objects.
+		// Keep the other two complete executor chains and literal probe oracle.
+		for key, object := range objects {
+			if key.Kind == "ReplicaSet" || key.Kind == "Pod" {
+				owner := object.GetOwnerReferences()
+				account, _, _ := unstructured.NestedString(object.Object, "spec", "serviceAccountName")
+				if key.Kind == "ReplicaSet" && len(owner) == 1 && owner[0].Name == "arcadectl-api" || key.Kind == "Pod" && account == "arcadectl-api" {
+					delete(objects, key)
+				}
+			}
+		}
+		for _, key := range []installstate.Key{serviceKey, deploymentKey(d.Namespace, "arcadectl-api")} {
+			object := x.f.access.objects[key].DeepCopy()
+			objects[key] = object
+			for i := range d.Resources {
+				if d.Resources[i].Key == key {
+					d.Resources[i].UID = object.GetUID()
+				}
+			}
+		}
+		for i := range v.objects.Pods.Items {
+			if v.objects.Pods.Items[i].Spec.ServiceAccountName == "arcadectl-api" {
+				v.objects.Pods.Items[i] = *x.access.pod.DeepCopy()
+			}
+		}
+		for _, object := range []*unstructured.Unstructured{servingObject(t, x.access.pod), servingObject(t, x.access.rs)} {
+			objects[baselineObjectKey(object)] = object
+		}
+		for _, name := range []string{"arcadectl-admin-credential", "arcadectl-api-tls"} {
+			secret := x.secrets.objects[name].DeepCopy()
+			secret.APIVersion, secret.Kind = "v1", "Secret"
+			objects[secretKey(d.Namespace, name)] = servingObject(t, secret)
+			d.Resources = append(d.Resources, installstate.Resource{Key: secretKey(d.Namespace, name), UID: secret.UID, Phase: installrender.API, Retained: true})
+		}
+		installstate.SortResources(d.Resources)
+	}
 	d.Revision++
 	seedBaselineAccessUnitDocument(t, f, d)
 	if precontroller && (d.Stage != installstate.Applying || d.Mode != installstate.Install || d.Installed || d.Pending != nil || len(d.Resources) != 37 || len(d.SecurityBaseline.Resources) != 12) {
@@ -323,6 +388,9 @@ func testBaselineBehaviorWholeProviderWithProtocol(t *testing.T, scenario string
 	objectPaths := map[string]installstate.Key{}
 	for key := range objects {
 		path, err := resourcePath(key, false)
+		if key.Kind == "Secret" && activation != nil {
+			path, err = privateSecretPath(key, false)
+		}
 		if err != nil {
 			path, _, err = baselineExecutableRead(key, "get")
 		}
@@ -339,14 +407,18 @@ func testBaselineBehaviorWholeProviderWithProtocol(t *testing.T, scenario string
 	rows := map[string]int{}
 	detailedRows := map[string]int{}
 	producerBodies := map[string]*unstructured.Unstructured{}
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
 		requests++
 		w.Header().Set("Content-Type", "application/json")
 		user := r.Header.Get("Impersonate-User")
 		actor := strings.TrimPrefix(user, "system:serviceaccount:"+d.Namespace+":")
-		if r.Header.Get("Authorization") != "Bearer FAKE-BEHAVIOR-PROVIDER" || user != "" && actor != "arcadectl-controller" && actor != "arcadectl-destroy-controller" {
+		bearer := "Bearer FAKE-BEHAVIOR-PROVIDER"
+		if activation != nil {
+			bearer = "Bearer TEST-ONLY-KUBE-BEARER"
+		}
+		if r.Header.Get("Authorization") != bearer || user != "" && actor != "arcadectl-controller" && actor != "arcadectl-destroy-controller" {
 			t.Error("behavior provider changed frozen original identity")
 		}
 		if r.Method == http.MethodPost && r.URL.Path == "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews" {
@@ -404,6 +476,15 @@ func testBaselineBehaviorWholeProviderWithProtocol(t *testing.T, scenario string
 			return
 		}
 		if r.Method == http.MethodGet {
+			if activation != nil {
+				if activation.onRead != nil {
+					activation.onRead(r.URL.Path, objects)
+				}
+				if r.URL.Path == "/apis/discovery.k8s.io/v1/namespaces/"+d.Namespace+"/endpointslices" {
+					_ = json.NewEncoder(w).Encode(activation.serving.access.list)
+					return
+				}
+			}
 			if user != "" {
 				t.Error("behavior actor acquired generic GET")
 			}
@@ -542,10 +623,20 @@ func testBaselineBehaviorWholeProviderWithProtocol(t *testing.T, scenario string
 		row := actor + "/" + r.Method + "/" + resource[1]
 		rows[row]++
 		key := installstate.Key{APIVersion: resource[0], Kind: resource[1], Namespace: d.Namespace, Name: name}
+		if activation != nil && activation.proofs == 2 && probes == 98 && positives == 3 && len(producerBodies) == 3 && actor == "arcadectl-controller" && r.Method == http.MethodPost && resource[1] == "Job" {
+			account, _, _ := unstructured.NestedString(object.Object, "spec", "template", "spec", "serviceAccountName")
+			previous := producerBodies["arcadectl-controller/Job"]
+			if account == "default" && previous != nil && name != previous.GetName() {
+				// Only the literal first producer of the second complete97-row
+				// cycle may establish new negative-variant reference bodies.
+				// Original one-proof scenarios still reject repeated producers.
+				producerBodies = map[string]*unstructured.Unstructured{}
+			}
+		}
 		membership, valid := testBaselineBehaviorRequestRow(r, actor, key, &object, objects[key], producerBodies)
 		if !valid {
 			// Fixed diagnostic only; never print a captured request/body.
-			t.Error("behavior request differs from literal original body, scope or variant")
+			t.Error("behavior request differs from literal original body, scope or variant", row)
 			w.WriteHeader(500)
 			return
 		}
@@ -585,11 +676,23 @@ func testBaselineBehaviorWholeProviderWithProtocol(t *testing.T, scenario string
 		}
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		_ = json.NewEncoder(w).Encode(status)
-	}))
-	t.Cleanup(server.Close)
-	config := serverConfig(server)
-	config.BearerToken, config.QPS, config.Burst = "FAKE-BEHAVIOR-PROVIDER", 1000, 2000 // In-process synthetic only.
-	access, err := NewDirectHTTPAccess(config)
+	})
+	var access *HTTPAccess
+	if activation == nil {
+		server := httptest.NewTLSServer(handler)
+		t.Cleanup(server.Close)
+		config := serverConfig(server)
+		config.BearerToken, config.QPS, config.Burst = "FAKE-BEHAVIOR-PROVIDER", 1000, 2000 // In-process synthetic only.
+		access, err = NewDirectHTTPAccess(config)
+	} else {
+		access, activation.forwards = nativeForwardFixtureProtocol(t, activation.serving, "success", activation.onUpgrade, true, func(w http.ResponseWriter, r *http.Request) bool {
+			if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/portforward") {
+				return false
+			}
+			handler.ServeHTTP(w, r)
+			return true
+		})
+	}
 	if err != nil {
 		t.Fatal("closed behavior transport unavailable")
 	}
@@ -621,14 +724,15 @@ func testBaselineBehaviorWholeProviderWithProtocol(t *testing.T, scenario string
 		engine.baseline.runtimeGuard = guard // Nonrecursion instrument ONLY.
 		defer func() { engine.baseline.runtimeGuard = nil }()
 	}
-	behavior, err := provider.newBaselineBehavior(t.Context(), snapshot)
+	constructorContext, constructorDiagnostic := WithLifecycleDiagnostic(t.Context())
+	behavior, err := provider.newBaselineBehavior(constructorContext, snapshot)
 	t.Cleanup(behavior.release)
 	wantMembers := 3
 	if precontroller {
 		wantMembers = 0
 	}
 	if err != nil || behavior == nil || len(behavior.family.pods) != wantMembers || len(behavior.parents) != wantMembers {
-		t.Fatal("whole original behavior constructor refused authentic synthetic chains")
+		t.Fatalf("whole original behavior constructor refused authentic synthetic chains: %s", constructorDiagnostic.BoundarySnapshot())
 	}
 	var receiptName string
 	if pendingService || pendingParent {
@@ -680,10 +784,15 @@ func testBaselineBehaviorWholeProviderWithProtocol(t *testing.T, scenario string
 		t.Fatal("intended whole-driver fault was never reached")
 	}
 	wantProbes, wantPodProbes := 97, 6
+	wantPositives, wantRules := 3, 6
+	if activation != nil {
+		wantProbes, wantPodProbes = 97*activation.proofs, 6*activation.proofs
+		wantPositives, wantRules = 3*activation.proofs, activation.rulePasses
+	}
 	if precontroller {
 		wantProbes, wantPodProbes = 82, 0
 	}
-	if positive && (probes != wantProbes || positives != 3 || podProbes != wantPodProbes || rules["arcadectl-controller"] != 6 || rules["arcadectl-destroy-controller"] != 6) {
+	if positive && (probes != wantProbes || positives != wantPositives || podProbes != wantPodProbes || rules["arcadectl-controller"] != wantRules || rules["arcadectl-destroy-controller"] != wantRules) {
 		t.Fatal("healthy driver omitted finite behavioral rows or closing rule passes")
 	}
 	if positive {
@@ -698,10 +807,28 @@ func testBaselineBehaviorWholeProviderWithProtocol(t *testing.T, scenario string
 				delete(want, absent)
 			}
 		}
+		if activation != nil {
+			for row, count := range want {
+				if activation.proofs == 0 {
+					delete(want, row)
+				} else {
+					want[row] = count * activation.proofs
+				}
+			}
+		}
 		if !reflect.DeepEqual(want, rows) {
 			t.Fatal("behavior driver request multiset differs from independent literal protocol")
 		}
 		wantDetailed := testBaselineBehaviorLiteralRows(v.objects.Pods.Items)
+		if activation != nil {
+			for row, count := range wantDetailed {
+				if activation.proofs == 0 {
+					delete(wantDetailed, row)
+				} else {
+					wantDetailed[row] = count * activation.proofs
+				}
+			}
+		}
 		if precontroller {
 			for _, method := range []string{"PUT", "PATCH", "DELETE"} {
 				for _, name := range []string{"arcadectl-controller", "arcadectl-api", "arcadectl-destroy-controller"} {

@@ -282,7 +282,22 @@ func (l *Lifecycle) checkOperationOwned(ctx context.Context, kind Checkpoint, s 
 			return ErrLifecycle
 		}
 	}
-	if err := l.checks.Check(ctx, LifecycleCheck{kind, s, mode, plan, opts}); err != nil {
+	request := LifecycleCheck{kind, s, mode, plan, opts}
+	var activationOwner *activationEpoch
+	var activationProof *activationEvidence
+	if checks, ok := l.checks.(*clusterLifecycleChecks); ok && kind == TargetAuthenticated && l.engine.baseline != nil {
+		// Only the actual baseline-bound production composition can transfer
+		// this private owner. A refusal never falls back to the public verifier.
+		if checks.prerequisites == nil || checks.prerequisites.engine != l.engine {
+			return ErrLifecycle
+		}
+		var err error
+		activationOwner, activationProof, err = checks.beginTargetEpoch(ctx, request)
+		if err != nil {
+			return ErrLifecycle
+		}
+		defer activationOwner.release()
+	} else if err := l.checks.Check(ctx, request); err != nil {
 		return ErrLifecycle // never expose provider/cluster/private-file details
 	}
 	if kind == RetainedAdmission && l.engine.verifyRetiredAdmission(ctx, s) != nil {
@@ -303,6 +318,9 @@ func (l *Lifecycle) checkOperationOwned(ctx context.Context, kind Checkpoint, s 
 	_, err := l.original(ctx, s)
 	if err == nil && secrets != nil {
 		err = secrets.confirm(s)
+	}
+	if err == nil && activationOwner != nil && activationOwner.finish(ctx, activationProof) != nil {
+		err = ErrLifecycle
 	}
 	return err
 }

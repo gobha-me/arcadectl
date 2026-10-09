@@ -27,6 +27,7 @@ const (
 type activationEpoch struct {
 	self      *activationEpoch
 	phase     atomic.Uint32
+	authPhase atomic.Uint32
 	target    *ClusterTargetAuthenticated
 	request   LifecycleCheck
 	baseline  *ClusterSecurityBaseline

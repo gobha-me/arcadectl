@@ -28,6 +28,13 @@ import (
 // Test-only stock server proves wire compatibility independently of our frame
 // state machine. Production imports only its bounded codec, not this manager.
 func nativeForwardFixture(t *testing.T, x *servingFixture, mode string, onUpgrade func(), readHandlers ...func(http.ResponseWriter, *http.Request) bool) (*HTTPAccess, *atomic.Int32) {
+	return nativeForwardFixtureProtocol(t, x, mode, onUpgrade, false, readHandlers...)
+}
+
+// Complete baseline protocols additionally need their literal POST/PUT/PATCH/
+// DELETE dry-runs dispatched before the fixed forwarding route. Existing
+// forwarding fixtures retain their GET-only handler scope.
+func nativeForwardFixtureProtocol(t *testing.T, x *servingFixture, mode string, onUpgrade func(), completeProtocol bool, readHandlers ...func(http.ResponseWriter, *http.Request) bool) (*HTTPAccess, *atomic.Int32) {
 	t.Helper()
 	posts := &atomic.Int32{}
 	var mu sync.Mutex
@@ -53,7 +60,7 @@ func nativeForwardFixture(t *testing.T, x *servingFixture, mode string, onUpgrad
 			}
 		}
 		for _, read := range readHandlers {
-			if r.Method == http.MethodGet && read(w, r) {
+			if (r.Method == http.MethodGet || completeProtocol) && read(w, r) {
 				return
 			}
 		}
@@ -207,6 +214,9 @@ func nativeForwardFixture(t *testing.T, x *servingFixture, mode string, onUpgrad
 	})
 	config := serverConfig(server)
 	config.BearerToken = fakeKubeToken
+	if completeProtocol {
+		config.QPS, config.Burst = 1000, 2000 // In-process complete responder only.
+	}
 	if mode == "basic-auth" {
 		config.BearerToken = ""
 		config.Username, config.Password = "test-only-user", "test-only-password"
@@ -223,7 +233,13 @@ func nativeForwardFixture(t *testing.T, x *servingFixture, mode string, onUpgrad
 			t.Fatal(err)
 		}
 	}
-	provider, err := NewHTTPAccess(config)
+	var provider *HTTPAccess
+	var err error
+	if completeProtocol {
+		provider, err = NewDirectHTTPAccess(config)
+	} else {
+		provider, err = NewHTTPAccess(config)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
