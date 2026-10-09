@@ -134,6 +134,10 @@ func TestAdmissionPhaseTraceClosedStagesAndNoArbitraryValues(t *testing.T) {
 		admissionPhasePreviewPostWitness: "preview-post-witness", admissionPhasePreviewPostReadiness: "preview-post-readiness",
 		admissionPhasePreviewWholeShape: "preview-whole-shape", admissionPhasePreviewAccepted: "preview-refused-after-accepted",
 		admissionPhasePreviewObservation: "preview-whole-observation-changed", admissionPhasePreviewSeal: "preview-original-seal-refused",
+		admissionPhaseInitialCold: "initial-cold-evidence", admissionPhaseInitialControllers: "initial-controller-families",
+		admissionPhaseInitialRows: "initial-whole-rows", admissionPhaseInitialPublic: "initial-public-inventory",
+		admissionPhaseInitialAccounts: "initial-service-accounts", admissionPhaseInitialMembership: "initial-membership-correlation",
+		admissionPhaseInitialServing: "initial-api-serving",
 	}
 	for value := range 256 {
 		step := admissionPhaseStep(value)

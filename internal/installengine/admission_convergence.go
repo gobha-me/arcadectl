@@ -36,6 +36,7 @@ func (a *ClusterAdmission) waitInitialPhase(ctx context.Context, request Lifecyc
 		if api == nil || template == nil || p.engine.fixtureFence(request.Snapshot) != nil || p.original(ctx, request.Snapshot) != nil {
 			return nil, ErrAdmission
 		}
+		traceAdmissionPhase(ctx, admissionPhaseInitialServing, -1)
 		if p.waitOriginalServingStage(ctx, request.Snapshot, true) != nil {
 			return nil, ErrAdmission
 		}

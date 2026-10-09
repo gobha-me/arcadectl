@@ -171,6 +171,75 @@ func TestAdmissionInitialPhaseLeaderMutationRefused(t *testing.T) {
 	}
 }
 
+// Intrinsic time/identity refusals are independent of the client/server clock
+// ordering regression exercised through the complete HTTPS initializer above.
+func TestAdmissionInitialPhaseLeaderClockDomainsRemainBounded(t *testing.T) {
+	plan := fixturePlan(t)
+	v, ns, lists := readyControllerFixture(t, plan)
+	d, err := installstate.Decode([]byte(ns.Annotations[installstate.Annotation]), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	states, _, err := admissionClassifyObservationTest(t, v, ns, lists, d, plan, "")
+	if err != nil || !states[0].Executing || len(states[0].Pods) != 1 {
+		t.Fatal("original leader chain unavailable")
+	}
+	lease := phaseLeaderFixture(states[0].Pods[0], 0, now)
+	lease.CreationTimestamp = metav1.NewTime(now.Add(-10 * time.Second).Truncate(time.Second))
+	acquire := metav1.NewMicroTime(lease.CreationTimestamp.Add(-time.Second))
+	lease.Spec.AcquireTime = &acquire
+	original, err := capturePhaseLeader(ns.Name, &lease, states[0], now)
+	if err != nil {
+		t.Fatal("original client-acquired-before-server-created leader refused")
+	}
+	for _, scenario := range []string{"nil-acquire", "zero-acquire", "non-utc-acquire", "submicro-acquire", "acquire-after-renew", "future-creation", "future-renew", "stale-renew", "foreign-holder", "changed-acquisition", "changed-creation"} {
+		t.Run(scenario, func(t *testing.T) {
+			changed := lease.DeepCopy()
+			wantValid := false
+			switch scenario {
+			case "nil-acquire":
+				changed.Spec.AcquireTime = nil
+			case "zero-acquire":
+				changed.Spec.AcquireTime = &metav1.MicroTime{}
+			case "non-utc-acquire":
+				changed.Spec.AcquireTime.Time = changed.Spec.AcquireTime.In(time.FixedZone("foreign", 3600))
+			case "submicro-acquire":
+				changed.Spec.AcquireTime.Time = changed.Spec.AcquireTime.Add(time.Nanosecond)
+			case "acquire-after-renew":
+				changed.Spec.AcquireTime.Time = changed.Spec.RenewTime.Add(time.Microsecond)
+			case "future-creation":
+				changed.CreationTimestamp.Time = now.Add(2 * time.Second)
+			case "future-renew":
+				changed.Spec.RenewTime.Time = now.Add(2 * time.Second)
+			case "stale-renew":
+				// Isolate freshness, not the independent acquire <= renew rule.
+				changed.Spec.AcquireTime.Time = now.Add(-20 * time.Second)
+				changed.Spec.RenewTime.Time = now.Add(-16 * time.Second)
+			case "foreign-holder":
+				changed.Spec.HolderIdentity = ptr.To("foreign-pod_10000000-0000-4000-8000-000000000099")
+			case "changed-acquisition":
+				changed.Spec.AcquireTime.Time = changed.Spec.AcquireTime.Add(time.Microsecond)
+				wantValid = true
+			case "changed-creation":
+				changed.CreationTimestamp.Time = changed.CreationTimestamp.Add(-time.Second)
+				wantValid = true
+			}
+			observed, err := capturePhaseLeader(ns.Name, changed, states[0], now)
+			if (err == nil) != wantValid {
+				t.Fatal("leader clock/identity intrinsic refusal changed")
+			}
+			if wantValid {
+				before := fixturePhaseBaseline{Version: "admission-phase-v1", Leaders: []fixturePhaseLeader{original}}
+				after := fixturePhaseBaseline{Version: "admission-phase-v1", Leaders: []fixturePhaseLeader{observed}}
+				if samePhaseBaseline(before, after) {
+					t.Fatal("immutable acquisition/server creation changed between original reads")
+				}
+			}
+		})
+	}
+}
+
 func TestAdmissionInitialPhaseImmutableCompanionAndClosedShape(t *testing.T) {
 	f := newFixture(t, false)
 	ledger, err := f.engine.prepareFixtureLedger(t.Context(), f.snapshot)

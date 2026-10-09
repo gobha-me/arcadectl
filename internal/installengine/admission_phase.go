@@ -181,6 +181,7 @@ func (a *ClusterAdmission) captureInitialPhase(ctx context.Context, request Life
 	if err != nil {
 		return nil, ErrAdmission
 	}
+	traceAdmissionPhase(ctx, admissionPhaseConfigured, -1)
 	before, err := a.configured(ctx, request)
 	if err != nil {
 		return nil, ErrAdmission
@@ -189,19 +190,24 @@ func (a *ClusterAdmission) captureInitialPhase(ctx context.Context, request Life
 	coldRequest.Checkpoint = ColdSafety
 	var lastAccounts *phaseServiceAccounts
 	collect := func() (*coldWorldTuple, [32]byte, fixturePhaseBaseline, error) {
+		traceAdmissionPhase(ctx, admissionPhaseInitialCold, -1)
 		tuple, observation, _, hash, err := cold.collectEvidence(ctx, coldRequest)
 		if err != nil {
 			return nil, [32]byte{}, fixturePhaseBaseline{}, ErrAdmission
 		}
+		traceAdmissionPhase(ctx, admissionPhaseInitialControllers, -1)
 		families, err := a.prerequisites.engine.admissionControllers(ctx, request, observation)
 		if err != nil {
 			return nil, [32]byte{}, fixturePhaseBaseline{}, ErrAdmission
 		}
+		traceAdmissionPhase(ctx, admissionPhaseInitialRows, -1)
 		baseline, err := capturePhaseBaseline(observation, families, time.Now().UTC())
 		if err == nil {
+			traceAdmissionPhase(ctx, admissionPhaseInitialPublic, -1)
 			baseline.Public, err = a.phasePublicInventory(ctx, request)
 		}
 		if err == nil && a.prerequisites.engine.baseline != nil {
+			traceAdmissionPhase(ctx, admissionPhaseInitialAccounts, -1)
 			accounts, readErr := a.collectPhaseServiceAccounts(ctx, request)
 			if readErr != nil {
 				err = ErrFixtures
@@ -217,14 +223,20 @@ func (a *ClusterAdmission) captureInitialPhase(ctx context.Context, request Life
 		return nil, ErrAdmission
 	}
 	_, secondHash, second, err := collect()
-	if err != nil || firstHash != secondHash || !samePhaseBaseline(first, second) {
+	if err != nil {
 		return nil, ErrAdmission
 	}
+	traceAdmissionPhase(ctx, admissionPhaseInitialMembership, -1)
+	if firstHash != secondHash || !samePhaseBaseline(first, second) {
+		return nil, ErrAdmission
+	}
+	traceAdmissionPhase(ctx, admissionPhaseFinalConfigured, -1)
 	after, err := a.configured(ctx, request)
 	if err != nil || !sameAdmissionConfiguration(before, after) || a.prerequisites.original(ctx, request.Snapshot) != nil {
 		return nil, ErrAdmission
 	}
 	if lastAccounts != nil {
+		traceAdmissionPhase(ctx, admissionPhaseInitialAccounts, -1)
 		closing, err := a.collectPhaseServiceAccounts(ctx, request)
 		if err != nil || !samePhaseServiceAccounts(lastAccounts, closing) || a.prerequisites.original(ctx, request.Snapshot) != nil {
 			return nil, ErrAdmission
@@ -232,6 +244,7 @@ func (a *ClusterAdmission) captureInitialPhase(ctx context.Context, request Life
 	}
 	// The second read is the latest accepted renewal/RV/managed-field floor.
 	// Sealing the first would permit regression to an already superseded read.
+	traceAdmissionPhase(ctx, admissionPhaseComplete, -1)
 	return &initialAdmissionPhase{request.Snapshot, worlds, second}, nil
 }
 
@@ -338,7 +351,11 @@ func capturePhaseBaseline(o *installobserve.Observation, families [2]admissionCo
 
 func capturePhaseLeader(namespace string, lease *coordinationv1.Lease, state admissionControllerState, now time.Time) (fixturePhaseLeader, error) {
 	var zero fixturePhaseLeader
-	if !state.Executing || state.Deployment == nil || !installsafety.ControllerElectionBookkeeping(namespace, lease) || lease.CreationTimestamp.After(now.Add(time.Second)) || lease.Spec.AcquireTime.Before(&metav1.MicroTime{Time: lease.CreationTimestamp.Time}) || lease.Spec.RenewTime.After(now.Add(time.Second)) || now.Sub(lease.Spec.RenewTime.Time) > 15*time.Second {
+	// client-go samples acquisition BEFORE requesting Lease GET/CREATE; the
+	// server assigns creation afterward. These clocks have no valid ordering
+	// constraint. Bookkeeping still requires acquire <= renew; acquisition and
+	// server creation stay in the immutable whole-row hash across renewals.
+	if !state.Executing || state.Deployment == nil || !installsafety.ControllerElectionBookkeeping(namespace, lease) || lease.CreationTimestamp.After(now.Add(time.Second)) || lease.Spec.RenewTime.After(now.Add(time.Second)) || now.Sub(lease.Spec.RenewTime.Time) > 15*time.Second {
 		return zero, ErrAdmission
 	}
 	var podUID, setUID types.UID

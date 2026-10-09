@@ -162,10 +162,31 @@ const (
 	admissionPhasePreviewAccepted
 	admissionPhasePreviewObservation
 	admissionPhasePreviewSeal
+	admissionPhaseInitialCold
+	admissionPhaseInitialControllers
+	admissionPhaseInitialRows
+	admissionPhaseInitialPublic
+	admissionPhaseInitialAccounts
+	admissionPhaseInitialMembership
+	admissionPhaseInitialServing
 )
 
 func (step admissionPhaseStep) String() string {
 	switch step {
+	case admissionPhaseInitialCold:
+		return "initial-cold-evidence"
+	case admissionPhaseInitialControllers:
+		return "initial-controller-families"
+	case admissionPhaseInitialRows:
+		return "initial-whole-rows"
+	case admissionPhaseInitialPublic:
+		return "initial-public-inventory"
+	case admissionPhaseInitialAccounts:
+		return "initial-service-accounts"
+	case admissionPhaseInitialMembership:
+		return "initial-membership-correlation"
+	case admissionPhaseInitialServing:
+		return "initial-api-serving"
 	case admissionPhasePreviewUnavailable:
 		return "preview-unavailable"
 	case admissionPhasePreviewReadiness:
@@ -305,7 +326,7 @@ func validAdmissionPhasePosition(step admissionPhaseStep, slot int) bool {
 	if step == admissionPhaseNamedGet || step == admissionPhaseWholeFixture {
 		return slot >= 0 && slot < fixtureMaxSlots
 	}
-	return step >= admissionPhaseOriginal && step <= admissionPhasePreviewSeal && slot == -1
+	return step >= admissionPhaseOriginal && step <= admissionPhaseInitialServing && slot == -1
 }
 
 func traceAdmissionPhase(ctx context.Context, step admissionPhaseStep, slot int) {
