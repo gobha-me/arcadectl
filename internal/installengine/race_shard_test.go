@@ -22,9 +22,12 @@ func TestInstallerRaceShardsDiscoverUnicodeTestsAndKeepCompleteTrees(t *testing.
 		t.Fatal(err)
 	}
 	names := []string{"TestAlpha", "TestÉclair", "TestΓamma", "ExampleRead", "FuzzCorpus", "TestZulu", "Test_123", "TestEight", "TestNine", "TestTen", "TestEleven", "TestTwelve", "TestThirteen", "TestFourteen", "TestFifteen", "TestSixteen", "TestSeventeen", "TestEighteen", "TestNineteen"}
+	for i := 20; i <= 33; i++ {
+		names = append(names, "TestExtra"+strconv.Itoa(i))
+	}
 	stub := `go() {
   if [[ "$*" == 'test -race -p 1 -list . ./internal/installengine' ]]; then
-    printf '%s\n' TestAlpha TestÉclair TestΓamma ExampleRead FuzzCorpus TestZulu Test_123 TestEight TestNine TestTen TestEleven TestTwelve TestThirteen TestFourteen TestFifteen TestSixteen TestSeventeen TestEighteen TestNineteen 'ok fake-package 0.001s'
+    printf '%s\n' ` + strings.Join(names, " ") + ` 'ok fake-package 0.001s'
   else
     printf '%s\n' "$*"
   fi
@@ -33,15 +36,17 @@ func TestInstallerRaceShardsDiscoverUnicodeTestsAndKeepCompleteTrees(t *testing.
 export -f go
 exec bash "$@"`
 	combined := []string{}
-	for shard := 0; shard < 8; shard++ {
+	partitions := make([][]string, 32)
+	for shard := 0; shard < 32; shard++ {
 		output, err := exec.Command("bash", "-c", stub, "shard-fixture", script, strconv.Itoa(shard), "--list-only").CombinedOutput()
 		if err != nil {
 			t.Fatalf("shard discovery: %v %s", err, output)
 		}
 		selected := strings.Fields(string(output))
+		partitions[shard] = slices.Clone(selected)
 		combined = append(combined, selected...)
 		for i, name := range selected {
-			if name != names[shard+i*8] {
+			if name != names[shard+i*32] {
 				t.Fatal("wrong round-robin assignment", shard)
 			}
 		}
@@ -49,7 +54,7 @@ exec bash "$@"`
 		if err != nil {
 			t.Fatalf("shard execution: %v %s", err, output)
 		}
-		if !strings.HasPrefix(string(output), fmt.Sprintf("Installer engine race shard %d/8: %d of %d discovered tests\n", shard, len(selected), len(names))) {
+		if !strings.HasPrefix(string(output), fmt.Sprintf("Installer engine race shard %d/32: %d of %d discovered tests\n", shard, len(selected), len(names))) {
 			t.Fatal("reported shard coverage disagreed with actual partition")
 		}
 		pattern := []string{}
@@ -60,12 +65,29 @@ exec bash "$@"`
 			t.Fatal("changed execution flags or unanchored tree selection")
 		}
 	}
+	// Refinement preserves discovery order and only subdivides each original
+	// worker's test trees. It must not combine unrelated formerly passing sets.
+	for parent := 0; parent < 8; parent++ {
+		original := []string{}
+		for i := parent; i < len(names); i += 8 {
+			original = append(original, names[i])
+		}
+		for child := 0; child < 4; child++ {
+			want := []string{}
+			for i := child; i < len(original); i += 4 {
+				want = append(want, original[i])
+			}
+			if !slices.Equal(partitions[parent+child*8], want) {
+				t.Fatal("new worker did not preserve ordered original-shard refinement")
+			}
+		}
+	}
 	slices.Sort(names)
 	slices.Sort(combined)
 	if !slices.Equal(names, combined) {
 		t.Fatal("duplicate or omitted compiled tests")
 	}
-	for _, args := range [][]string{nil, {"-1"}, {"8"}, {"01"}, {"x"}, {"0", "--unreviewed"}, {"0", "--list-only", "extra"}} {
+	for _, args := range [][]string{nil, {"-1"}, {"32"}, {"40"}, {"01"}, {"015"}, {"031"}, {"x"}, {"0", "--unreviewed"}, {"0", "--list-only", "extra"}} {
 		command := exec.Command("bash", append([]string{"-c", "go() { return 93; }\nexport -f go\nexec bash \"$@\"", "invalid-argument-fixture", script}, args...)...)
 		if err := command.Run(); err == nil {
 			t.Fatal("invalid shard arguments accepted")
@@ -83,7 +105,7 @@ exec bash "$@"`
 		}
 	}
 	for _, option := range [][]string{nil, {"--list-only"}} {
-		args := append([]string{"-c", "go() { printf '%s\\n' TestOnly; }\nexport -f go\nexec bash \"$@\"", "empty-assignment-fixture", script, "7"}, option...)
+		args := append([]string{"-c", "go() { printf '%s\\n' TestOnly; }\nexport -f go\nexec bash \"$@\"", "empty-assignment-fixture", script, "31"}, option...)
 		if exec.Command("bash", args...).Run() == nil {
 			t.Fatal("empty assigned shard became a passing gate")
 		}

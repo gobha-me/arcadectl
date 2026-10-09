@@ -135,6 +135,9 @@ const (
 	admissionPhaseGCLeaseCorrelation
 	admissionPhaseGCLeaseSource
 	admissionPhaseGCClosing
+	admissionPhaseGCEventAliasRV
+	admissionPhaseGCEventAliasMetadata
+	admissionPhaseGCGraphBound
 	admissionPhaseComplete
 )
 
@@ -192,6 +195,12 @@ func (step admissionPhaseStep) String() string {
 		return "gc-lease-source"
 	case admissionPhaseGCClosing:
 		return "gc-closing"
+	case admissionPhaseGCEventAliasRV:
+		return "gc-event-alias-rv-conflict"
+	case admissionPhaseGCEventAliasMetadata:
+		return "gc-event-alias-metadata-conflict"
+	case admissionPhaseGCGraphBound:
+		return "gc-metadata-graph-bound"
 	case admissionPhaseComplete:
 		return "complete"
 	}

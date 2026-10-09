@@ -5,14 +5,16 @@
 # Separate CI workers, not concurrent builds inside the developer pod. Discover
 # compiled top-level tests rather than maintaining a prefix allowlist that can
 # silently omit new tests. Each name belongs to exactly one round-robin shard.
+# Thirty-two workers refine the original eight partitions without reordering
+# discovery or splitting subtest trees; each process retains its 20m budget.
 set -euo pipefail
 
-if [[ $# -lt 1 || $# -gt 2 || ! $1 =~ ^[0-7]$ || ${2:-} != "" && ${2:-} != --list-only ]]; then
-  echo 'Usage: bash hack/test-installengine-race-shard.sh {0|1|2|3|4|5|6|7} [--list-only]' >&2
+if [[ $# -lt 1 || $# -gt 2 || ! $1 =~ ^([0-9]|[12][0-9]|3[01])$ || ${2:-} != "" && ${2:-} != --list-only ]]; then
+  echo 'Usage: bash hack/test-installengine-race-shard.sh SHARD [--list-only] (SHARD: 0..31)' >&2
   exit 2
 fi
 engine_race_shard_index=$1
-engine_race_shard_count=8
+engine_race_shard_count=32
 
 engine_race_listing=$(go test -race -p 1 -list . ./internal/installengine)
 mapfile -t engine_race_tests < <(printf '%s\n' "$engine_race_listing" | awk '/^(Test|Example|Fuzz)[^[:space:]]*$/')

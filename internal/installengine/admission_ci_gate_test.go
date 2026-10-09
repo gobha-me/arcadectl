@@ -20,10 +20,13 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	}
 	var workflow struct {
 		Jobs map[string]struct {
-			If       string   `yaml:"if"`
-			Needs    []string `yaml:"needs"`
-			Strategy struct {
-				Matrix struct {
+			If             string            `yaml:"if"`
+			Needs          []string          `yaml:"needs"`
+			TimeoutMinutes int               `yaml:"timeout-minutes"`
+			Env            map[string]string `yaml:"env"`
+			Strategy       struct {
+				FailFast *bool `yaml:"fail-fast"`
+				Matrix   struct {
 					Shard   []int    `yaml:"shard"`
 					Profile []int    `yaml:"profile"`
 					Mode    []string `yaml:"mode"`
@@ -72,8 +75,15 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	}
 	admission := workflow.Jobs["kind-install-admission"]
 	races := workflow.Jobs["install-engine-race"]
-	if !slices.Equal(races.Strategy.Matrix.Shard, []int{0, 1, 2, 3, 4, 5, 6, 7}) || len(races.Strategy.Matrix.Exclude) != 0 {
+	wantShards := make([]int, 32)
+	for i := range wantShards {
+		wantShards[i] = i
+	}
+	if !slices.Equal(races.Strategy.Matrix.Shard, wantShards) || len(races.Strategy.Matrix.Exclude) != 0 {
 		t.Fatal("compiled race test partitions omitted from CI")
+	}
+	if races.TimeoutMinutes != 30 || races.Strategy.FailFast == nil || *races.Strategy.FailFast || races.Env["GOMAXPROCS"] != "2" || races.Env["GOMEMLIMIT"] != "1GiB" {
+		t.Fatal("race workers changed their bounded budgets or cancelled sibling coverage")
 	}
 	raceRun := false
 	for _, step := range races.Steps {
@@ -90,6 +100,16 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 		fullRun = fullRun || step.Run == "make test-kind-install-admission INSTALL_ADMISSION_PROFILE='${{ matrix.profile }}' INSTALL_ADMISSION_MODE='${{ matrix.mode }}'"
 	}
 	gate := workflow.Jobs["go-and-policy"]
+	nativeSuiteRuns := 0
+	for _, step := range gate.Steps {
+		if step.Run == "make test-envtest" {
+			nativeSuiteRuns++
+		}
+	}
+	makefile, err := os.ReadFile("../../Makefile")
+	if err != nil || strings.Count(string(makefile), "go test -tags=envtest -p 1 -timeout=30m -count=1 ./api/v1alpha1 ./internal/controller ./internal/install ./internal/installcontract ./internal/installengine") != 1 || gate.TimeoutMinutes != 45 || nativeSuiteRuns != 1 {
+		t.Fatal("complete fresh API-server suite or its bounded CI envelope changed")
+	}
 	binary := workflow.Jobs["kind-install-binary"]
 	binaryRun := false
 	binaryHistory := false

@@ -67,6 +67,12 @@ func (g *GCReader) DiagnosticStage() string {
 		return "metadata-shape"
 	case gcStageMetadataUIDs:
 		return "metadata-uid-correlation"
+	case gcStageEventAliasRV:
+		return "event-alias-rv-conflict"
+	case gcStageEventAliasMetadata:
+		return "event-alias-metadata-conflict"
+	case gcStageGraphBound:
+		return "metadata-graph-bound"
 	case gcStageLeasePages:
 		return "lease-pages"
 	case gcStageLeaseMembership:
@@ -88,6 +94,9 @@ const (
 	gcStageMetadataPages
 	gcStageMetadataShape
 	gcStageMetadataUIDs
+	gcStageEventAliasRV
+	gcStageEventAliasMetadata
+	gcStageGraphBound
 	gcStageLeasePages
 	gcStageLeaseMembership
 	gcStageLeaseCorrelation
@@ -285,12 +294,21 @@ func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeas
 	// rate limiter before whole-object correlation. Reorder READS only; never
 	// mutate the sealed catalogue, skip a source/page, change the supplied
 	// read limiter/QPS (including the installer's bounded shared default) or weaken
-	// the final fresh discovery/journal barrier. Other sources keep their order.
+	// the final fresh discovery/journal barrier. Read the known Event aliases
+	// adjacently before Leases so unrelated SDK requests do not unnecessarily
+	// separate their exact metadata correlation. This is not an atomic snapshot:
+	// any observed alias mismatch still refuses without retry or normalization.
+	// Preserve canonical order inside each scheduling class and in the result.
 	readOrder := make([]GCResource, 0, len(discovery.resources))
-	for _, last := range []bool{false, true} {
+	for class := range 3 {
 		for _, source := range discovery.resources {
-			lease := source.GVR.Group == "coordination.k8s.io" && source.GVR.Resource == "leases"
-			if lease == last {
+			sourceClass := 0
+			if gcNativeEvent(source) {
+				sourceClass = 1
+			} else if source.GVR.Group == "coordination.k8s.io" && source.GVR.Resource == "leases" {
+				sourceClass = 2
+			}
+			if sourceClass == class {
 				readOrder = append(readOrder, source)
 			}
 		}
@@ -325,11 +343,20 @@ func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeas
 			object := GCObject{source, publicMetadata(m)}
 			g.diagnostic.Store(gcStageMetadataUIDs)
 			if prior, exists := identities[m.UID]; exists && !gcEventAlias(prior, object) {
+				// Fixed diagnostics only: never feed this distinction into
+				// acceptance, a retry decision, or a new collection capability.
+				if gcKnownEventAlias(prior, object) {
+					g.diagnostic.Store(gcStageEventAliasMetadata)
+					if gcEventRVOnlyConflict(prior, object) {
+						g.diagnostic.Store(gcStageEventAliasRV)
+					}
+				}
 				return nil, ErrOwnership
 			}
 			identities[m.UID] = object
 			objects = append(objects, object)
 			if len(objects) > installsafety.MaxOwnerGraphNodes {
+				g.diagnostic.Store(gcStageGraphBound)
 				return nil, ErrRead
 			}
 		}
@@ -390,7 +417,8 @@ func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeas
 		return nil, ErrConcurrent
 	}
 	// Preserve the public observation's original canonical source order despite
-	// scheduling Lease requests last; within-source page/item order is unchanged.
+	// scheduling Event aliases together and Lease requests last; within-source
+	// page/item order is unchanged.
 	slices.SortStableFunc(objects, func(a, b GCObject) int { return strings.Compare(a.Source.GVR.String(), b.Source.GVR.String()) })
 	if rvConflict {
 		*refusal = &LeaseRVConflict{journal: discovery.journal, objects: objects, leases: leases, readAt: leasesReadAt}
@@ -405,8 +433,24 @@ func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeas
 // known cross-GroupResource alias; require identical public metadata and never
 // allow it to mask a conflicting UID/name/owner or duplicate within one source.
 func gcEventAlias(a, b GCObject) bool {
-	return a.Source.Kind == "Event" && b.Source.Kind == "Event" && a.Source.GVR.Resource == "events" && b.Source.GVR.Resource == "events" &&
-		a.Source.GVR.Group != b.Source.GVR.Group && slices.Contains([]string{"", "events.k8s.io"}, a.Source.GVR.Group) && slices.Contains([]string{"", "events.k8s.io"}, b.Source.GVR.Group) && reflect.DeepEqual(a.Metadata, b.Metadata)
+	return gcKnownEventAlias(a, b) && reflect.DeepEqual(a.Metadata, b.Metadata)
+}
+
+func gcNativeEvent(source GCResource) bool {
+	return source.Kind == "Event" && source.GVR.Resource == "events" && slices.Contains([]string{"", "events.k8s.io"}, source.GVR.Group)
+}
+
+func gcKnownEventAlias(a, b GCObject) bool {
+	return gcNativeEvent(a.Source) && gcNativeEvent(b.Source) && a.Source.GVR.Group != b.Source.GVR.Group
+}
+
+// Diagnostic classification of already-refused sanitized metadata only. Keep
+// both observed RVs intact; this helper cannot create successful evidence.
+func gcEventRVOnlyConflict(a, b GCObject) bool {
+	x, y := a.Metadata, b.Metadata
+	return gcKnownEventAlias(a, b) && x.ResourceVersion != y.ResourceVersion &&
+		x.Name == y.Name && x.Namespace == y.Namespace && x.UID == y.UID && x.Generation == y.Generation &&
+		reflect.DeepEqual(x.OwnerReferences, y.OwnerReferences) && reflect.DeepEqual(x.DeletionTimestamp, y.DeletionTimestamp)
 }
 
 // Descendants uses all observed owner UID edges, not kind/controller flags or

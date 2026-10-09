@@ -31,13 +31,14 @@ type gcHTTPFixture struct {
 	afterRead  func(string)
 	wholeFault string
 	wholeReads int
+	eventRV    int
 }
 
 func newGCHTTPFixture(t *testing.T, fault string) *gcHTTPFixture {
 	t.Helper()
-	h := &gcHTTPFixture{f: newFixture(t), fault: fault, reads: map[string]int{}}
+	h := &gcHTTPFixture{f: newFixture(t), fault: fault, reads: map[string]int{}, eventRV: 21}
 	catalogue := gcTestCatalogue(t)
-	if strings.HasPrefix(fault, "lease-last") {
+	if strings.HasPrefix(fault, "lease-last") || fault == "event-between-reads-with-leases" {
 		version := metav1.GroupVersionForDiscovery{GroupVersion: "coordination.k8s.io/v1", Version: "v1"}
 		catalogue.Groups = append(catalogue.Groups, gcGroup{Name: "coordination.k8s.io", Versions: []metav1.GroupVersionForDiscovery{version}, Preferred: version})
 		catalogue.Lists[version.GroupVersion] = metav1.APIResourceList{TypeMeta: metav1.TypeMeta{Kind: "APIResourceList", APIVersion: "v1"}, GroupVersion: version.GroupVersion, APIResources: []metav1.APIResource{{Name: "leases", Kind: "Lease", Namespaced: true, Verbs: metav1.Verbs{"delete", "get", "list", "watch"}}}}
@@ -218,6 +219,7 @@ func newGCHTTPFixture(t *testing.T, fault string) *gcHTTPFixture {
 			}
 		case strings.HasSuffix(path, "/events"):
 			page.Items = append(page.Items, makeObject("event", "event-uid"))
+			page.Items[0].ResourceVersion = strconv.Itoa(h.eventRV)
 			if strings.HasPrefix(path, "/apis/events.k8s.io/") {
 				switch h.fault {
 				case "event-rv":
@@ -233,6 +235,9 @@ func newGCHTTPFixture(t *testing.T, fault string) *gcHTTPFixture {
 		case strings.HasSuffix(path, "/secrets"):
 			if h.fault != "absent-root" {
 				page.Items = append(page.Items, makeObject("root", "root-uid"))
+				if h.fault == "event-foreign-uid" {
+					page.Items[0].UID = "event-uid"
+				}
 			}
 		case strings.HasSuffix(path, "/legacywidgets"):
 			page.Items = append(page.Items, makeObject("bridge", "bridge-uid", metav1.OwnerReference{APIVersion: "v1", Kind: "Secret", Name: "root", UID: "root-uid"}))
@@ -470,29 +475,114 @@ func TestGCReaderDiscoveryRequiresExplicitDecisionFields(t *testing.T) {
 }
 
 func TestGCReaderEventsRequireExactKnownAliasMetadata(t *testing.T) {
-	for _, fault := range []string{"event-identical", "event-rv", "event-owner", "event-name", "event-duplicate"} {
+	for _, fault := range []string{"event-identical", "event-between-reads", "event-between-reads-with-leases", "event-between-aliases", "event-rv", "event-owner", "event-name", "event-duplicate", "event-foreign-uid"} {
 		t.Run(fault, func(t *testing.T) {
 			h := newGCHTTPFixture(t, fault)
+			var order []string
+			eventReads := 0
+			churn := strings.HasPrefix(fault, "event-between-reads")
+			pairLeases := fault == "event-between-reads-with-leases"
+			h.afterRead = func(path string) {
+				if strings.Contains(path, "/namespaces/") {
+					order = append(order, path)
+					if strings.HasSuffix(path, "/events") {
+						eventReads++
+						// An actual update after the first response and before
+						// the second snapshot must still refuse, even adjacent.
+						if fault == "event-between-aliases" && eventReads == 2 {
+							h.eventRV++
+						}
+					}
+					if churn && (strings.HasSuffix(path, "/secrets") || strings.HasSuffix(path, "/legacywidgets") || strings.HasSuffix(path, "/widgets")) {
+						h.eventRV++
+					}
+				}
+			}
 			discovery, err := h.g.Discover(t.Context(), h.f.anchor)
-			if err != nil || len(discovery.Resources()) != 5 {
+			sources := 5
+			if pairLeases {
+				sources++
+			}
+			if err != nil || len(discovery.Resources()) != sources {
 				t.Fatal("complete Event alias catalogue unproved", err)
 			}
-			observation, err := h.g.Collect(t.Context(), discovery)
-			if fault != "event-identical" {
-				if err == nil || observation != nil {
+			original := discovery.Resources()
+			var observation *GCObservation
+			if pairLeases {
+				observation, err = h.g.CollectWithLeases(t.Context(), discovery)
+			} else {
+				observation, err = h.g.Collect(t.Context(), discovery)
+			}
+			if fault != "event-identical" && !churn {
+				if err != ErrOwnership || observation != nil {
 					t.Fatal("conflicting alias or same-source duplicate accepted")
 				}
 				expected := "metadata-uid-correlation"
 				if fault == "event-duplicate" {
 					expected = "metadata-shape"
+				} else if fault == "event-rv" || fault == "event-between-aliases" {
+					expected = "event-alias-rv-conflict"
+				} else if fault == "event-name" || fault == "event-owner" {
+					expected = "event-alias-metadata-conflict"
 				}
 				if h.g.DiagnosticStage() != expected {
 					t.Fatal("Event refusal diagnostic unavailable", h.g.DiagnosticStage())
 				}
+				if fault == "event-between-aliases" && (eventReads != 2 || h.lists != 6 || h.eventRV != 22 || !strings.HasSuffix(order[len(order)-1], "/events") || !strings.HasSuffix(order[len(order)-2], "/events")) {
+					t.Fatal("adjacent alias conflict was retried, separated or normalized")
+				}
 				return
 			}
-			if err != nil || observation == nil || len(observation.Objects()) != 134 || h.lists != 6 {
+			objects, lists := 134, 6
+			if pairLeases {
+				objects += 129
+				lists += 4 // two complete metadata pages plus two whole Lease pages
+			}
+			if err != nil || observation == nil || len(observation.Objects()) != objects || h.lists != lists {
 				t.Fatal("identical known Event alias was not completely observed", err)
+			}
+			if !reflect.DeepEqual(original, discovery.Resources()) {
+				t.Fatal("read scheduling changed the original sealed catalogue")
+			}
+			observed := observation.Objects()
+			for index, object := range observed {
+				if index > 0 && observed[index-1].Source.GVR.String() > object.Source.GVR.String() {
+					t.Fatal("read scheduling changed canonical observation order")
+				}
+			}
+			if churn {
+				events := []int{}
+				for index, path := range order {
+					if strings.HasSuffix(path, "/events") {
+						events = append(events, index)
+					}
+				}
+				if len(events) != 2 || events[1] != events[0]+1 || h.eventRV != 25 {
+					t.Fatal("known Event aliases were separated by unrelated metadata reads", order)
+				}
+				for _, source := range original {
+					prefix := "/apis/" + source.GVR.GroupVersion().String()
+					if source.GVR.Group == "" {
+						prefix = "/api/" + source.GVR.Version
+					}
+					path := prefix + "/namespaces/" + h.f.anchor.Namespace + "/" + source.GVR.Resource
+					pages := 1
+					if source.GVR.Resource == "widgets" {
+						pages = 2
+					} else if source.GVR.Resource == "leases" {
+						pages = 4
+					}
+					if h.reads[path] != pages {
+						t.Fatal("scheduled collection skipped or repeated a source/page", source.GVR, h.reads[path])
+					}
+				}
+				if pairLeases {
+					for _, path := range order[len(order)-4:] {
+						if !strings.HasSuffix(path, "/leases") {
+							t.Fatal("paired Lease reads no longer finish the collection")
+						}
+					}
+				}
 			}
 		})
 	}
@@ -502,6 +592,8 @@ func TestGCReaderDiagnosticClosedStagesAndInvalidAttemptReset(t *testing.T) {
 	labels := map[uint32]string{
 		gcStageOpening: "opening", gcStageMetadataPages: "metadata-pages",
 		gcStageMetadataShape: "metadata-shape", gcStageMetadataUIDs: "metadata-uid-correlation",
+		gcStageEventAliasRV: "event-alias-rv-conflict", gcStageEventAliasMetadata: "event-alias-metadata-conflict",
+		gcStageGraphBound: "metadata-graph-bound",
 		gcStageLeasePages: "lease-pages", gcStageLeaseMembership: "lease-membership",
 		gcStageLeaseCorrelation: "lease-correlation", gcStageLeaseSource: "lease-source",
 		gcStageClosing: "closing", gcStageComplete: "complete",

@@ -88,6 +88,12 @@ func (w *fixtureWire) gcMetadataAttempt(ctx context.Context, pairLeases bool, re
 			step = admissionPhaseGCMetadataShape
 		case "metadata-uid-correlation":
 			step = admissionPhaseGCMetadataUIDs
+		case "event-alias-rv-conflict":
+			step = admissionPhaseGCEventAliasRV
+		case "event-alias-metadata-conflict":
+			step = admissionPhaseGCEventAliasMetadata
+		case "metadata-graph-bound":
+			step = admissionPhaseGCGraphBound
 		case "lease-pages":
 			step = admissionPhaseGCLeasePages
 		case "lease-membership":
