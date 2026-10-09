@@ -106,8 +106,33 @@ func baselineActorPermission(identity *actorWireIdentity, key installstate.Key, 
 }
 
 func (actors *baselineActors) verify(ctx context.Context) error {
+	return actors.verifyWithProbe(ctx, nil)
+}
+
+// Private exact operation, not caller-supplied authorization or a reusable
+// authority. Only probe composes this operation into its fresh full witness.
+type baselineProbeDescriptor struct {
+	actor     admissionActor
+	operation admissionProbeOperation
+	key       installstate.Key
+}
+
+func (actors *baselineActors) verifyWithProbe(ctx context.Context, probe *baselineProbeDescriptor) error {
 	if actors == nil || actors.baseline == nil || ctx == nil || actors.snapshot == nil || len(actors.clients) != 2 {
 		return ErrSecurityBaseline
+	}
+	var operationClient *HTTPAccess
+	var operationPermission authv1.SelfSubjectAccessReviewSpec
+	if probe != nil {
+		operationClient = actors.clients[probe.actor]
+		if operationClient == nil || operationClient.actor == nil || operationClient.actor.actor != probe.actor || operationClient.actor.namespace != actors.snapshot.Anchor().Namespace || operationClient.actor.purpose != baselineAdmissionPurpose {
+			return ErrSecurityBaseline
+		}
+		var err error
+		operationPermission, err = baselineActorPermission(operationClient.actor, probe.key, probe.operation)
+		if err != nil {
+			return ErrSecurityBaseline
+		}
 	}
 	c := actors.baseline
 	if c.engine == nil || c.engine.baseline == nil || c.access == nil || c.engine.access != c.access || !c.access.actorCompatible() {
@@ -123,6 +148,12 @@ func (actors *baselineActors) verify(ctx context.Context) error {
 	}
 	policies, err := c.configured(ctx, actors.snapshot)
 	if err != nil || !reflect.DeepEqual(policies, actors.policies) {
+		return ErrSecurityBaseline
+	}
+	// The exact operation must precede the entire containment catalog. A grant
+	// reached during this SSAR must refuse BEFORE any dry-run is sent, not only
+	// during post-verification. Close original access/configuration afterwards.
+	if probe != nil && operationClient.authorize(ctx, operationPermission) != nil {
 		return ErrSecurityBaseline
 	}
 	for _, actor := range []admissionActor{ordinaryControllerActor, destroyControllerActor} {
@@ -161,13 +192,16 @@ func (actors *baselineActors) verify(ctx context.Context) error {
 // runtime guard. Each request carries fresh actor permission and independent
 // denial of maintenance rights, with original access/configuration brackets.
 func (actors *baselineActors) probe(ctx context.Context, actor admissionActor, operation admissionProbeOperation, object *unstructured.Unstructured, policy, binding, message string) (*unstructured.Unstructured, error) {
-	if actors == nil || ctx == nil || object == nil {
+	if actors == nil || ctx == nil || object == nil || actors.baseline == nil || actors.baseline.access == nil || actors.snapshot == nil {
 		return nil, ErrInvalid
 	}
 	client := actors.clients[actor]
-	if client == nil || client.actor == nil || client.actor.purpose != baselineAdmissionPurpose {
+	if client == nil || client.actor == nil || client.actor.actor != actor || client.actor.namespace != actors.snapshot.Anchor().Namespace || client.actor.purpose != baselineAdmissionPurpose {
 		return nil, ErrInvalid
 	}
+	// Freeze both the exact descriptor and transmitted whole candidate before
+	// discovery/authorization can change a caller's original object pointer.
+	object = object.DeepCopy()
 	key := installstate.Key{APIVersion: object.GetAPIVersion(), Kind: object.GetKind(), Namespace: object.GetNamespace(), Name: object.GetName()}
 	permission, err := baselineActorPermission(client.actor, key, operation)
 	if err != nil {
@@ -179,7 +213,8 @@ func (actors *baselineActors) probe(ctx context.Context, actor admissionActor, o
 	if discoveryErr != nil || !discoveredPermission(discovery, proofPermission{spec: permission, kind: key.Kind}) {
 		return nil, ErrSecurityBaseline
 	}
-	if actors.verify(ctx) != nil || client.authorize(ctx, permission) != nil || actors.verify(ctx) != nil {
+	descriptor := &baselineProbeDescriptor{actor: actor, operation: operation, key: key}
+	if actors.verifyWithProbe(ctx, descriptor) != nil {
 		return nil, ErrSecurityBaseline
 	}
 	result, err := client.probeOperation(ctx, operation, object, policy, binding, message)

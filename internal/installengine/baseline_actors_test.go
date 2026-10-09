@@ -4,6 +4,7 @@
 package installengine
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"github.com/gobha-me/arcadectl/internal/installbaseline"
 	"github.com/gobha-me/arcadectl/internal/installstate"
 	authv1 "k8s.io/api/authorization/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
@@ -26,10 +28,12 @@ import (
 // is inferred from the fake replies.
 func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 	modes := []string{"healthy", "admin-denied", "actor-maintenance-allowed", "actor-cel-maintenance-allowed", "actor-producer-allowed", "negative-review-missing", "actor-operation-denied", "access-replaced", "baseline-drift", "late-access-rv", "late-policy-rv", "review-access-rv", "review-policy-rv", "closing-config-access-rv", "wrong-denial"}
+	modes = append(modes, "operation-access-uid", "operation-access-rv", "operation-policy-rv", "operation-policy-shape", "operation-policy-status", "operation-journal", "operation-namespace-uid", "operation-review-missing", "operation-review-malformed", "operation-canceled", "candidate-mutated", "invalid-actor", "swapped-actor", "foreign-namespace", "unsupported-operation", "wrong-purpose")
 	type grant struct {
-		actor admissionActor
-		row   int
-		late  bool
+		actor     admissionActor
+		row       int
+		late      bool
+		operation bool
 	}
 	grants := map[string]grant{}
 	for _, actor := range []admissionActor{ordinaryControllerActor, destroyControllerActor} {
@@ -39,10 +43,15 @@ func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 				modes = append(modes, mode)
 				grants[mode] = grant{actor: actor, row: index, late: late}
 			}
+			mode := fmt.Sprintf("operation-grant-%s-%d", actor.account(), index)
+			modes = append(modes, mode)
+			grants[mode] = grant{actor: actor, row: index, late: true, operation: true}
 		}
 	}
 	for _, mode := range modes {
 		t.Run(mode, func(t *testing.T) {
+			probeContext, cancelProbe := context.WithCancel(t.Context())
+			defer cancelProbe()
 			f := seedBaselineAccessWitness(t)
 			objects := map[string]*unstructured.Unstructured{}
 			accountPath, policyPath := "", ""
@@ -71,6 +80,9 @@ func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 				_ = unstructured.SetNestedField(objects[policyPath].Object, "Ignore", "spec", "failurePolicy")
 			}
 			var probes atomic.Int32
+			var requests atomic.Int32
+			var candidate *unstructured.Unstructured
+			copiedBeforeTransport := make(chan struct{})
 			var mu sync.Mutex
 			catalog := testBaselineContainmentAttributes(f.plan.Namespace())
 			seen := map[string]map[int]int{}
@@ -80,7 +92,9 @@ func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 				t.Fatal("unit closing configuration route unavailable")
 			}
 			catalogReviews, closingReads := 0, 0
+			operationReviews := 0
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
 				mu.Lock()
 				defer mu.Unlock()
 				w.Header().Set("Content-Type", "application/json")
@@ -173,7 +187,7 @@ func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 							allowed = mode == "actor-maintenance-allowed" ||
 								mode == "actor-cel-maintenance-allowed" && version == "*" && attributes.Namespace == f.plan.Namespace() ||
 								mode == "actor-producer-allowed" && version == "*" && attributes.Namespace == "kube-system" && attributes.Name == "job-controller"
-							if change, ok := grants[mode]; ok && change.actor == matchedActor && change.row == matchedRow && (!change.late || probes.Load() > 0) {
+							if change, ok := grants[mode]; ok && change.actor == matchedActor && change.row == matchedRow && (!change.late || !change.operation && probes.Load() > 0 || change.operation && operationReviews > 0) {
 								allowed = true
 							}
 							if mode == "review-access-rv" {
@@ -184,6 +198,47 @@ func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 							}
 						} else {
 							allowed = mode != "actor-operation-denied"
+							if !reflect.DeepEqual(*attributes, authv1.ResourceAttributes{Group: "batch", Version: "v1", Resource: "jobs", Verb: "create", Namespace: f.plan.Namespace()}) {
+								t.Error("exact operation review widened its literal tuple")
+							}
+							operationReviews++
+							switch mode {
+							case "operation-access-uid":
+								objects[accountPath].SetUID("foreign-operation-access")
+							case "operation-access-rv":
+								objects[accountPath].SetResourceVersion("9000")
+							case "operation-policy-rv":
+								objects[policyPath].SetResourceVersion("9000")
+							case "operation-policy-shape":
+								_ = unstructured.SetNestedField(objects[policyPath].Object, "Ignore", "spec", "failurePolicy")
+							case "operation-policy-status":
+								_ = unstructured.SetNestedField(objects[policyPath].Object, int64(0), "status", "observedGeneration")
+							case "operation-journal", "operation-namespace-uid":
+								ns, err := f.access.client.CoreV1().Namespaces().Get(r.Context(), f.plan.Namespace(), metav1.GetOptions{})
+								if err != nil {
+									t.Error("operation drift fixture unavailable")
+									return
+								}
+								if mode == "operation-journal" {
+									ns.ResourceVersion = "9000"
+								} else {
+									ns.UID = "foreign-operation-namespace"
+								}
+								// Deliberate external drift, not the fixture's fenced
+								// installer CAS reactor (which must reject this edit).
+								if err := f.access.client.Tracker().Update(corev1.SchemeGroupVersion.WithResource("namespaces"), ns, ""); err != nil {
+									t.Error("operation drift fixture refused")
+								}
+							case "operation-canceled":
+								cancelProbe()
+							case "candidate-mutated":
+								// Transport handoff supplies an explicit happens-before
+								// edge from the candidate copy to this hostile caller edit.
+								<-copiedBeforeTransport
+								candidate.SetName("changed-after-authorization")
+								candidate.SetNamespace("foreign-after-authorization")
+								_ = unstructured.SetNestedField(candidate.Object, false, "spec", "suspend")
+							}
 						}
 					}
 					body, _ := json.Marshal(review)
@@ -192,6 +247,12 @@ func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 					fields["status"] = map[string]any{"allowed": allowed}
 					if mode == "negative-review-missing" && r.Header.Get("Impersonate-User") != "" && attributes.Verb == "impersonate" {
 						fields["status"] = map[string]any{}
+					}
+					if attributes.Verb == "create" && mode == "operation-review-missing" {
+						fields["status"] = map[string]any{}
+					}
+					if attributes.Verb == "create" && mode == "operation-review-malformed" {
+						fields["status"] = map[string]any{"allowed": "true"}
 					}
 					_ = json.NewEncoder(w).Encode(fields)
 					return
@@ -203,6 +264,10 @@ func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 					var object unstructured.Unstructured
 					if json.NewDecoder(r.Body).Decode(&object.Object) != nil {
 						t.Error("baseline probe body unavailable")
+					}
+					want := map[string]any{"apiVersion": "batch/v1", "kind": "Job", "metadata": map[string]any{"name": "inert-unit-probe", "namespace": f.plan.Namespace()}, "spec": map[string]any{"suspend": true}}
+					if !reflect.DeepEqual(object.Object, want) {
+						t.Error("dry-run changed frozen original whole candidate")
 					}
 					key := installstate.Key{APIVersion: "batch/v1", Kind: "Job", Namespace: f.plan.Namespace(), Name: object.GetName()}
 					policy := "arcadectl-identity-template-" + f.plan.Namespace()
@@ -259,23 +324,71 @@ func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 			// Independent table counts catch omitted producers and actors;
 			// testing only whichever rows production chooses is circular.
 			mu.Lock()
+			before := map[string]map[int]int{}
 			for _, actor := range []admissionActor{ordinaryControllerActor, destroyControllerActor} {
 				user := "system:serviceaccount:" + f.plan.Namespace() + ":" + actor.account()
+				before[user] = map[int]int{}
 				for index := range catalog {
 					if seen[user][index] == 0 {
 						t.Error("baseline factory omitted a literal containment row or actor")
 					}
+					before[user][index] = seen[user][index]
 				}
 			}
 			mu.Unlock()
-			object := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "batch/v1", "kind": "Job", "metadata": map[string]any{"name": "inert-unit-probe", "namespace": f.plan.Namespace()}}}
+			candidate = &unstructured.Unstructured{Object: map[string]any{"apiVersion": "batch/v1", "kind": "Job", "metadata": map[string]any{"name": "inert-unit-probe", "namespace": f.plan.Namespace()}, "spec": map[string]any{"suspend": true}}}
+			actor, operation := ordinaryControllerActor, probeCreateOperation
+			invalid := false
+			switch mode {
+			case "invalid-actor":
+				actor, invalid = admissionActor(255), true
+			case "swapped-actor":
+				actors.clients[ordinaryControllerActor], invalid = actors.clients[destroyControllerActor], true
+			case "foreign-namespace":
+				candidate.SetNamespace("foreign")
+				invalid = true
+			case "unsupported-operation":
+				operation, invalid = probeDeletePVCOperation, true
+			case "wrong-purpose":
+				actors.clients[ordinaryControllerActor].actor.purpose, invalid = runtimeAdmissionPurpose, true
+			case "candidate-mutated":
+				client := actors.clients[ordinaryControllerActor]
+				copyClient := *client.client
+				inner := copyClient.Transport
+				var once sync.Once
+				copyClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+					once.Do(func() { close(copiedBeforeTransport) })
+					return inner.RoundTrip(request)
+				})
+				client.client = &copyClient
+			}
+			beforeRequests := requests.Load()
 			policy := "arcadectl-identity-template-" + f.plan.Namespace()
-			_, err = actors.probe(t.Context(), ordinaryControllerActor, probeCreateOperation, object, policy, policy, installbaseline.DenialMessage)
-			if (err == nil) != (mode == "healthy") || err != nil && strings.Contains(err.Error(), "CANARY") || probes.Load() > 1 {
+			_, err = actors.probe(probeContext, actor, operation, candidate, policy, policy, installbaseline.DenialMessage)
+			positive := mode == "healthy" || mode == "candidate-mutated"
+			if (err == nil) != positive || err != nil && strings.Contains(err.Error(), "CANARY") || probes.Load() > 1 {
 				t.Fatal("baseline probe accepted changed authority, wrong denial or replay")
 			}
-			if mode == "actor-operation-denied" && probes.Load() != 0 || mode != "actor-operation-denied" && probes.Load() != 1 {
+			zeroDryRuns := invalid || mode == "actor-operation-denied" || strings.HasPrefix(mode, "operation-")
+			if zeroDryRuns && probes.Load() != 0 || !zeroDryRuns && probes.Load() != 1 {
 				t.Fatal("unproved actor operation reached wire or proved dry-run was omitted")
+			}
+			if invalid && (err != ErrInvalid || requests.Load() != beforeRequests) {
+				t.Fatal("invalid private tuple reached HTTP")
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if !invalid && operationReviews != 1 {
+				t.Fatal("exact operation review omitted or repeated", operationReviews)
+			}
+			if positive {
+				for user, rows := range before {
+					for row, count := range rows {
+						if seen[user][row] != count+2 {
+							t.Error("healthy probe omitted pre/post literal containment row", user, row)
+						}
+					}
+				}
 			}
 		})
 	}
