@@ -140,6 +140,17 @@ func testBaselineBehaviorWholeProvider(t *testing.T, scenario string) {
 		}
 		f = seedBaselineAccessWitnessWithPlans(t, plans...)
 	}
+	// Keep synthetic discovery independently pinned to each supported server
+	// profile. Transition fixtures use 1.37, not the default 1.35 fixture.
+	var serverVersion map[string]any
+	switch f.plan.Profile().KubernetesVersion {
+	case "1.35.8":
+		serverVersion = map[string]any{"major": "1", "minor": "35", "gitVersion": "v1.35.8"}
+	case "1.37.0":
+		serverVersion = map[string]any{"major": "1", "minor": "37", "gitVersion": "v1.37.0"}
+	default:
+		t.Fatal("whole provider fixture has no independently pinned server version")
+	}
 	v := newBaselineDescendantsFixtureWithPlans(t, plans...)
 	d := f.snapshot.Document()
 	objects := map[installstate.Key]*unstructured.Unstructured{}
@@ -351,7 +362,7 @@ func testBaselineBehaviorWholeProvider(t *testing.T, scenario string) {
 				t.Error("behavior actor acquired generic GET")
 			}
 			if r.URL.Path == "/version" {
-				_ = json.NewEncoder(w).Encode(map[string]any{"major": "1", "minor": "35", "gitVersion": "v" + f.plan.Profile().KubernetesVersion})
+				_ = json.NewEncoder(w).Encode(serverVersion)
 				return
 			}
 			if r.URL.Path == "/api/v1/namespaces/"+d.Namespace {
