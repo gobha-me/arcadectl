@@ -273,31 +273,12 @@ func runKindAPILifecycle(t *testing.T, f kindAPILifecycleFixture) {
 		}
 		return result
 	}
-	// Kind intentionally has no cloud load-balancer provider. This test-only
-	// admin fixture supplies the owned Service endpoint; the API never does it.
-	provideEndpoint := func() {
-		service, err := f.cluster.CoreV1().Services(namespace).Get(f.ctx, name, metav1.GetOptions{})
-		if apierrors.IsNotFound(err) {
-			return
-		}
-		if err != nil {
-			t.Fatal("owned Service read unavailable")
-		}
-		if service.Labels["app.kubernetes.io/instance"] != name || service.Spec.ClusterIP == "" || service.Spec.ClusterIP == "None" {
-			t.Fatal("unexpected lifecycle Service identity")
-		}
-		if len(service.Status.LoadBalancer.Ingress) == 1 && service.Status.LoadBalancer.Ingress[0].IP == service.Spec.ClusterIP {
-			return
-		}
-		service.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{IP: service.Spec.ClusterIP}}
-		if _, err := f.cluster.CoreV1().Services(namespace).UpdateStatus(f.ctx, service, metav1.UpdateOptions{}); err != nil {
-			t.Fatal("test-only load-balancer endpoint unavailable")
-		}
-	}
+	// Kind has no cloud load-balancer provider. Only endpoint-producing actions
+	// use the test-only owned status helper; stop/decommission never write it.
+	var endpointServerUID types.UID
 	waitOperation := func(id string) adminv1.Operation {
 		var operation adminv1.Operation
 		waitKindAPI(t, f.ctx, func() bool {
-			provideEndpoint()
 			result := request("GET", "/v1/operations/"+id, "", "", nil)
 			if result.err || result.status != 200 {
 				t.Fatal("durable operation poll unavailable")
@@ -308,6 +289,21 @@ func runKindAPILifecycle(t *testing.T, f kindAPILifecycleFixture) {
 			}
 			if operation.Action == "server.create" && (operation.Child == nil || operation.Child.UID == "") {
 				return false
+			}
+			if operation.Action == "server.create" {
+				if operation.Child.Kind != "GameServer" || operation.Child.Name != name || endpointServerUID != "" && endpointServerUID != types.UID(operation.Child.UID) {
+					t.Fatal("endpoint fixture original server receipt changed")
+				}
+				endpointServerUID = types.UID(operation.Child.UID)
+			}
+			if kindEndpointAction(operation.Action) && operation.Phase != "Succeeded" {
+				ready, err := provideOwnedKindEndpoint(f.ctx, f.cluster.CoreV1().Services(namespace), namespace, name, endpointServerUID)
+				if err != nil {
+					t.Fatalf("test-only endpoint action=%s: %s", operation.Action, err)
+				}
+				if !ready {
+					return false
+				}
 			}
 			return operation.Phase == "Succeeded" && operation.ObservedGeneration == operation.Generation && operation.CompletedAt != ""
 		})
