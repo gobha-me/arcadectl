@@ -46,7 +46,18 @@ const (
 type FileIdentity struct {
 	device, inode uint64
 	digest        [32]byte
+	changeTime    unix.Timespec
 }
+
+// An inode number can be recycled after successive atomic replacements.
+// Keep the observed change timestamp as well as its device/inode/content;
+// access-time changes from our own reads must not invalidate the observation.
+// Ctime is not a universally unique inode generation. Protocols requiring
+// stronger replacement fencing must retain an original descriptor witness.
+func fileIdentity(stat unix.Stat_t, body []byte) FileIdentity {
+	return FileIdentity{device: uint64(stat.Dev), inode: stat.Ino, digest: sha256.Sum256(body), changeTime: stat.Ctim}
+}
+
 type Store struct {
 	fd       int
 	mu       sync.Mutex
@@ -158,38 +169,55 @@ func readAt(dir int, name string, max int64, p Protection) ([]byte, FileIdentity
 	return readAtBounded(dir, name, max, p, MaxFileBytes)
 }
 func readAtBounded(dir int, name string, max int64, p Protection, limit int64) ([]byte, FileIdentity, error) {
+	f, body, identity, err := openReadAtBounded(dir, name, max, p, limit)
+	if err != nil {
+		return nil, FileIdentity{}, err
+	}
+	defer f.Close()
+	return body, identity, nil
+}
+
+// Transfer the very descriptor that supplied the bounded read. A caller that
+// retains it prevents its original inode from being recycled between proofs.
+func openReadAtBounded(dir int, name string, max int64, p Protection, limit int64) (*os.File, []byte, FileIdentity, error) {
 	if !validFileLimit(limit) || max < 1 || max > limit || name == "." || name == ".." || strings.ContainsAny(name, "/\x00") {
-		return nil, FileIdentity{}, ErrUnsafe
+		return nil, nil, FileIdentity{}, ErrUnsafe
 	}
 	fd, e := unix.Openat(dir, name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 	if e != nil {
 		if e == unix.ENOENT {
-			return nil, FileIdentity{}, ErrNotFound
+			return nil, nil, FileIdentity{}, ErrNotFound
 		}
-		return nil, FileIdentity{}, ErrUnsafe
+		return nil, nil, FileIdentity{}, ErrUnsafe
 	}
 	f := os.NewFile(uintptr(fd), "private-file")
-	defer f.Close()
+	transferred := false
+	defer func() {
+		if !transferred {
+			_ = f.Close()
+		}
+	}()
 	var before, after unix.Stat_t
 	if unix.Fstat(fd, &before) != nil {
-		return nil, FileIdentity{}, ErrUnsafe
+		return nil, nil, FileIdentity{}, ErrUnsafe
 	}
 	safe := privateStat(&before)
 	if p == TrustedPublic {
 		safe = before.Mode&unix.S_IFMT == unix.S_IFREG && (before.Uid == 0 || before.Uid == uint32(os.Geteuid())) && before.Mode&0o022 == 0 && before.Nlink == 1
 	}
 	if !safe || before.Size < 0 || before.Size > max {
-		return nil, FileIdentity{}, ErrUnsafe
+		return nil, nil, FileIdentity{}, ErrUnsafe
 	}
 	b, e := io.ReadAll(io.LimitReader(f, max+1))
 	if e != nil || int64(len(b)) > max || unix.Fstat(fd, &after) != nil {
-		return nil, FileIdentity{}, ErrUnsafe
+		return nil, nil, FileIdentity{}, ErrUnsafe
 	}
 	before.Atim = after.Atim
 	if before != after {
-		return nil, FileIdentity{}, ErrUnsafe
+		return nil, nil, FileIdentity{}, ErrUnsafe
 	}
-	return b, FileIdentity{uint64(before.Dev), before.Ino, sha256.Sum256(b)}, nil
+	transferred = true
+	return f, b, fileIdentity(before, b), nil
 }
 func (s *Store) Read(name string, max int64) ([]byte, FileIdentity, error) {
 	return s.readBounded(name, max, MaxFileBytes)
@@ -261,7 +289,7 @@ func (s *Store) confirmDurableBounded(name string, expected FileIdentity, limit 
 	file := os.NewFile(uintptr(fd), "private-file")
 	defer file.Close()
 	var stat unix.Stat_t
-	if unix.Fstat(fd, &stat) != nil || !privateStat(&stat) || uint64(stat.Dev) != expected.device || stat.Ino != expected.inode {
+	if unix.Fstat(fd, &stat) != nil || !privateStat(&stat) || uint64(stat.Dev) != expected.device || stat.Ino != expected.inode || stat.Ctim != expected.changeTime {
 		return ErrChanged
 	}
 	if stat.Size < 0 || stat.Size > limit {

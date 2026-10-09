@@ -93,6 +93,11 @@ func TestRefusesSymlinksHardlinksFIFOModesAndTraversal(t *testing.T) {
 	if e := os.WriteFile(file, []byte("CANARY"), 0o644); e != nil {
 		t.Fatal(e)
 	}
+	// Establish the deliberate unsafe fixture independent of the process
+	// umask; a private validation runner may correctly start with umask 077.
+	if e := os.Chmod(file, 0o644); e != nil {
+		t.Fatal(e)
+	}
 	if _, _, e := store.Read("wide", 32); !errors.Is(e, ErrUnsafe) {
 		t.Fatal("world-readable file accepted")
 	}
