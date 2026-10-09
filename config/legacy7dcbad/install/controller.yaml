@@ -76,14 +76,6 @@ rules:
   - update
   - watch
 - apiGroups:
-  - apps
-  resources:
-  - replicasets
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
   - arcade.gobha.me
   resources:
   - arcadeoperations

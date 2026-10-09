@@ -317,6 +317,10 @@ driver, LoadBalancer, or backup repository.
 `7dcbad6497782c198c7b142a6a8b902dead4b79e`, its original templates, the default
 namespace, and the Kubernetes 1.37.0 declaration. Supply images actually built
 from that source; relabeling current binaries does not prove upgrade/rollback.
+The 31 original embedded assets are preserved byte-for-byte under
+`config/legacy7dcbad/`, outside current asset globs. Legacy rendering and the
+original whole-tree checksum both use this frozen filesystem, so current
+namespace Role or template changes cannot silently alter the predecessor.
 
 Current packages can declare `--predecessor /absolute/package/path` and
 `--predecessor-id ID`. The predecessor is externally verified and checked

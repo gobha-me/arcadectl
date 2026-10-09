@@ -85,9 +85,17 @@ func RenderPayloads(images installpackage.Images, legacy bool) (map[string][]byt
 	if legacy && !legacyAssetsMatch() {
 		return nil, nil, ErrInvalid
 	}
+	var assets fs.FS = config.Installation
+	if legacy {
+		var err error
+		assets, err = fs.Sub(config.LegacyInstallation, "legacy7dcbad")
+		if err != nil {
+			return nil, nil, ErrInvalid
+		}
+	}
 	// The package parser owns the strict image grammar. Validate through a small
 	// complete metadata envelope rather than duplicating a weaker image regex.
-	anchors, err := readObjects([]string{"install/anchors.yaml"}, images)
+	anchors, err := readObjects(assets, []string{"install/anchors.yaml"}, images)
 	if err != nil || len(anchors) != 6 {
 		return nil, nil, ErrInvalid
 	}
@@ -95,11 +103,11 @@ func RenderPayloads(images installpackage.Images, legacy bool) (map[string][]byt
 	if err != nil {
 		return nil, nil, err
 	}
-	controllers, err := readObjects(controllerFiles, images)
+	controllers, err := readObjects(assets, controllerFiles, images)
 	if err != nil || len(controllers) != 27 {
 		return nil, nil, ErrInvalid
 	}
-	api, err := readObjects([]string{"api/service-account.yaml", "api/role.yaml", "api/service.yaml", "api/deployment.yaml.tmpl"}, images)
+	api, err := readObjects(assets, []string{"api/service-account.yaml", "api/role.yaml", "api/service.yaml", "api/deployment.yaml.tmpl"}, images)
 	if err != nil || len(api) != 5 {
 		return nil, nil, ErrInvalid
 	}
@@ -139,8 +147,13 @@ func RenderPayloads(images installpackage.Images, legacy bool) (map[string][]byt
 }
 
 func legacyAssetsMatch() bool {
+	assets, err := fs.Sub(config.LegacyInstallation, "legacy7dcbad")
+	return err == nil && legacyAssetTreeMatches(assets)
+}
+
+func legacyAssetTreeMatches(assets fs.FS) bool {
 	var paths []string
-	err := fs.WalkDir(config.Installation, ".", func(path string, entry fs.DirEntry, err error) error {
+	err := fs.WalkDir(assets, ".", func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -155,7 +168,7 @@ func legacyAssetsMatch() bool {
 	slices.Sort(paths)
 	hash := sha256.New()
 	for _, path := range paths {
-		body, err := config.Installation.ReadFile(path)
+		body, err := fs.ReadFile(assets, path)
 		if err != nil {
 			return false
 		}
@@ -165,10 +178,10 @@ func legacyAssetsMatch() bool {
 	return hex.EncodeToString(hash.Sum(nil)) == legacyAssetsSHA256
 }
 
-func readObjects(files []string, images installpackage.Images) ([]*unstructured.Unstructured, error) {
+func readObjects(assets fs.FS, files []string, images installpackage.Images) ([]*unstructured.Unstructured, error) {
 	var objects []*unstructured.Unstructured
 	for _, path := range files {
-		body, err := config.Installation.ReadFile(path)
+		body, err := fs.ReadFile(assets, path)
 		if err != nil {
 			return nil, ErrInvalid
 		}

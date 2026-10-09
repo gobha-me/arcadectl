@@ -53,6 +53,7 @@ type GameServerReconciler struct {
 // +kubebuilder:rbac:groups=arcade.gobha.me,resources=gameservers,verbs=get;list;watch,namespace=arcadectl-system
 // +kubebuilder:rbac:groups=arcade.gobha.me,resources=gameservers/status,verbs=get;update;patch,namespace=arcadectl-system
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete,namespace=arcadectl-system
+// +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch,namespace=arcadectl-system
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete,namespace=arcadectl-system
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete,namespace=arcadectl-system
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch,namespace=arcadectl-system
@@ -224,6 +225,14 @@ func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 			"the game server is stopped; persistent data is retained")
 		return ctrl.Result{}, r.updateStatusWithData(ctx, server, arcadev1alpha1.PhaseStopped, progress, nil, storage.data)
 	}
+	draining, drainErr := r.runtimeReplacementDraining(ctx, server, plan.Workload)
+	if drainErr != nil {
+		return ctrl.Result{}, r.reportFailure(ctx, server, progress, runtimeDrainFailure(drainErr))
+	}
+	if draining {
+		setRuntimeStopping(progress)
+		return ctrl.Result{RequeueAfter: time.Second}, r.updateStatus(ctx, server, arcadev1alpha1.PhaseStopping, progress, nil)
+	}
 	if err := r.clearColdBackupMarkers(ctx, server, plan.DataClaims); err != nil {
 		return ctrl.Result{}, r.reportFailure(ctx, server, progress, newReconcileFailure(
 			arcadev1alpha1.ConditionStorageReady,
@@ -248,8 +257,12 @@ func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 	progress.set(arcadev1alpha1.ConditionConfigurationReady, metav1.ConditionTrue, arcadev1alpha1.ReasonConfigurationReady,
 		"the current rendered game configuration is applied")
 
-	deployment, err := r.reconcileDeployment(ctx, plan.Workload)
+	deployment, err := r.reconcileDeployment(ctx, server, plan.Workload)
 	if err != nil {
+		if errors.Is(err, errRuntimeDraining) {
+			setRuntimeStopping(progress)
+			return ctrl.Result{RequeueAfter: time.Second}, r.updateStatus(ctx, server, arcadev1alpha1.PhaseStopping, progress, nil)
+		}
 		key := client.ObjectKeyFromObject(plan.Workload)
 		failure := newReconcileFailure(
 			arcadev1alpha1.ConditionWorkloadReady,
@@ -774,11 +787,18 @@ func storageClassCompatible(existing, desired *string, exact bool) bool {
 	return existing != nil && *existing == *desired
 }
 
-func (r *GameServerReconciler) reconcileDeployment(ctx context.Context, desired *appsv1.Deployment) (*appsv1.Deployment, error) {
+func (r *GameServerReconciler) reconcileDeployment(ctx context.Context, server *arcadev1alpha1.GameServer, desired *appsv1.Deployment) (*appsv1.Deployment, error) {
 	existing := &appsv1.Deployment{}
 	key := client.ObjectKeyFromObject(desired)
-	if err := r.Get(ctx, key, existing); err != nil {
+	if err := r.runtimeReader().Get(ctx, key, existing); err != nil {
 		if apierrors.IsNotFound(err) {
+			draining, err := r.runtimePodsRemain(ctx, server, desired.Spec.Template.Spec.Volumes)
+			if err != nil {
+				return nil, err
+			}
+			if draining {
+				return nil, errRuntimeDraining
+			}
 			created := desired.DeepCopy()
 			if err := r.Create(ctx, created); err != nil {
 				return nil, fmt.Errorf("create game workload %s: %w", key, err)
@@ -790,8 +810,14 @@ func (r *GameServerReconciler) reconcileDeployment(ctx context.Context, desired 
 	if err := requireControlledBy(existing, desired.OwnerReferences[0]); err != nil {
 		return nil, fmt.Errorf("refuse game workload %s: %w", key, err)
 	}
+	if !existing.DeletionTimestamp.IsZero() {
+		return nil, errRuntimeDraining
+	}
 
 	updated := desired.DeepCopy()
+	// Apply must update this exact observed Deployment, not upsert a new
+	// identity if it disappears between observation and the write.
+	updated.UID, updated.ResourceVersion = existing.UID, existing.ResourceVersion
 	if err := r.Patch(ctx, updated, client.Apply, client.FieldOwner("arcadectl-controller"), client.ForceOwnership); err != nil {
 		return nil, fmt.Errorf("apply game workload %s: %w", key, err)
 	}
@@ -855,14 +881,15 @@ func (r *GameServerReconciler) deleteControlledRuntime(ctx context.Context, serv
 		conditionType string
 		failureReason string
 	}{
-		{&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: server.Name + "-configuration", Namespace: server.Namespace}}, "ConfigMap", arcadev1alpha1.ConditionConfigurationReady, arcadev1alpha1.ReasonConfigurationOperationFailed},
 		{&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: server.Name, Namespace: server.Namespace}}, "Deployment", arcadev1alpha1.ConditionWorkloadReady, arcadev1alpha1.ReasonWorkloadOperationFailed},
+		{&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: server.Name + "-configuration", Namespace: server.Namespace}}, "ConfigMap", arcadev1alpha1.ConditionConfigurationReady, arcadev1alpha1.ReasonConfigurationOperationFailed},
 		{&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: server.Name, Namespace: server.Namespace}}, "Service", arcadev1alpha1.ConditionNetworkReady, arcadev1alpha1.ReasonNetworkOperationFailed},
 	}
 	stopping := false
+	var volumes []corev1.Volume
 	for _, resource := range resources {
 		key := client.ObjectKeyFromObject(resource.object)
-		if err := r.Get(ctx, key, resource.object); err != nil {
+		if err := r.runtimeReader().Get(ctx, key, resource.object); err != nil {
 			if apierrors.IsNotFound(err) {
 				continue
 			}
@@ -879,7 +906,15 @@ func (r *GameServerReconciler) deleteControlledRuntime(ctx context.Context, serv
 				"Arcadectl will not adopt or delete it; inspect ownership and deliberately resolve the conflict",
 				fmt.Errorf("refuse deleting runtime resource %s: %w", key, err))
 		}
-		if err := r.Delete(ctx, resource.object); err != nil && !apierrors.IsNotFound(err) {
+		if deployment, ok := resource.object.(*appsv1.Deployment); ok {
+			volumes = deployment.Spec.Template.Spec.Volumes
+		}
+		uid, rv := resource.object.GetUID(), resource.object.GetResourceVersion()
+		options := []client.DeleteOption{client.Preconditions{UID: &uid, ResourceVersion: &rv}}
+		if _, ok := resource.object.(*appsv1.Deployment); ok {
+			options = append(options, client.PropagationPolicy(metav1.DeletePropagationForeground))
+		}
+		if err := r.Delete(ctx, resource.object, options...); err != nil && !apierrors.IsNotFound(err) {
 			return false, newReconcileFailure(
 				resource.conditionType,
 				resource.failureReason,
@@ -890,7 +925,11 @@ func (r *GameServerReconciler) deleteControlledRuntime(ctx context.Context, serv
 		}
 		stopping = true
 	}
-	return stopping, nil
+	podsRemain, err := r.runtimePodsRemain(ctx, server, volumes)
+	if err != nil {
+		return false, runtimeDrainFailure(err)
+	}
+	return stopping || podsRemain, nil
 }
 
 func workloadAvailable(deployment *appsv1.Deployment) bool {

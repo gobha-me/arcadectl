@@ -12,3 +12,9 @@ import "embed"
 //
 //go:embed install/*.yaml install/deployment.yaml.tmpl rbac/*.yaml api/*.yaml api/deployment.yaml.tmpl
 var Installation embed.FS
+
+// LegacyInstallation preserves the authentic predecessor's original bytes.
+// Its separate prefix is deliberately outside every current Installation glob.
+//
+//go:embed legacy7dcbad/install/*.yaml legacy7dcbad/install/deployment.yaml.tmpl legacy7dcbad/rbac/*.yaml legacy7dcbad/api/*.yaml legacy7dcbad/api/deployment.yaml.tmpl
+var LegacyInstallation embed.FS
