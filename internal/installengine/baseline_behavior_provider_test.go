@@ -33,6 +33,17 @@ func TestBaselineBehaviorWholeProviderHealthy(t *testing.T) {
 	testBaselineBehaviorWholeProvider(t, "healthy")
 }
 
+// Additional coverage, not a replacement for the 23 original scenarios.
+// Inventory/health are synthetic; this proves the actual closed driver accepts
+// the pre-controller cardinality, not a native installer or archive lifecycle.
+func TestBaselinePrecontrollerWholeProviderHealthy(t *testing.T) {
+	testBaselineBehaviorWholeProvider(t, "precontroller")
+}
+
+func TestBaselinePrecontrollerWholeProviderRuntimeHealthy(t *testing.T) {
+	testBaselineBehaviorWholeProvider(t, "runtime-precontroller")
+}
+
 func TestBaselineBehaviorWholeProviderPendingService(t *testing.T) {
 	testBaselineBehaviorWholeProvider(t, "pending-service")
 }
@@ -137,7 +148,8 @@ func testBaselineBehaviorWholeProviderWithProtocol(t *testing.T, scenario string
 	f := seedBaselineAccessWitness(t)
 	plans := []*installrender.Plan{f.plan}
 	complete := strings.HasPrefix(mode, "complete-")
-	positive := mode == "healthy" || mode == "pending-service" || mode == "pending-parent" || complete || closeOrder
+	precontroller := mode == "precontroller"
+	positive := mode == "healthy" || mode == "pending-service" || mode == "pending-parent" || complete || closeOrder || precontroller
 	pendingService := mode == "pending-service" || mode == "final-receipt-replacement" || mode == "final-close-order-service"
 	pendingParent := mode == "pending-parent" || mode == "final-parent-receipt-replacement" || mode == "final-close-order-parent"
 	if mode == "complete-upgrade" || mode == "complete-rollback" {
@@ -160,6 +172,11 @@ func testBaselineBehaviorWholeProviderWithProtocol(t *testing.T, scenario string
 		t.Fatal("whole provider fixture has no independently pinned server version")
 	}
 	v := newBaselineDescendantsFixtureWithPlans(t, plans...)
+	if precontroller {
+		v.objects.Deployments.Items = nil
+		v.objects.ReplicaSets.Items = nil
+		v.objects.Pods.Items = nil
+	}
 	d := f.snapshot.Document()
 	objects := map[installstate.Key]*unstructured.Unstructured{}
 	for key, object := range f.access.objects {
@@ -171,7 +188,7 @@ func testBaselineBehaviorWholeProviderWithProtocol(t *testing.T, scenario string
 		objects[key] = copy
 	}
 	for _, resource := range v.d.Resources {
-		if resource.Key.Kind == "Deployment" {
+		if resource.Key.Kind == "Deployment" && !precontroller {
 			d.Resources = append(d.Resources, resource)
 		}
 	}
@@ -225,13 +242,16 @@ func testBaselineBehaviorWholeProviderWithProtocol(t *testing.T, scenario string
 		objects[key].SetAnnotations(annotations)
 	}
 	installstate.SortResources(d.Resources)
-	if complete {
+	if complete || precontroller {
 		// Explicitly synthetic complete inventory, followed by the real
 		// Verifying→Complete namespace CAS. Native/full lifecycle proof is
 		// separate; these cases exercise every actual behavior helper at
 		// a sealed Complete state without relabelling it as in-progress.
 		for _, metadata := range f.plan.ResourceMetadata() {
 			key := installstate.Key{APIVersion: metadata.APIVersion, Kind: metadata.Kind, Namespace: metadata.Namespace, Name: metadata.Name}
+			if precontroller && key.Kind == "Deployment" {
+				continue
+			}
 			found := false
 			for _, recorded := range d.Resources {
 				found = found || recorded.Key == key
@@ -244,11 +264,19 @@ func testBaselineBehaviorWholeProviderWithProtocol(t *testing.T, scenario string
 				t.Fatal("complete synthetic signed inventory unavailable")
 			}
 			d.Resources = append(d.Resources, installstate.Resource{Key: key, UID: types.UID("complete-" + key.Kind + "-" + key.Name), TemplateSHA256: template.Hash(), Phase: template.Phase(), Retained: template.Retained()})
+			if precontroller {
+				object := testBaselineMetadataLive(t, template, strings.Repeat("b", 32))
+				object.SetUID(types.UID("complete-" + key.Kind + "-" + key.Name))
+				object.SetResourceVersion("17")
+				objects[key] = object
+			}
 		}
 		for _, name := range []string{"arcadectl-admin-credential", "arcadectl-api-tls"} {
 			d.Resources = append(d.Resources, installstate.Resource{Key: secretKey(d.Namespace, name), UID: types.UID("complete-secret-" + name), Phase: installrender.API, Retained: true})
 		}
-		d.Stage = installstate.Verifying
+		if complete {
+			d.Stage = installstate.Verifying
+		}
 		if mode == "complete-upgrade" {
 			d.Mode, d.ActivePackage, d.Installed = installstate.Upgrade, plans[1].Digest(), true
 		} else if mode == "complete-rollback" {
@@ -263,6 +291,9 @@ func testBaselineBehaviorWholeProviderWithProtocol(t *testing.T, scenario string
 	}
 	d.Revision++
 	seedBaselineAccessUnitDocument(t, f, d)
+	if precontroller && (d.Stage != installstate.Applying || d.Mode != installstate.Install || d.Installed || d.Pending != nil || len(d.Resources) != 37 || len(d.SecurityBaseline.Resources) != 12) {
+		t.Fatal("synthetic pre-controller fixture lost its exact settled inventory")
+	}
 	if complete {
 		var err error
 		f.snapshot, err = (&Lifecycle{engine: f.engine}).stage(t.Context(), f.snapshot, installstate.Complete)
@@ -592,7 +623,11 @@ func testBaselineBehaviorWholeProviderWithProtocol(t *testing.T, scenario string
 	}
 	behavior, err := provider.newBaselineBehavior(t.Context(), snapshot)
 	t.Cleanup(behavior.release)
-	if err != nil || behavior == nil || len(behavior.family.pods) != 3 || len(behavior.parents) != 3 {
+	wantMembers := 3
+	if precontroller {
+		wantMembers = 0
+	}
+	if err != nil || behavior == nil || len(behavior.family.pods) != wantMembers || len(behavior.parents) != wantMembers {
 		t.Fatal("whole original behavior constructor refused authentic synthetic chains")
 	}
 	var receiptName string
@@ -644,7 +679,11 @@ func testBaselineBehaviorWholeProviderWithProtocol(t *testing.T, scenario string
 	if !positive && !injected {
 		t.Fatal("intended whole-driver fault was never reached")
 	}
-	if positive && (probes != 97 || positives != 3 || podProbes != 6 || rules["arcadectl-controller"] != 6 || rules["arcadectl-destroy-controller"] != 6) {
+	wantProbes, wantPodProbes := 97, 6
+	if precontroller {
+		wantProbes, wantPodProbes = 82, 0
+	}
+	if positive && (probes != wantProbes || positives != 3 || podProbes != wantPodProbes || rules["arcadectl-controller"] != 6 || rules["arcadectl-destroy-controller"] != 6) {
 		t.Fatal("healthy driver omitted finite behavioral rows or closing rule passes")
 	}
 	if positive {
@@ -654,10 +693,22 @@ func testBaselineBehaviorWholeProviderWithProtocol(t *testing.T, scenario string
 			"arcadectl-controller/DELETE/ServiceAccount": 4, "arcadectl-destroy-controller/DELETE/ServiceAccount": 4, "arcadectl-controller/DELETE/Role": 4, "arcadectl-destroy-controller/DELETE/Role": 4,
 			"arcadectl-controller/DELETE/RoleBinding": 4, "arcadectl-destroy-controller/DELETE/RoleBinding": 4, "arcadectl-controller/PUT/Service": 1, "arcadectl-controller/PATCH/Service": 1, "arcadectl-controller/DELETE/Service": 1,
 			"arcadectl-controller/PUT/Deployment": 3, "arcadectl-controller/PATCH/Deployment": 3, "arcadectl-controller/DELETE/Deployment": 3, "arcadectl-controller/PUT/Pod": 3, "arcadectl-destroy-controller/PUT/Pod": 3}
+		if precontroller {
+			for _, absent := range []string{"arcadectl-controller/PUT/Deployment", "arcadectl-controller/PATCH/Deployment", "arcadectl-controller/DELETE/Deployment", "arcadectl-controller/PUT/Pod", "arcadectl-destroy-controller/PUT/Pod"} {
+				delete(want, absent)
+			}
+		}
 		if !reflect.DeepEqual(want, rows) {
 			t.Fatal("behavior driver request multiset differs from independent literal protocol")
 		}
 		wantDetailed := testBaselineBehaviorLiteralRows(v.objects.Pods.Items)
+		if precontroller {
+			for _, method := range []string{"PUT", "PATCH", "DELETE"} {
+				for _, name := range []string{"arcadectl-controller", "arcadectl-api", "arcadectl-destroy-controller"} {
+					delete(wantDetailed, "arcadectl-controller/"+method+"/Deployment/"+name)
+				}
+			}
+		}
 		if !reflect.DeepEqual(wantDetailed, detailedRows) {
 			t.Fatal("behavior driver omitted or repeated a literal named/variant row")
 		}

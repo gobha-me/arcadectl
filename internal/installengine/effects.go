@@ -212,10 +212,12 @@ func (e *Engine) Apply(ctx context.Context, s *installstate.Snapshot, key instal
 }
 
 func (e *Engine) apply(ctx context.Context, s *installstate.Snapshot, key installstate.Key, digest string, paused bool, operation *baselinePrerequisite) (*installstate.Snapshot, error) {
+	traceOperationBoundary(ctx, boundaryApplyOpening)
 	fresh, err := e.currentEffect(ctx, s, operation)
 	if err != nil {
 		return nil, err
 	}
+	traceOperationBoundary(ctx, boundaryApplyCandidate)
 	d := fresh.Document()
 	t, err := e.desired(d, key, digest, paused)
 	if err != nil {
@@ -257,15 +259,21 @@ func (e *Engine) apply(ctx context.Context, s *installstate.Snapshot, key instal
 		return nil, ErrInvalid
 	}
 	var admitted *unstructured.Unstructured
+	traceOperationBoundary(ctx, boundaryApplyPreview)
 	if p.Action == installstate.Create {
 		admitted, err = e.access.Create(ctx, key, candidate, true)
 	} else {
 		admitted, err = e.access.Update(ctx, key, candidate, true)
 	}
-	if err != nil || admitted == nil || t.MatchAdmitted(admitted) != nil || admitted.GetAnnotations()[installstate.MutationAnnotation] != nonce || p.Action == installstate.Update && admitted.GetUID() != p.BeforeUID {
+	if err != nil {
+		return nil, ErrRead
+	}
+	traceOperationBoundary(ctx, boundaryApplyPreviewResult)
+	if admitted == nil || t.MatchAdmitted(admitted) != nil || admitted.GetAnnotations()[installstate.MutationAnnotation] != nonce || p.Action == installstate.Update && admitted.GetUID() != p.BeforeUID {
 		return nil, ErrRead
 	}
 	// Refuse a stale Namespace even when dry-run itself succeeded.
+	traceOperationBoundary(ctx, boundaryApplyAfterPreview)
 	fresh, err = e.currentEffect(ctx, fresh, operation)
 	if err != nil {
 		return nil, err

@@ -270,6 +270,7 @@ func runMutation(ctx context.Context, o options, stdout, stderr io.Writer) int {
 		s, err = x.lifecycle.Step(stepCtx, s, mutationLifecycleOptions(o, s))
 		if err != nil || s == nil {
 			_, _ = fmt.Fprintf(stderr, "installation diagnostic progress %s\n", diagnostic.Snapshot())
+			_, _ = fmt.Fprintf(stderr, "installation diagnostic boundary %s\n", diagnostic.BoundarySnapshot())
 			_, _ = io.WriteString(stderr, "installation stopped at a protected checkpoint; inspect before explicit resume; no failed effect was retried\n")
 			return 4
 		}

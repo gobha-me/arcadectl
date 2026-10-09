@@ -224,6 +224,7 @@ func (w *SecretWorkflow) retained(ctx context.Context, s *installstate.Snapshot,
 	if w == nil || w.engine == nil {
 		return nil, caID, ErrInvalid
 	}
+	traceOperationBoundary(ctx, boundaryRetainedOpening)
 	fresh, err := w.engine.current(ctx, s)
 	if err != nil {
 		return nil, caID, err
@@ -232,13 +233,16 @@ func (w *SecretWorkflow) retained(ctx context.Context, s *installstate.Snapshot,
 	if d.Pending != nil && (!retiringAccessDelete(d) || w.engine.verifyRetiredAdmission(ctx, fresh) != nil) {
 		return nil, caID, ErrInvalid
 	}
+	traceOperationBoundary(ctx, boundaryRetainedRead)
 	objects, caID, err = w.readRetainedObjects(ctx, fresh, caFile, now)
 	if err != nil {
 		return nil, caID, err
 	}
+	traceOperationBoundary(ctx, boundaryRetainedClosing)
 	if _, err := w.engine.current(ctx, fresh); err != nil {
 		return nil, caID, ErrConcurrent
 	}
+	traceOperationBoundary(ctx, boundaryRetainedComplete)
 	return objects, caID, nil
 }
 

@@ -36,14 +36,17 @@ func (b *baselineBehavior) release() {
 }
 
 func (c *ClusterSecurityBaseline) newBaselineBehavior(ctx context.Context, snapshot *installstate.Snapshot) (*baselineBehavior, error) {
+	traceBaselineBoundary(ctx, baselineBoundaryActors)
 	actors, err := c.newBaselineActors(ctx, snapshot)
 	if err != nil {
 		return nil, ErrSecurityBaseline
 	}
+	traceBaselineBoundary(ctx, baselineBoundaryExecutables)
 	executables, err := c.collectExecutables(ctx, snapshot)
 	if err != nil {
 		return nil, ErrSecurityBaseline
 	}
+	traceBaselineBoundary(ctx, baselineBoundaryMetadata)
 	metadata, err := c.originalMetadata(ctx, snapshot)
 	if err != nil {
 		return nil, ErrSecurityBaseline
@@ -54,6 +57,7 @@ func (c *ClusterSecurityBaseline) newBaselineBehavior(ctx context.Context, snaps
 			metadata.release()
 		}
 	}()
+	traceBaselineBoundary(ctx, baselineBoundaryParents)
 	parents, err := c.originalParents(ctx, snapshot, executables)
 	if err != nil {
 		return nil, ErrSecurityBaseline
@@ -63,6 +67,7 @@ func (c *ClusterSecurityBaseline) newBaselineBehavior(ctx context.Context, snaps
 			releaseBaselineParents(parents)
 		}
 	}()
+	traceBaselineBoundary(ctx, baselineBoundaryFamily)
 	family, err := c.engine.baselineDescendants(snapshot.Document(), parents, actors.access, executables.observation.Collections())
 	if err != nil {
 		return nil, ErrSecurityBaseline
@@ -78,6 +83,7 @@ func (c *ClusterSecurityBaseline) newBaselineBehavior(ctx context.Context, snaps
 			return nil, ErrSecurityBaseline
 		}
 	}
+	traceBaselineBoundary(ctx, baselineBoundaryActorClose)
 	if actors.verify(ctx) != nil {
 		return nil, ErrSecurityBaseline
 	}
@@ -92,6 +98,7 @@ func (b *baselineBehavior) prove(ctx context.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 	defer cancel()
+	traceBaselineBoundary(ctx, baselineBoundaryDeniedOpening)
 	if b.actors.verifyDeniedBehavior(ctx, b) != nil {
 		return ErrSecurityBaseline
 	}
@@ -108,16 +115,27 @@ func (b *baselineBehavior) prove(ctx context.Context) error {
 		if err != nil {
 			return ErrSecurityBaseline
 		}
+		traceBaselineBoundary(ctx, baselineBoundaryProducerBefore)
 		positive, err := baselineProducerProbe(plan, row.kind, nonce)
 		if err != nil || b.readExact(ctx, baselineObjectKey(positive), nil) != nil {
 			return ErrSecurityBaseline
 		}
 		start := time.Now().UTC()
+		traceBaselineBoundary(ctx, baselineBoundaryProducerWire)
 		reply, err := b.actors.probe(ctx, row.actor, probeCreateOperation, positive, "", "", "")
 		end := time.Now().UTC()
-		if err != nil || !validBaselineProducerResult(plan, row.kind, nonce, reply, start, end) || b.readExact(ctx, baselineObjectKey(positive), nil) != nil {
+		if err != nil {
 			return ErrSecurityBaseline
 		}
+		traceBaselineBoundary(ctx, baselineBoundaryProducerResult)
+		if !validBaselineProducerResult(plan, row.kind, nonce, reply, start, end) {
+			return ErrSecurityBaseline
+		}
+		traceBaselineBoundary(ctx, baselineBoundaryProducerAfter)
+		if b.readExact(ctx, baselineObjectKey(positive), nil) != nil {
+			return ErrSecurityBaseline
+		}
+		traceBaselineBoundary(ctx, baselineBoundaryProducerNegative)
 		for _, reserved := range []string{"arcadectl-controller", "arcadectl-api", "arcadectl-destroy-controller", "arcadectl-destroy-admin"} {
 			for _, variant := range []baselineProducerNegative{baselineProducerReservedAccount, baselineProducerReservedName} {
 				negative, err := baselineNegativeProducerProbe(plan, row.kind, nonce, variant, reserved)
@@ -131,6 +149,7 @@ func (b *baselineBehavior) prove(ctx context.Context) error {
 			}
 		}
 	}
+	traceBaselineBoundary(ctx, baselineBoundaryIdentity)
 	for _, actor := range []admissionActor{ordinaryControllerActor, destroyControllerActor} {
 		for _, key := range baselineMetadataKeys(plan.Namespace()) {
 			if key.Kind == "Service" && actor != ordinaryControllerActor {
@@ -170,6 +189,7 @@ func (b *baselineBehavior) prove(ctx context.Context) error {
 			}
 		}
 	}
+	traceBaselineBoundary(ctx, baselineBoundaryParentProbe)
 	for _, name := range []string{"arcadectl-controller", "arcadectl-api", "arcadectl-destroy-controller"} {
 		parent := b.parents[name]
 		if parent == nil {
@@ -189,6 +209,7 @@ func (b *baselineBehavior) prove(ctx context.Context) error {
 			}
 		}
 	}
+	traceBaselineBoundary(ctx, baselineBoundaryPodProbe)
 	keys := make([]installstate.Key, 0, len(b.family.pods))
 	for key := range b.family.pods {
 		keys = append(keys, key)
@@ -209,6 +230,7 @@ func (b *baselineBehavior) prove(ctx context.Context) error {
 			}
 		}
 	}
+	traceBaselineBoundary(ctx, baselineBoundaryClosing)
 	return b.close(ctx)
 }
 

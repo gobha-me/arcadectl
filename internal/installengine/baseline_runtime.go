@@ -20,6 +20,7 @@ const baselineRuntimeTimeout = 15 * time.Minute
 // exception selected by stage or a missing actor. Closed production composition
 // installs this full provider; incomplete access never becomes runtime authority.
 func (c *ClusterSecurityBaseline) Verify(ctx context.Context, snapshot *installstate.Snapshot) error {
+	traceBaselineBoundary(ctx, baselineBoundaryScope)
 	if c == nil || c.engine == nil || c.engine.baseline == nil || !c.engine.baselinePlan().IsTrusted() || c.engine.journal == nil || c.engine.journal.BaselineDigest() != c.engine.baselinePlan().Digest() ||
 		c.access == nil || c.access.native == nil || c.engine.access != c.access || !c.access.actorCompatible() ||
 		ctx == nil || ctx.Err() != nil || snapshot == nil {
@@ -36,6 +37,7 @@ func (c *ClusterSecurityBaseline) Verify(ctx context.Context, snapshot *installs
 	}
 	var source *reinstallSourceWitness
 	if d.AdmissionReinstall != nil {
+		traceBaselineBoundary(ctx, baselineBoundarySource)
 		var err error
 		source, err = c.engine.openReinstallSource(snapshot)
 		if err != nil {
@@ -47,7 +49,12 @@ func (c *ClusterSecurityBaseline) Verify(ctx context.Context, snapshot *installs
 		if d.Mode != installstate.Uninstall {
 			return ErrSecurityBaseline
 		}
-		return c.verifyRetiredRuntime(ctx, snapshot)
+		traceBaselineBoundary(ctx, baselineBoundaryRetired)
+		err := c.verifyRetiredRuntime(ctx, snapshot)
+		if err == nil {
+			traceBaselineBoundary(ctx, baselineBoundaryComplete)
+		}
+		return err
 	}
 	if !c.engine.baselineObservable(d) {
 		return ErrSecurityBaseline
@@ -60,12 +67,16 @@ func (c *ClusterSecurityBaseline) Verify(ctx context.Context, snapshot *installs
 	if behavior.prove(ctx) != nil || ctx.Err() != nil {
 		return ErrSecurityBaseline
 	}
-	if source != nil && c.engine.closeReinstallSource(source) != nil {
-		return ErrSecurityBaseline
+	if source != nil {
+		traceBaselineBoundary(ctx, baselineBoundarySourceClose)
+		if c.engine.closeReinstallSource(source) != nil {
+			return ErrSecurityBaseline
+		}
 	}
 	if ctx.Err() != nil {
 		return ErrSecurityBaseline
 	}
+	traceBaselineBoundary(ctx, baselineBoundaryComplete)
 	return nil
 }
 
