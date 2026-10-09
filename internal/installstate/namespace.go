@@ -148,6 +148,9 @@ func (s *Store) Bind(ctx context.Context, anchor Anchor, initial Document) (*Sna
 	if s.baseline != nil && (initial.SecurityBaseline == nil || initial.SecurityBaseline.Stage != BaselinePreparing) {
 		return nil, ErrInvalid
 	}
+	if enrollmentProvenance(initial) != nil {
+		return nil, ErrInvalid // Fresh bootstrap cannot manufacture historical provenance.
+	}
 	body, err := EncodeWithBaseline(initial, s.baseline, s.plans...)
 	if err != nil {
 		return nil, err
@@ -176,6 +179,12 @@ func (s *Store) Commit(ctx context.Context, snapshot *Snapshot, next Document) (
 	if snapshot.document.AdmissionReinstall == nil && next.AdmissionReinstall != nil &&
 		(next.AdmissionReinstall.SourceRevision != snapshot.document.Revision || next.AdmissionReinstall.SourceJournalSHA256 != journalSHA256(snapshot.body)) {
 		return nil, ErrInvalid // Pin the sealed source bytes, not reconstructed caller data.
+	}
+	if snapshot.document.SecurityBaseline == nil && enrollmentProvenance(next) != nil {
+		p := enrollmentProvenance(next)
+		if p.SourceRevision != snapshot.document.Revision || p.SourceJournalSHA256 != journalSHA256(snapshot.body) {
+			return nil, ErrInvalid // Bind enrollment to literal sealed source bytes too.
+		}
 	}
 	body, err := EncodeWithBaseline(next, s.baseline, s.plans...)
 	if err != nil {
@@ -235,6 +244,9 @@ func validTransition(before, next Document) bool {
 		return false
 	}
 	if !validReinstallTransition(before, next) {
+		return false
+	}
+	if !validBaselineEnrollmentTransition(before, next) {
 		return false
 	}
 	if !reflect.DeepEqual(before.SecurityBaseline, next.SecurityBaseline) {

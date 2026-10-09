@@ -32,11 +32,12 @@ type BaselineResource struct {
 // retaining uninstall. Verified records completed ownership establishment, not
 // a promise about current live health; the engine must continuously reobserve.
 type SecurityBaseline struct {
-	Version        string             `json:"version"`
-	ArtifactDigest string             `json:"artifactDigest"`
-	Stage          BaselineStage      `json:"stage"`
-	Resources      []BaselineResource `json:"resources"`
-	Pending        *Pending           `json:"pending"`
+	Version        string                        `json:"version"`
+	ArtifactDigest string                        `json:"artifactDigest"`
+	Stage          BaselineStage                 `json:"stage"`
+	Resources      []BaselineResource            `json:"resources"`
+	Pending        *Pending                      `json:"pending"`
+	Enrollment     *BaselineEnrollmentProvenance `json:"enrollment,omitempty"`
 }
 
 func PinnedSecurityBaseline(plan *installbaseline.Plan) (*SecurityBaseline, error) {
@@ -58,6 +59,9 @@ func validateSecurityBaseline(document Document, plan *installbaseline.Plan) err
 		return nil
 	} // Historical absence, not verification.
 	if !plan.IsTrusted() || baseline.Version != installbaseline.Version || baseline.ArtifactDigest != plan.Digest() || baseline.Resources == nil || len(baseline.Resources) > installbaseline.ResourceCount {
+		return ErrInvalid
+	}
+	if validateBaselineEnrollment(document) != nil {
 		return ErrInvalid
 	}
 	if baseline.Stage != BaselineVerified && document.Pending != nil {
@@ -119,7 +123,13 @@ func validSecurityTransition(before, next Document) bool {
 		return false
 	}
 	if a == nil {
-		return b.Stage == BaselinePreparing && len(b.Resources) == 0 && b.Pending == nil
+		if b.Stage != BaselinePreparing || len(b.Resources) != 0 || b.Pending != nil {
+			return false
+		}
+		if before.Stage == Complete || before.Installed || before.ActivePackage != "" {
+			return b.Enrollment != nil && baselineEnrollmentSource(before)
+		}
+		return b.Enrollment == nil && before.Mode == Install && before.Stage == Preparing && before.Pending == nil && before.AdmissionReinstall == nil && before.AdmissionRetirementRevision == 0 && len(before.Resources) == 1 && before.Resources[0].Key.Kind == "Namespace"
 	}
 	if a.Version != b.Version || a.ArtifactDigest != b.ArtifactDigest || a.Stage == BaselineVerified {
 		return false
