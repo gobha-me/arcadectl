@@ -77,7 +77,8 @@ TestBaselineRetiredHTTPSRuntimeCompleteReceiptReplaced 120
 # exclusive existing worker; it is not a certified standalone runtime bound.
 TestBaselinePrerequisiteRetainedWorldsHTTPS 1200
 TestBaselineMetadataWholeProvider 360
-TestAdmissionRetirementBaselineContextPreservesOriginalInventoryAndRuntimeGate 300
+# Exact 380072a measured 344.48s, above the previous 300 estimate.
+TestAdmissionRetirementBaselineContextPreservesOriginalInventoryAndRuntimeGate 420
 # Exact e5047d3 successful CI shard20 measured200.23s. Replace the default60
 # with a scheduling estimate that retains headroom, not an execution budget.
 TestAdmissionRetirementRejectsMissingCorruptOrChangedEvidence 270
@@ -109,9 +110,26 @@ TestAdmissionConfigurationRequiresEveryOriginalSignedHealthyPolicy 180
 TestAdmissionRetirementRejectsRecreatedWithdrawnAccess 150
 TestLifecycleUninstallRecoveryAfterAuthorityRemoval 150
 TestBaselinePrerequisiteRetainedRecoveryHTTPS 360
+# Exact 380072a worker 19 measured 122.11s for this complete tree, previously
+# default 60. Its package then exhausted 20m during another complete tree.
+# A 150 scheduling estimate adds observed headroom without changing coverage,
+# worker count or deadlines; the new placement still needs hosted validation.
+TestBaselinePrerequisiteRetainedReceiptOwnsSourceBeforeAndDuringIntent 150
 TestAdmissionRetirementFailureBeforeLatchHasNoEffect 150
 TestFixturePhaseOriginalWarmRenewalBoundsAndFloors 150
-TestBaselinePrerequisiteRetainedCreateHTTPS 300
+# The same 380072a worker 20 timed out after these complete trees passed
+# 199.81s and 125.62s, respectively, both previously default 60. Rounded
+# estimates account for their measured costs without changing any test tree.
+TestFixturePhaseNamedScanClosesEveryRemoteOriginalWitness 240
+TestFixtureWireUnknownCreateNeverAdoptsOrReplays 150
+# Remaining material underestimates from the same compiled 597-name run:
+# retained create 351.40s (previous 300), both-set capture 193.36s (default 60),
+# warm renewal identity/closure 105.95s/104.22s (both default 60). These rounded
+# scheduling estimates add measured headroom; they are not runtime bounds.
+TestBaselinePrerequisiteRetainedCreateHTTPS 420
+TestAdmissionRetirementBaselineV2CaptureClosesBothProtectionSets 240
+TestFixturePhaseOriginalWarmRenewalIdentity 150
+TestFixturePhaseOriginalWarmRenewalClosure 150
 TestFixturePhaseCompleteOriginalAndFixedFixtureAccounting 240
 TestFixtureV3CompleteAccountsRefuseIncompleteAndChangingMembership 180
 # Same worker reached489s in this tree before its package budget expired.
