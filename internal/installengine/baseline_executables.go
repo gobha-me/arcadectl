@@ -102,6 +102,13 @@ func (c *ClusterSecurityBaseline) collectExecutables(ctx context.Context, snapsh
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
+	defer func() {
+		// Observe a real collector child expiry before our own cancel runs.
+		// Other callers have no ACK preparation record and remain unchanged.
+		if d, ok := ctx.Value(lifecycleDiagnosticKey{}).(*LifecycleDiagnostic); ok && d != nil && d.ackPreparation.Load()>>8 == uint32(ackExecutableCollection) && ctx.Err() != nil {
+			traceAcknowledgedDeleteRefusal(ctx, ctx.Err())
+		}
+	}()
 	plan := c.engine.plans[snapshot.Document().TargetPackage]
 	if !plan.IsTrusted() || c.access.checkVersion(ctx, plan.Profile()) != nil {
 		return nil, ErrSecurityBaseline

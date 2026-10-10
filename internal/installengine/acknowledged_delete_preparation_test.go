@@ -534,6 +534,16 @@ func testAcknowledgedDeletePreparation(t *testing.T, failure string) {
 		if !errors.Is(err, ErrOutcomeUnknown) || writes != 1 || !injected || !reflect.DeepEqual(intent, settled.Document()) {
 			t.Fatal("refused preparation/proof changed or settled original Pending", err, diagnostic.BoundarySnapshot())
 		}
+		preparation := map[string]string{
+			"replacement": "step=target-original-check status=refused", "unsigned-parent": "step=target-original-check status=refused",
+			"read-refusal": "step=target-read status=refused", "journal": "step=original-closing status=refused",
+			"protected-file": "step=original-closing status=refused", "cancel": "step=target-read status=cancelled",
+			"collected-reappearance": "step=target-absent-check status=refused", "postproof-reappearance": "step=post-guard-target-read status=refused",
+			"late-pod": "step=full-guard-opening status=refused",
+		}[failure]
+		if diagnostic.AcknowledgedDeleteSnapshot() != preparation {
+			t.Fatal("actual preparation refusal lost its closed step/context labels", diagnostic.AcknowledgedDeleteSnapshot())
+		}
 		if failure == "late-pod" {
 			if diagnostic.FailureSnapshot() != "check=executables-stable family=Pod changes=resource-version,metadata,status" || proofStarts != 2 || postRules != 2 || !proofOpened {
 				t.Fatal("late complete Pod drift was exempted, retried or misattributed", diagnostic.FailureSnapshot())

@@ -29,6 +29,7 @@ type LifecycleDiagnostic struct {
 	baselineBoundary       atomic.Uint32
 	baselineBeforeDeadline atomic.Uint32
 	baselineFailure        atomic.Uint32
+	ackPreparation         atomic.Uint32
 }
 
 // WithLifecycleDiagnostic creates a fresh opaque recorder, superseding any
@@ -88,6 +89,7 @@ func traceLifecycleCheckpoint(ctx context.Context, kind Checkpoint, state lifecy
 			diagnostic.baselineBoundary.Store(0)
 			diagnostic.baselineBeforeDeadline.Store(0)
 			diagnostic.baselineFailure.Store(0)
+			diagnostic.ackPreparation.Store(0)
 		}
 		diagnostic.checkpoint.Store(uint32(kind)<<8 | uint32(state))
 	}

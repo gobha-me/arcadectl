@@ -408,6 +408,15 @@ errors, objects, names, paths, identities or credentials and performs no extra
 cluster reads or retries. Errors, exit codes and protected recovery remain
 unchanged. Diagnostics are progress, not proof or established root cause.
 
+An acknowledged baseline Deployment deletion additionally records its last
+closed preparation step (original fences, target read/original envelope,
+executable collection, absence/quietness, full guard, or post-guard target read)
+and an active/refused/cancelled/deadline status. Observed expiry of the existing
+five-minute ACK wait or its two-minute collection child is distinct from the
+outer command context, which may still be active. A collection refusal remains
+coarse: it does not identify a provider cause. No error text, object value,
+timeout override, extra observation, exemption, or retry is introduced.
+
 The development native gates are separate and mandatory in the committed CI:
 four complete public admission runs (profiles 135/137, cold/warm) and three actual
 signed-installer executable runs. Both profiles exercise current-package fresh

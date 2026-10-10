@@ -251,3 +251,8 @@ TestAcknowledgedDeleteRejectsProtectedFileFenceDuringPreparation 360
 TestAcknowledgedDeleteCancellationKeepsOriginalIntent 360
 TestAcknowledgedDeleteRejectsCollectedTargetReappearance 360
 TestAcknowledgedDeleteRejectsTargetReappearanceAfterFullProof 480
+# Closed diagnostic controls are pure/synthetic early-refusal tests, not full
+# HTTPS lifecycle proofs. Their combined local race run with existing pure
+# controls took4.702s; these conservative estimates only guide placement.
+TestAcknowledgedDeleteDiagnosticClosedFreshAndConcurrent 10
+TestAcknowledgedDeleteDiagnosticActualEarlyRefusals 10
