@@ -16,8 +16,9 @@ import (
 // The engine separately proves protected source/bootstrap/CA ownership, live
 // original resources, cold worlds and complete producer chains at effect edges.
 type BaselineEnrollmentProvenance struct {
-	SourceRevision      uint64 `json:"sourceRevision"`
-	SourceJournalSHA256 string `json:"sourceJournalSha256"`
+	SourceRevision       uint64 `json:"sourceRevision"`
+	SourceJournalSHA256  string `json:"sourceJournalSha256"`
+	SourceEvidenceSHA256 string `json:"sourceEvidenceSha256"`
 }
 
 func baselineEnrollmentSource(d Document) bool {
@@ -37,7 +38,7 @@ func validateBaselineEnrollment(d Document) error {
 	if p == nil {
 		return nil
 	}
-	if p.SourceRevision == 0 || p.SourceRevision >= d.Revision || !digestID.MatchString(p.SourceJournalSHA256) {
+	if p.SourceRevision == 0 || p.SourceRevision >= d.Revision || !digestID.MatchString(p.SourceJournalSHA256) || !digestID.MatchString(p.SourceEvidenceSHA256) {
 		return ErrInvalid
 	}
 	if d.SecurityBaseline.Stage != BaselineVerified && !baselineEnrollmentSource(d) {

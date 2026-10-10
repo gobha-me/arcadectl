@@ -29,10 +29,23 @@ type filePinState struct {
 	path     string
 	identity FileIdentity
 	max      int64
+	limit    int64
 	protect  Protection
 }
 
 func (s *Store) Pin(name string, max int64) ([]byte, FileIdentity, *FilePin, error) {
+	return s.pinBounded(name, max, MaxFileBytes)
+}
+
+// PinEvidence holds an original descriptor for larger private evidence only.
+// Credential/trust-input Pin and PinAbsolute retain their smaller limits.
+// Evidence is neither a mutation permit nor authority to reconstruct a lost
+// original inventory; callers must independently bind its canonical seal.
+func (s *Store) PinEvidence(name string, max int64) ([]byte, FileIdentity, *FilePin, error) {
+	return s.pinBounded(name, max, MaxEvidenceFileBytes)
+}
+
+func (s *Store) pinBounded(name string, max, limit int64) ([]byte, FileIdentity, *FilePin, error) {
 	if s == nil {
 		return nil, FileIdentity{}, nil, ErrUnsafe
 	}
@@ -41,11 +54,11 @@ func (s *Store) Pin(name string, max int64) ([]byte, FileIdentity, *FilePin, err
 	if !s.valid() || !safeName(name) {
 		return nil, FileIdentity{}, nil, ErrUnsafe
 	}
-	file, body, identity, err := openReadAtBounded(s.fd, name, max, Private, MaxFileBytes)
+	file, body, identity, err := openReadAtBounded(s.fd, name, max, Private, limit)
 	if err != nil {
 		return nil, FileIdentity{}, nil, err
 	}
-	return body, identity, &FilePin{&filePinState{file: file, store: s, name: name, identity: identity, max: max, protect: Private}}, nil
+	return body, identity, &FilePin{&filePinState{file: file, store: s, name: name, identity: identity, max: max, limit: limit, protect: Private}}, nil
 }
 
 // PinAbsolute applies the same original-descriptor lifetime to a bounded trust
@@ -81,7 +94,7 @@ func (witness *FilePin) Confirm() error {
 		return ErrUnsafe
 	}
 	if p.store != nil {
-		return p.store.ConfirmDurable(p.name, p.identity)
+		return p.store.confirmDurableBounded(p.name, p.identity, p.limit)
 	}
 	_, identity, err := ReadAbsolute(p.path, p.max, p.protect)
 	if err != nil {

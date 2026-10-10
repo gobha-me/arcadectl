@@ -36,7 +36,9 @@ func enrollmentIntent(t *testing.T, d Document, source []byte, baseline *install
 	t.Helper()
 	next := lifecycleCopy(t, d)
 	next.SecurityBaseline, _ = PinnedSecurityBaseline(baseline)
-	next.SecurityBaseline.Enrollment = &BaselineEnrollmentProvenance{SourceRevision: d.Revision, SourceJournalSHA256: journalSHA256(source)}
+	// Independent state-only seal fixture; actual protected source/world
+	// envelope authentication belongs to the engine's closed protocol.
+	next.SecurityBaseline.Enrollment = &BaselineEnrollmentProvenance{SourceRevision: d.Revision, SourceJournalSHA256: journalSHA256(source), SourceEvidenceSHA256: strings.Repeat("b", 64)}
 	next.Revision++
 	return next
 }
@@ -87,6 +89,8 @@ func TestBaselineEnrollmentHistoricalEncodingAndBoundedContext(t *testing.T) {
 		"zero-revision":          func(d *Document) { d.SecurityBaseline.Enrollment.SourceRevision = 0 },
 		"future-revision":        func(d *Document) { d.SecurityBaseline.Enrollment.SourceRevision = d.Revision },
 		"upper-hash":             func(d *Document) { d.SecurityBaseline.Enrollment.SourceJournalSHA256 = strings.Repeat("A", 64) },
+		"missing-evidence-seal":  func(d *Document) { d.SecurityBaseline.Enrollment.SourceEvidenceSHA256 = "" },
+		"upper-evidence-seal":    func(d *Document) { d.SecurityBaseline.Enrollment.SourceEvidenceSHA256 = strings.Repeat("A", 64) },
 		"wrong-mode":             func(d *Document) { d.Mode = Uninstall },
 		"not-installed":          func(d *Document) { d.Installed = false },
 		"runtime-stage":          func(d *Document) { d.Stage = Preparing },
@@ -132,6 +136,7 @@ func TestBaselineEnrollmentImmutableAcrossDistinctPackageTransitions(t *testing.
 				func(d *Document) { d.SecurityBaseline.Enrollment = nil },
 				func(d *Document) { d.SecurityBaseline.Enrollment.SourceRevision-- },
 				func(d *Document) { d.SecurityBaseline.Enrollment.SourceJournalSHA256 = strings.Repeat("f", 64) },
+				func(d *Document) { d.SecurityBaseline.Enrollment.SourceEvidenceSHA256 = strings.Repeat("f", 64) },
 			} {
 				bad := lifecycleCopy(t, next)
 				mutate(&bad)
@@ -156,13 +161,15 @@ func TestBaselineEnrollmentIntroductionPinsLiteralSnapshotBeforeCAS(t *testing.T
 		t.Fatal("original historical snapshot unavailable")
 	}
 	intent := enrollmentIntent(t, d, old, baseline)
-	for _, name := range []string{"missing-pin", "wrong-revision", "wrong-hash", "invented-body", "runtime-mode", "inventory", "history"} {
+	for _, name := range []string{"missing-pin", "missing-evidence-seal", "wrong-revision", "wrong-hash", "invented-body", "runtime-mode", "inventory", "history"} {
 		t.Run(name, func(t *testing.T) {
 			bad := lifecycleCopy(t, intent)
 			observed := *snapshot
 			switch name {
 			case "missing-pin":
 				bad.SecurityBaseline.Enrollment = nil
+			case "missing-evidence-seal":
+				bad.SecurityBaseline.Enrollment.SourceEvidenceSHA256 = ""
 			case "wrong-revision":
 				bad.SecurityBaseline.Enrollment.SourceRevision--
 			case "wrong-hash":
@@ -214,6 +221,7 @@ func TestBaselineEnrollmentPinSurvivesOwnershipAndOrdinaryTransitions(t *testing
 			func(d *Document) { d.SecurityBaseline.Enrollment = nil },
 			func(d *Document) { d.SecurityBaseline.Enrollment.SourceRevision-- },
 			func(d *Document) { d.SecurityBaseline.Enrollment.SourceJournalSHA256 = strings.Repeat("f", 64) },
+			func(d *Document) { d.SecurityBaseline.Enrollment.SourceEvidenceSHA256 = strings.Repeat("f", 64) },
 		} {
 			bad := lifecycleCopy(t, next)
 			change(&bad)
