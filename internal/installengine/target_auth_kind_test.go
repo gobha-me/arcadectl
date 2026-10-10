@@ -42,6 +42,19 @@ func targetKindFixture(t *testing.T, nodeImage string) (context.Context, *rest.C
 	return ctx, config, api
 }
 
+// The complete pre-controller component has 34 public and two original Secret
+// effects plus multiple complete runtime barriers. Its measured first attempt
+// exceeded the small two-prerequisite fixture's 20-minute envelope. This named,
+// finite test-only budget changes no production proof or installer deadline.
+func targetKindPrecontrollerFixture(t *testing.T, nodeImage string) (context.Context, *rest.Config, string) {
+	t.Helper()
+	if nodeImage != targetKind135 && nodeImage != targetKind137 {
+		t.Fatal("unsupported pre-controller fixture profile")
+	}
+	ctx, config, images, _ := targetKindFixtureImagesForBudget(t, nodeImage, false, false, false, false, true)
+	return ctx, config, images.API
+}
+
 // The closed warm option builds the normal controller, not lifecycle-test code.
 // Both images use the same exact-owned registry/cluster and serial build path.
 func targetKindFixtureImages(t *testing.T, nodeImage string, withController bool) (context.Context, *rest.Config, string, string) {
@@ -78,6 +91,14 @@ func targetKindInstallerFixture(t *testing.T, nodeImage string, predecessor bool
 
 func targetKindFixtureImagesForScope(t *testing.T, nodeImage string, withController, recipeV2, binary, predecessor bool) (context.Context, *rest.Config, installpackage.Images, installpackage.Images) {
 	t.Helper()
+	return targetKindFixtureImagesForBudget(t, nodeImage, withController, recipeV2, binary, predecessor, false)
+}
+
+func targetKindFixtureImagesForBudget(t *testing.T, nodeImage string, withController, recipeV2, binary, predecessor, precontroller bool) (context.Context, *rest.Config, installpackage.Images, installpackage.Images) {
+	t.Helper()
+	if precontroller && (withController || recipeV2 || binary || predecessor) {
+		t.Fatal("pre-controller fixture cannot acquire executable or historical scope")
+	}
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal("repository root unavailable")
@@ -92,6 +113,9 @@ func targetKindFixtureImagesForScope(t *testing.T, nodeImage string, withControl
 	}
 	kubeconfig := filepath.Join(workspace, "kubeconfig")
 	budget := 20 * time.Minute
+	if precontroller {
+		budget = 30 * time.Minute
+	}
 	if recipeV2 {
 		budget = 40 * time.Minute
 	}

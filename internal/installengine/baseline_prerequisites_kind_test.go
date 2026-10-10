@@ -7,6 +7,7 @@ package installengine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"reflect"
@@ -26,14 +27,30 @@ import (
 
 // Actual controller-manager typechecking plus the closed production bootstrap
 // CREATE/receipt/recovery proof, with fresh ownership through actual lifecycle
-// Steps and restart. This does not substitute for full effective runtime
-// enforcement, versioned runtime fixtures or signed-binary lifecycle proof.
+// Steps and restart. The separate larger pre-controller component continues
+// from this same genuine setup; neither replaces signed-binary lifecycle proof.
 // The existing owned Kind helper caps the node at 3 GiB and cleans its exact
 // cluster/registry/images. No external kubeconfig, workload or world is used.
 func TestKindBaselinePrerequisiteCreateNative(t *testing.T) {
+	testKindBaselineNative(t, false)
+}
+
+// Actual 37-entry pre-controller inventory, including original Secret effects,
+// complete empty executor observation and retained/full runtime proofs. This
+// does not execute the full-admission retirement archive or start a controller.
+func TestKindBaselinePrecontrollerRuntimeNative(t *testing.T) {
+	testKindBaselineNative(t, true)
+}
+
+func testKindBaselineNative(t *testing.T, precontroller bool) {
+	t.Helper()
 	for _, profile := range []struct{ id, node string }{{installrender.Profile135, targetKind135}, {installrender.Profile137, targetKind137}} {
 		t.Run(profile.id, func(t *testing.T) {
-			ctx, config, _ := targetKindFixture(t, profile.node)
+			fixture := targetKindFixture
+			if precontroller {
+				fixture = targetKindPrecontrollerFixture
+			}
+			ctx, config, _ := fixture(t, profile.node)
 			plan := fixturePlanProfile(t, "baseline-native-create", profile.id)
 			baseline := baselineFixturePlan(t, plan.Namespace(), profile.id, 'd')
 			access, err := NewDirectHTTPAccess(config)
@@ -218,6 +235,154 @@ func TestKindBaselinePrerequisiteCreateNative(t *testing.T) {
 				t.Fatal("native bootstrap component invented full runtime enforcement")
 			}
 			t.Log("actual baseline typechecking, original CRD/SA CREATE, restart, foreign-inventory refusal and runtime fence proved")
+			if !precontroller {
+				return // preserve the original small component and its time bounds
+			}
+
+			// Build the actual fresh pre-controller state using only production
+			// original CREATE/ACK/receipt/journal paths. Never fabricate inventory,
+			// health, actor authority, executor observations or retained Secrets.
+			// Keep the earlier incomplete-inventory refusal as an independent
+			// control. This smaller component deliberately has no fixture archive;
+			// its success cannot explain the exact signed CLI's archive-era failure.
+			prerequisites, services := 0, 0
+			for index, key := range lifecycle.ordered(snapshot.Document()) {
+				if key.Kind == "Deployment" {
+					continue // no controller or API process is allowed to start
+				}
+				prerequisite := baselinePrerequisiteKey(key, plan.Namespace())
+				if prerequisite {
+					prerequisites++
+				} else if key.APIVersion == "v1" && key.Kind == "Service" && key.Name == "arcadectl-api" {
+					services++
+				} else {
+					t.Fatal("native pre-controller component encountered an unreviewed effect")
+				}
+				if entry, _ := engine.inventory(snapshot.Document(), key); entry != nil {
+					continue // the two earlier actual acknowledged effects
+				}
+				attempt, diagnostic := WithLifecycleDiagnostic(ctx)
+				var next *installstate.Snapshot
+				var applyErr error
+				if prerequisite {
+					next, applyErr = engine.applyPrerequisite(attempt, snapshot, key, plan.Digest())
+				} else {
+					// The Service uses ordinary Apply's complete runtime guard,
+					// never the private nonexecuting bootstrap CREATE protocol.
+					next, applyErr = engine.Apply(attempt, snapshot, key, plan.Digest(), false)
+				}
+				if applyErr != nil && !errors.Is(applyErr, ErrOutcomeUnknown) {
+					t.Fatalf("native pre-controller original effect %d refused: fixture-deadline=%t %s", index, errors.Is(ctx.Err(), context.DeadlineExceeded), diagnostic.BoundarySnapshot())
+				}
+				if next == nil {
+					t.Fatal("native pre-controller effect returned no original snapshot")
+				}
+				snapshot = next
+				if applyErr != nil && wait.PollUntilContextTimeout(ctx, 200*time.Millisecond, 90*time.Second, true, func(ctx context.Context) (bool, error) {
+					fresh, err := store.Load(ctx, snapshot.Anchor())
+					if err != nil {
+						return false, nil
+					}
+					observed, err := engine.Recover(ctx, fresh)
+					if err == nil {
+						snapshot = observed
+					}
+					return err == nil, nil
+				}) != nil {
+					t.Fatal("native pre-controller acknowledged effect did not settle observation-only")
+				}
+				// Restart the production composition after EVERY completed effect.
+				engine, err = NewWithBaselineAccess(access, store, files, baseline, plan)
+				if err != nil {
+					t.Fatal("native pre-controller engine restart refused")
+				}
+				lifecycle, err = NewClusterLifecycle(engine, access)
+				if err != nil {
+					t.Fatal("native pre-controller closed lifecycle restart refused")
+				}
+				snapshot, err = store.Load(ctx, snapshot.Anchor())
+				if err != nil {
+					t.Fatal("native pre-controller original journal reload refused")
+				}
+				entry, template := engine.inventory(snapshot.Document(), key)
+				live, readErr := access.Get(ctx, key)
+				if entry == nil || template == nil || readErr != nil || template.MatchLive(live, entry.UID) != nil || snapshot.Document().Pending != nil {
+					t.Fatal("native pre-controller original identity or settlement unproved")
+				}
+			}
+			if prerequisites != 33 || services != 1 || len(snapshot.Document().Resources) != 35 {
+				t.Fatal("native pre-controller public inventory coverage changed")
+			}
+			for index := 0; index < 2; index++ {
+				attempt, diagnostic := WithLifecycleDiagnostic(ctx)
+				next, done, err := lifecycle.ensureSecrets(attempt, snapshot, opts)
+				if err != nil || done || next == nil || next.ResourceVersion() == snapshot.ResourceVersion() {
+					t.Fatalf("native pre-controller original Secret effect %d refused: fixture-deadline=%t %s", index, errors.Is(ctx.Err(), context.DeadlineExceeded), diagnostic.BoundarySnapshot())
+				}
+				snapshot = next
+				// Independently bind each live Secret to the recorded original
+				// UID and its durable CREATE ACK, without logging private data or
+				// relying on the workflow's later retained validation to assert it.
+				name := []string{"arcadectl-admin-credential", "arcadectl-api-tls"}[index]
+				key := secretKey(plan.Namespace(), name)
+				var original *installstate.Resource
+				for _, resource := range snapshot.Document().Resources {
+					if resource.Key == key {
+						if original != nil {
+							t.Fatal("native pre-controller Secret original is duplicated")
+						}
+						original = &resource
+					}
+				}
+				live, readErr := access.PrivateSecrets().Get(ctx, key.Namespace, key.Name)
+				if original == nil || !original.Retained || original.TemplateSHA256 != "" || original.Phase != installrender.API || readErr != nil || live == nil || original.UID == "" || live.UID != original.UID || live.ResourceVersion == "" || live.DeletionTimestamp != nil || len(live.Annotations) != 1 {
+					t.Fatal("native pre-controller Secret original metadata or public hash invariant unproved")
+				}
+				nonce := live.Annotations[installstate.MutationAnnotation]
+				if !nonceID.MatchString(nonce) {
+					t.Fatal("native pre-controller Secret original nonce unproved")
+				}
+				receiptName := "create-" + nonce + ".json"
+				body, identity, readErr := files.Read(receiptName, 4096)
+				var receipt createReceipt
+				if readErr != nil || files.ConfirmDurable(receiptName, identity) != nil || json.Unmarshal(body, &receipt) != nil || receipt.Version != "v1" || receipt.Anchor != snapshot.Anchor() || receipt.TargetPackage != plan.Digest() || receipt.OriginalUID != original.UID || receipt.Pending != (installstate.Pending{Action: installstate.Create, Key: key, CreateNonce: nonce}) {
+					t.Fatal("native pre-controller Secret protected original ACK unproved")
+				}
+			}
+			document := snapshot.Document()
+			if document.Stage != installstate.Applying || document.Revision != 100 || document.Pending != nil || document.Installed || len(document.Resources) != 37 || document.SecurityBaseline.Stage != installstate.BaselineVerified || document.SecurityBaseline.Pending != nil || len(document.SecurityBaseline.Resources) != 12 {
+				t.Fatal("native pre-controller original journal did not reach the exact 37-entry Applying boundary")
+			}
+			observer, err = NewClusterSecurityBaseline(engine, access)
+			if err != nil {
+				t.Fatal("native pre-controller full runtime provider unavailable")
+			}
+			executables, err := observer.collectExecutables(ctx, snapshot)
+			if err != nil || executables == nil || len(executables.whole) != 0 || len(executables.guarded) != 0 {
+				t.Fatal("native pre-controller complete executable inventory is not empty")
+			}
+			collections := executables.observation.Collections()
+			if collections == nil || collections.Pods == nil || collections.Jobs == nil || collections.Deployments == nil || collections.ReplicaSets == nil || collections.StatefulSets == nil || collections.DaemonSets == nil || collections.ReplicationControllers == nil || collections.CronJobs == nil || len(collections.Pods.Items)+len(collections.Jobs.Items)+len(collections.Deployments.Items)+len(collections.ReplicaSets.Items)+len(collections.StatefulSets.Items)+len(collections.DaemonSets.Items)+len(collections.ReplicationControllers.Items)+len(collections.CronJobs.Items) != 0 {
+				t.Fatal("native pre-controller eight-family empty observation is incomplete")
+			}
+			for _, name := range []string{"arcadectl-controller", "arcadectl-destroy-controller", "arcadectl-api"} {
+				key := installstate.Key{APIVersion: "apps/v1", Kind: "Deployment", Namespace: plan.Namespace(), Name: name}
+				if _, err := access.Get(ctx, key); !apierrors.IsNotFound(err) {
+					t.Fatal("native pre-controller original Deployment absence unproved")
+				}
+			}
+			attempt, diagnostic := WithLifecycleDiagnostic(ctx)
+			beforeRetained := snapshot.ResourceVersion()
+			beforeBytes := snapshot.Bytes()
+			next, done, err := lifecycle.ensureSecrets(attempt, snapshot, opts)
+			if err != nil || !done || next == nil || next.ResourceVersion() != beforeRetained || !reflect.DeepEqual(next.Bytes(), beforeBytes) {
+				t.Fatalf("native pre-controller retained Secret/full runtime proof refused: fixture-deadline=%t %s", errors.Is(ctx.Err(), context.DeadlineExceeded), diagnostic.BoundarySnapshot())
+			}
+			unchanged, err = store.Load(ctx, snapshot.Anchor())
+			if err != nil || unchanged.ResourceVersion() != beforeRetained || !reflect.DeepEqual(unchanged.Bytes(), beforeBytes) {
+				t.Fatal("native pre-controller read-only proof changed the original journal")
+			}
+			t.Log("genuine native Applying revision 100, original 37/12 inventories, empty eight executor families, absent three parents, and retained Secret/full runtime proof passed; no full-admission archive or signed lifecycle claimed")
 		})
 	}
 }
