@@ -107,3 +107,10 @@ TestBaselineEnrollmentSourcePartialOpenReleasesDescriptors 90
 TestBaselineEnrollmentSourceLargeEvidenceKeepsCredentialLimit 60
 TestBaselineEnrollmentSourceRejectsChangedParsedEvidence 180
 TestBaselineEnrollmentSourceRejectsPausedAndMixedTarget 90
+# Historical collector component: measured local race trees were 58.60s,
+# 92.66s, 41.62s and 42.34s respectively. Scheduling hints include margin;
+# these remain whole tests and do not certify native migration duration.
+TestBaselineOriginalAccessHistoricalModesKeepVerifiedGuardClosed 90
+TestBaselineEnrollmentSafetyHistoricalModesClosedTLS 180
+TestBaselineEnrollmentSafetyOriginalAndLateEvidenceClosedTLS 90
+TestBaselineEnrollmentSafetySourceBackedResumeClosedTLS 90

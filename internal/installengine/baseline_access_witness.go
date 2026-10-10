@@ -29,6 +29,20 @@ func (b *baselineWorkflow) runtimeAccessWitness(ctx context.Context, snapshot *i
 		d.SecurityBaseline.ArtifactDigest != b.plan.Digest() || d.AdmissionRetirementRevision != 0 || !e.baselineObservable(d) {
 		return nil, ErrSecurityBaseline
 	}
+	return b.readOriginalRuntimeAccess(ctx, fresh)
+}
+
+// Shared READ-only signed catalog, not a verified-baseline selection or an
+// effect permit. Both callers supply their own closed opening eligibility and
+// original Namespace observation; this leaf retains the same complete original
+// UID/template catalog and trailing Namespace/journal fence. Historical
+// enrollment must separately close its input/source, actor and cold evidence.
+func (b *baselineWorkflow) readOriginalRuntimeAccess(ctx context.Context, fresh *installstate.Snapshot) (map[installstate.Key]admissionIdentity, error) {
+	if b == nil || b.engine == nil || ctx == nil || ctx.Err() != nil || fresh == nil || !b.engine.baselineObservable(fresh.Document()) {
+		return nil, ErrSecurityBaseline
+	}
+	e := b.engine
+	d := fresh.Document()
 	witness := map[installstate.Key]admissionIdentity{}
 	// Mixed upgrades use the recorded active/target inventory, not prospective
 	// access objects which have not been created yet. Every accepted template

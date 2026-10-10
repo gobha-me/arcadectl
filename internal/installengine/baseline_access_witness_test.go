@@ -42,6 +42,57 @@ func TestBaselineAccessWitnessMissingOriginalRBACCannotUseAmbientAuthority(t *te
 	}
 }
 
+func TestBaselineOriginalAccessHistoricalModesKeepVerifiedGuardClosed(t *testing.T) {
+	for _, mode := range []installstate.Mode{installstate.Install, installstate.Upgrade, installstate.Rollback} {
+		t.Run(string(mode), func(t *testing.T) {
+			v, source, _, _ := baselineEnrollmentSourceFixture(t, mode)
+			e := v.f.engine
+			beforeWrites, beforeUpdates, beforeSecrets := v.f.access.writes, v.f.nsUpdates, v.private.writes
+			if _, err := (&Lifecycle{engine: e}).original(t.Context(), source); err != nil {
+				t.Fatal("historical original Namespace opening unavailable", err)
+			}
+			witness, err := e.baseline.readOriginalRuntimeAccess(t.Context(), source)
+			if err != nil || witness == nil {
+				t.Fatal("original historical signed access catalog unavailable", err)
+			}
+			wanted := 0
+			for _, row := range e.plans[source.Document().TargetPackage].ResourceMetadata() {
+				key := installstate.Key{APIVersion: row.APIVersion, Kind: row.Kind, Namespace: row.Namespace, Name: row.Name}
+				if !accessRetirementKey(key) {
+					continue
+				}
+				wanted++
+				original, template := e.inventory(source.Document(), key)
+				live := v.f.access.objects[key]
+				if original == nil || template == nil || live == nil || witness[key] != (admissionIdentity{original.UID, live.GetResourceVersion(), template.Hash()}) {
+					t.Fatal("historical reader omitted or adopted an original authority")
+				}
+			}
+			if len(witness) != wanted || wanted < 4 || source.Document().Mode != mode || source.Document().SecurityBaseline != nil {
+				t.Fatal("historical reader invented baseline state or rewrote real history")
+			}
+			if _, err := e.baseline.runtimeAccessWitness(t.Context(), source); err != ErrSecurityBaseline || e.baseline.verifyRuntime(t.Context(), source) != ErrSecurityBaseline {
+				t.Fatal("read-only original catalog opened a verified-baseline/runtime guard")
+			}
+			key := installstate.Key{APIVersion: "v1", Kind: "ServiceAccount", Namespace: source.Anchor().Namespace, Name: "arcadectl-controller"}
+			original := v.f.access.objects[key].DeepCopy()
+			v.f.access.objects[key].SetUID("foreign-replacement")
+			if _, err := e.baseline.readOriginalRuntimeAccess(t.Context(), source); err != ErrSecurityBaseline {
+				t.Fatal("historical reader accepted same-name foreign access")
+			}
+			v.f.access.objects[key] = original
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			if _, err := e.baseline.readOriginalRuntimeAccess(ctx, source); err != ErrSecurityBaseline {
+				t.Fatal("cancelled historical reader supplied authority")
+			}
+			if beforeWrites != v.f.access.writes || beforeUpdates != v.f.nsUpdates || beforeSecrets != v.private.writes {
+				t.Fatal("read-only historical access catalog issued an effect")
+			}
+		})
+	}
+}
+
 // Synthetic original objects test the read-only acceptance boundary, NOT
 // native admission or effect ownership. No permissive runtime guard is wired.
 func seedBaselineAccessWitness(t *testing.T) *fixture {
