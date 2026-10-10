@@ -38,7 +38,7 @@ test-envtest:
 	go test -tags=envtest -p 1 -timeout=30m -count=1 ./api/v1alpha1 ./internal/controller ./internal/install ./internal/installcontract ./internal/installengine
 
 test-kind-api:
-	GOMAXPROCS=2 GOMEMLIMIT=1GiB go test -tags=kindapi -p 1 -timeout=35m -v ./internal/install -run '^TestKindAuthenticatedAdmin$$' -count=1
+	GOMAXPROCS=2 GOMEMLIMIT=1GiB go test -tags=kindapi -p 1 -timeout=35m -v ./internal/install -run '^TestKind(AuthenticatedAdmin|APIRequestDiagnostic.*)$$' -count=1
 
 test-kind-install-auth:
 	GOMAXPROCS=2 GOMEMLIMIT=1GiB go test -tags=kindinstall -p 1 -timeout=48m -v ./internal/installengine -run '^TestKind(TargetAuthenticatedNativeKubelet|AdmissionFixturesWarmControllers)$$' -count=1
