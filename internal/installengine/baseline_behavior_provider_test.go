@@ -159,6 +159,10 @@ type baselineBehaviorActivationFixture struct {
 }
 
 func testBaselineBehaviorWholeProviderWithActivation(t *testing.T, scenario string, protocol func(*Engine, *installstate.Snapshot, *ClusterSecurityBaseline, func() int) error, activation *baselineBehaviorActivationFixture) {
+	testBaselineBehaviorWholeProviderComposition(t, scenario, protocol, activation, nil)
+}
+
+func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string, protocol func(*Engine, *installstate.Snapshot, *ClusterSecurityBaseline, func() int) error, activation *baselineBehaviorActivationFixture, effect *baselineBehaviorEffectFixture) {
 	t.Helper()
 	runtime := strings.HasPrefix(scenario, "runtime-")
 	mode := strings.TrimPrefix(scenario, "runtime-")
@@ -354,6 +358,12 @@ func testBaselineBehaviorWholeProviderWithActivation(t *testing.T, scenario stri
 		}
 		installstate.SortResources(d.Resources)
 	}
+	if effect != nil {
+		if mode != "healthy" || protocol == nil || activation != nil {
+			t.Fatal("effect fixture escaped its explicit original CREATE scope")
+		}
+		effect.prepare(t, &d, objects, f.plan)
+	}
 	d.Revision++
 	seedBaselineAccessUnitDocument(t, f, d)
 	if precontroller && (d.Stage != installstate.Applying || d.Mode != installstate.Install || d.Installed || d.Pending != nil || len(d.Resources) != 37 || len(d.SecurityBaseline.Resources) != 12) {
@@ -383,6 +393,9 @@ func testBaselineBehaviorWholeProviderWithActivation(t *testing.T, scenario stri
 	if err != nil {
 		t.Fatal("protected original provider namespace unavailable")
 	}
+	if effect != nil {
+		effect.namespace = ns
+	}
 	// Independent literal resources, not production catalog derivation.
 	resources := [][3]string{{"v1", "Pod", "pods"}, {"batch/v1", "Job", "jobs"}, {"apps/v1", "Deployment", "deployments"}, {"apps/v1", "ReplicaSet", "replicasets"}, {"apps/v1", "StatefulSet", "statefulsets"}, {"apps/v1", "DaemonSet", "daemonsets"}, {"v1", "ReplicationController", "replicationcontrollers"}, {"batch/v1", "CronJob", "cronjobs"}, {"v1", "ServiceAccount", "serviceaccounts"}, {"v1", "Service", "services"}, {"rbac.authorization.k8s.io/v1", "Role", "roles"}, {"rbac.authorization.k8s.io/v1", "RoleBinding", "rolebindings"}}
 	objectPaths := map[string]installstate.Key{}
@@ -398,6 +411,15 @@ func testBaselineBehaviorWholeProviderWithActivation(t *testing.T, scenario stri
 			t.Fatal("original provider object route unavailable")
 		}
 		objectPaths[path] = key
+	}
+	if effect != nil {
+		for key := range effect.family {
+			path, _, err := baselineExecutableRead(key, "get")
+			if err != nil {
+				t.Fatal("effect fixture future family route unavailable")
+			}
+			objectPaths[path] = key
+		}
 	}
 	var mu sync.Mutex
 	requests := 0
@@ -421,6 +443,9 @@ func testBaselineBehaviorWholeProviderWithActivation(t *testing.T, scenario stri
 		if r.Header.Get("Authorization") != bearer || user != "" && actor != "arcadectl-controller" && actor != "arcadectl-destroy-controller" {
 			t.Error("behavior provider changed frozen original identity")
 		}
+		if effect != nil && effect.serve(t, w, r, objects) {
+			return
+		}
 		if r.Method == http.MethodPost && r.URL.Path == "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews" {
 			var review authv1.SelfSubjectAccessReview
 			if json.NewDecoder(r.Body).Decode(&review) != nil || review.Spec.ResourceAttributes == nil || review.Spec.NonResourceAttributes != nil {
@@ -429,6 +454,13 @@ func testBaselineBehaviorWholeProviderWithActivation(t *testing.T, scenario stri
 				return
 			}
 			a := review.Spec.ResourceAttributes
+			if effect != nil && effect.creates == 1 && !effect.proofOpening && user == "" && a.Verb == "impersonate" && a.Resource == "serviceaccounts" && a.Version == "*" {
+				// Quiet collection asks only read/list. The first maintenance
+				// impersonation review opens actual newBaselineActors; freeze
+				// the last PRE-proof collection timestamp before later reads.
+				effect.proofOpening = true
+				effect.quietCollection = effect.lastCollection
+			}
 			// A literal catalog-only token descriptor, never the outer
 			// wildcard impersonation bracket between catalog passes.
 			if probes == 97 && user != "" && !injected && a.Group == "" && a.Version == "v1" && a.Resource == "serviceaccounts" && a.Subresource == "token" && a.Verb == "create" && a.Name == "arcadectl-api" &&
@@ -439,6 +471,9 @@ func testBaselineBehaviorWholeProviderWithActivation(t *testing.T, scenario stri
 			allowed := false
 			if user == "" {
 				allowed = a.Verb == "get" || a.Verb == "list" || a.Verb == "impersonate" && a.Version == "*" && a.Resource == "serviceaccounts" && a.Namespace == d.Namespace && (a.Name == "arcadectl-controller" || a.Name == "arcadectl-destroy-controller")
+				if effect != nil {
+					allowed = allowed || a.Verb == "update" && a.Group == "" && a.Version == "v1" && a.Resource == "namespaces" && a.Name == d.Namespace && a.Namespace == "" && a.Subresource == "" || a.Verb == "create" && a.Group == "apps" && a.Version == "v1" && a.Resource == "deployments" && a.Namespace == d.Namespace && a.Name == "" && a.Subresource == ""
+				}
 			} else if a.Version == "v1" && a.Namespace == d.Namespace && a.Subresource == "" && a.FieldSelector == nil && a.LabelSelector == nil {
 				collection := a.Verb == "create" && a.Name == ""
 				named := a.Name != "" && (a.Verb == "update" || a.Verb == "delete" || a.Verb == "patch")
@@ -524,6 +559,9 @@ func testBaselineBehaviorWholeProviderWithActivation(t *testing.T, scenario stri
 					}
 				}
 				copy := ns.DeepCopy()
+				if effect != nil {
+					copy = effect.namespace.DeepCopy()
+				}
 				copy.APIVersion, copy.Kind = "v1", "Namespace"
 				_ = json.NewEncoder(w).Encode(copy)
 				return
@@ -542,6 +580,10 @@ func testBaselineBehaviorWholeProviderWithActivation(t *testing.T, scenario stri
 				}
 			}
 			if key, ok := objectPaths[r.URL.Path]; ok {
+				if objects[key] == nil {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
 				if probes == 97 && key == serviceKey && !injected {
 					switch mode {
 					case "closing-new-pod":
@@ -623,6 +665,9 @@ func testBaselineBehaviorWholeProviderWithActivation(t *testing.T, scenario stri
 		row := actor + "/" + r.Method + "/" + resource[1]
 		rows[row]++
 		key := installstate.Key{APIVersion: resource[0], Kind: resource[1], Namespace: d.Namespace, Name: name}
+		if effect != nil && (probes == 93 || probes == 185 || probes == 277) && actor == "arcadectl-controller" && r.Method == http.MethodPost && resource[1] == "Job" {
+			producerBodies = map[string]*unstructured.Unstructured{}
+		}
 		if activation != nil && activation.proofs == 2 && probes == 98 && positives == 3 && len(producerBodies) == 3 && actor == "arcadectl-controller" && r.Method == http.MethodPost && resource[1] == "Job" {
 			account, _, _ := unstructured.NestedString(object.Object, "spec", "template", "spec", "serviceAccountName")
 			previous := producerBodies["arcadectl-controller/Job"]
@@ -728,6 +773,9 @@ func testBaselineBehaviorWholeProviderWithActivation(t *testing.T, scenario stri
 	behavior, err := provider.newBaselineBehavior(constructorContext, snapshot)
 	t.Cleanup(behavior.release)
 	wantMembers := 3
+	if effect != nil {
+		wantMembers = 2
+	}
 	if precontroller {
 		wantMembers = 0
 	}
@@ -792,6 +840,15 @@ func testBaselineBehaviorWholeProviderWithActivation(t *testing.T, scenario stri
 	if precontroller {
 		wantProbes, wantPodProbes = 82, 0
 	}
+	if effect != nil {
+		wantProbes, wantPodProbes, wantPositives, wantRules = 373, 18, 12, 24
+		if effect.failure != "" && effect.failure != "receipt-at-settlement" {
+			wantProbes, wantPodProbes, wantPositives, wantRules = 276, 12, 9, 18
+			if effect.failure == "late-status" || effect.failure == "receipt-after-wait" {
+				wantRules++ // opening denied-catalog rules only, no fourth behavioral cycle
+			}
+		}
+	}
 	if positive && (probes != wantProbes || positives != wantPositives || podProbes != wantPodProbes || rules["arcadectl-controller"] != wantRules || rules["arcadectl-destroy-controller"] != wantRules) {
 		t.Fatal("healthy driver omitted finite behavioral rows or closing rule passes")
 	}
@@ -816,10 +873,37 @@ func testBaselineBehaviorWholeProviderWithActivation(t *testing.T, scenario stri
 				}
 			}
 		}
+		if effect != nil {
+			cycles := 4
+			if wantProbes == 276 {
+				cycles = 3
+			}
+			for row, count := range want {
+				want[row] = count * cycles
+			}
+			for _, row := range []string{"arcadectl-controller/PUT/Deployment", "arcadectl-controller/PATCH/Deployment", "arcadectl-controller/DELETE/Deployment", "arcadectl-controller/PUT/Pod", "arcadectl-destroy-controller/PUT/Pod"} {
+				want[row] -= 3 // API parent and Pod absent in the first three proofs.
+			}
+		}
 		if !reflect.DeepEqual(want, rows) {
 			t.Fatal("behavior driver request multiset differs from independent literal protocol")
 		}
 		wantDetailed := testBaselineBehaviorLiteralRows(v.objects.Pods.Items)
+		if effect != nil {
+			cycles := 4
+			if wantProbes == 276 {
+				cycles = 3
+			}
+			for row, count := range wantDetailed {
+				wantDetailed[row] = count * cycles
+				if strings.HasSuffix(row, "/Deployment/arcadectl-api") || strings.Contains(row, "/Pod/") && strings.HasSuffix(row, "/"+effect.podName) {
+					wantDetailed[row] -= 3
+				}
+				if wantDetailed[row] == 0 {
+					delete(wantDetailed, row)
+				}
+			}
+		}
 		if activation != nil {
 			for row, count := range wantDetailed {
 				if activation.proofs == 0 {

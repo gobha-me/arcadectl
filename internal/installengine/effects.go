@@ -412,6 +412,15 @@ func (e *Engine) recover(ctx context.Context, s *installstate.Snapshot, ack *uns
 
 func (e *Engine) recoverWithOperation(ctx context.Context, s *installstate.Snapshot, ack *unstructured.Unstructured, hasAck, allowInitialObservation bool, operation *baselinePrerequisite) (*installstate.Snapshot, error) {
 	traceOperationBoundary(ctx, boundaryRecoveryOpening)
+	var acknowledgedParent *baselineParent
+	if e != nil && e.baseline != nil && operation == nil && hasAck && s != nil && s.Document().Pending != nil && s.Document().Pending.Key.Kind == "Deployment" {
+		var err error
+		acknowledgedParent, err = e.waitAcknowledgedDeployment(ctx, s, ack)
+		if err != nil {
+			return s, ErrOutcomeUnknown
+		}
+		defer acknowledgedParent.release()
+	}
 	var receipt *prerequisiteReceiptWitness
 	var fresh *installstate.Snapshot
 	var err error
@@ -511,6 +520,9 @@ func (e *Engine) recoverWithOperation(ctx context.Context, s *installstate.Snaps
 	d.Revision++
 	d.Pending = nil
 	traceOperationBoundary(ctx, boundaryRecoverySettlement)
+	if acknowledgedParent != nil && e.confirmBaselineOriginalReceipt(fresh.Document(), fresh.Document().Pending.Key, &baselineOriginalObject{whole: acknowledgedParent.whole, template: acknowledgedParent.template, receipt: acknowledgedParent.receipt}) != nil {
+		return fresh, ErrOutcomeUnknown
+	}
 	if operation != nil {
 		if _, err := (&Lifecycle{engine: e}).original(ctx, fresh); err != nil || e.confirmPrerequisiteReceipt(fresh, operation, receipt) != nil || ctx.Err() != nil {
 			return fresh, ErrOutcomeUnknown
@@ -519,6 +531,9 @@ func (e *Engine) recoverWithOperation(ctx context.Context, s *installstate.Snaps
 	settled, err := e.journal.Commit(ctx, fresh, d)
 	if err != nil {
 		return fresh, ErrOutcomeUnknown
+	}
+	if acknowledgedParent != nil && e.confirmBaselineOriginalReceipt(fresh.Document(), fresh.Document().Pending.Key, &baselineOriginalObject{whole: acknowledgedParent.whole, template: acknowledgedParent.template, receipt: acknowledgedParent.receipt}) != nil {
+		return settled, ErrOutcomeUnknown // CAS completed; never claim stale receipt continuity
 	}
 	traceOperationBoundary(ctx, boundaryRecoveryComplete)
 	return settled, nil
