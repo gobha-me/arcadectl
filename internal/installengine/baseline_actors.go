@@ -6,6 +6,8 @@ package installengine
 import (
 	"context"
 	"reflect"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gobha-me/arcadectl/internal/installstate"
@@ -156,16 +158,8 @@ func (actors *baselineActors) verifyWithProbe(ctx context.Context, probe *baseli
 	if probe != nil && operationClient.authorize(ctx, operationPermission) != nil {
 		return ErrSecurityBaseline
 	}
-	for _, actor := range []admissionActor{ordinaryControllerActor, destroyControllerActor} {
-		client := actors.clients[actor]
-		if client == nil || client.actor == nil || client.actor.actor != actor || client.actor.namespace != actors.snapshot.Anchor().Namespace || client.actor.purpose != baselineAdmissionPurpose {
-			return ErrSecurityBaseline
-		}
-		for _, permission := range baselineAuthorizationContainmentPermissions(actors.snapshot.Anchor().Namespace) {
-			if client.authorizationDecision(ctx, permission, false) != nil {
-				return ErrSecurityBaseline
-			}
-		}
+	if actors.verifyContainment(ctx) != nil {
+		return ErrSecurityBaseline
 	}
 	// A successful collection of reviews does not pin original identities.
 	// Repeat both independent witnesses across the entire two-actor catalog.
@@ -182,6 +176,47 @@ func (actors *baselineActors) verifyWithProbe(ctx context.Context, probe *baseli
 	// cannot disappear between the witness sets and this return.
 	current, err = c.engine.baseline.runtimeAccessWitness(ctx, actors.snapshot)
 	if err != nil || !reflect.DeepEqual(current, actors.access) {
+		return ErrSecurityBaseline
+	}
+	return nil
+}
+
+// Private catalog component only, never a complete authority or public bypass.
+// The caller owes the exact operation review and whole opening/closing fences.
+func (actors *baselineActors) verifyContainment(ctx context.Context) error {
+	if actors == nil || ctx == nil || ctx.Err() != nil || actors.snapshot == nil || len(actors.clients) != 2 {
+		return ErrSecurityBaseline
+	}
+	var clients [2]*HTTPAccess
+	for i, actor := range [2]admissionActor{ordinaryControllerActor, destroyControllerActor} {
+		client := actors.clients[actor]
+		if client == nil || client.actor == nil || client.actor.actor != actor || client.actor.namespace != actors.snapshot.Anchor().Namespace || client.actor.purpose != baselineAdmissionPurpose {
+			return ErrSecurityBaseline
+		}
+		clients[i] = client
+	}
+	// Both fixed actors are validated before starting either lane. Keep every
+	// per-actor catalog serial; only the two independent catalogs overlap.
+	// Cancel a refused sibling, but JOIN both before returning or allowing the
+	// caller's closing witnesses/dry-run. No result is cached or retried.
+	permissions := baselineAuthorizationContainmentPermissions(actors.snapshot.Anchor().Namespace)
+	reviews, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var group sync.WaitGroup
+	var refused atomic.Bool
+	for _, client := range clients {
+		group.Go(func() {
+			for _, permission := range permissions {
+				if reviews.Err() != nil || client.authorizationDecision(reviews, permission, false) != nil {
+					refused.Store(true)
+					cancel()
+					return
+				}
+			}
+		})
+	}
+	group.Wait()
+	if refused.Load() || ctx.Err() != nil {
 		return ErrSecurityBaseline
 	}
 	return nil

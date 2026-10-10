@@ -4,9 +4,11 @@
 package installengine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -14,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gobha-me/arcadectl/internal/installbaseline"
 	"github.com/gobha-me/arcadectl/internal/installstate"
@@ -28,6 +31,7 @@ import (
 // is inferred from the fake replies.
 func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 	modes := []string{"healthy", "admin-denied", "actor-maintenance-allowed", "actor-cel-maintenance-allowed", "actor-producer-allowed", "negative-review-missing", "actor-operation-denied", "access-replaced", "baseline-drift", "late-access-rv", "late-policy-rv", "review-access-rv", "review-policy-rv", "closing-config-access-rv", "wrong-denial"}
+	modes = append(modes, "two-lane-join-before-probe")
 	modes = append(modes, "operation-access-uid", "operation-access-rv", "operation-policy-rv", "operation-policy-shape", "operation-policy-status", "operation-journal", "operation-namespace-uid", "operation-review-missing", "operation-review-malformed", "operation-canceled", "candidate-mutated", "invalid-actor", "swapped-actor", "foreign-namespace", "unsupported-operation", "wrong-purpose")
 	type grant struct {
 		actor     admissionActor
@@ -80,6 +84,8 @@ func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 				_ = unstructured.SetNestedField(objects[policyPath].Object, "Ignore", "spec", "failurePolicy")
 			}
 			var probes atomic.Int32
+			var catalogBlocked atomic.Bool
+			var earlyClosing atomic.Int32
 			var requests atomic.Int32
 			var candidate *unstructured.Unstructured
 			copiedBeforeTransport := make(chan struct{})
@@ -95,6 +101,9 @@ func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 			operationReviews := 0
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requests.Add(1)
+				if catalogBlocked.Load() && (r.Method == http.MethodGet || r.URL.Path == "/apis/batch/v1/namespaces/"+f.plan.Namespace()+"/jobs") {
+					earlyClosing.Add(1)
+				}
 				mu.Lock()
 				defer mu.Unlock()
 				w.Header().Set("Content-Type", "application/json")
@@ -364,8 +373,73 @@ func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 			}
 			beforeRequests := requests.Load()
 			policy := "arcadectl-identity-template-" + f.plan.Namespace()
-			_, err = actors.probe(probeContext, actor, operation, candidate, policy, policy, installbaseline.DenialMessage)
-			positive := mode == "healthy" || mode == "candidate-mutated"
+			if mode == "two-lane-join-before-probe" {
+				client := actors.clients[destroyControllerActor]
+				copyClient := *client.client
+				inner := copyClient.Transport
+				entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+				var enteredOnce, releaseOnce sync.Once
+				copyClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+					body, readErr := io.ReadAll(request.Body)
+					request.Body = io.NopCloser(bytes.NewReader(body))
+					var review authv1.SelfSubjectAccessReview
+					if readErr != nil || json.Unmarshal(body, &review) != nil {
+						return nil, ErrRead
+					}
+					if review.Spec.ResourceAttributes != nil && reflect.DeepEqual(*review.Spec.ResourceAttributes, catalog[12]) {
+						block := false
+						enteredOnce.Do(func() { block = true })
+						if block {
+							catalogBlocked.Store(true)
+							close(entered)
+							select {
+							case <-release:
+							case <-request.Context().Done():
+								return nil, ErrRead
+							}
+						}
+					}
+					return inner.RoundTrip(request)
+				})
+				client.client = &copyClient
+				joinedCtx, joinedCancel := context.WithTimeout(probeContext, 5*time.Second)
+				defer func() {
+					joinedCancel()
+					releaseOnce.Do(func() { close(release) })
+					select {
+					case <-done:
+					case <-time.After(2 * time.Second):
+						t.Error("actual probe outlived its canceled catalog")
+					}
+				}()
+				go func() {
+					_, err = actors.probe(joinedCtx, actor, operation, candidate, policy, policy, installbaseline.DenialMessage)
+					close(done)
+				}()
+				select {
+				case <-entered:
+				case <-joinedCtx.Done():
+					t.Fatal("actual probe did not reach its last sibling catalog row")
+				}
+				select {
+				case <-done:
+					t.Fatal("actual probe returned before joining its catalog")
+				case <-time.After(200 * time.Millisecond):
+				}
+				if earlyClosing.Load() != 0 || probes.Load() != 0 {
+					t.Fatal("closing witness or dry-run preceded the complete joined catalog")
+				}
+				catalogBlocked.Store(false)
+				releaseOnce.Do(func() { close(release) })
+				select {
+				case <-done:
+				case <-joinedCtx.Done():
+					t.Fatal("actual probe did not close and finish after catalog release")
+				}
+			} else {
+				_, err = actors.probe(probeContext, actor, operation, candidate, policy, policy, installbaseline.DenialMessage)
+			}
+			positive := mode == "healthy" || mode == "candidate-mutated" || mode == "two-lane-join-before-probe"
 			if (err == nil) != positive || err != nil && strings.Contains(err.Error(), "CANARY") || probes.Load() > 1 {
 				t.Fatal("baseline probe accepted changed authority, wrong denial or replay")
 			}
