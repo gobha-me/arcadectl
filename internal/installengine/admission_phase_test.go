@@ -189,11 +189,13 @@ func TestAdmissionInitialPhaseLeaderClockDomainsRemainBounded(t *testing.T) {
 	lease.CreationTimestamp = metav1.NewTime(now.Add(-10 * time.Second).Truncate(time.Second))
 	acquire := metav1.NewMicroTime(lease.CreationTimestamp.Add(-time.Second))
 	lease.Spec.AcquireTime = &acquire
+	managed := metav1.NewTime(lease.CreationTimestamp.Add(-time.Second))
+	lease.ManagedFields[0].Time = &managed
 	original, err := capturePhaseLeader(ns.Name, &lease, states[0], now)
 	if err != nil {
-		t.Fatal("original client-acquired-before-server-created leader refused")
+		t.Fatal("original client acquisition or native field management before server creation refused")
 	}
-	for _, scenario := range []string{"nil-acquire", "zero-acquire", "non-utc-acquire", "submicro-acquire", "acquire-after-renew", "future-creation", "future-renew", "stale-renew", "foreign-holder", "changed-acquisition", "changed-creation"} {
+	for _, scenario := range []string{"nil-acquire", "zero-acquire", "non-utc-acquire", "submicro-acquire", "acquire-after-renew", "future-creation", "future-renew", "stale-renew", "foreign-holder", "changed-acquisition", "changed-creation", "nil-managed", "zero-managed", "year-zero-managed", "future-managed"} {
 		t.Run(scenario, func(t *testing.T) {
 			changed := lease.DeepCopy()
 			wantValid := false
@@ -218,6 +220,16 @@ func TestAdmissionInitialPhaseLeaderClockDomainsRemainBounded(t *testing.T) {
 				changed.Spec.RenewTime.Time = now.Add(-16 * time.Second)
 			case "foreign-holder":
 				changed.Spec.HolderIdentity = ptr.To("foreign-pod_10000000-0000-4000-8000-000000000099")
+			case "nil-managed":
+				changed.ManagedFields[0].Time = nil
+			case "zero-managed":
+				changed.ManagedFields[0].Time = &metav1.Time{}
+			case "year-zero-managed":
+				invalid := metav1.NewTime(time.Date(0, 1, 1, 0, 0, 0, 0, time.UTC))
+				changed.ManagedFields[0].Time = &invalid
+			case "future-managed":
+				invalid := metav1.NewTime(now.Add(2 * time.Second))
+				changed.ManagedFields[0].Time = &invalid
 			case "changed-acquisition":
 				changed.Spec.AcquireTime.Time = changed.Spec.AcquireTime.Add(time.Microsecond)
 				wantValid = true

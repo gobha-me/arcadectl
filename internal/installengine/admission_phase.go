@@ -380,7 +380,9 @@ func capturePhaseLeader(namespace string, lease *coordinationv1.Lease, state adm
 	times := make([]string, len(copy.ManagedFields))
 	for index := range copy.ManagedFields {
 		field := &copy.ManagedFields[index]
-		if field.Time == nil || field.Time.IsZero() || field.Time.Time.After(now.Add(time.Second)) || field.Time.Before(&lease.CreationTimestamp) || field.Manager == "" || field.Operation != metav1.ManagedFieldsOperationUpdate || field.APIVersion != "coordination.k8s.io/v1" || field.Subresource != "" || field.FieldsType != "FieldsV1" || field.FieldsV1 == nil {
+		// Native field management and REST creation stamp independent times;
+		// creation is not a lower bound for the original managed-field stamp.
+		if field.Time == nil || field.Time.IsZero() || field.Time.Year() < 1 || field.Time.Year() > 9999 || field.Time.Time.After(now.Add(time.Second)) || field.Manager == "" || field.Operation != metav1.ManagedFieldsOperationUpdate || field.APIVersion != "coordination.k8s.io/v1" || field.Subresource != "" || field.FieldsType != "FieldsV1" || field.FieldsV1 == nil {
 			return zero, ErrAdmission
 		}
 		times[index] = field.Time.UTC().Format(time.RFC3339Nano)

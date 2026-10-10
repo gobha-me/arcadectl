@@ -127,6 +127,56 @@ func TestFixtureResultClosedPhasesOriginalOwnershipAndWholeShape(t *testing.T) {
 	}
 }
 
+func TestFixtureResultIndependentNativeMetadataTimes(t *testing.T) {
+	created := time.Date(2026, time.October, 6, 10, 0, 0, 0, time.UTC)
+	observed := created.Add(2 * time.Minute)
+	for _, profile := range []string{installrender.Profile135, installrender.Profile137} {
+		t.Run(profile, func(t *testing.T) {
+			for _, recipe := range []string{fixtureRecipeV1, fixtureRecipeV2, fixtureRecipeV3} {
+				t.Run(recipe, func(t *testing.T) {
+					f := newFixtureWithPlans(t, false, fixturePlanProfile(t, "isolated-install", profile))
+					ledger, err := f.engine.prepareFixtureLedgerRecipe(t.Context(), f.snapshot, recipe)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer ledger.close()
+					for _, slot := range fixtureCreationOrder(ledger.document) {
+						for _, phase := range []fixtureResultPhase{fixtureDryRunResult, fixtureAcknowledgedResult, fixtureStableResult} {
+							if phase == fixtureAcknowledgedResult {
+								acknowledgeRecipeFixture(t, ledger, slot, types.UID(fmt.Sprintf("a0000000-0000-4000-8000-%012x", slot+1)))
+							}
+							original := fixtureResultExample(t, ledger, slot, phase, created)
+							if ledger.validateResult(slot, phase, original, observed) != nil {
+								t.Fatalf("healthy original slot%d phase%d refused", slot, phase)
+							}
+							before := bytes.Clone(ledger.body)
+							changed := original.DeepCopy()
+							fields := changed.Object["metadata"].(map[string]any)["managedFields"].([]any)
+							// Native field management runs before REST creation stamping.
+							// Independent second-resolution timestamps can straddle a
+							// boundary. Their relative order is not identity/freshness proof.
+							fields[0].(map[string]any)["time"] = created.Add(-time.Second).Format(time.RFC3339)
+							if ledger.validateResult(slot, phase, changed, observed) != nil {
+								t.Errorf("independently valid native times refused slot%d phase%d", slot, phase)
+							}
+							for _, invalid := range []any{nil, "0001-01-01T00:00:00Z", "0000-01-01T00:00:00Z", "10000-01-01T00:00:00Z", created.Format(time.RFC3339Nano) + ".bad", observed.Add(2 * time.Second).Format(time.RFC3339)} {
+								bad := changed.DeepCopy()
+								bad.Object["metadata"].(map[string]any)["managedFields"].([]any)[0].(map[string]any)["time"] = invalid
+								if ledger.validateResult(slot, phase, bad, observed) != ErrFixtures {
+									t.Fatalf("invalid managed timestamp accepted slot%d phase%d", slot, phase)
+								}
+							}
+							if !bytes.Equal(before, ledger.body) || f.access.writes != 0 || f.nsUpdates != 0 {
+								t.Fatal("metadata shape proof changed ownership or cluster state")
+							}
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
 func fixtureResultRefusals(t *testing.T, ledger *fixtureLedger, slot int, phase fixtureResultPhase, o *unstructured.Unstructured, observed time.Time) {
 	t.Helper()
 	before := bytes.Clone(ledger.body)
@@ -202,8 +252,8 @@ func fixtureResultRefusals(t *testing.T, ledger *fixtureLedger, slot int, phase 
 			entry[field] = "PRIVATE-CANARY"
 		}
 	}
-	mutations["managed-time-before-creation"] = func(x *unstructured.Unstructured) {
-		x.Object["metadata"].(map[string]any)["managedFields"].([]any)[0].(map[string]any)["time"] = "2026-10-06T09:59:59Z"
+	mutations["managed-time-year-zero"] = func(x *unstructured.Unstructured) {
+		x.Object["metadata"].(map[string]any)["managedFields"].([]any)[0].(map[string]any)["time"] = "0000-01-01T00:00:00Z"
 	}
 	mutations["managed-time-future"] = func(x *unstructured.Unstructured) {
 		x.Object["metadata"].(map[string]any)["managedFields"].([]any)[0].(map[string]any)["time"] = observed.Add(2 * time.Second).Format(time.RFC3339)
