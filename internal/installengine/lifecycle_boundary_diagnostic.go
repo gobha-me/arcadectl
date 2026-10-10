@@ -20,6 +20,16 @@ const (
 	boundaryApplyPreview
 	boundaryApplyPreviewResult
 	boundaryApplyAfterPreview
+	boundaryApplyIntent
+	boundaryApplyReceipt
+	boundaryApplyEffectOpening
+	boundaryApplyEffectRequest
+	boundaryApplyEffectResult
+	boundaryRecoveryOpening
+	boundaryRecoveryRead
+	boundaryRecoveryReceipt
+	boundaryRecoverySettlement
+	boundaryRecoveryComplete
 )
 
 func (b operationBoundary) label() string {
@@ -42,6 +52,26 @@ func (b operationBoundary) label() string {
 		return "apply-preview-result"
 	case boundaryApplyAfterPreview:
 		return "apply-after-preview"
+	case boundaryApplyIntent:
+		return "apply-intent"
+	case boundaryApplyReceipt:
+		return "apply-receipt"
+	case boundaryApplyEffectOpening:
+		return "apply-effect-opening"
+	case boundaryApplyEffectRequest:
+		return "apply-effect-request"
+	case boundaryApplyEffectResult:
+		return "apply-effect-result"
+	case boundaryRecoveryOpening:
+		return "recovery-opening"
+	case boundaryRecoveryRead:
+		return "recovery-read"
+	case boundaryRecoveryReceipt:
+		return "recovery-receipt"
+	case boundaryRecoverySettlement:
+		return "recovery-settlement"
+	case boundaryRecoveryComplete:
+		return "recovery-complete"
 	}
 	return "unknown"
 }

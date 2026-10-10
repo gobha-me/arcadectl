@@ -280,24 +280,29 @@ func (e *Engine) apply(ctx context.Context, s *installstate.Snapshot, key instal
 	}
 	d.Revision++
 	d.Pending = p
+	traceOperationBoundary(ctx, boundaryApplyIntent)
 	intent, err := e.journal.Commit(ctx, fresh, d)
 	if err != nil {
 		return nil, err
 	} // NO target effect on unconfirmed intent
 	if p.Action == installstate.Create {
+		traceOperationBoundary(ctx, boundaryApplyReceipt)
 		if err := e.prepareCreateReceipt(intent.Document()); err != nil {
 			return intent, ErrOutcomeUnknown
 		}
 	}
+	traceOperationBoundary(ctx, boundaryApplyEffectOpening)
 	if _, err = e.currentEffect(ctx, intent, operation); err != nil {
 		return intent, ErrOutcomeUnknown
 	}
 	var ack *unstructured.Unstructured
+	traceOperationBoundary(ctx, boundaryApplyEffectRequest)
 	if p.Action == installstate.Create {
 		ack, err = e.access.Create(ctx, key, candidate, false)
 	} else {
 		ack, err = e.access.Update(ctx, key, candidate, false)
 	}
+	traceOperationBoundary(ctx, boundaryApplyEffectResult)
 	// A successful acknowledgement must agree with the independently observed
 	// effect. A lost response is correlated by the exact saved nonce instead.
 	if err == nil && p.Action == installstate.Create && ack != nil {
@@ -406,6 +411,7 @@ func (e *Engine) recover(ctx context.Context, s *installstate.Snapshot, ack *uns
 }
 
 func (e *Engine) recoverWithOperation(ctx context.Context, s *installstate.Snapshot, ack *unstructured.Unstructured, hasAck, allowInitialObservation bool, operation *baselinePrerequisite) (*installstate.Snapshot, error) {
+	traceOperationBoundary(ctx, boundaryRecoveryOpening)
 	var receipt *prerequisiteReceiptWitness
 	var fresh *installstate.Snapshot
 	var err error
@@ -453,6 +459,7 @@ func (e *Engine) recoverWithOperation(ctx context.Context, s *installstate.Snaps
 			return fresh, ErrInvalid
 		}
 	}
+	traceOperationBoundary(ctx, boundaryRecoveryRead)
 	live, readErr := e.access.Get(ctx, p.Key)
 	index := slices.IndexFunc(d.Resources, func(r installstate.Resource) bool { return r.Key == p.Key })
 	if p.Action == installstate.Delete {
@@ -466,6 +473,7 @@ func (e *Engine) recoverWithOperation(ctx context.Context, s *installstate.Snaps
 			return fresh, ErrOutcomeUnknown
 		}
 		if p.Action == installstate.Create {
+			traceOperationBoundary(ctx, boundaryRecoveryReceipt)
 			if index >= 0 {
 				return fresh, ErrOutcomeUnknown
 			}
@@ -502,6 +510,7 @@ func (e *Engine) recoverWithOperation(ctx context.Context, s *installstate.Snaps
 	installstate.SortResources(d.Resources)
 	d.Revision++
 	d.Pending = nil
+	traceOperationBoundary(ctx, boundaryRecoverySettlement)
 	if operation != nil {
 		if _, err := (&Lifecycle{engine: e}).original(ctx, fresh); err != nil || e.confirmPrerequisiteReceipt(fresh, operation, receipt) != nil || ctx.Err() != nil {
 			return fresh, ErrOutcomeUnknown
@@ -511,5 +520,6 @@ func (e *Engine) recoverWithOperation(ctx context.Context, s *installstate.Snaps
 	if err != nil {
 		return fresh, ErrOutcomeUnknown
 	}
+	traceOperationBoundary(ctx, boundaryRecoveryComplete)
 	return settled, nil
 }

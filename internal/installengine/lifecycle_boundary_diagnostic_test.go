@@ -5,12 +5,14 @@ package installengine
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/gobha-me/arcadectl/internal/installstate"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
@@ -20,7 +22,12 @@ func TestLifecycleBoundaryDiagnosticClosedFreshAndConcurrent(t *testing.T) {
 	if absent.BoundarySnapshot() != unknown {
 		t.Fatal("nil boundary diagnostic became evidence")
 	}
-	operations := map[operationBoundary]string{boundaryRetainedOpening: "retained-opening", boundaryRetainedRead: "retained-read", boundaryRetainedClosing: "retained-closing", boundaryRetainedComplete: "retained-complete", boundaryApplyOpening: "apply-opening", boundaryApplyCandidate: "apply-candidate", boundaryApplyPreview: "apply-preview", boundaryApplyPreviewResult: "apply-preview-result", boundaryApplyAfterPreview: "apply-after-preview"}
+	operations := map[operationBoundary]string{
+		boundaryRetainedOpening: "retained-opening", boundaryRetainedRead: "retained-read", boundaryRetainedClosing: "retained-closing", boundaryRetainedComplete: "retained-complete",
+		boundaryApplyOpening: "apply-opening", boundaryApplyCandidate: "apply-candidate", boundaryApplyPreview: "apply-preview", boundaryApplyPreviewResult: "apply-preview-result", boundaryApplyAfterPreview: "apply-after-preview",
+		boundaryApplyIntent: "apply-intent", boundaryApplyReceipt: "apply-receipt", boundaryApplyEffectOpening: "apply-effect-opening", boundaryApplyEffectRequest: "apply-effect-request", boundaryApplyEffectResult: "apply-effect-result",
+		boundaryRecoveryOpening: "recovery-opening", boundaryRecoveryRead: "recovery-read", boundaryRecoveryReceipt: "recovery-receipt", boundaryRecoverySettlement: "recovery-settlement", boundaryRecoveryComplete: "recovery-complete",
+	}
 	baselines := map[baselineBoundary]string{baselineBoundaryScope: "scope", baselineBoundarySource: "source", baselineBoundaryActors: "actors", baselineBoundaryExecutables: "executables", baselineBoundaryMetadata: "metadata", baselineBoundaryParents: "parents", baselineBoundaryFamily: "family", baselineBoundaryActorClose: "actor-close", baselineBoundaryDeniedOpening: "denied-opening", baselineBoundaryProducerBefore: "producer-before", baselineBoundaryProducerWire: "producer-wire", baselineBoundaryProducerResult: "producer-result", baselineBoundaryProducerAfter: "producer-after", baselineBoundaryProducerNegative: "producer-negative", baselineBoundaryIdentity: "identity-probe", baselineBoundaryParentProbe: "parent-probe", baselineBoundaryPodProbe: "pod-probe", baselineBoundaryClosing: "closing", baselineBoundarySourceClose: "source-close", baselineBoundaryRetired: "retired", baselineBoundaryComplete: "complete"}
 	for value := range 256 {
 		ctx, d := WithLifecycleDiagnostic(t.Context())
@@ -124,4 +131,72 @@ func TestLifecycleBoundaryDiagnosticActualWholeProofRefusal(t *testing.T) {
 		}
 		return err // Shared fixture independently requires its fault was reached.
 	})
+}
+
+func TestLifecycleBoundaryDiagnosticIntentEffectAndSettlement(t *testing.T) {
+	for _, which := range []string{"success", "intent_failure", "malformed_ack", "settlement_failure"} {
+		t.Run(which, func(t *testing.T) {
+			f := newFixture(t, false)
+			switch which {
+			case "intent_failure":
+				f.nsUpdate = func(*corev1.Namespace) error { return errors.New("PRIVATE-CANARY") }
+			case "malformed_ack":
+				f.access.write = func(action installstate.Action, key installstate.Key, candidate *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+					if action != installstate.Create || key != f.key {
+						t.Fatal("unexpected real effect")
+					}
+					ack := candidate.DeepCopy()
+					ack.SetUID("original-ack")
+					ack.SetResourceVersion("25")
+					ack.SetAnnotations(map[string]string{})
+					return ack, nil
+				}
+			case "settlement_failure":
+				f.nsUpdate = func(*corev1.Namespace) error {
+					if f.nsUpdates == 2 {
+						return errors.New("PRIVATE-CANARY")
+					}
+					return nil
+				}
+			}
+			ctx, diagnostic := WithLifecycleDiagnostic(t.Context())
+			snapshot, err := f.engine.Apply(ctx, f.snapshot, f.key, f.plan.Digest(), false)
+			want := "operation=recovery-complete baseline=unknown"
+			switch which {
+			case "success":
+				if err != nil || snapshot == nil || snapshot.Document().Pending != nil || f.access.writes != 1 || f.nsUpdates != 2 {
+					t.Fatal("diagnostic changed successful single-effect settlement", err)
+				}
+			case "intent_failure":
+				want = "operation=apply-intent baseline=unknown"
+				if err == nil || snapshot != nil || f.access.writes != 0 || f.nsUpdates != 1 {
+					t.Fatal("diagnostic changed unconfirmed-intent refusal")
+				}
+			case "malformed_ack":
+				want = "operation=apply-effect-result baseline=unknown"
+				if err != ErrOutcomeUnknown || snapshot == nil || snapshot.Document().Pending == nil || f.access.writes != 1 || f.nsUpdates != 1 {
+					t.Fatal("diagnostic accepted malformed ACK or retried effect", err)
+				}
+				uid, loadErr := f.engine.loadCreateUID(snapshot.Document())
+				if loadErr != nil || uid != "original-ack" {
+					t.Fatal("diagnostic changed ACK identity persistence")
+				}
+			case "settlement_failure":
+				want = "operation=recovery-settlement baseline=unknown"
+				if err != ErrOutcomeUnknown || snapshot == nil || snapshot.Document().Pending == nil || f.access.writes != 1 || f.nsUpdates != 2 {
+					t.Fatal("diagnostic changed uncertain settlement", err)
+				}
+			}
+			if diagnostic.BoundarySnapshot() != want || strings.Contains(diagnostic.BoundarySnapshot(), "CANARY") || f.access.dryRuns != 1 {
+				t.Fatal("same-attempt boundary was wrong, leaked a provider error, or repeated preview")
+			}
+			if which == "settlement_failure" {
+				ctx, diagnostic = WithLifecycleDiagnostic(t.Context())
+				snapshot, err = f.engine.Recover(ctx, snapshot)
+				if err != nil || snapshot == nil || snapshot.Document().Pending != nil || diagnostic.BoundarySnapshot() != "operation=recovery-complete baseline=unknown" || f.access.writes != 1 || f.access.dryRuns != 1 || f.nsUpdates != 3 {
+					t.Fatal("diagnostic changed observation-only recovery", err)
+				}
+			}
+		})
+	}
 }
