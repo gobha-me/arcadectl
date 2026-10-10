@@ -140,7 +140,7 @@ func testBaselineBehaviorWholeProvider(t *testing.T, scenario string) {
 
 // Test-only protocol substitution shares the complete independent responder
 // and final literal request oracle. Existing scenario wrappers still exercise
-// their original dispatch unchanged; this seam creates no production hook.
+// their original dispatch unchanged; this seam effects no production hook.
 func testBaselineBehaviorWholeProviderWithProtocol(t *testing.T, scenario string, protocol func(*Engine, *installstate.Snapshot, *ClusterSecurityBaseline, func() int) error) {
 	testBaselineBehaviorWholeProviderWithActivation(t, scenario, protocol, nil)
 }
@@ -360,7 +360,7 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 	}
 	if effect != nil {
 		if mode != "healthy" || protocol == nil || activation != nil {
-			t.Fatal("effect fixture escaped its explicit original CREATE scope")
+			t.Fatal("effect fixture escaped its explicit original Deployment scope")
 		}
 		effect.prepare(t, &d, objects, f.plan)
 	}
@@ -454,7 +454,7 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 				return
 			}
 			a := review.Spec.ResourceAttributes
-			if effect != nil && effect.creates == 1 && !effect.proofOpening && user == "" && a.Verb == "impersonate" && a.Resource == "serviceaccounts" && a.Version == "*" {
+			if effect != nil && effect.effects == 1 && !effect.proofOpening && user == "" && a.Verb == "impersonate" && a.Resource == "serviceaccounts" && a.Version == "*" {
 				// Quiet collection asks only read/list. The first maintenance
 				// impersonation review opens actual newBaselineActors; freeze
 				// the last PRE-proof collection timestamp before later reads.
@@ -472,7 +472,7 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 			if user == "" {
 				allowed = a.Verb == "get" || a.Verb == "list" || a.Verb == "impersonate" && a.Version == "*" && a.Resource == "serviceaccounts" && a.Namespace == d.Namespace && (a.Name == "arcadectl-controller" || a.Name == "arcadectl-destroy-controller")
 				if effect != nil {
-					allowed = allowed || a.Verb == "update" && a.Group == "" && a.Version == "v1" && a.Resource == "namespaces" && a.Name == d.Namespace && a.Namespace == "" && a.Subresource == "" || a.Verb == "create" && a.Group == "apps" && a.Version == "v1" && a.Resource == "deployments" && a.Namespace == d.Namespace && a.Name == "" && a.Subresource == ""
+					allowed = allowed || a.Verb == "update" && a.Group == "" && a.Version == "v1" && a.Resource == "namespaces" && a.Name == d.Namespace && a.Namespace == "" && a.Subresource == "" || a.Group == "apps" && a.Version == "v1" && a.Resource == "deployments" && a.Namespace == d.Namespace && a.Subresource == "" && (!effect.update && a.Verb == "create" && a.Name == "" || effect.update && a.Verb == "update" && a.Name == "arcadectl-api")
 				}
 			} else if a.Version == "v1" && a.Namespace == d.Namespace && a.Subresource == "" && a.FieldSelector == nil && a.LabelSelector == nil {
 				collection := a.Verb == "create" && a.Name == ""
@@ -665,7 +665,7 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 		row := actor + "/" + r.Method + "/" + resource[1]
 		rows[row]++
 		key := installstate.Key{APIVersion: resource[0], Kind: resource[1], Namespace: d.Namespace, Name: name}
-		if effect != nil && (probes == 93 || probes == 185 || probes == 277) && actor == "arcadectl-controller" && r.Method == http.MethodPost && resource[1] == "Job" {
+		if effect != nil && (!effect.update && (probes == 93 || probes == 185 || probes == 277) || effect.update && (probes == 98 || probes == 195 || probes == 292)) && actor == "arcadectl-controller" && r.Method == http.MethodPost && resource[1] == "Job" {
 			producerBodies = map[string]*unstructured.Unstructured{}
 		}
 		if activation != nil && activation.proofs == 2 && probes == 98 && positives == 3 && len(producerBodies) == 3 && actor == "arcadectl-controller" && r.Method == http.MethodPost && resource[1] == "Job" {
@@ -773,7 +773,7 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 	behavior, err := provider.newBaselineBehavior(constructorContext, snapshot)
 	t.Cleanup(behavior.release)
 	wantMembers := 3
-	if effect != nil {
+	if effect != nil && !effect.update {
 		wantMembers = 2
 	}
 	if precontroller {
@@ -842,10 +842,19 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 	}
 	if effect != nil {
 		wantProbes, wantPodProbes, wantPositives, wantRules = 373, 18, 12, 24
-		if effect.failure != "" && effect.failure != "receipt-at-settlement" {
+		if effect.failure != "" && effect.failure != "receipt-at-settlement" && !(effect.update && effect.failure == "ambiguous-response") {
 			wantProbes, wantPodProbes, wantPositives, wantRules = 276, 12, 9, 18
 			if effect.failure == "late-status" || effect.failure == "receipt-after-wait" {
 				wantRules++ // opening denied-catalog rules only, no fourth behavioral cycle
+			}
+		}
+		if effect.update {
+			// All three original families are present in the first three
+			// complete proofs, unlike the explicit missing-parent CREATE case.
+			wantProbes += 15
+			wantPodProbes += 6
+			if effect.failure == "ambiguous-response" {
+				wantRules++ // first recovery's denied window, before later public proof
 			}
 		}
 	}
@@ -875,14 +884,16 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 		}
 		if effect != nil {
 			cycles := 4
-			if wantProbes == 276 {
+			if wantPositives == 9 {
 				cycles = 3
 			}
 			for row, count := range want {
 				want[row] = count * cycles
 			}
-			for _, row := range []string{"arcadectl-controller/PUT/Deployment", "arcadectl-controller/PATCH/Deployment", "arcadectl-controller/DELETE/Deployment", "arcadectl-controller/PUT/Pod", "arcadectl-destroy-controller/PUT/Pod"} {
-				want[row] -= 3 // API parent and Pod absent in the first three proofs.
+			if !effect.update {
+				for _, row := range []string{"arcadectl-controller/PUT/Deployment", "arcadectl-controller/PATCH/Deployment", "arcadectl-controller/DELETE/Deployment", "arcadectl-controller/PUT/Pod", "arcadectl-destroy-controller/PUT/Pod"} {
+					want[row] -= 3 // API parent and Pod absent in the first three proofs.
+				}
 			}
 		}
 		if !reflect.DeepEqual(want, rows) {
@@ -891,12 +902,12 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 		wantDetailed := testBaselineBehaviorLiteralRows(v.objects.Pods.Items)
 		if effect != nil {
 			cycles := 4
-			if wantProbes == 276 {
+			if wantPositives == 9 {
 				cycles = 3
 			}
 			for row, count := range wantDetailed {
 				wantDetailed[row] = count * cycles
-				if strings.HasSuffix(row, "/Deployment/arcadectl-api") || strings.Contains(row, "/Pod/") && strings.HasSuffix(row, "/"+effect.podName) {
+				if !effect.update && (strings.HasSuffix(row, "/Deployment/arcadectl-api") || strings.Contains(row, "/Pod/") && strings.HasSuffix(row, "/"+effect.podName)) {
 					wantDetailed[row] -= 3
 				}
 				if wantDetailed[row] == 0 {

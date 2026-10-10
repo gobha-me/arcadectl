@@ -15,6 +15,7 @@ import (
 
 	"github.com/gobha-me/arcadectl/internal/installrender"
 	"github.com/gobha-me/arcadectl/internal/installstate"
+	"github.com/gobha-me/arcadectl/internal/privatefs"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
@@ -32,11 +33,13 @@ type baselineBehaviorEffectFixture struct {
 	intent                                          installstate.Document
 	engine                                          *Engine
 	failure                                         string
+	update                                          bool
+	beforeRV                                        string
 	injected                                        bool
 	lastChange, lastCollection, quietCollection     time.Time
 	proofOpening                                    bool
-	postCreateRules                                 int
-	previews, creates, namespaceWrites, collections int
+	postEffectRules                                 int
+	previews, effects, namespaceWrites, collections int
 }
 
 func (f *baselineBehaviorEffectFixture) prepare(t *testing.T, d *installstate.Document, objects map[installstate.Key]*unstructured.Unstructured, plan *installrender.Plan) {
@@ -49,7 +52,9 @@ func (f *baselineBehaviorEffectFixture) prepare(t *testing.T, d *installstate.Do
 		owners := object.GetOwnerReferences()
 		if k == key || k.Kind == "ReplicaSet" && len(owners) == 1 && owners[0].Name == key.Name || k.Kind == "Pod" && account == key.Name {
 			f.family[k] = object.DeepCopy()
-			delete(objects, k)
+			if !f.update {
+				delete(objects, k)
+			}
 			if k.Kind == "Pod" {
 				f.podName = k.Name
 			}
@@ -63,20 +68,23 @@ func (f *baselineBehaviorEffectFixture) prepare(t *testing.T, d *installstate.Do
 			resources = append(resources, resource)
 		}
 	}
-	d.Resources = resources
+	if !f.update {
+		d.Resources = resources
+	}
 	for _, resource := range plan.Resources() {
 		if baselineObjectKey(resource.Object) == key {
 			f.raw = resource.Object.DeepCopy()
 		}
 	}
 	if len(f.family) != 3 || f.raw == nil || f.resource.UID == "" || f.podName == "" || d.Pending != nil {
-		t.Fatal("explicit missing API parent fixture unavailable")
+		t.Fatal("explicit original API family fixture unavailable")
 	}
+	f.beforeRV = f.family[key].GetResourceVersion()
 }
 
 func (f *baselineBehaviorEffectFixture) serve(t *testing.T, w http.ResponseWriter, r *http.Request, objects map[installstate.Key]*unstructured.Unstructured) bool {
 	key := f.resource.Key
-	if f.creates == 1 && !f.proofOpening && r.Method == http.MethodGet {
+	if f.effects == 1 && !f.proofOpening && r.Method == http.MethodGet {
 		for _, path := range []string{"/api/v1/namespaces/" + key.Namespace + "/pods", "/apis/apps/v1/namespaces/" + key.Namespace + "/deployments", "/apis/apps/v1/namespaces/" + key.Namespace + "/replicasets", "/apis/batch/v1/namespaces/" + key.Namespace + "/jobs", "/apis/apps/v1/namespaces/" + key.Namespace + "/statefulsets", "/apis/apps/v1/namespaces/" + key.Namespace + "/daemonsets", "/api/v1/namespaces/" + key.Namespace + "/replicationcontrollers", "/apis/batch/v1/namespaces/" + key.Namespace + "/cronjobs"} {
 			if r.URL.Path == path || strings.HasPrefix(r.URL.Path, path+"/") {
 				f.lastCollection = time.Now()
@@ -84,18 +92,18 @@ func (f *baselineBehaviorEffectFixture) serve(t *testing.T, w http.ResponseWrite
 			}
 		}
 	}
-	if f.creates == 1 && r.Method == http.MethodPost && r.URL.Path == "/apis/authorization.k8s.io/v1/selfsubjectrulesreviews" {
-		f.postCreateRules++
+	if f.effects == 1 && r.Method == http.MethodPost && r.URL.Path == "/apis/authorization.k8s.io/v1/selfsubjectrulesreviews" {
+		f.postEffectRules++
 		if f.failure == "receipt-after-wait" && !f.injected {
 			f.replaceReceipt(t)
 		}
 	}
-	if f.failure == "late-status" && !f.injected && f.postCreateRules == 2 && r.Method == http.MethodPost && r.URL.Path == "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews" && r.Header.Get("Impersonate-User") != "" {
+	if f.failure == "late-status" && !f.injected && f.postEffectRules == 2 && r.Method == http.MethodPost && r.URL.Path == "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews" && r.Header.Get("Impersonate-User") != "" {
 		objects[key].SetResourceVersion("200")
 		objects[key].Object["status"] = map[string]any{"observedGeneration": int64(1), "replicas": int64(0)}
 		f.injected = true
 	}
-	if r.Method == http.MethodGet && f.creates == 1 && r.URL.Path == "/api/v1/namespaces/"+key.Namespace+"/pods" {
+	if r.Method == http.MethodGet && f.effects == 1 && r.URL.Path == "/api/v1/namespaces/"+key.Namespace+"/pods" {
 		f.collections++
 		f.lastCollection = time.Now()
 		// Each complete LIST/GET cycle is internally coherent. Changes occur
@@ -160,24 +168,32 @@ func (f *baselineBehaviorEffectFixture) serve(t *testing.T, w http.ResponseWrite
 		switch f.namespaceWrites {
 		case 0:
 			if after.Pending == nil || len(after.Pending.CreateNonce) != 32 {
-				t.Error("actual CREATE intent missing nonce")
+				t.Error("actual Deployment intent missing nonce")
 				w.WriteHeader(500)
 				return true
 			}
 			if _, err := hex.DecodeString(after.Pending.CreateNonce); err != nil || strings.ToLower(after.Pending.CreateNonce) != after.Pending.CreateNonce {
-				t.Error("actual CREATE nonce is not canonical hexadecimal")
+				t.Error("actual Deployment nonce is not canonical hexadecimal")
 				w.WriteHeader(500)
 				return true
 			}
 			want.Pending = &installstate.Pending{Action: installstate.Create, Key: key, CreateNonce: after.Pending.CreateNonce, AfterSHA256: f.resource.TemplateSHA256}
+			if f.update {
+				want.Pending.Action = installstate.Update
+				want.Pending.BeforeUID = f.resource.UID
+				want.Pending.BeforeResourceVersion = f.beforeRV
+				want.Pending.BeforeSHA256 = f.resource.TemplateSHA256
+			}
 		case 1:
-			if f.creates != 1 || before.Pending == nil {
-				t.Error("settlement preceded the one actual CREATE")
+			if f.effects != 1 || before.Pending == nil {
+				t.Error("settlement preceded the one actual Deployment effect")
 				w.WriteHeader(500)
 				return true
 			}
 			want.Pending = nil
-			want.Resources = append(append([]installstate.Resource(nil), before.Resources...), f.resource)
+			if !f.update {
+				want.Resources = append(append([]installstate.Resource(nil), before.Resources...), f.resource)
+			}
 			installstate.SortResources(want.Resources)
 		default:
 			t.Error("effect fixture observed repeated Namespace mutation")
@@ -219,12 +235,16 @@ func (f *baselineBehaviorEffectFixture) serve(t *testing.T, w http.ResponseWrite
 		_ = json.NewEncoder(w).Encode(candidate)
 		return true
 	}
-	if r.Method != http.MethodPost || r.URL.Path != "/apis/apps/v1/namespaces/"+key.Namespace+"/deployments" {
+	method, path := http.MethodPost, "/apis/apps/v1/namespaces/"+key.Namespace+"/deployments"
+	if f.update {
+		method, path = http.MethodPut, path+"/"+key.Name
+	}
+	if r.Method != method || r.URL.Path != path {
 		return false
 	}
 	var candidate unstructured.Unstructured
 	if json.NewDecoder(r.Body).Decode(&candidate.Object) != nil {
-		t.Error("actual original Deployment CREATE malformed")
+		t.Error("actual original Deployment request malformed")
 		w.WriteHeader(500)
 		return true
 	}
@@ -236,6 +256,13 @@ func (f *baselineBehaviorEffectFixture) serve(t *testing.T, w http.ResponseWrite
 		annotations = map[string]string{}
 	}
 	annotations[installstate.MutationAnnotation] = candidate.GetAnnotations()[installstate.MutationAnnotation]
+	if f.update {
+		want.SetUID(f.resource.UID)
+		want.SetResourceVersion(f.beforeRV)
+		if revision := f.family[key].GetAnnotations()["deployment.kubernetes.io/revision"]; revision != "" {
+			annotations["deployment.kubernetes.io/revision"] = revision
+		}
+	}
 	want.SetAnnotations(annotations)
 	query := "fieldValidation=Strict"
 	dry := r.URL.Query().Get("dryRun") == "All"
@@ -243,25 +270,32 @@ func (f *baselineBehaviorEffectFixture) serve(t *testing.T, w http.ResponseWrite
 		query = "dryRun=All&" + query
 	}
 	if r.URL.RawQuery != query || !testBaselineBehaviorJSONEqual(want.Object, candidate.Object) || r.Header.Get("Content-Type") != "application/json" || r.Header.Get("Accept") != "application/json" || len(annotations[installstate.MutationAnnotation]) != 32 {
-		t.Error("actual CREATE escaped literal signed request")
+		t.Error("actual Deployment effect escaped literal signed request")
 		w.WriteHeader(500)
 		return true
 	}
 	ack := f.family[key].DeepCopy()
 	ack.SetAnnotations(candidate.GetAnnotations())
+	if f.update {
+		ack.SetResourceVersion("99")
+	}
 	if dry {
-		if f.previews != 0 || f.creates != 0 || doc.Pending != nil {
+		if f.previews != 0 || f.effects != 0 || doc.Pending != nil {
 			t.Error("original preview repeated or followed intent")
 		}
 		f.previews++
 		f.preview = candidate.DeepCopy()
 	} else {
-		if f.creates != 0 || f.previews != 1 || doc.Pending == nil || doc.Pending.Key != key || doc.Pending.Action != installstate.Create || doc.Pending.CreateNonce != annotations[installstate.MutationAnnotation] || !testBaselineBehaviorJSONEqual(f.preview.Object, candidate.Object) {
-			t.Error("persistent CREATE did not follow exact original intent/preview once")
+		action := installstate.Create
+		if f.update {
+			action = installstate.Update
+		}
+		if f.effects != 0 || f.previews != 1 || doc.Pending == nil || doc.Pending.Key != key || doc.Pending.Action != action || doc.Pending.CreateNonce != annotations[installstate.MutationAnnotation] || !testBaselineBehaviorJSONEqual(f.preview.Object, candidate.Object) {
+			t.Error("persistent Deployment effect did not follow exact original intent/preview once")
 			w.WriteHeader(500)
 			return true
 		}
-		f.creates++
+		f.effects++
 		f.family[key] = ack.DeepCopy()
 		objects[key] = ack.DeepCopy()
 		if f.failure == "ambiguous-response" {
@@ -270,7 +304,11 @@ func (f *baselineBehaviorEffectFixture) serve(t *testing.T, w http.ResponseWrite
 			return true
 		}
 	}
-	w.WriteHeader(http.StatusCreated)
+	status := http.StatusCreated
+	if f.update {
+		status = http.StatusOK
+	}
+	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(ack.Object)
 	return true
 }
@@ -328,19 +366,47 @@ func TestAcknowledgedDeploymentDoesNotWaitOrReplayAmbiguousOutcome(t *testing.T)
 
 func testAcknowledgedDeploymentConvergence(t *testing.T, failure string) {
 	t.Helper()
-	fixture := &baselineBehaviorEffectFixture{failure: failure}
+	testAcknowledgedDeploymentEffect(t, failure, false)
+}
+
+func TestAcknowledgedDeploymentUpdateConvergesBeforeOriginalRecoveryProof(t *testing.T) {
+	testAcknowledgedDeploymentEffect(t, "", true)
+}
+
+func TestAcknowledgedDeploymentUpdateRejectsForeignUIDDuringWait(t *testing.T) {
+	testAcknowledgedDeploymentEffect(t, "wrong-live-uid", true)
+}
+
+func TestAcknowledgedDeploymentUpdateRejectsUnsignedTemplateDuringWait(t *testing.T) {
+	testAcknowledgedDeploymentEffect(t, "changed-live-template", true)
+}
+
+func TestAcknowledgedDeploymentUpdateRejectsStaleJournalDuringWait(t *testing.T) {
+	testAcknowledgedDeploymentEffect(t, "journal-in-wait", true)
+}
+
+func TestAcknowledgedDeploymentUpdateObservesAmbiguousOutcomeWithoutWaitOrReplay(t *testing.T) {
+	testAcknowledgedDeploymentEffect(t, "ambiguous-response", true)
+}
+
+// UPDATE uses genuine original inventory and a nonce-only same-template write.
+// This covers the actual UPDATE branch, not upgrade/rollback native behavior.
+func testAcknowledgedDeploymentEffect(t *testing.T, failure string, update bool) {
+	t.Helper()
+	fixture := &baselineBehaviorEffectFixture{failure: failure, update: update}
 	testBaselineBehaviorWholeProviderComposition(t, "healthy", func(engine *Engine, snapshot *installstate.Snapshot, _ *ClusterSecurityBaseline, _ func() int) error {
 		fixture.engine = engine
 		original := snapshot.Document()
-		if original.Pending != nil || fixture.intent.Pending != nil || fixture.previews != 0 || fixture.creates != 0 || fixture.namespaceWrites != 0 {
-			t.Fatal("CREATE regression did not start before genuine intent/effect/ACK")
+		if original.Pending != nil || fixture.intent.Pending != nil || fixture.previews != 0 || fixture.effects != 0 || fixture.namespaceWrites != 0 {
+			t.Fatal("Deployment regression did not start before genuine intent/effect/ACK")
 		}
-		if recorded, _ := engine.inventory(original, fixture.resource.Key); recorded != nil {
-			t.Fatal("CREATE regression started with an already-recorded API parent")
+		recorded, _ := engine.inventory(original, fixture.resource.Key)
+		if !update && recorded != nil || update && (recorded == nil || !reflect.DeepEqual(*recorded, fixture.resource)) {
+			t.Fatal("effect regression lost its original absent or recorded API parent")
 		}
 		ctx, diagnostic := WithLifecycleDiagnostic(t.Context())
 		settled, err := engine.Apply(ctx, snapshot, fixture.resource.Key, snapshot.Document().TargetPackage, false)
-		if settled == nil || fixture.previews != 1 || fixture.creates != 1 || failure != "" && !fixture.injected {
+		if settled == nil || fixture.previews != 1 || fixture.effects != 1 || failure != "" && !fixture.injected {
 			t.Fatalf("actual ACK/effect recovery did not await quiet original inventory: %s", diagnostic.BoundarySnapshot())
 		}
 		if failure != "" && err != ErrOutcomeUnknown || failure == "" && err != nil {
@@ -360,16 +426,43 @@ func testAcknowledgedDeploymentConvergence(t *testing.T, failure string) {
 			t.Fatal("late whole drift no longer refused at the actual denied window")
 		}
 		if failure == "ambiguous-response" {
-			if fixture.collections != 1 || fixture.postCreateRules != 0 {
-				t.Fatal("unknown response entered ACK-only quiet/proof path")
-			}
-			resumed, resumeErr := engine.Recover(t.Context(), settled)
-			if resumeErr != ErrOutcomeUnknown || resumed == nil || !reflect.DeepEqual(resumed.Document(), fixture.intent) || fixture.collections != 2 || fixture.previews != 1 || fixture.creates != 1 || fixture.namespaceWrites != 1 {
-				t.Fatal("public restarted recovery manufactured ACK, waited or replayed effect")
+			if update {
+				// A lost UPDATE response cannot enter private ACK quietness.
+				// The first full guard sees the next native-style whole change
+				// and refuses. Restarted recovery may later OBSERVE the sealed
+				// original UID/nonce; unlike CREATE it needs no new UID receipt.
+				if fixture.collections != 2 || fixture.postEffectRules != 2 || !fixture.quietCollection.IsZero() || diagnostic.BoundarySnapshot() != "operation=recovery-opening baseline=denied-executables-stable" {
+					t.Fatal("ambiguous UPDATE waited for ACK quietness or omitted whole drift refusal")
+				}
+				resumed, resumeErr := engine.Recover(t.Context(), settled)
+				if resumeErr != nil || resumed == nil || resumed.Document().Pending != nil || resumed.Document().Revision != original.Revision+2 || fixture.collections != 8 || fixture.postEffectRules != 14 || fixture.previews != 1 || fixture.effects != 1 || fixture.namespaceWrites != 2 {
+					t.Fatal("public UPDATE recovery did not settle original observation without replay")
+				}
+				settled = resumed
+				_ = json.Unmarshal([]byte(fixture.namespace.Annotations[installstate.Annotation]), &live)
+				if !reflect.DeepEqual(settled.Document(), live) {
+					t.Fatal("public UPDATE recovery changed the exact original settled CAS")
+				}
+				completedCAS = true
+			} else {
+				if fixture.collections != 1 || fixture.postEffectRules != 0 {
+					t.Fatal("unknown response entered ACK-only quiet/proof path")
+				}
+				resumed, resumeErr := engine.Recover(t.Context(), settled)
+				if resumeErr != ErrOutcomeUnknown || resumed == nil || !reflect.DeepEqual(resumed.Document(), fixture.intent) || fixture.collections != 2 || fixture.previews != 1 || fixture.effects != 1 || fixture.namespaceWrites != 1 {
+					t.Fatal("public restarted recovery manufactured ACK, waited or replayed effect")
+				}
 			}
 		}
 		uid, receiptErr := engine.loadCreateUID(fixture.intent)
-		if failure == "ambiguous-response" {
+		if update {
+			if receiptErr == nil || uid != "" {
+				t.Fatal("UPDATE manufactured a CREATE receipt identity")
+			}
+			if _, _, err := engine.files.Read("create-"+fixture.intent.Pending.CreateNonce+".json", 4096); err != privatefs.ErrNotFound {
+				t.Fatal("UPDATE created or obscured a CREATE receipt")
+			}
+		} else if failure == "ambiguous-response" {
 			if receiptErr == nil || uid != "" {
 				t.Fatal("unknown response manufactured durable original UID")
 			}
@@ -377,17 +470,20 @@ func testAcknowledgedDeploymentConvergence(t *testing.T, failure string) {
 			t.Fatal("actual CREATE lost original durable ACK identity")
 		}
 		if testBaselineReceiptDescriptors(t, "create-"+fixture.intent.Pending.CreateNonce+".json") != 0 {
-			t.Fatal("actual CREATE did not retain the original durable ACK or release its pins")
+			t.Fatal("actual Deployment effect did not release its original receipt pins")
 		}
 		// No Ready predicate is used: quiet original non-Ready processes remain
 		// valid baseline subjects, not authenticated serving or effect authority.
 		if completedCAS {
+			if update && !reflect.DeepEqual(original.Resources, settled.Document().Resources) {
+				t.Fatal("same-template UPDATE changed original inventory identity or cardinality")
+			}
 			var deploymentReady int64
 			if len(fixture.final) != 3 || fixture.final[fixture.resource.Key] == nil {
 				t.Fatal("actual served final family unavailable")
 			}
 			deploymentReady, _, _ = unstructured.NestedInt64(fixture.final[fixture.resource.Key].Object, "status", "availableReplicas")
-			if deploymentReady != 0 || fixture.quietCollection.IsZero() || fixture.quietCollection.Sub(fixture.lastChange) < 5*time.Second {
+			if deploymentReady != 0 || !(update && failure == "ambiguous-response") && (fixture.quietCollection.IsZero() || fixture.quietCollection.Sub(fixture.lastChange) < 5*time.Second) {
 				t.Fatal("quiet handoff omitted its interval or required availability")
 			}
 			for key, object := range fixture.final {
