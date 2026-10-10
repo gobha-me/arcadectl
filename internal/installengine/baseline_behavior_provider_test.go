@@ -170,7 +170,7 @@ func testBaselineBehaviorWholeProviderWithActivation(t *testing.T, scenario stri
 	testBaselineBehaviorWholeProviderComposition(t, scenario, protocol, activation, nil)
 }
 
-func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string, protocol func(*Engine, *installstate.Snapshot, *ClusterSecurityBaseline, func() int) error, activation *baselineBehaviorActivationFixture, effect *baselineBehaviorEffectFixture) {
+func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string, protocol func(*Engine, *installstate.Snapshot, *ClusterSecurityBaseline, func() int) error, activation *baselineBehaviorActivationFixture, effect *baselineBehaviorEffectFixture, fences ...*testDeniedCompositionFence) {
 	t.Helper()
 	runtime := strings.HasPrefix(scenario, "runtime-")
 	mode := strings.TrimPrefix(scenario, "runtime-")
@@ -749,6 +749,12 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 		_ = json.NewEncoder(w).Encode(status)
 	})
 	var access *HTTPAccess
+	if len(fences) > 1 {
+		t.Fatal("multiple test-only denied fences requested")
+	}
+	if len(fences) == 1 {
+		handler = fences[0].wrap(t, handler)
+	}
 	if activation == nil {
 		server := httptest.NewTLSServer(handler)
 		t.Cleanup(server.Close)

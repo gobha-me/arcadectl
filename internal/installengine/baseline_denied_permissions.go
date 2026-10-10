@@ -336,12 +336,8 @@ func (actors *baselineActors) verifyDeniedComposition(ctx context.Context, execu
 	}
 	for pass := 0; pass < 2; pass++ {
 		traceBaselineBoundary(ctx, baselineBoundaryDeniedReviews)
-		for _, actor := range []admissionActor{ordinaryControllerActor, destroyControllerActor} {
-			for _, row := range scope.rows[actor] {
-				if clients[actor].authorizationDecision(ctx, authv1.SelfSubjectAccessReviewSpec{ResourceAttributes: row.attributes()}, false) != nil {
-					return ErrSecurityBaseline
-				}
-			}
+		if baselineDeniedReviews(ctx, scope, clients) != nil {
+			return ErrSecurityBaseline
 		}
 		traceBaselineBoundary(ctx, baselineBoundaryDeniedExecutablesClosing)
 		closing, err := actors.baseline.collectExecutables(ctx, actors.snapshot)

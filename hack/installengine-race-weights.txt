@@ -8,6 +8,7 @@
 # Retired: the old 33-scenario tree shared shard 7's first ~18m58s; individual
 # maxima are unmeasured. These conservative initial hints require CI feedback.
 TestBaselineBehaviorWholeProviderHealthy 180
+TestBaselineDeniedCompositionJoinsBothLanesBeforeEveryClosingBundle 180
 TestBaselineBehaviorWholeProviderPendingService 180
 TestBaselineBehaviorWholeProviderPendingParent 180
 TestBaselineBehaviorWholeProviderCompleteInstall 180
