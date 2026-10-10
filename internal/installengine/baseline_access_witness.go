@@ -5,6 +5,7 @@ package installengine
 
 import (
 	"context"
+	"sync"
 
 	"github.com/gobha-me/arcadectl/internal/installcontract"
 	"github.com/gobha-me/arcadectl/internal/installstate"
@@ -43,28 +44,66 @@ func (b *baselineWorkflow) readOriginalRuntimeAccess(ctx context.Context, fresh 
 	}
 	e := b.engine
 	d := fresh.Document()
-	witness := map[installstate.Key]admissionIdentity{}
 	// Mixed upgrades use the recorded active/target inventory, not prospective
 	// access objects which have not been created yet. Every accepted template
 	// still comes from one of this engine's authenticated sealed contracts.
+	// Freeze complete original membership before any request. Two fixed lanes
+	// retain their original order and every uncached UID/whole-template check.
+	type accessResource struct {
+		resource installstate.Resource
+		template *installcontract.Template
+	}
+	var frozen []accessResource
+	var lanes [2][]int
+	seen := make(map[installstate.Key]bool)
 	for _, resource := range d.Resources {
 		key := resource.Key
 		if !accessRetirementKey(key) {
 			continue
 		}
 		entry, template := e.inventory(d, key)
-		if entry == nil || template == nil || witness[key].UID != "" {
+		if entry == nil || template == nil || seen[key] {
 			return nil, ErrSecurityBaseline
 		}
-		live, err := e.access.Get(ctx, key)
-		if err != nil || live == nil {
-			return nil, ErrSecurityBaseline
-		}
-		accepted, err := e.baselineAccessTemplate(d, entry, template, live)
-		if err != nil {
-			return nil, ErrSecurityBaseline
-		}
-		witness[key] = admissionIdentity{entry.UID, live.GetResourceVersion(), accepted.Hash()}
+		seen[key] = true
+		lane := len(frozen) % len(lanes)
+		lanes[lane] = append(lanes[lane], len(frozen))
+		frozen = append(frozen, accessResource{resource: *entry, template: template})
+	}
+	observed := make([]admissionIdentity, len(frozen))
+	var failures [2]error
+	readCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var readers sync.WaitGroup
+	for lane, indices := range lanes {
+		readers.Go(func() {
+			for _, index := range indices {
+				entry := frozen[index]
+				live, err := e.access.Get(readCtx, entry.resource.Key)
+				if err != nil || live == nil {
+					failures[lane] = ErrSecurityBaseline
+					cancel()
+					return
+				}
+				accepted, err := e.baselineAccessTemplate(d, &entry.resource, entry.template, live)
+				if err != nil {
+					failures[lane] = ErrSecurityBaseline
+					cancel()
+					return
+				}
+				observed[index] = admissionIdentity{entry.resource.UID, live.GetResourceVersion(), accepted.Hash()}
+			}
+		})
+	}
+	// A refusal cancels its sibling but must still join it. No map, catalog or
+	// original Namespace/journal close may escape an in-flight signed read.
+	readers.Wait()
+	if failures[0] != nil || failures[1] != nil || ctx.Err() != nil {
+		return nil, ErrSecurityBaseline
+	}
+	witness := make(map[installstate.Key]admissionIdentity, len(frozen))
+	for index, entry := range frozen {
+		witness[entry.resource.Key] = observed[index]
 	}
 	for _, name := range []string{"arcadectl-controller", "arcadectl-api", "arcadectl-destroy-controller", "arcadectl-destroy-admin"} {
 		key := installstate.Key{APIVersion: "v1", Kind: "ServiceAccount", Namespace: d.Namespace, Name: name}
