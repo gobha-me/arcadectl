@@ -597,6 +597,11 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 					objects[key].Object["status"] = map[string]any{"private": "PRIVATE-CANARY"}
 					injected = true
 				}
+				if effect != nil && effect.failure == "late-producer-status" && effect.effects == 1 && effect.proofOpening && effect.postEffectRules == 6 && effect.postEffectProbes == 20 && key == deploymentKey(d.Namespace, "arcadectl-controller") && !effect.injected {
+					objects[key].SetResourceVersion("200")
+					objects[key].Object["status"] = map[string]any{"observedGeneration": int64(1), "replicas": int64(0)}
+					effect.injected = true
+				}
 				if probes == 97 && key == serviceKey && !injected {
 					switch mode {
 					case "closing-new-pod":
@@ -642,6 +647,9 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 			return
 		}
 		probes++
+		if effect != nil && effect.effects == 1 {
+			effect.postEffectProbes++
+		}
 		var object unstructured.Unstructured
 		if json.NewDecoder(r.Body).Decode(&object.Object) != nil {
 			t.Error("behavior mutation probe malformed")
@@ -838,6 +846,9 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 		if wantFailure != "" && diagnostic.FailureSnapshot() != wantFailure {
 			t.Fatal("actual negative proof lost fixed refusal attribution", diagnostic.FailureSnapshot())
 		}
+		if (mode == "producer-denial-before" || mode == "producer-denial-after") && diagnostic.DeploymentSnapshot() != "role=controller metadata-first=resource-version-only status-first=other" {
+			t.Fatal("actual negative proof lost fixed per-object detail")
+		}
 	}
 	if (err == nil) != positive {
 		t.Fatal("whole behavior driver confused healthy composition and injected refusal")
@@ -884,6 +895,10 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 				wantRules++ // first recovery's denied window, before later public proof
 			}
 		}
+		if effect.failure == "late-producer-status" {
+			wantProbes += 20
+			wantPositives, wantRules = 12, 21
+		}
 	}
 	if positive && (probes != wantProbes || positives != wantPositives || podProbes != wantPodProbes || rules["arcadectl-controller"] != wantRules || rules["arcadectl-destroy-controller"] != wantRules) {
 		t.Fatal("healthy driver omitted finite behavioral rows or closing rule passes")
@@ -911,7 +926,7 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 		}
 		if effect != nil {
 			cycles := 4
-			if wantPositives == 9 {
+			if wantPositives == 9 || effect.failure == "late-producer-status" {
 				cycles = 3
 			}
 			for row, count := range want {
@@ -922,6 +937,11 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 					want[row] -= 3 // API parent and Pod absent in the first three proofs.
 				}
 			}
+			if effect.failure == "late-producer-status" {
+				want["arcadectl-controller/POST/Job"] += 9
+				want["arcadectl-destroy-controller/POST/Job"] += 9
+				want["arcadectl-controller/POST/Deployment"] += 2
+			}
 		}
 		if !reflect.DeepEqual(want, rows) {
 			t.Fatal("behavior driver request multiset differs from independent literal protocol")
@@ -929,7 +949,7 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 		wantDetailed := testBaselineBehaviorLiteralRows(v.objects.Pods.Items)
 		if effect != nil {
 			cycles := 4
-			if wantPositives == 9 {
+			if wantPositives == 9 || effect.failure == "late-producer-status" {
 				cycles = 3
 			}
 			for row, count := range wantDetailed {
@@ -940,6 +960,17 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 				if wantDetailed[row] == 0 {
 					delete(wantDetailed, row)
 				}
+			}
+			if effect.failure == "late-producer-status" {
+				// Literal fourth-cycle prefix: both complete Job groups and
+				// only two Deployment rows. The reserved-name denial is NOT sent.
+				for row, count := range testBaselineBehaviorLiteralRows(nil) {
+					if strings.Contains(row, "/POST/Job/") {
+						wantDetailed[row] += count
+					}
+				}
+				wantDetailed["arcadectl-controller/POST/Deployment/positive"]++
+				wantDetailed["arcadectl-controller/POST/Deployment/account/arcadectl-controller"]++
 			}
 		}
 		if activation != nil {

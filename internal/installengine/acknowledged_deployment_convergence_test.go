@@ -39,6 +39,7 @@ type baselineBehaviorEffectFixture struct {
 	lastChange, lastCollection, quietCollection     time.Time
 	proofOpening                                    bool
 	postEffectRules                                 int
+	postEffectProbes                                int
 	previews, effects, namespaceWrites, collections int
 }
 
@@ -336,6 +337,14 @@ func TestAcknowledgedDeploymentRejectsLateWholeStatusDrift(t *testing.T) {
 	testAcknowledgedDeploymentConvergence(t, "late-status")
 }
 
+func TestAcknowledgedDeploymentRejectsLateProducerStatusDrift(t *testing.T) {
+	testAcknowledgedDeploymentEffect(t, "late-producer-status", false)
+}
+
+func TestAcknowledgedDeploymentUpdateRejectsLateProducerStatusDrift(t *testing.T) {
+	testAcknowledgedDeploymentEffect(t, "late-producer-status", true)
+}
+
 func TestAcknowledgedDeploymentRejectsReceiptReplacementDuringWait(t *testing.T) {
 	testAcknowledgedDeploymentConvergence(t, "receipt-in-wait")
 }
@@ -424,6 +433,11 @@ func testAcknowledgedDeploymentEffect(t *testing.T, failure string, update bool)
 		}
 		if failure == "late-status" && diagnostic.BoundarySnapshot() != "operation=recovery-opening baseline=denied-executables-stable" {
 			t.Fatal("late whole drift no longer refused at the actual denied window")
+		}
+		if failure == "late-producer-status" {
+			if diagnostic.BoundarySnapshot() != "operation=recovery-opening baseline=producer-negative" || diagnostic.FailureSnapshot() != "check=denial-read-before family=Deployment changes=resource-version,metadata,status" || diagnostic.DeploymentSnapshot() != "role=controller metadata-first=resource-version-only status-first=observed-generation" || fixture.postEffectRules != 6 || fixture.postEffectProbes != 20 || !reflect.DeepEqual(live, fixture.intent) {
+				t.Fatal("late producer drift escaped original refusal, emitted values, sent failed negative probe or changed Pending")
+			}
 		}
 		if failure == "ambiguous-response" {
 			if update {

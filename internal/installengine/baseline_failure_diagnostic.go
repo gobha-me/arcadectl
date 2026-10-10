@@ -93,6 +93,10 @@ func baselineObjectDifference(before, after *unstructured.Unstructured) baseline
 var baselineDiagnosticFamilies = [...]string{"Pod", "Job", "Deployment", "ReplicaSet", "StatefulSet", "DaemonSet", "ReplicationController", "CronJob", "ServiceAccount", "Secret", "Service"}
 
 func traceBaselineFailure(ctx context.Context, check baselineFailureCheck, kind string, fields baselineDifference) {
+	storeBaselineFailure(ctx, check, kind, fields, 0)
+}
+
+func storeBaselineFailure(ctx context.Context, check baselineFailureCheck, kind string, fields baselineDifference, detail uint32) {
 	if ctx == nil || check.label() == "unknown" {
 		return
 	}
@@ -108,7 +112,7 @@ func traceBaselineFailure(ctx context.Context, check baselineFailureCheck, kind 
 		}
 	}
 	// One scalar prevents mixed check/family/field records. This is not proof.
-	d.baselineFailure.Store(uint32(check) | family<<8 | uint32(fields)<<16)
+	d.baselineFailure.Store(uint32(check) | family<<8 | uint32(fields)<<16 | detail)
 }
 
 func traceBaselineExecutableDifference(ctx context.Context, before, after *baselineExecutables) {

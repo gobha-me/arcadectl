@@ -294,7 +294,8 @@ func (b *baselineBehavior) readExactDiagnostic(ctx context.Context, key installs
 		}
 	} else if err != nil || live == nil || !reflect.DeepEqual(live.Object, original.Object) {
 		if err == nil && live != nil {
-			return refuse(baselineObjectDifference(original, live))
+			traceBaselineObjectFailure(ctx, check, key, original, live)
+			return ErrSecurityBaseline
 		}
 		return refuse(0)
 	}
