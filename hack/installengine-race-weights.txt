@@ -69,7 +69,10 @@ TestBaselineRetiredHTTPSRuntimeCompleteHealthy 120
 TestBaselineRetiredHTTPSRuntimeCompleteReceiptReplaced 120
 # Compound original trees: conservative scheduling hints from their scenario
 # counts and old shard aggregates, NOT independently measured test durations.
-TestBaselinePrerequisiteRetainedWorldsHTTPS 720
+# Exact e5047d3 CI shard0 measured954.21s for this passing complete tree;
+# companions consumed239.70s before the20m package limit caught the next test.
+# 1200 guides placement with headroom; it is not a certified runtime bound.
+TestBaselinePrerequisiteRetainedWorldsHTTPS 1200
 TestBaselineMetadataWholeProvider 360
 TestAdmissionRetirementBaselineContextPreservesOriginalInventoryAndRuntimeGate 300
 TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe 360
