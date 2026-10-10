@@ -344,6 +344,7 @@ func (e *Engine) Delete(ctx context.Context, s *installstate.Snapshot, key insta
 // Only lifecycle orchestration requests waiting for a reliably acknowledged
 // DELETE. The public single-attempt primitive retains its recovery contract.
 func (e *Engine) delete(ctx context.Context, s *installstate.Snapshot, key installstate.Key, awaitAcknowledgement bool) (*installstate.Snapshot, error) {
+	traceOperationBoundary(ctx, boundaryDeleteOpening)
 	fresh, err := e.current(ctx, s)
 	if err != nil {
 		return nil, err
@@ -367,16 +368,20 @@ func (e *Engine) delete(ctx context.Context, s *installstate.Snapshot, key insta
 	p := &installstate.Pending{Action: installstate.Delete, Key: key, CreateNonce: nonce, BeforeUID: r.UID, BeforeResourceVersion: live.GetResourceVersion(), BeforeSHA256: r.TemplateSHA256}
 	d.Revision++
 	d.Pending = p
+	traceOperationBoundary(ctx, boundaryDeleteIntent)
 	intent, err := e.journal.Commit(ctx, fresh, d)
 	if err != nil {
 		return nil, err
 	}
+	traceOperationBoundary(ctx, boundaryDeleteEffectOpening)
 	if _, err = e.current(ctx, intent); err != nil {
 		return intent, ErrOutcomeUnknown
 	}
 	uid, rv := p.BeforeUID, p.BeforeResourceVersion
 	foreground := metav1.DeletePropagationForeground
+	traceOperationBoundary(ctx, boundaryDeleteEffectRequest)
 	deleteErr := e.access.Delete(ctx, key, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &rv}, PropagationPolicy: &foreground})
+	traceOperationBoundary(ctx, boundaryDeleteEffectResult)
 	if awaitAcknowledgement && deleteErr == nil {
 		return e.waitAcknowledgedDelete(ctx, intent)
 	}

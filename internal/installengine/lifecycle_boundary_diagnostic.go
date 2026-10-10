@@ -30,6 +30,13 @@ const (
 	boundaryRecoveryReceipt
 	boundaryRecoverySettlement
 	boundaryRecoveryComplete
+	boundaryDeleteOpening
+	boundaryDeleteIntent
+	boundaryDeleteEffectOpening
+	boundaryDeleteEffectRequest
+	boundaryDeleteEffectResult
+	boundaryDeleteACKWait
+	boundaryDeleteACKClose
 )
 
 func (b operationBoundary) label() string {
@@ -72,6 +79,20 @@ func (b operationBoundary) label() string {
 		return "recovery-settlement"
 	case boundaryRecoveryComplete:
 		return "recovery-complete"
+	case boundaryDeleteOpening:
+		return "delete-opening"
+	case boundaryDeleteIntent:
+		return "delete-intent"
+	case boundaryDeleteEffectOpening:
+		return "delete-effect-opening"
+	case boundaryDeleteEffectRequest:
+		return "delete-effect-request"
+	case boundaryDeleteEffectResult:
+		return "delete-effect-result"
+	case boundaryDeleteACKWait:
+		return "delete-ack-wait"
+	case boundaryDeleteACKClose:
+		return "delete-ack-close"
 	}
 	return "unknown"
 }
@@ -201,6 +222,7 @@ func traceOperationBoundary(ctx context.Context, step operationBoundary) {
 	}
 	if d, ok := ctx.Value(lifecycleDiagnosticKey{}).(*LifecycleDiagnostic); ok && d != nil {
 		d.baselineBoundary.Store(0)
+		d.baselineBeforeDeadline.Store(0)
 		d.operationBoundary.Store(uint32(step))
 	}
 }
@@ -210,6 +232,15 @@ func traceBaselineBoundary(ctx context.Context, step baselineBoundary) {
 		return
 	}
 	if d, ok := ctx.Value(lifecycleDiagnosticKey{}).(*LifecycleDiagnostic); ok && d != nil {
+		if step == baselineBoundaryScope {
+			d.baselineBeforeDeadline.Store(0)
+		}
+		if step == baselineBoundaryRuntimeDeadline {
+			previous := d.baselineBoundary.Load()
+			if previous != uint32(baselineBoundaryRuntimeDeadline) {
+				d.baselineBeforeDeadline.Store(previous)
+			}
+		}
 		d.baselineBoundary.Store(uint32(step))
 	}
 }
@@ -230,4 +261,20 @@ func (d *LifecycleDiagnostic) BoundarySnapshot() string {
 		}
 	}
 	return fmt.Sprintf("operation=%s baseline=%s", operation, baseline)
+}
+
+// DeadlineSnapshot retains the last fixed progress label before an observed
+// proof-context expiration, independently of BoundarySnapshot's existing
+// format. It is not a cause, proof or retry instruction. An absent deadline
+// emits nothing. Read only after the SAME Step returns; fields are not an
+// atomic multi-goroutine observation and contain no caller/provider text.
+func (d *LifecycleDiagnostic) DeadlineSnapshot() string {
+	if d == nil || d.baselineBoundary.Load() != uint32(baselineBoundaryRuntimeDeadline) {
+		return ""
+	}
+	label := "unknown"
+	if value := d.baselineBeforeDeadline.Load(); value <= 255 && value != uint32(baselineBoundaryRuntimeDeadline) {
+		label = baselineBoundary(value).label()
+	}
+	return "baseline-before-deadline=" + label
 }

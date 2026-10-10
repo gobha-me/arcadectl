@@ -22,11 +22,12 @@ const (
 // no context, callback, provider error, object, identity, path or credential.
 // It is not proof, root-cause classification, recovery or retry authority.
 type LifecycleDiagnostic struct {
-	checkpoint        atomic.Uint32
-	admission         admissionTrace
-	activation        activationTrace
-	operationBoundary atomic.Uint32
-	baselineBoundary  atomic.Uint32
+	checkpoint             atomic.Uint32
+	admission              admissionTrace
+	activation             activationTrace
+	operationBoundary      atomic.Uint32
+	baselineBoundary       atomic.Uint32
+	baselineBeforeDeadline atomic.Uint32
 }
 
 // WithLifecycleDiagnostic creates a fresh opaque recorder, superseding any
@@ -84,6 +85,7 @@ func traceLifecycleCheckpoint(ctx context.Context, kind Checkpoint, state lifecy
 			diagnostic.activation.step.Store(0)
 			diagnostic.operationBoundary.Store(0)
 			diagnostic.baselineBoundary.Store(0)
+			diagnostic.baselineBeforeDeadline.Store(0)
 		}
 		diagnostic.checkpoint.Store(uint32(kind)<<8 | uint32(state))
 	}

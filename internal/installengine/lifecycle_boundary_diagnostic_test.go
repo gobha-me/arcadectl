@@ -14,6 +14,8 @@ import (
 	"github.com/gobha-me/arcadectl/internal/installstate"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	clienttest "k8s.io/client-go/testing"
 )
 
 func TestLifecycleBoundaryDiagnosticClosedFreshAndConcurrent(t *testing.T) {
@@ -27,6 +29,7 @@ func TestLifecycleBoundaryDiagnosticClosedFreshAndConcurrent(t *testing.T) {
 		boundaryApplyOpening: "apply-opening", boundaryApplyCandidate: "apply-candidate", boundaryApplyPreview: "apply-preview", boundaryApplyPreviewResult: "apply-preview-result", boundaryApplyAfterPreview: "apply-after-preview",
 		boundaryApplyIntent: "apply-intent", boundaryApplyReceipt: "apply-receipt", boundaryApplyEffectOpening: "apply-effect-opening", boundaryApplyEffectRequest: "apply-effect-request", boundaryApplyEffectResult: "apply-effect-result",
 		boundaryRecoveryOpening: "recovery-opening", boundaryRecoveryRead: "recovery-read", boundaryRecoveryReceipt: "recovery-receipt", boundaryRecoverySettlement: "recovery-settlement", boundaryRecoveryComplete: "recovery-complete",
+		boundaryDeleteOpening: "delete-opening", boundaryDeleteIntent: "delete-intent", boundaryDeleteEffectOpening: "delete-effect-opening", boundaryDeleteEffectRequest: "delete-effect-request", boundaryDeleteEffectResult: "delete-effect-result", boundaryDeleteACKWait: "delete-ack-wait", boundaryDeleteACKClose: "delete-ack-close",
 	}
 	baselines := map[baselineBoundary]string{baselineBoundaryScope: "scope", baselineBoundarySource: "source", baselineBoundaryActors: "actors", baselineBoundaryExecutables: "executables", baselineBoundaryMetadata: "metadata", baselineBoundaryParents: "parents", baselineBoundaryFamily: "family", baselineBoundaryActorClose: "actor-close", baselineBoundaryDeniedOpening: "denied-opening", baselineBoundaryProducerBefore: "producer-before", baselineBoundaryProducerWire: "producer-wire", baselineBoundaryProducerResult: "producer-result", baselineBoundaryProducerAfter: "producer-after", baselineBoundaryProducerNegative: "producer-negative", baselineBoundaryIdentity: "identity-probe", baselineBoundaryParentProbe: "parent-probe", baselineBoundaryPodProbe: "pod-probe", baselineBoundaryClosing: "closing", baselineBoundarySourceClose: "source-close", baselineBoundaryRetired: "retired", baselineBoundaryComplete: "complete"}
 	for boundary, label := range map[baselineBoundary]string{
@@ -119,6 +122,90 @@ func TestLifecycleBoundaryDiagnosticActualRefusalsPreserveEffects(t *testing.T) 
 	}
 	if f.access.writes != writes || f.nsUpdates != updates || f.snapshot.Document().Pending != nil {
 		t.Fatal("preview diagnostic persisted or retried an effect")
+	}
+}
+
+func TestLifecycleDeadlineDiagnosticKeepsFixedPreExpirationProgress(t *testing.T) {
+	var absent *LifecycleDiagnostic
+	if absent.DeadlineSnapshot() != "" {
+		t.Fatal("absent recorder manufactured a deadline")
+	}
+	ctx, diagnostic := WithLifecycleDiagnostic(t.Context())
+	for _, boundary := range []baselineBoundary{baselineBoundaryDeniedReviews, baselineBoundaryProducerNegative, baselineBoundaryIdentity} {
+		traceOperationBoundary(ctx, boundaryDeleteOpening)
+		traceBaselineBoundary(ctx, boundary)
+		if diagnostic.DeadlineSnapshot() != "" {
+			t.Fatal("progress alone became an observed deadline")
+		}
+		traceBaselineBoundary(ctx, baselineBoundaryRuntimeDeadline)
+		traceBaselineBoundary(ctx, baselineBoundaryRuntimeDeadline)
+		if diagnostic.BoundarySnapshot() != "operation=delete-opening baseline=runtime-deadline" || diagnostic.DeadlineSnapshot() != "baseline-before-deadline="+boundary.label() {
+			t.Fatal("deadline overwrote prior progress or changed existing output")
+		}
+		traceBaselineBoundary(ctx, baselineBoundaryScope)
+		if diagnostic.DeadlineSnapshot() != "" || diagnostic.baselineBeforeDeadline.Load() != 0 {
+			t.Fatal("a new proof retained an earlier deadline")
+		}
+	}
+	for _, value := range []uint32{0, 255, 256, 0xffffffff, uint32(baselineBoundaryRuntimeDeadline)} {
+		diagnostic.baselineBoundary.Store(uint32(baselineBoundaryRuntimeDeadline))
+		diagnostic.baselineBeforeDeadline.Store(value)
+		if diagnostic.DeadlineSnapshot() != "baseline-before-deadline=unknown" {
+			t.Fatal("unknown or corrupted enum escaped the fixed deadline catalog")
+		}
+	}
+	traceOperationBoundary(ctx, boundaryDeleteEffectOpening)
+	if diagnostic.DeadlineSnapshot() != "" || diagnostic.baselineBeforeDeadline.Load() != 0 {
+		t.Fatal("new operation retained an earlier deadline")
+	}
+	traceBaselineBoundary(ctx, baselineBoundaryDeniedReviews)
+	traceBaselineBoundary(ctx, baselineBoundaryRuntimeDeadline)
+	traceLifecycleCheckpoint(ctx, APIStopped, lifecycleDiagnosticEntered)
+	if diagnostic.DeadlineSnapshot() != "" || diagnostic.baselineBeforeDeadline.Load() != 0 {
+		t.Fatal("new checkpoint retained an earlier deadline")
+	}
+}
+
+func TestLifecycleBoundaryDiagnosticDistinguishesActualDeleteGuards(t *testing.T) {
+	for _, boundary := range []string{"delete-opening", "delete-effect-opening", "delete-ack-wait", "delete-ack-close"} {
+		t.Run(boundary, func(t *testing.T) {
+			f := newFixture(t, true)
+			ctx, diagnostic := WithLifecycleDiagnostic(t.Context())
+			before := string(f.snapshot.Bytes())
+			injected := false
+			f.access.client.PrependReactor("get", "namespaces", func(clienttest.Action) (bool, runtime.Object, error) {
+				if diagnostic.BoundarySnapshot() == "operation="+boundary+" baseline=unknown" {
+					injected = true
+					return true, nil, errors.New("PRIVATE-CANARY")
+				}
+				return false, nil, nil
+			})
+			// Keep the acknowledged original present so the second observation
+			// fence is reached. Only the test's read refusal stops that wait.
+			f.access.write = func(action installstate.Action, key installstate.Key, object *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+				if action != installstate.Delete || key != f.key || object != nil {
+					t.Fatal("DELETE diagnostic changed its original effect")
+				}
+				return nil, nil
+			}
+			snapshot, err := f.engine.delete(ctx, f.snapshot, f.key, true)
+			wantWrites, wantCAS := 1, 1
+			if boundary == "delete-opening" {
+				wantWrites, wantCAS = 0, 0
+			} else if boundary == "delete-effect-opening" {
+				wantWrites = 0
+			}
+			if err == nil || !injected || f.access.writes != wantWrites || f.nsUpdates != wantCAS || diagnostic.BoundarySnapshot() != "operation="+boundary+" baseline=unknown" || diagnostic.DeadlineSnapshot() != "" || string(f.snapshot.Bytes()) != before {
+				t.Fatal("actual DELETE guard lost its stage or changed effects/intent")
+			}
+			if boundary == "delete-opening" {
+				if snapshot != nil {
+					t.Fatal("opening refusal manufactured an intent")
+				}
+			} else if snapshot == nil || snapshot.Document().Pending == nil || snapshot.Document().Pending.Action != installstate.Delete || snapshot.Document().Revision != f.snapshot.Document().Revision+1 {
+				t.Fatal("refused DELETE guard lost its committed original intent")
+			}
+		})
 	}
 }
 

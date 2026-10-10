@@ -88,7 +88,7 @@ func TestBaselineRuntimeDispatchRefusesIncompleteContextsBeforeWire(t *testing.T
 	deadlineCtx, deadlineCancel := context.WithTimeout(t.Context(), time.Second)
 	defer deadlineCancel()
 	deadlineCtx, diagnostic := WithLifecycleDiagnostic(deadlineCtx)
-	if provider.Verify(deadlineCtx, f.snapshot) != ErrSecurityBaseline || requests.Load() != 1 || diagnostic.BoundarySnapshot() != "operation=unknown baseline=runtime-deadline" || engine.baseline.runtimeGuard != nil || f.access.writes != writes || f.nsUpdates != updates {
+	if provider.Verify(deadlineCtx, f.snapshot) != ErrSecurityBaseline || requests.Load() != 1 || diagnostic.BoundarySnapshot() != "operation=unknown baseline=runtime-deadline" || diagnostic.DeadlineSnapshot() != "baseline-before-deadline=actors" || engine.baseline.runtimeGuard != nil || f.access.writes != writes || f.nsUpdates != updates {
 		t.Fatal("actual runtime deadline changed refusal/effect behavior or lost its bounded diagnostic", diagnostic.BoundarySnapshot())
 	}
 }

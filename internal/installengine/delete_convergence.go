@@ -22,6 +22,7 @@ func (e *Engine) waitAcknowledgedDelete(ctx context.Context, intent *installstat
 	p := intent.Document().Pending
 	settled := intent
 	err := wait.PollUntilContextTimeout(ctx, time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
+		traceOperationBoundary(ctx, boundaryDeleteACKWait)
 		fresh, err := e.current(ctx, intent)
 		if err != nil {
 			return false, ErrOutcomeUnknown
@@ -39,6 +40,7 @@ func (e *Engine) waitAcknowledgedDelete(ctx context.Context, intent *installstat
 		if readErr != nil || live == nil || live.GetUID() != p.BeforeUID || live.GetResourceVersion() == "" {
 			return false, ErrOutcomeUnknown // replacement/refusal is permanent
 		}
+		traceOperationBoundary(ctx, boundaryDeleteACKClose)
 		if _, err := e.current(ctx, intent); err != nil {
 			return false, ErrOutcomeUnknown
 		}

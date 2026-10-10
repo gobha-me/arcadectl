@@ -283,6 +283,9 @@ func runMutation(ctx context.Context, o options, stdout, stderr io.Writer) int {
 		if err != nil || s == nil {
 			_, _ = fmt.Fprintf(stderr, "installation diagnostic progress %s\n", diagnostic.Snapshot())
 			_, _ = fmt.Fprintf(stderr, "installation diagnostic boundary %s\n", diagnostic.BoundarySnapshot())
+			if deadline := diagnostic.DeadlineSnapshot(); deadline != "" {
+				_, _ = fmt.Fprintf(stderr, "installation diagnostic deadline %s\n", deadline)
+			}
 			_, _ = io.WriteString(stderr, "installation stopped at a protected checkpoint; inspect before explicit resume; no failed effect was retried\n")
 			return 4
 		}
