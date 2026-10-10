@@ -75,6 +75,9 @@ TestBaselineRetiredHTTPSRuntimeCompleteReceiptReplaced 120
 TestBaselinePrerequisiteRetainedWorldsHTTPS 1200
 TestBaselineMetadataWholeProvider 360
 TestAdmissionRetirementBaselineContextPreservesOriginalInventoryAndRuntimeGate 300
+# Exact e5047d3 successful CI shard20 measured200.23s. Replace the default60
+# with a scheduling estimate that retains headroom, not an execution budget.
+TestAdmissionRetirementRejectsMissingCorruptOrChangedEvidence 270
 TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe 360
 TestBaselineDeniedProviderClosesOriginalWholeEvidenceAndLateGrants 360
 # Exact 9cf6c36 CI shard23 measured473.99s; retain headroom without changing
