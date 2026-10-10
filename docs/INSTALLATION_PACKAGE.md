@@ -70,6 +70,22 @@ identity decisions; the finite review catalog is not an attestation of an
 arbitrary external authorizer or a guarantee against future administrator
 changes. No additional actor credentials are required by that model.
 
+The template and ReplicaSet producer policies allow the exact native
+`system:serviceaccount:kube-system:generic-garbage-collector` to DELETE, or to
+UPDATE with non-null old/new objects and the **whole executable spec unchanged**.
+This accommodates the resource-version-preconditioned foreground-finalizer
+[MergePatch used by Kubernetes GC](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/controller/garbagecollector/operations.go#L95-L133),
+which admission evaluates as UPDATE. It deliberately permits metadata-only
+updates by this already trusted native principal, not only finalizer removal;
+it is not an original-UID or installer-WAL authorization proof. It does not
+grant CREATE, scaling, selector/template/spec changes or ordinary/runtime-actor
+access, and adds no new Pod/CronJob/identity/Scale/PVC authority. Existing complete
+metadata, owner-chain, UID/RV, receipt and stability proofs remain mandatory.
+Authenticated API-only tests cover native foreground-finalizer PATCH/absence
+and negatively attributed boundary controls on both profiles. They contain no
+controller-manager/kubelet: actual descendant GC and full retaining lifecycle
+still require the separate signed-binary gates to complete successfully.
+
 The private dry-run transport also has finite, negatively attributed identity
 CREATE/DELETE and ordinary-controller Service UPDATE/PATCH and Deployment
 PATCH routes. PATCH bytes are internally constructed metadata-only merge

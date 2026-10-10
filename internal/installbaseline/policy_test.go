@@ -5,6 +5,7 @@ package installbaseline
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	admissionv1 "k8s.io/api/admissionregistration/v1"
@@ -52,5 +53,70 @@ func TestBaselineRejectsUnscopedNamespaces(t *testing.T) {
 		if _, err := Render(namespace); err != ErrInvalid {
 			t.Errorf("accepted invalid baseline namespace %q", namespace)
 		}
+	}
+}
+
+// A literal renderer contract, not an executing CEL or native GC certificate.
+// Native authenticated positive/negative requests separately prove admission.
+func TestReviewedGarbageCollectorProducerBoundaries(t *testing.T) {
+	objects, err := Render("isolated-baseline")
+	if err != nil {
+		t.Fatal("reviewed policies unavailable")
+	}
+	gc := `
+ (request.userInfo.username == 'system:serviceaccount:kube-system:generic-garbage-collector' &&
+  (request.operation == 'DELETE' ||
+   (request.operation == 'UPDATE' && object != null && oldObject != null && object.spec == oldObject.spec)))`
+	wants := map[string]string{
+		"template": gc + ` ||
+ (request.kind.kind == 'Job' && request.operation in ['CREATE', 'DELETE'] &&
+  request.userInfo.username in ['system:kube-controller-manager', 'system:serviceaccount:kube-system:cronjob-controller'])`,
+		"replicaset": gc + ` ||
+ ((request.userInfo.username in ['system:kube-controller-manager', 'system:serviceaccount:kube-system:deployment-controller']) &&
+  (request.operation in ['CREATE', 'DELETE'] ||
+   (request.operation == 'UPDATE' && object != null && oldObject != null &&
+    object.spec.template == oldObject.spec.template && object.spec.selector == oldObject.spec.selector &&
+    ((!has(object.spec.minReadySeconds) && !has(oldObject.spec.minReadySeconds)) ||
+     (has(object.spec.minReadySeconds) && has(oldObject.spec.minReadySeconds) && object.spec.minReadySeconds == oldObject.spec.minReadySeconds)))))`,
+		"pod": `
+ (request.operation in ['CREATE', 'DELETE'] ||
+  (request.operation == 'UPDATE' && object != null && oldObject != null && object.spec == oldObject.spec)) &&
+ (request.userInfo.username == 'system:kube-controller-manager' ||
+  request.userInfo.username in [
+    'system:serviceaccount:kube-system:replicaset-controller',
+    'system:serviceaccount:kube-system:job-controller',
+    'system:serviceaccount:kube-system:replication-controller',
+    'system:serviceaccount:kube-system:daemon-set-controller',
+    'system:serviceaccount:kube-system:statefulset-controller'] ||
+  (request.operation == 'DELETE' && request.userInfo.username == 'system:serviceaccount:kube-system:generic-garbage-collector'))`,
+		"cronjob": "false", "identity": "false", "scale": "false",
+	}
+	seen := map[string]bool{}
+	for index := 0; index < len(objects); index += 2 {
+		var policy admissionv1.ValidatingAdmissionPolicy
+		if runtime.DefaultUnstructuredConverter.FromUnstructured(objects[index].Object, &policy) != nil {
+			t.Fatal("literal policy unavailable")
+		}
+		family := strings.TrimSuffix(strings.TrimPrefix(policy.Name, "arcadectl-identity-"), "-isolated-baseline")
+		want, known := wants[family]
+		if !known || seen[family] {
+			t.Fatal("unexpected/duplicate producer family")
+		}
+		seen[family] = true
+		matches := 0
+		for _, variable := range policy.Spec.Variables {
+			if variable.Name == "producer" {
+				matches++
+				if variable.Expression != want {
+					t.Fatal("producer authority escaped independently reviewed literal")
+				}
+			}
+		}
+		if matches != 1 {
+			t.Fatal("missing or duplicate producer predicate")
+		}
+	}
+	if len(seen) != len(wants) {
+		t.Fatal("producer family coverage incomplete")
 	}
 }

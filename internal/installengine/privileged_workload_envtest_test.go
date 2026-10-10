@@ -35,8 +35,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
-// These are native RBAC/admission dry runs in owned API servers without a
-// scheduler, controller-manager or kubelet. No privileged workload executes,
+// These native RBAC/admission boundary tests run in owned API servers without a
+// scheduler, controller-manager or kubelet. Probe requests are dry runs except for the
+// explicitly owned inert GC fixture lifecycle. No privileged workload executes,
 // no bearer token is requested, and no world or PVC is created or deleted.
 func TestEnvtestOrdinaryControllerCannotLaunchPrivilegedIdentity(t *testing.T) {
 	testPrivilegedIdentityBoundary(t, false)
@@ -353,7 +354,8 @@ func baselineDenial(err error, family, namespace string) bool {
 
 // Explicit local RBAC lets these tests distinguish admission from authorization.
 // None of these users can impersonate the maintenance ServiceAccount. There are
-// still no controllers or kubelets, and every caller mutation is a dry run.
+// still no controllers or kubelets. Caller mutations are dry runs apart from
+// the owned inert GC fixture's foreground DELETE and finalizer PATCH lifecycle.
 func testStandaloneProducerBoundary(t *testing.T, ctx context.Context, environment *envtest.Environment, config *rest.Config,
 	admin, ordinary *kubernetes.Clientset, namespace string, job *batchv1.Job, installed *appsv1.Deployment,
 	actorCan func(*kubernetes.Clientset, string, string, string, string, string, bool)) {
@@ -394,6 +396,7 @@ func testStandaloneProducerBoundary(t *testing.T, ctx context.Context, environme
 		clients[name] = client
 	}
 	nonadmin := clients[users[0]]
+	testStandaloneGarbageCollectorUpdateBoundary(t, ctx, admin, clients[users[6]], nonadmin, ordinary, namespace, installed, actorCan)
 	deny := func(family string, err error) {
 		t.Helper()
 		if !baselineDenial(err, family, namespace) {

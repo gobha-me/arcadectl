@@ -146,8 +146,7 @@ const podProducer = `
 // ReplicaSetSpec has replicas, minReadySeconds, selector and template. Only the
 // replicas field may change under the producer exception; metadata revisions
 // are allowed. Neither the executable template nor selector can be substituted.
-const replicaSetProducer = `
- (request.operation == 'DELETE' && request.userInfo.username == 'system:serviceaccount:kube-system:generic-garbage-collector') ||
+const replicaSetProducer = garbageCollectorProducer + ` ||
  ((request.userInfo.username in ['system:kube-controller-manager', 'system:serviceaccount:kube-system:deployment-controller']) &&
   (request.operation in ['CREATE', 'DELETE'] ||
    (request.operation == 'UPDATE' && object != null && oldObject != null &&
@@ -155,7 +154,18 @@ const replicaSetProducer = `
     ((!has(object.spec.minReadySeconds) && !has(oldObject.spec.minReadySeconds)) ||
      (has(object.spec.minReadySeconds) && has(oldObject.spec.minReadySeconds) && object.spec.minReadySeconds == oldObject.spec.minReadySeconds)))))`
 
-const templateProducer = `
- (request.operation == 'DELETE' && request.userInfo.username == 'system:serviceaccount:kube-system:generic-garbage-collector') ||
+const templateProducer = garbageCollectorProducer + ` ||
  (request.kind.kind == 'Job' && request.operation in ['CREATE', 'DELETE'] &&
   request.userInfo.username in ['system:kube-controller-manager', 'system:serviceaccount:kube-system:cronjob-controller'])`
+
+// Foreground GC removes its finalizer through a resource-version-preconditioned
+// MergePatch, which admission sees as UPDATE, not DELETE. This exact trusted
+// native principal may update metadata with the WHOLE executable spec unchanged.
+// This is not an original-UID/WAL proof or a finalizer-only exception; the
+// installer's full metadata, owner-chain and UID/RV guards remain mandatory.
+// CREATE, scaling, selector/template substitution and other principals do not
+// acquire authority. Pod/CronJob/identity/Scale families stay unchanged.
+const garbageCollectorProducer = `
+ (request.userInfo.username == 'system:serviceaccount:kube-system:generic-garbage-collector' &&
+  (request.operation == 'DELETE' ||
+   (request.operation == 'UPDATE' && object != null && oldObject != null && object.spec == oldObject.spec)))`
