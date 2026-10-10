@@ -4,6 +4,7 @@
 package installengine
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -34,6 +35,9 @@ type baselineBehaviorEffectFixture struct {
 	engine                                          *Engine
 	failure                                         string
 	update                                          bool
+	controller, delayedReady                        bool
+	becameReady                                     time.Time
+	cancel                                          context.CancelFunc
 	beforeRV                                        string
 	injected                                        bool
 	lastChange, lastCollection, quietCollection     time.Time
@@ -47,6 +51,9 @@ func (f *baselineBehaviorEffectFixture) prepare(t *testing.T, d *installstate.Do
 	t.Helper()
 	d.Stage = installstate.Applying
 	key := deploymentKey(d.Namespace, "arcadectl-api")
+	if f.controller {
+		key = deploymentKey(d.Namespace, "arcadectl-controller")
+	}
 	f.family = map[installstate.Key]*unstructured.Unstructured{}
 	for k, object := range objects {
 		account, _, _ := unstructured.NestedString(object.Object, "spec", "serviceAccountName")
@@ -118,6 +125,17 @@ func (f *baselineBehaviorEffectFixture) serve(t *testing.T, w http.ResponseWrite
 			}
 			objects[key].Object["status"] = map[string]any{"observedGeneration": int64(1), "replicas": int64(f.collections % 2)}
 			f.lastChange = time.Now()
+		}
+		// Leave the parent unchanged and non-Ready longer than the existing
+		// quiet interval. Only closed lifecycle preparation must wait past it.
+		if f.delayedReady && f.collections >= 10 && f.becameReady.IsZero() {
+			objects[key].SetResourceVersion("150")
+			objects[key].Object["status"] = map[string]any{"observedGeneration": objects[key].GetGeneration(), "replicas": int64(1), "updatedReplicas": int64(1), "readyReplicas": int64(1), "availableReplicas": int64(1)}
+			f.becameReady, f.lastChange = time.Now(), time.Now()
+		}
+		if f.failure == "stable-unready" && f.collections == 10 && !f.injected {
+			f.injected = true
+			f.cancel()
 		}
 		if f.collections == 2 && !f.injected {
 			switch f.failure {
@@ -401,8 +419,15 @@ func TestAcknowledgedDeploymentUpdateObservesAmbiguousOutcomeWithoutWaitOrReplay
 // UPDATE uses genuine original inventory and a nonce-only same-template write.
 // This covers the actual UPDATE branch, not upgrade/rollback native behavior.
 func testAcknowledgedDeploymentEffect(t *testing.T, failure string, update bool) {
+	testAcknowledgedDeploymentEffectMode(t, failure, update, false)
+}
+
+func testAcknowledgedDeploymentEffectMode(t *testing.T, failure string, update, lifecycle bool) {
 	t.Helper()
-	fixture := &baselineBehaviorEffectFixture{failure: failure, update: update}
+	fixture := &baselineBehaviorEffectFixture{failure: failure, update: update, controller: lifecycle, delayedReady: lifecycle}
+	if failure == "stable-unready" {
+		fixture.delayedReady = false
+	}
 	testBaselineBehaviorWholeProviderComposition(t, "healthy", func(engine *Engine, snapshot *installstate.Snapshot, _ *ClusterSecurityBaseline, _ func() int) error {
 		fixture.engine = engine
 		original := snapshot.Document()
@@ -414,7 +439,21 @@ func testAcknowledgedDeploymentEffect(t *testing.T, failure string, update bool)
 			t.Fatal("effect regression lost its original absent or recorded API parent")
 		}
 		ctx, diagnostic := WithLifecycleDiagnostic(t.Context())
-		settled, err := engine.Apply(ctx, snapshot, fixture.resource.Key, snapshot.Document().TargetPackage, false)
+		if failure == "stable-unready" {
+			ctx, fixture.cancel = context.WithCancel(ctx)
+			defer fixture.cancel()
+		}
+		var settled *installstate.Snapshot
+		var err error
+		if lifecycle {
+			closed, constructorErr := NewClusterLifecycle(engine, engine.access.(*HTTPAccess))
+			if constructorErr != nil {
+				t.Fatal("closed lifecycle preparation unavailable")
+			}
+			settled, err = closed.applyTarget(ctx, snapshot, fixture.resource.Key, snapshot.Document().TargetPackage)
+		} else {
+			settled, err = engine.Apply(ctx, snapshot, fixture.resource.Key, snapshot.Document().TargetPackage, false)
+		}
 		if settled == nil || fixture.previews != 1 || fixture.effects != 1 || failure != "" && !fixture.injected {
 			t.Fatalf("actual ACK/effect recovery did not await quiet original inventory: %s", diagnostic.BoundarySnapshot())
 		}
@@ -435,8 +474,12 @@ func testAcknowledgedDeploymentEffect(t *testing.T, failure string, update bool)
 			t.Fatal("late whole drift no longer refused at the actual denied window")
 		}
 		if failure == "late-producer-status" {
-			if diagnostic.BoundarySnapshot() != "operation=recovery-opening baseline=producer-negative" || diagnostic.FailureSnapshot() != "check=denial-read-before family=Deployment changes=resource-version,metadata,status" || diagnostic.DeploymentSnapshot() != "role=controller metadata-first=resource-version-only status-first=observed-generation" || fixture.postEffectRules != 6 || fixture.postEffectProbes != 20 || !reflect.DeepEqual(live, fixture.intent) {
-				t.Fatal("late producer drift escaped original refusal, emitted values, sent failed negative probe or changed Pending")
+			status := "observed-generation"
+			if lifecycle {
+				status = "replicas" // Ready parent already had the unchanged observedGeneration=1.
+			}
+			if diagnostic.BoundarySnapshot() != "operation=recovery-opening baseline=producer-negative" || diagnostic.FailureSnapshot() != "check=denial-read-before family=Deployment changes=resource-version,metadata,status" || diagnostic.DeploymentSnapshot() != "role=controller metadata-first=resource-version-only status-first="+status || fixture.postEffectRules != 6 || fixture.postEffectProbes != 20 || !reflect.DeepEqual(live, fixture.intent) {
+				t.Fatalf("late producer drift escaped exact original refusal: %s; %s; %s; rules=%d probes=%d", diagnostic.BoundarySnapshot(), diagnostic.FailureSnapshot(), diagnostic.DeploymentSnapshot(), fixture.postEffectRules, fixture.postEffectProbes)
 			}
 		}
 		if failure == "ambiguous-response" {
@@ -468,6 +511,9 @@ func testAcknowledgedDeploymentEffect(t *testing.T, failure string, update bool)
 				}
 			}
 		}
+		if failure == "stable-unready" && (fixture.proofOpening || !fixture.quietCollection.IsZero() || fixture.postEffectRules != 0 || fixture.collections != 10 || !fixture.becameReady.IsZero()) {
+			t.Fatal("closed lifecycle opened proof on stable non-Ready controller or ignored cancellation")
+		}
 		uid, receiptErr := engine.loadCreateUID(fixture.intent)
 		if update {
 			if receiptErr == nil || uid != "" {
@@ -486,8 +532,8 @@ func testAcknowledgedDeploymentEffect(t *testing.T, failure string, update bool)
 		if testBaselineReceiptDescriptors(t, "create-"+fixture.intent.Pending.CreateNonce+".json") != 0 {
 			t.Fatal("actual Deployment effect did not release its original receipt pins")
 		}
-		// No Ready predicate is used: quiet original non-Ready processes remain
-		// valid baseline subjects, not authenticated serving or effect authority.
+		// Generic Apply accepts quiet non-Ready parents; the closed lifecycle's
+		// ordinary controller starts its quiet interval only after availability.
 		if completedCAS {
 			if update && !reflect.DeepEqual(original.Resources, settled.Document().Resources) {
 				t.Fatal("same-template UPDATE changed original inventory identity or cardinality")
@@ -497,7 +543,14 @@ func testAcknowledgedDeploymentEffect(t *testing.T, failure string, update bool)
 				t.Fatal("actual served final family unavailable")
 			}
 			deploymentReady, _, _ = unstructured.NestedInt64(fixture.final[fixture.resource.Key].Object, "status", "availableReplicas")
-			if deploymentReady != 0 || !(update && failure == "ambiguous-response") && (fixture.quietCollection.IsZero() || fixture.quietCollection.Sub(fixture.lastChange) < 5*time.Second) {
+			wantReady := int64(0)
+			if lifecycle && !(update && failure == "ambiguous-response") {
+				wantReady = 1
+				if fixture.becameReady.IsZero() || fixture.collections < 10 || fixture.quietCollection.Sub(fixture.becameReady) < 5*time.Second {
+					t.Fatal("closed lifecycle opened proof before readiness and subsequent whole quietness")
+				}
+			}
+			if deploymentReady != wantReady || !(update && failure == "ambiguous-response") && (fixture.quietCollection.IsZero() || fixture.quietCollection.Sub(fixture.lastChange) < 5*time.Second) {
 				t.Fatal("quiet handoff omitted its interval or required availability")
 			}
 			for key, object := range fixture.final {

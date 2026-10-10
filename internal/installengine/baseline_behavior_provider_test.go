@@ -480,7 +480,7 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 			if user == "" {
 				allowed = a.Verb == "get" || a.Verb == "list" || a.Verb == "impersonate" && a.Version == "*" && a.Resource == "serviceaccounts" && a.Namespace == d.Namespace && (a.Name == "arcadectl-controller" || a.Name == "arcadectl-destroy-controller")
 				if effect != nil {
-					allowed = allowed || a.Verb == "update" && a.Group == "" && a.Version == "v1" && a.Resource == "namespaces" && a.Name == d.Namespace && a.Namespace == "" && a.Subresource == "" || a.Group == "apps" && a.Version == "v1" && a.Resource == "deployments" && a.Namespace == d.Namespace && a.Subresource == "" && (!effect.update && a.Verb == "create" && a.Name == "" || effect.update && a.Verb == "update" && a.Name == "arcadectl-api")
+					allowed = allowed || a.Verb == "update" && a.Group == "" && a.Version == "v1" && a.Resource == "namespaces" && a.Name == d.Namespace && a.Namespace == "" && a.Subresource == "" || a.Group == "apps" && a.Version == "v1" && a.Resource == "deployments" && a.Namespace == d.Namespace && a.Subresource == "" && (!effect.update && a.Verb == "create" && a.Name == "" || effect.update && a.Verb == "update" && a.Name == effect.resource.Key.Name)
 				}
 			} else if a.Version == "v1" && a.Namespace == d.Namespace && a.Subresource == "" && a.FieldSelector == nil && a.LabelSelector == nil {
 				collection := a.Verb == "create" && a.Name == ""
@@ -940,7 +940,7 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 			}
 			if !effect.update {
 				for _, row := range []string{"arcadectl-controller/PUT/Deployment", "arcadectl-controller/PATCH/Deployment", "arcadectl-controller/DELETE/Deployment", "arcadectl-controller/PUT/Pod", "arcadectl-destroy-controller/PUT/Pod"} {
-					want[row] -= 3 // API parent and Pod absent in the first three proofs.
+					want[row] -= 3 // Selected parent and Pod absent in the first three proofs.
 				}
 			}
 			if effect.failure == "late-producer-status" {
@@ -960,7 +960,7 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 			}
 			for row, count := range wantDetailed {
 				wantDetailed[row] = count * cycles
-				if !effect.update && (strings.HasSuffix(row, "/Deployment/arcadectl-api") || strings.Contains(row, "/Pod/") && strings.HasSuffix(row, "/"+effect.podName)) {
+				if !effect.update && (strings.HasSuffix(row, "/Deployment/"+effect.resource.Key.Name) || strings.Contains(row, "/Pod/") && strings.HasSuffix(row, "/"+effect.podName)) {
 					wantDetailed[row] -= 3
 				}
 				if wantDetailed[row] == 0 {

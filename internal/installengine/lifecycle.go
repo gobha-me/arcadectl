@@ -704,7 +704,7 @@ func (l *Lifecycle) applyOwned(ctx context.Context, s *installstate.Snapshot, op
 			// retained-source union. Install/stage flags alone grant no exemption.
 			return l.engine.applyPrerequisiteOwned(ctx, s, key, d.TargetPackage, secrets)
 		}
-		return l.engine.Apply(ctx, s, key, d.TargetPackage, false)
+		return l.applyTarget(ctx, s, key, d.TargetPackage)
 	}
 	return l.stage(ctx, s, installstate.Verifying)
 }

@@ -212,6 +212,13 @@ func (e *Engine) Apply(ctx context.Context, s *installstate.Snapshot, key instal
 }
 
 func (e *Engine) apply(ctx context.Context, s *installstate.Snapshot, key installstate.Key, digest string, paused bool, operation *baselinePrerequisite) (*installstate.Snapshot, error) {
+	return e.applyPrepared(ctx, s, key, digest, paused, operation, nil)
+}
+
+func (e *Engine) applyPrepared(ctx context.Context, s *installstate.Snapshot, key installstate.Key, digest string, paused bool, operation *baselinePrerequisite, preparation *lifecycleControllerPreparation) (*installstate.Snapshot, error) {
+	if preparation != nil && (operation != nil || !preparation.validOriginal(e, s, key, digest, paused)) {
+		return s, ErrInvalid
+	}
 	traceOperationBoundary(ctx, boundaryApplyOpening)
 	fresh, err := e.currentEffect(ctx, s, operation)
 	if err != nil {
@@ -285,6 +292,12 @@ func (e *Engine) apply(ctx context.Context, s *installstate.Snapshot, key instal
 	if err != nil {
 		return nil, err
 	} // NO target effect on unconfirmed intent
+	if preparation != nil {
+		preparation, err = preparation.bindIntent(e, intent, p)
+		if err != nil {
+			return intent, ErrOutcomeUnknown
+		}
+	}
 	if p.Action == installstate.Create {
 		traceOperationBoundary(ctx, boundaryApplyReceipt)
 		if err := e.prepareCreateReceipt(intent.Document()); err != nil {
@@ -313,7 +326,7 @@ func (e *Engine) apply(ctx context.Context, s *installstate.Snapshot, key instal
 	if err == nil && (ack == nil || !effectMatches(t, p, ack)) {
 		return intent, ErrOutcomeUnknown
 	}
-	return e.recoverWithOperation(ctx, intent, ack, err == nil, ambiguousCreateResponse(err), operation)
+	return e.recoverPreparedWithOperation(ctx, intent, ack, err == nil, ambiguousCreateResponse(err), operation, preparation)
 }
 
 func ambiguousCreateResponse(err error) bool {
@@ -416,11 +429,18 @@ func (e *Engine) recover(ctx context.Context, s *installstate.Snapshot, ack *uns
 }
 
 func (e *Engine) recoverWithOperation(ctx context.Context, s *installstate.Snapshot, ack *unstructured.Unstructured, hasAck, allowInitialObservation bool, operation *baselinePrerequisite) (*installstate.Snapshot, error) {
+	return e.recoverPreparedWithOperation(ctx, s, ack, hasAck, allowInitialObservation, operation, nil)
+}
+
+func (e *Engine) recoverPreparedWithOperation(ctx context.Context, s *installstate.Snapshot, ack *unstructured.Unstructured, hasAck, allowInitialObservation bool, operation *baselinePrerequisite, preparation *lifecycleControllerPreparation) (*installstate.Snapshot, error) {
 	traceOperationBoundary(ctx, boundaryRecoveryOpening)
+	if preparation != nil && (operation != nil || !preparation.validIntent(e, s)) {
+		return s, ErrOutcomeUnknown
+	}
 	var acknowledgedParent *baselineParent
 	if e != nil && e.baseline != nil && operation == nil && hasAck && s != nil && s.Document().Pending != nil && s.Document().Pending.Key.Kind == "Deployment" {
 		var err error
-		acknowledgedParent, err = e.waitAcknowledgedDeployment(ctx, s, ack)
+		acknowledgedParent, err = e.waitAcknowledgedDeployment(ctx, s, ack, preparation)
 		if err != nil {
 			return s, ErrOutcomeUnknown
 		}

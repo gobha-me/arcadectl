@@ -15,11 +15,16 @@ import (
 // A successful original Deployment ACK can precede asynchronous native status
 // and descendant changes. Observe complete executable quietness BEFORE opening
 // the recovery proof, never by retrying a failed proof or ignoring whole fields.
-// This is not readiness, effect permission, recovery settlement or authentication.
+// Only the closed lifecycle's controller-start purpose additionally observes
+// readiness before quietness. Generic Apply still accepts stable non-Ready
+// objects. Neither path grants effect permission, settlement or authentication.
 // Its caller retains the returned original ACK receipt through the actual full
 // proof and settlement. Unknown responses never enter this ACK-only path.
-func (e *Engine) waitAcknowledgedDeployment(ctx context.Context, s *installstate.Snapshot, ack *unstructured.Unstructured) (*baselineParent, error) {
+func (e *Engine) waitAcknowledgedDeployment(ctx context.Context, s *installstate.Snapshot, ack *unstructured.Unstructured, preparation *lifecycleControllerPreparation) (*baselineParent, error) {
 	if e == nil || e.baseline == nil || e.baseline.prerequisites == nil || ctx == nil || ctx.Err() != nil || s == nil || ack == nil {
+		return nil, ErrOutcomeUnknown
+	}
+	if preparation != nil && !preparation.validIntent(e, s) {
 		return nil, ErrOutcomeUnknown
 	}
 	d := s.Document()
@@ -64,6 +69,10 @@ func (e *Engine) waitAcknowledgedDeployment(ctx context.Context, s *installstate
 		}
 		if err != nil || parent == nil || parent.whole.GetUID() != owner.whole.GetUID() || parent.template.Hash() != owner.template.Hash() || !sameBaselineOriginalReceipt(owner.receipt, parent.receipt) || confirm() != nil {
 			return false, ErrOutcomeUnknown
+		}
+		if preparation != nil && (parent.parent.Spec.Paused || !availableInstallationDeployment(parent.parent)) {
+			previous, quiet = nil, time.Time{}
+			return false, nil // preparation only, never retry a failed full proof
 		}
 		if previous == nil || !sameBaselineExecutables(previous, fresh) {
 			previous, quiet = fresh, time.Now()
