@@ -10,8 +10,8 @@ import (
 	"github.com/gobha-me/arcadectl/internal/installstate"
 )
 
-// This purpose only strengthens pre-proof observation for the ordinary
-// controller started by the closed lifecycle. It grants no mutation authority,
+// This purpose only strengthens pre-proof observation for the two software
+// controllers started by the closed lifecycle. It grants no mutation authority,
 // skips no baseline proof, and cannot be reconstructed by public recovery.
 type lifecycleControllerPreparation struct {
 	lifecycle *Lifecycle
@@ -30,7 +30,7 @@ func (l *Lifecycle) applyTarget(ctx context.Context, s *installstate.Snapshot, k
 	}
 	checks, closed := l.checks.(*clusterLifecycleChecks)
 	d := s.Document()
-	if !closed || l.engine.baseline == nil || d.Stage != installstate.Applying || key != deploymentKey(d.Namespace, "arcadectl-controller") {
+	if !closed || l.engine.baseline == nil || d.Stage != installstate.Applying || !lifecycleControllerKey(d.Namespace, key) {
 		return l.engine.Apply(ctx, s, key, digest, false)
 	}
 	t, err := l.engine.desired(d, key, digest, false)
@@ -46,11 +46,15 @@ func (p *lifecycleControllerPreparation) validOriginal(e *Engine, s *installstat
 		return false
 	}
 	d := s.Document()
-	if d.Stage != installstate.Applying || d.Pending != nil || key != deploymentKey(d.Namespace, "arcadectl-controller") || digest != d.TargetPackage {
+	if d.Stage != installstate.Applying || d.Pending != nil || !lifecycleControllerKey(d.Namespace, key) || digest != d.TargetPackage {
 		return false
 	}
 	t, err := e.desired(d, key, digest, false)
 	return err == nil && t.Hash() == p.hash
+}
+
+func lifecycleControllerKey(namespace string, key installstate.Key) bool {
+	return key == deploymentKey(namespace, "arcadectl-controller") || key == deploymentKey(namespace, "arcadectl-destroy-controller")
 }
 
 // Bind the purpose to the actual single intent CAS, not an equivalent replayed

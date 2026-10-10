@@ -89,6 +89,26 @@ garbage collection, or authorize a runtime effect. The complete guard must
 close whole executable/parent/access/policy evidence and protected receipt file
 identity/durability after its last remote observation.
 
+Before its full recovery proof, the closed lifecycle additionally prepares both
+software-controller Deployments (`arcadectl-controller` and
+`arcadectl-destroy-controller`) after their exact original successful CREATE or
+UPDATE acknowledgement. The private purpose binds the original snapshot,
+actual intent CAS, key, signed template and digest. Availability must precede
+the unchanged five-second whole-executable quiet interval, within the existing
+five-minute observation budget. This is read-only preparation, not effect or
+settlement authority. Generic Apply still accepts quiet non-Ready parents;
+lost responses and public recovery cannot reconstruct the purpose. Any later
+whole-object drift still refuses the full proof rather than being retried or
+ignored. Native lifecycle certification remains mandatory.
+
+Each original signed access witness reads its frozen recorded catalog in two
+balanced serial lanes. Baseline configuration uses two serial lanes for its
+policies and bindings. Every fresh GET and complete pass is retained; either
+refusal cancels and joins both readers before result publication or the original
+Namespace/journal close. No access witness is cached or removed, including the
+final access observation after closing configuration. These bounded read-only
+schedules do not relax historical caller eligibility or runtime deadlines.
+
 The separate reserved-metadata witness reads all sixteen fixed addresses: the
 four reserved names across ServiceAccounts, Roles, RoleBindings and Services.
 Only the API Service has a sealed signed template; the other three Service

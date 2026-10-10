@@ -35,7 +35,8 @@ type baselineBehaviorEffectFixture struct {
 	engine                                          *Engine
 	failure                                         string
 	update                                          bool
-	controller, delayedReady                        bool
+	controllerName                                  string
+	delayedReady                                    bool
 	becameReady                                     time.Time
 	cancel                                          context.CancelFunc
 	beforeRV                                        string
@@ -51,8 +52,8 @@ func (f *baselineBehaviorEffectFixture) prepare(t *testing.T, d *installstate.Do
 	t.Helper()
 	d.Stage = installstate.Applying
 	key := deploymentKey(d.Namespace, "arcadectl-api")
-	if f.controller {
-		key = deploymentKey(d.Namespace, "arcadectl-controller")
+	if f.controllerName != "" {
+		key = deploymentKey(d.Namespace, f.controllerName)
 	}
 	f.family = map[installstate.Key]*unstructured.Unstructured{}
 	for k, object := range objects {
@@ -85,7 +86,7 @@ func (f *baselineBehaviorEffectFixture) prepare(t *testing.T, d *installstate.Do
 		}
 	}
 	if len(f.family) != 3 || f.raw == nil || f.resource.UID == "" || f.podName == "" || d.Pending != nil {
-		t.Fatal("explicit original API family fixture unavailable")
+		t.Fatal("explicit original Deployment family fixture unavailable")
 	}
 	f.beforeRV = f.family[key].GetResourceVersion()
 }
@@ -424,7 +425,17 @@ func testAcknowledgedDeploymentEffect(t *testing.T, failure string, update bool)
 
 func testAcknowledgedDeploymentEffectMode(t *testing.T, failure string, update, lifecycle bool) {
 	t.Helper()
-	fixture := &baselineBehaviorEffectFixture{failure: failure, update: update, controller: lifecycle, delayedReady: lifecycle}
+	name := ""
+	if lifecycle {
+		name = "arcadectl-controller"
+	}
+	testAcknowledgedDeploymentEffectController(t, failure, update, name)
+}
+
+func testAcknowledgedDeploymentEffectController(t *testing.T, failure string, update bool, name string) {
+	t.Helper()
+	lifecycle := name != ""
+	fixture := &baselineBehaviorEffectFixture{failure: failure, update: update, controllerName: name, delayedReady: lifecycle}
 	if failure == "stable-unready" {
 		fixture.delayedReady = false
 	}
@@ -436,7 +447,7 @@ func testAcknowledgedDeploymentEffectMode(t *testing.T, failure string, update, 
 		}
 		recorded, _ := engine.inventory(original, fixture.resource.Key)
 		if !update && recorded != nil || update && (recorded == nil || !reflect.DeepEqual(*recorded, fixture.resource)) {
-			t.Fatal("effect regression lost its original absent or recorded API parent")
+			t.Fatal("effect regression lost its original absent or recorded Deployment parent")
 		}
 		ctx, diagnostic := WithLifecycleDiagnostic(t.Context())
 		if failure == "stable-unready" {
@@ -473,12 +484,16 @@ func testAcknowledgedDeploymentEffectMode(t *testing.T, failure string, update, 
 		if failure == "late-status" && diagnostic.BoundarySnapshot() != "operation=recovery-opening baseline=denied-executables-stable" {
 			t.Fatal("late whole drift no longer refused at the actual denied window")
 		}
-		if failure == "late-producer-status" {
+		if failure == "late-producer-status" || failure == "late-destroy-producer-status" {
 			status := "observed-generation"
+			role, metadata, probes := "controller", "resource-version-only", 20
 			if lifecycle {
 				status = "replicas" // Ready parent already had the unchanged observedGeneration=1.
 			}
-			if diagnostic.BoundarySnapshot() != "operation=recovery-opening baseline=producer-negative" || diagnostic.FailureSnapshot() != "check=denial-read-before family=Deployment changes=resource-version,metadata,status" || diagnostic.DeploymentSnapshot() != "role=controller metadata-first=resource-version-only status-first="+status || fixture.postEffectRules != 6 || fixture.postEffectProbes != 20 || !reflect.DeepEqual(live, fixture.intent) {
+			if failure == "late-destroy-producer-status" {
+				role, metadata, status, probes = "destroy-controller", "managed-fields", "ready", 24
+			}
+			if diagnostic.BoundarySnapshot() != "operation=recovery-opening baseline=producer-negative" || diagnostic.FailureSnapshot() != "check=denial-read-before family=Deployment changes=resource-version,metadata,status" || diagnostic.DeploymentSnapshot() != "role="+role+" metadata-first="+metadata+" status-first="+status || fixture.postEffectRules != 6 || fixture.postEffectProbes != probes || !reflect.DeepEqual(live, fixture.intent) {
 				t.Fatalf("late producer drift escaped exact original refusal: %s; %s; %s; rules=%d probes=%d", diagnostic.BoundarySnapshot(), diagnostic.FailureSnapshot(), diagnostic.DeploymentSnapshot(), fixture.postEffectRules, fixture.postEffectProbes)
 			}
 		}
@@ -533,7 +548,7 @@ func testAcknowledgedDeploymentEffectMode(t *testing.T, failure string, update, 
 			t.Fatal("actual Deployment effect did not release its original receipt pins")
 		}
 		// Generic Apply accepts quiet non-Ready parents; the closed lifecycle's
-		// ordinary controller starts its quiet interval only after availability.
+		// two software controllers start their quiet interval after availability.
 		if completedCAS {
 			if update && !reflect.DeepEqual(original.Resources, settled.Document().Resources) {
 				t.Fatal("same-template UPDATE changed original inventory identity or cardinality")

@@ -602,6 +602,12 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 					objects[key].Object["status"] = map[string]any{"observedGeneration": int64(1), "replicas": int64(0)}
 					effect.injected = true
 				}
+				if effect != nil && effect.failure == "late-destroy-producer-status" && effect.effects == 1 && effect.proofOpening && effect.postEffectRules == 6 && effect.postEffectProbes == 24 && key == deploymentKey(d.Namespace, "arcadectl-destroy-controller") && !effect.injected {
+					objects[key].SetResourceVersion("200")
+					objects[key].SetManagedFields([]metav1.ManagedFieldsEntry{{Manager: "synthetic-native-ready", Operation: metav1.ManagedFieldsOperationUpdate, APIVersion: "apps/v1"}})
+					_ = unstructured.SetNestedField(objects[key].Object, int64(0), "status", "readyReplicas")
+					effect.injected = true
+				}
 				if probes == 97 && key == serviceKey && !injected {
 					switch mode {
 					case "closing-new-pod":
@@ -905,6 +911,10 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 			wantProbes += 20
 			wantPositives, wantRules = 12, 21
 		}
+		if effect.failure == "late-destroy-producer-status" {
+			wantProbes += 24
+			wantPositives, wantRules = 12, 21
+		}
 	}
 	if positive && (probes != wantProbes || positives != wantPositives || podProbes != wantPodProbes || rules["arcadectl-controller"] != wantRules || rules["arcadectl-destroy-controller"] != wantRules) {
 		t.Fatal("healthy driver omitted finite behavioral rows or closing rule passes")
@@ -932,7 +942,7 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 		}
 		if effect != nil {
 			cycles := 4
-			if wantPositives == 9 || effect.failure == "late-producer-status" {
+			if wantPositives == 9 || effect.failure == "late-producer-status" || effect.failure == "late-destroy-producer-status" {
 				cycles = 3
 			}
 			for row, count := range want {
@@ -948,6 +958,11 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 				want["arcadectl-destroy-controller/POST/Job"] += 9
 				want["arcadectl-controller/POST/Deployment"] += 2
 			}
+			if effect.failure == "late-destroy-producer-status" {
+				want["arcadectl-controller/POST/Job"] += 9
+				want["arcadectl-destroy-controller/POST/Job"] += 9
+				want["arcadectl-controller/POST/Deployment"] += 6
+			}
 		}
 		if !reflect.DeepEqual(want, rows) {
 			t.Fatal("behavior driver request multiset differs from independent literal protocol")
@@ -955,7 +970,7 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 		wantDetailed := testBaselineBehaviorLiteralRows(v.objects.Pods.Items)
 		if effect != nil {
 			cycles := 4
-			if wantPositives == 9 || effect.failure == "late-producer-status" {
+			if wantPositives == 9 || effect.failure == "late-producer-status" || effect.failure == "late-destroy-producer-status" {
 				cycles = 3
 			}
 			for row, count := range wantDetailed {
@@ -977,6 +992,18 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 				}
 				wantDetailed["arcadectl-controller/POST/Deployment/positive"]++
 				wantDetailed["arcadectl-controller/POST/Deployment/account/arcadectl-controller"]++
+			}
+			if effect.failure == "late-destroy-producer-status" {
+				// Literal fourth-cycle prefix ends BEFORE the destroy reserved-name
+				// denial. The other six Deployment rows and both Job groups ran.
+				for row, count := range testBaselineBehaviorLiteralRows(nil) {
+					if strings.Contains(row, "/POST/Job/") {
+						wantDetailed[row] += count
+					}
+				}
+				for _, suffix := range []string{"positive", "account/arcadectl-controller", "name/arcadectl-controller", "account/arcadectl-api", "name/arcadectl-api", "account/arcadectl-destroy-controller"} {
+					wantDetailed["arcadectl-controller/POST/Deployment/"+suffix]++
+				}
 			}
 		}
 		if activation != nil {

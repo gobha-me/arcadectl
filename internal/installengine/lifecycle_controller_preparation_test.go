@@ -58,9 +58,42 @@ func TestLifecycleControllerPreparationStableUnreadyCannotOpenProof(t *testing.T
 	testAcknowledgedDeploymentEffectMode(t, "stable-unready", false, true)
 }
 
+func TestLifecycleDestroyControllerPreparationWaitsForReadyThenWholeQuietness(t *testing.T) {
+	testAcknowledgedDeploymentEffectController(t, "", false, "arcadectl-destroy-controller")
+}
+
+func TestLifecycleDestroyControllerPreparationUpdateWaitsForReadyThenWholeQuietness(t *testing.T) {
+	testAcknowledgedDeploymentEffectController(t, "", true, "arcadectl-destroy-controller")
+}
+
+func TestLifecycleDestroyControllerPreparationRejectsLateProducerReadinessDrift(t *testing.T) {
+	testAcknowledgedDeploymentEffectController(t, "late-destroy-producer-status", false, "arcadectl-destroy-controller")
+}
+
+func TestLifecycleDestroyControllerPreparationStableUnreadyCannotOpenProof(t *testing.T) {
+	testAcknowledgedDeploymentEffectController(t, "stable-unready", false, "arcadectl-destroy-controller")
+}
+
+func TestLifecycleDestroyControllerPreparationDoesNotWaitForLostCreateResponse(t *testing.T) {
+	testAcknowledgedDeploymentEffectController(t, "ambiguous-response", false, "arcadectl-destroy-controller")
+}
+
+func TestLifecycleDestroyControllerPreparationDoesNotWaitForLostUpdateResponse(t *testing.T) {
+	testAcknowledgedDeploymentEffectController(t, "ambiguous-response", true, "arcadectl-destroy-controller")
+}
+
 // Pure private-purpose binding controls; these do not stand in for cluster
 // authentication, native readiness, or the actual Apply/ACK tests above.
 func TestLifecycleControllerPreparationCannotTransferOriginalOrIntent(t *testing.T) {
+	testLifecycleControllerPreparationBinding(t, "arcadectl-controller")
+}
+
+func TestLifecycleDestroyControllerPreparationCannotTransferOriginalOrIntent(t *testing.T) {
+	testLifecycleControllerPreparationBinding(t, "arcadectl-destroy-controller")
+}
+
+func testLifecycleControllerPreparationBinding(t *testing.T, name string) {
+	t.Helper()
 	f := newBaselineFixture(t)
 	completeBaselineFixture(t, f)
 	access := &HTTPAccess{}
@@ -68,7 +101,7 @@ func TestLifecycleControllerPreparationCannotTransferOriginalOrIntent(t *testing
 	checks := &clusterLifecycleChecks{prerequisites: &ClusterPrerequisites{engine: f.engine, access: access}}
 	lifecycle := &Lifecycle{engine: f.engine, checks: checks}
 	d := f.snapshot.Document()
-	key := deploymentKey(d.Namespace, "arcadectl-controller")
+	key := deploymentKey(d.Namespace, name)
 	target, err := f.engine.desired(d, key, d.TargetPackage, false)
 	if err != nil {
 		t.Fatal("signed controller target unavailable")
@@ -76,6 +109,14 @@ func TestLifecycleControllerPreparationCannotTransferOriginalOrIntent(t *testing
 	purpose := &lifecycleControllerPreparation{lifecycle: lifecycle, checks: checks, original: f.snapshot, key: key, digest: d.TargetPackage, hash: target.Hash()}
 	if !purpose.validOriginal(f.engine, f.snapshot, key, d.TargetPackage, false) {
 		t.Fatal("exact private original purpose refused")
+	}
+	for _, other := range []string{"arcadectl-controller", "arcadectl-destroy-controller", "arcadectl-api"} {
+		if other == name {
+			continue
+		}
+		if purpose.validOriginal(f.engine, f.snapshot, deploymentKey(d.Namespace, other), d.TargetPackage, false) {
+			t.Fatal("private controller purpose transferred to another Deployment key")
+		}
 	}
 	equivalent, err := f.store.Load(t.Context(), f.snapshot.Anchor())
 	if err != nil || equivalent == f.snapshot {
