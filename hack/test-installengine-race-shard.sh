@@ -6,8 +6,10 @@
 # compiled top-level tests rather than maintaining a prefix allowlist that can
 # silently omit new tests. Reviewed weights only guide scheduling: every new
 # compiled name still runs. Distribute indivisible trees by descending cost,
-# breaking ties by bytewise name and then lowest worker index. Weights are
-# estimates, not certified duration bounds; each process retains its 20m budget.
+# breaking ties by bytewise name and then lowest worker index. A full-budget
+# weight1200 reserves an exclusive worker; companions must not consume its
+# remaining execution margin. Weights are estimates, not certified duration
+# bounds; each process retains its 20m budget and there are still32 workers.
 set -euo pipefail
 
 if [[ $# -lt 1 || $# -gt 2 || ! $1 =~ ^([0-9]|[12][0-9]|3[01])$ || ${2:-} != "" && ${2:-} != --list-only ]]; then
@@ -53,9 +55,23 @@ engine_race_assignment=$(printf '%s\n' "${engine_race_tests[@]}" | awk '
     for (name in discovered) print name, (name in weights ? weights[name] : 60)
   }
 ' "$engine_race_weight_file" - | LC_ALL=C sort -k2,2nr -k1,1 | awk -v workers="$engine_race_shard_count" -v selected="$engine_race_shard_index" '
+  BEGIN { reserved = 0 }
   {
-    worker = 0
-    for (i = 1; i < workers; i++) if (load[i] < load[worker]) worker = i
+    # Descending costs put every full-budget tree before shared work. Even
+    # selection of a reserved worker must validate the entire partition.
+    if ($2 == 1200) {
+      if (reserved >= workers) {
+        print "Too many full-budget installer race trees." > "/dev/stderr"; exit 1
+      }
+      worker = reserved++
+      if (worker == selected) print $1
+      next
+    }
+    if (reserved == workers) {
+      print "No shared installer race worker remains." > "/dev/stderr"; exit 1
+    }
+    worker = reserved
+    for (i = reserved + 1; i < workers; i++) if (load[i] < load[worker]) worker = i
     load[worker] += $2
     if (worker == selected) print $1
   }
