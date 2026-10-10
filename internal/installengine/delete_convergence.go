@@ -21,8 +21,52 @@ func (e *Engine) waitAcknowledgedDelete(ctx context.Context, intent *installstat
 	}
 	p := intent.Document().Pending
 	settled := intent
+	// Only a successfully acknowledged lifecycle Deployment DELETE needs
+	// native descendant preparation. Public Delete and uncertain sends never
+	// enter this function. Preparation grants no authority: the original full
+	// guard and independent absence/recovery proof still precede settlement.
+	prepare := e.baseline != nil && p.Key.Kind == "Deployment"
+	var previous *baselineExecutables
+	var quiet time.Time
+	if prepare {
+		d := intent.Document()
+		original, before := e.inventory(d, p.Key)
+		if e.baseline.prerequisites == nil || original == nil || before == nil || !deletionAllowed(d, original, before) || p.BeforeUID != original.UID || p.BeforeSHA256 != before.Hash() || !baselineParentRV(p.BeforeResourceVersion) || !nonceID.MatchString(p.CreateNonce) || p.AfterSHA256 != "" {
+			return intent, ErrOutcomeUnknown
+		}
+	}
 	err := wait.PollUntilContextTimeout(ctx, time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
 		traceOperationBoundary(ctx, boundaryDeleteACKWait)
+		if prepare {
+			// Keep every preparation observation inside this SAME five-minute
+			// budget and bracket it with exact original Namespace/journal reads.
+			// Never retry a refused full proof or exempt draining Pod fields.
+			if _, err := e.currentOriginal(ctx, intent); err != nil {
+				return false, ErrOutcomeUnknown
+			}
+			live, readErr := e.access.Get(ctx, p.Key)
+			if _, err := e.currentOriginal(ctx, intent); err != nil || ctx.Err() != nil {
+				return false, ErrOutcomeUnknown
+			}
+			if !apierrors.IsNotFound(readErr) {
+				_, before := e.inventory(intent.Document(), p.Key)
+				if readErr != nil || !baselineDeletingOriginal(before, p, live) {
+					return false, ErrOutcomeUnknown
+				}
+				previous, quiet = nil, time.Time{}
+				return false, nil // acknowledged original is still draining
+			}
+			whole, err := e.baseline.prerequisites.collectExecutables(ctx, intent)
+			if _, fenceErr := e.currentOriginal(ctx, intent); err != nil || fenceErr != nil || whole == nil || ctx.Err() != nil || whole.whole[p.Key] != nil {
+				return false, ErrOutcomeUnknown
+			}
+			if previous == nil || !sameBaselineExecutables(previous, whole) {
+				previous, quiet = whole, time.Now()
+			}
+			if time.Since(quiet) < 5*time.Second {
+				return false, nil // complete read-only observations only
+			}
+		}
 		fresh, err := e.current(ctx, intent)
 		if err != nil {
 			return false, ErrOutcomeUnknown
@@ -39,6 +83,9 @@ func (e *Engine) waitAcknowledgedDelete(ctx context.Context, intent *installstat
 		}
 		if readErr != nil || live == nil || live.GetUID() != p.BeforeUID || live.GetResourceVersion() == "" {
 			return false, ErrOutcomeUnknown // replacement/refusal is permanent
+		}
+		if prepare {
+			return false, ErrOutcomeUnknown // prepared absence cannot be undone
 		}
 		traceOperationBoundary(ctx, boundaryDeleteACKClose)
 		if _, err := e.current(ctx, intent); err != nil {

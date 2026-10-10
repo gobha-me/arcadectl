@@ -197,7 +197,11 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 					tls := fixtureTLS(t, original.Namespace(), time.Now().UTC())
 					runUsing := func(executable, command, target string, historical bool) {
 						t.Helper()
-						args := []string{command, "--namespace", original.Namespace(), "--profile", profile.id, "--bootstrap-package", originalPath, "--trust-key", trust, "--state-dir", state, "--bootstrap-receipt", "bootstrap.json", "--kubeconfig", kubeconfig, "--context", "owned-installer", "--api-ca", tls.CAFile, "--timeout", "2h"}
+						args := []string{command, "--namespace", original.Namespace(), "--profile", profile.id, "--bootstrap-package", originalPath, "--trust-key", trust, "--state-dir", state, "--bootstrap-receipt", "bootstrap.json", "--kubeconfig", kubeconfig, "--context", "owned-installer", "--api-ca", tls.CAFile, "--timeout", installerBinaryCallerBudget(mode, command, historical)}
+						// Current fresh-install proofs exceeded the default two-hour
+						// caller budget on CI. Select a supported larger caller budget
+						// only for these commands; production defaults, inner proof
+						// deadlines and the whole fixture/test/job caps stay unchanged.
 						packageInputs := paths
 						if historical {
 							packageInputs = []string{originalPath}

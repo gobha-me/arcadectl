@@ -326,6 +326,16 @@ only observes that exact intent for up to five minutes and independently
 CAS-settles actual absence. Lost responses, replacement UIDs, journal drift or
 read refusal remain pending; no DELETE is replayed by that wait. The lower-level
 single-attempt primitive and explicit uncertain-effect recovery are unchanged.
+For a baseline-protected Deployment, the same acknowledged-delete wait first
+observes native convergence: an existing target must match its exact original
+foreground-delete intent; after actual absence, the complete eight-family
+executable observation must remain unchanged for five seconds. Original
+Namespace/journal fences surround those read-only observations. Only then does
+the unchanged full security proof and independent absence/CAS recovery run,
+all inside the same five-minute budget. A failed full proof is not retried;
+deleting Pods, unrelated workloads, metadata, status and resource versions
+remain part of the whole comparisons. Preparation is not deletion completion,
+mutation permission or authority to adopt a replacement.
 Before the single authentication attempt, the complete original API serving
 fingerprint must remain unchanged across observations for five seconds within
 a three-minute bound. The caller's shorter deadline always wins. No effect,
@@ -436,6 +446,17 @@ test "$(git rev-parse '2e897ca3b76617ac63c4a294d7ba8c908dcc368b^{tree}')" \
 Each binary fixture has a finite 330-minute outer budget, below its 340-minute
 Go test and 350-minute CI job bounds. Every individual command and behavioral
 proof still has its own shorter deadline; no old result replaces current proof.
+Current-package install commands in the fresh-profile fixtures explicitly
+select the supported `--timeout 3h`, including retaining reinstall. The prior
+1.35 CI install reached final admission post-observation but refused exactly
+two hours after command start; default-timeout installation was not proved.
+This changes that test-selected caller budget, not the CLI's two-hour default,
+24-hour supported maximum, whole-test bounds or any inner proof deadline.
+Historical/transition and uninstall commands still select two hours. A larger
+fixture caller budget neither fixes the separate five-minute DELETE-ACK
+failures nor proves default-timeout performance. On a refused Step the CLI
+prints only a fixed parent-context status (active/deadline/cancelled/unknown),
+never provider errors, context values or cancellation causes.
 
 Those executable tests also preserve the exact namespace, retained protection
 and Secret identities, unchanged local client/CA bytes, and two nonbinding

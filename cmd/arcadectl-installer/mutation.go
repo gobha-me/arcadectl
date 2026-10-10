@@ -282,6 +282,7 @@ func runMutation(ctx context.Context, o options, stdout, stderr io.Writer) int {
 		s, err = x.lifecycle.Step(stepCtx, s, mutationLifecycleOptions(o, s))
 		if err != nil || s == nil {
 			_, _ = fmt.Fprintf(stderr, "installation diagnostic progress %s\n", diagnostic.Snapshot())
+			_, _ = fmt.Fprintf(stderr, "installation diagnostic context status=%s\n", mutationContextStatus(ctx))
 			_, _ = fmt.Fprintf(stderr, "installation diagnostic boundary %s\n", diagnostic.BoundarySnapshot())
 			if failure := diagnostic.FailureSnapshot(); failure != "" {
 				_, _ = fmt.Fprintf(stderr, "installation diagnostic refusal %s\n", failure)
@@ -298,6 +299,25 @@ func runMutation(ctx context.Context, o options, stdout, stderr io.Writer) int {
 	}
 	_, _ = io.WriteString(stderr, "installation operation bound reached; inspect before explicit resume\n")
 	return 4
+}
+
+// Only closed context labels leave the command boundary. Provider errors,
+// cancellation causes, context values and credentials are never formatted.
+// This is diagnostic evidence, not permission to retry or change a deadline.
+func mutationContextStatus(ctx context.Context) string {
+	if ctx == nil {
+		return "unknown"
+	}
+	switch err := ctx.Err(); {
+	case err == nil:
+		return "active"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline"
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
+	default:
+		return "unknown"
+	}
 }
 
 func (x *mutationInstallation) enrollmentOptions(o options, s *installstate.Snapshot) installengine.BaselineEnrollmentOptions {
