@@ -315,6 +315,7 @@ func (b *baselineBehavior) closeOriginals(ctx context.Context, executables *base
 		return ErrSecurityBaseline
 	}
 	c, snapshot := b.actors.baseline, b.actors.snapshot
+	traceBaselineBoundary(ctx, baselineBoundaryClosingMetadata)
 	metadata, err := c.originalMetadata(ctx, snapshot)
 	if err != nil {
 		return ErrSecurityBaseline
@@ -323,6 +324,7 @@ func (b *baselineBehavior) closeOriginals(ctx context.Context, executables *base
 	if !sameBaselineMetadata(b.metadata, metadata) {
 		return ErrSecurityBaseline
 	}
+	traceBaselineBoundary(ctx, baselineBoundaryClosingParents)
 	parents, err := c.originalParents(ctx, snapshot, executables)
 	if err != nil {
 		return ErrSecurityBaseline
@@ -331,6 +333,7 @@ func (b *baselineBehavior) closeOriginals(ctx context.Context, executables *base
 	if !sameBaselineParents(b.parents, parents) {
 		return ErrSecurityBaseline
 	}
+	traceBaselineBoundary(ctx, baselineBoundaryClosingFamily)
 	family, err := c.engine.baselineDescendants(snapshot.Document(), parents, b.actors.access, executables.observation.Collections())
 	if err != nil || !reflect.DeepEqual(b.family, family) {
 		return ErrSecurityBaseline

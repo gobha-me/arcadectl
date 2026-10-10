@@ -100,6 +100,21 @@ const (
 	baselineBoundarySourceClose
 	baselineBoundaryRetired
 	baselineBoundaryComplete
+	baselineBoundaryDeniedActorsOpening
+	baselineBoundaryDeniedCatalog
+	baselineBoundaryDeniedRulesOpening
+	baselineBoundaryDeniedClients
+	baselineBoundaryDeniedReviews
+	baselineBoundaryDeniedExecutablesClosing
+	baselineBoundaryDeniedExecutablesStable
+	baselineBoundaryDeniedOriginalsClosing
+	baselineBoundaryDeniedActorsClosing
+	baselineBoundaryDeniedRulesClosing
+	baselineBoundaryDeniedActorsFinal
+	baselineBoundaryClosingMetadata
+	baselineBoundaryClosingParents
+	baselineBoundaryClosingFamily
+	baselineBoundaryRuntimeDeadline
 )
 
 func (b baselineBoundary) label() string {
@@ -146,6 +161,36 @@ func (b baselineBoundary) label() string {
 		return "retired"
 	case baselineBoundaryComplete:
 		return "complete"
+	case baselineBoundaryDeniedActorsOpening:
+		return "denied-actors-opening"
+	case baselineBoundaryDeniedCatalog:
+		return "denied-catalog"
+	case baselineBoundaryDeniedRulesOpening:
+		return "denied-rules-opening"
+	case baselineBoundaryDeniedClients:
+		return "denied-clients"
+	case baselineBoundaryDeniedReviews:
+		return "denied-reviews"
+	case baselineBoundaryDeniedExecutablesClosing:
+		return "denied-executables-closing"
+	case baselineBoundaryDeniedExecutablesStable:
+		return "denied-executables-stable"
+	case baselineBoundaryDeniedOriginalsClosing:
+		return "denied-originals-closing"
+	case baselineBoundaryDeniedActorsClosing:
+		return "denied-actors-closing"
+	case baselineBoundaryDeniedRulesClosing:
+		return "denied-rules-closing"
+	case baselineBoundaryDeniedActorsFinal:
+		return "denied-actors-final"
+	case baselineBoundaryClosingMetadata:
+		return "closing-metadata"
+	case baselineBoundaryClosingParents:
+		return "closing-parents"
+	case baselineBoundaryClosingFamily:
+		return "closing-family"
+	case baselineBoundaryRuntimeDeadline:
+		return "runtime-deadline"
 	}
 	return "unknown"
 }
@@ -170,8 +215,9 @@ func traceBaselineBoundary(ctx context.Context, step baselineBoundary) {
 }
 
 // BoundarySnapshot is separate from the existing bounded checkpoint record.
-// It reports only the most recently reached fixed operations, never a cause,
-// proof, deadline override, retry instruction or provider response. Read it
+// It reports fixed progress or an observed proof-context deadline expiration,
+// never a provider cause, proof, deadline override, retry instruction or
+// provider response. Read it
 // after the SAME Step returns. No pathname, UID, nonce or private bytes escape.
 func (d *LifecycleDiagnostic) BoundarySnapshot() string {
 	operation, baseline := "unknown", "unknown"

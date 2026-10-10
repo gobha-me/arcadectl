@@ -308,18 +308,25 @@ func (actors *baselineActors) verifyDeniedBehavior(ctx context.Context, behavior
 }
 
 func (actors *baselineActors) verifyDeniedComposition(ctx context.Context, executables *baselineExecutables, behavior *baselineBehavior) error {
-	if actors == nil || actors.baseline == nil || ctx == nil || baselineDeniedObservation(actors.snapshot, executables) != nil || actors.verify(ctx) != nil {
+	if actors == nil || actors.baseline == nil || ctx == nil || baselineDeniedObservation(actors.snapshot, executables) != nil {
 		return ErrSecurityBaseline
 	}
+	traceBaselineBoundary(ctx, baselineBoundaryDeniedActorsOpening)
+	if actors.verify(ctx) != nil {
+		return ErrSecurityBaseline
+	}
+	traceBaselineBoundary(ctx, baselineBoundaryDeniedCatalog)
 	scope, err := actors.baseline.engine.baselineDeniedCatalog(actors.snapshot.Document(), actors.access, executables.guarded)
 	if err != nil {
 		return ErrSecurityBaseline
 	}
+	traceBaselineBoundary(ctx, baselineBoundaryDeniedRulesOpening)
 	rulesClients, openingRules, err := actors.rulesClients(ctx, executables)
 	if err != nil {
 		return ErrSecurityBaseline
 	}
 	clients := map[admissionActor]*HTTPAccess{}
+	traceBaselineBoundary(ctx, baselineBoundaryDeniedClients)
 	for _, actor := range []admissionActor{ordinaryControllerActor, destroyControllerActor} {
 		client, err := actors.baseline.access.baselineDeniedClient(actor, scope)
 		if err != nil {
@@ -328,6 +335,7 @@ func (actors *baselineActors) verifyDeniedComposition(ctx context.Context, execu
 		clients[actor] = client
 	}
 	for pass := 0; pass < 2; pass++ {
+		traceBaselineBoundary(ctx, baselineBoundaryDeniedReviews)
 		for _, actor := range []admissionActor{ordinaryControllerActor, destroyControllerActor} {
 			for _, row := range scope.rows[actor] {
 				if clients[actor].authorizationDecision(ctx, authv1.SelfSubjectAccessReviewSpec{ResourceAttributes: row.attributes()}, false) != nil {
@@ -335,16 +343,31 @@ func (actors *baselineActors) verifyDeniedComposition(ctx context.Context, execu
 				}
 			}
 		}
+		traceBaselineBoundary(ctx, baselineBoundaryDeniedExecutablesClosing)
 		closing, err := actors.baseline.collectExecutables(ctx, actors.snapshot)
-		if err != nil || !sameBaselineExecutables(executables, closing) || behavior != nil && behavior.closeOriginals(ctx, closing) != nil || actors.verify(ctx) != nil || ctx.Err() != nil {
+		if err != nil {
 			return ErrSecurityBaseline
 		}
+		traceBaselineBoundary(ctx, baselineBoundaryDeniedExecutablesStable)
+		if !sameBaselineExecutables(executables, closing) {
+			return ErrSecurityBaseline
+		}
+		traceBaselineBoundary(ctx, baselineBoundaryDeniedOriginalsClosing)
+		if behavior != nil && behavior.closeOriginals(ctx, closing) != nil {
+			return ErrSecurityBaseline
+		}
+		traceBaselineBoundary(ctx, baselineBoundaryDeniedActorsClosing)
+		if actors.verify(ctx) != nil || ctx.Err() != nil {
+			return ErrSecurityBaseline
+		}
+		traceBaselineBoundary(ctx, baselineBoundaryDeniedRulesClosing)
 		for _, actor := range []admissionActor{ordinaryControllerActor, destroyControllerActor} {
 			rules, err := rulesClients[actor].baselineRules(ctx)
 			if err != nil || !baselineProxyRulesContained(rules, closing) || !sameBaselineRules(openingRules[actor], rules) {
 				return ErrSecurityBaseline
 			}
 		}
+		traceBaselineBoundary(ctx, baselineBoundaryDeniedActorsFinal)
 		if actors.verify(ctx) != nil || ctx.Err() != nil {
 			return ErrSecurityBaseline
 		}

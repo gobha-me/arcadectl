@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gobha-me/arcadectl/internal/installstate"
 )
@@ -16,8 +17,13 @@ import (
 func TestBaselineRuntimeDispatchRefusesIncompleteContextsBeforeWire(t *testing.T) {
 	f := newBaselineFixture(t) // Pinned only, explicitly not verified enforcement.
 	var requests atomic.Int32
+	var waitForDeadline atomic.Bool
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
+		if waitForDeadline.Load() {
+			<-r.Context().Done()
+			return
+		}
 		w.WriteHeader(http.StatusForbidden)
 	}))
 	defer server.Close()
@@ -73,6 +79,17 @@ func TestBaselineRuntimeDispatchRefusesIncompleteContextsBeforeWire(t *testing.T
 	}
 	if requests.Load() != 0 || engine.baseline.runtimeGuard != nil || f.access.writes != 0 {
 		t.Fatal("runtime refusal performed wire/effects or installed itself as authority")
+	}
+	// A real caller deadline reached during the actual provider's first remote
+	// witness is distinct from an inferred transport or structural cause.
+	completeBaselineFixture(t, f)
+	writes, updates := f.access.writes, f.nsUpdates
+	waitForDeadline.Store(true)
+	deadlineCtx, deadlineCancel := context.WithTimeout(t.Context(), time.Second)
+	defer deadlineCancel()
+	deadlineCtx, diagnostic := WithLifecycleDiagnostic(deadlineCtx)
+	if provider.Verify(deadlineCtx, f.snapshot) != ErrSecurityBaseline || requests.Load() != 1 || diagnostic.BoundarySnapshot() != "operation=unknown baseline=runtime-deadline" || engine.baseline.runtimeGuard != nil || f.access.writes != writes || f.nsUpdates != updates {
+		t.Fatal("actual runtime deadline changed refusal/effect behavior or lost its bounded diagnostic", diagnostic.BoundarySnapshot())
 	}
 }
 

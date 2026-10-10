@@ -30,6 +30,13 @@ func (c *ClusterSecurityBaseline) Verify(ctx context.Context, snapshot *installs
 	// component deadlines remain in force; an earlier caller deadline wins.
 	ctx, cancel := context.WithTimeout(ctx, baselineRuntimeTimeout)
 	defer cancel()
+	// Record only an actual expired proof context, not a guessed provider
+	// cause. Run before our own deferred cancel; keep all proof/error behavior.
+	defer func() {
+		if ctx.Err() == context.DeadlineExceeded {
+			traceBaselineBoundary(ctx, baselineBoundaryRuntimeDeadline)
+		}
+	}()
 	d := snapshot.Document()
 	if d.SecurityBaseline == nil || d.SecurityBaseline.Version != installbaseline.Version || d.SecurityBaseline.ArtifactDigest != c.engine.baselinePlan().Digest() ||
 		d.SecurityBaseline.Stage != installstate.BaselineVerified || d.SecurityBaseline.Pending != nil {

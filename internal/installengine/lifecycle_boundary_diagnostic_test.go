@@ -29,6 +29,11 @@ func TestLifecycleBoundaryDiagnosticClosedFreshAndConcurrent(t *testing.T) {
 		boundaryRecoveryOpening: "recovery-opening", boundaryRecoveryRead: "recovery-read", boundaryRecoveryReceipt: "recovery-receipt", boundaryRecoverySettlement: "recovery-settlement", boundaryRecoveryComplete: "recovery-complete",
 	}
 	baselines := map[baselineBoundary]string{baselineBoundaryScope: "scope", baselineBoundarySource: "source", baselineBoundaryActors: "actors", baselineBoundaryExecutables: "executables", baselineBoundaryMetadata: "metadata", baselineBoundaryParents: "parents", baselineBoundaryFamily: "family", baselineBoundaryActorClose: "actor-close", baselineBoundaryDeniedOpening: "denied-opening", baselineBoundaryProducerBefore: "producer-before", baselineBoundaryProducerWire: "producer-wire", baselineBoundaryProducerResult: "producer-result", baselineBoundaryProducerAfter: "producer-after", baselineBoundaryProducerNegative: "producer-negative", baselineBoundaryIdentity: "identity-probe", baselineBoundaryParentProbe: "parent-probe", baselineBoundaryPodProbe: "pod-probe", baselineBoundaryClosing: "closing", baselineBoundarySourceClose: "source-close", baselineBoundaryRetired: "retired", baselineBoundaryComplete: "complete"}
+	for boundary, label := range map[baselineBoundary]string{
+		baselineBoundaryDeniedActorsOpening: "denied-actors-opening", baselineBoundaryDeniedCatalog: "denied-catalog", baselineBoundaryDeniedRulesOpening: "denied-rules-opening", baselineBoundaryDeniedClients: "denied-clients", baselineBoundaryDeniedReviews: "denied-reviews", baselineBoundaryDeniedExecutablesClosing: "denied-executables-closing", baselineBoundaryDeniedExecutablesStable: "denied-executables-stable", baselineBoundaryDeniedOriginalsClosing: "denied-originals-closing", baselineBoundaryDeniedActorsClosing: "denied-actors-closing", baselineBoundaryDeniedRulesClosing: "denied-rules-closing", baselineBoundaryDeniedActorsFinal: "denied-actors-final", baselineBoundaryClosingMetadata: "closing-metadata", baselineBoundaryClosingParents: "closing-parents", baselineBoundaryClosingFamily: "closing-family", baselineBoundaryRuntimeDeadline: "runtime-deadline",
+	} {
+		baselines[boundary] = label
+	}
 	for value := range 256 {
 		ctx, d := WithLifecycleDiagnostic(t.Context())
 		operation, validOperation := operations[operationBoundary(value)]

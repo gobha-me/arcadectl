@@ -29,6 +29,7 @@ import (
 func TestBaselineDeniedProviderClosesOriginalWholeEvidenceAndLateGrants(t *testing.T) {
 	modes := []string{"healthy", "first-closing-new-pod", "second-closing-new-pod", "closing-pod-rv", "closing-pod-port", "closing-unselected-rv", "closing-access-rv", "closing-policy-rv", "closing-journal-rv", "missing-negative-result", "evaluation-error", "forbidden-negative-result", "dropped-guarded", "dropped-whole", "cancelled", "opening-noncanonical-proxy-rule", "closing-noncanonical-proxy-rule", "closing-harmless-rule-drift", "closing-incomplete-rules"}
 	modes = append(modes, "opening-destroy-noncanonical-proxy-rule", "closing-destroy-noncanonical-proxy-rule", "second-closing-destroy-proxy-rule", "second-closing-destroy-incomplete-rules")
+	modes = append(modes, "closing-deployment-status")
 	type grant struct {
 		actor admissionActor
 		late  bool
@@ -296,6 +297,11 @@ func TestBaselineDeniedProviderClosesOriginalWholeEvidenceAndLateGrants(t *testi
 								case "closing-unselected-rv":
 									objects[unselectedKey].SetResourceVersion("9001")
 									changed = true
+								case "closing-deployment-status":
+									key := deploymentKey(ns.Name, "generated-deployments-bcdfg")
+									objects[key].SetResourceVersion("9001")
+									objects[key].Object["status"] = map[string]any{"replicas": int64(1), "readyReplicas": int64(1), "availableReplicas": int64(1)}
+									changed = true
 								}
 							}
 						}
@@ -358,7 +364,7 @@ func TestBaselineDeniedProviderClosesOriginalWholeEvidenceAndLateGrants(t *testi
 			guard := &baselineParentRefusingRuntimeGuard{}
 			engine.baseline.runtimeGuard = guard // detects accidental recursive use ONLY
 			defer func() { engine.baseline.runtimeGuard = nil }()
-			ctx := t.Context()
+			ctx, diagnostic := WithLifecycleDiagnostic(t.Context())
 			if mode == "cancelled" {
 				var cancel func()
 				ctx, cancel = context.WithCancel(ctx)
@@ -367,6 +373,26 @@ func TestBaselineDeniedProviderClosesOriginalWholeEvidenceAndLateGrants(t *testi
 			err = actors.verifyDenied(ctx, executables)
 			if (err == nil) != (mode == "healthy") || err != nil && strings.Contains(err.Error(), "FAKE") || guard.calls.Load() != 0 {
 				t.Fatal("denied provider accepted changed/unproved evidence, refused healthy originals or recursed")
+			}
+			// Independent literal expectations for actual short-circuit points.
+			// No raw review/object/provider error is included in the trace.
+			wantBoundary := map[string]string{
+				"healthy":               "denied-actors-final",
+				"first-closing-new-pod": "denied-executables-stable", "second-closing-new-pod": "denied-executables-stable",
+				"closing-pod-rv": "denied-executables-stable", "closing-pod-port": "denied-executables-stable", "closing-unselected-rv": "denied-executables-stable",
+				"closing-deployment-status": "denied-executables-stable",
+				"closing-access-rv":         "denied-actors-closing", "closing-policy-rv": "denied-actors-closing", "closing-journal-rv": "denied-executables-closing",
+				"missing-negative-result": "denied-reviews", "evaluation-error": "denied-reviews", "forbidden-negative-result": "denied-reviews",
+				"dropped-guarded": "unknown", "dropped-whole": "unknown", "cancelled": "denied-actors-opening",
+				"opening-noncanonical-proxy-rule": "denied-rules-opening", "opening-destroy-noncanonical-proxy-rule": "denied-rules-opening",
+				"closing-noncanonical-proxy-rule": "denied-rules-closing", "closing-destroy-noncanonical-proxy-rule": "denied-rules-closing", "second-closing-destroy-proxy-rule": "denied-rules-closing",
+				"closing-harmless-rule-drift": "denied-rules-closing", "closing-incomplete-rules": "denied-rules-closing", "second-closing-destroy-incomplete-rules": "denied-rules-closing",
+			}[mode]
+			if _, ok := grants[mode]; ok {
+				wantBoundary = "denied-reviews"
+			}
+			if wantBoundary == "" || diagnostic.BoundarySnapshot() != "operation=unknown baseline="+wantBoundary {
+				t.Fatal("actual denied proof lost its fixed refusal boundary", diagnostic.BoundarySnapshot())
 			}
 			mu.Lock()
 			defer mu.Unlock()
