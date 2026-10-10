@@ -109,7 +109,10 @@ func validBaselineProducerResult(plan *installrender.Plan, kind, nonce string, r
 		return false
 	}
 	entry := metadata.ManagedFields[0]
-	if entry.Time == nil || entry.Time.IsZero() || entry.Time.Before(&metadata.CreationTimestamp) {
+	// Field-manager updates precede REST creation metadata stamping. These
+	// independent native timestamps can straddle a second boundary; validate
+	// each against this request below, without inventing a relative order.
+	if entry.Time == nil || entry.Time.IsZero() {
 		return false
 	}
 	created := metadata.CreationTimestamp.UTC().Format(time.RFC3339)

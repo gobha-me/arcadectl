@@ -241,3 +241,44 @@ func TestBaselineProducerResultsCloseWholeReplyAndNativeMetadata(t *testing.T) {
 		})
 	}
 }
+
+// FieldManager.Update and the REST creation strategy stamp independently.
+// Both must be canonical and bounded by this request, but the field-manager
+// stamp can precede creation when the server crosses a serialization second.
+func TestBaselineProducerResultIndependentNativeTimestampOrder(t *testing.T) {
+	plan, nonce := fixturePlan(t), strings.Repeat("a", 32)
+	start := time.Date(2026, 10, 10, 0, 0, 0, 500000000, time.UTC)
+	end := start.Add(2 * time.Second)
+	for _, kind := range []string{"Job", "Deployment"} {
+		t.Run(kind, func(t *testing.T) {
+			desired, err := baselineProducerProbe(plan, kind, nonce)
+			if err != nil {
+				t.Fatal("closed timestamp probe unavailable")
+			}
+			reply := baselineProducerReply(t, desired, start)
+			reply.SetCreationTimestamp(metav1.NewTime(start.Add(time.Second).Truncate(time.Second)))
+			before := reply.DeepCopy()
+			if !validBaselineProducerResult(plan, kind, nonce, reply, start, end) || !reflect.DeepEqual(reply, before) {
+				t.Fatal("native field-before-creation timing refused or reply normalized")
+			}
+			for _, which := range []string{"stale-managed", "future-managed", "stale-created", "future-created"} {
+				t.Run(which, func(t *testing.T) {
+					bad := reply.DeepCopy()
+					field, stamp := "creationTimestamp", start.Add(-time.Second).Truncate(time.Second)
+					if strings.Contains(which, "future") {
+						stamp = end.Add(2 * time.Second).Truncate(time.Second)
+					}
+					if strings.HasSuffix(which, "managed") {
+						fields := bad.Object["metadata"].(map[string]any)["managedFields"].([]any)
+						fields[0].(map[string]any)["time"] = stamp.Format(time.RFC3339)
+					} else if unstructured.SetNestedField(bad.Object, stamp.Format(time.RFC3339), "metadata", field) != nil {
+						t.Fatal("timestamp boundary control unavailable")
+					}
+					if validBaselineProducerResult(plan, kind, nonce, bad, start, end) {
+						t.Fatal("out-of-request native timestamp admitted")
+					}
+				})
+			}
+		})
+	}
+}
