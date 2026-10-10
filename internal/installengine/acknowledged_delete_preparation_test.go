@@ -312,6 +312,10 @@ func testAcknowledgedDeletePreparation(t *testing.T, failure string) {
 						}
 					case "cancel":
 						cancel()
+						// Never race a valid target response against transport
+						// cancellation. Even an implicit empty 200 cannot pass
+						// the independent HTTP reader's strict body validation.
+						return
 					}
 				}
 				if targetReads <= 3 {
