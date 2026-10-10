@@ -6,9 +6,11 @@ package installengine
 import (
 	"context"
 	"reflect"
+	"sync"
 	"time"
 
 	"github.com/gobha-me/arcadectl/internal/installbaseline"
+	"github.com/gobha-me/arcadectl/internal/installcontract"
 	"github.com/gobha-me/arcadectl/internal/installstate"
 	admissionv1 "k8s.io/api/admissionregistration/v1"
 )
@@ -68,35 +70,92 @@ func (c *ClusterSecurityBaseline) configuredPass(ctx context.Context, snapshot *
 	if baseline == nil || baseline.Stage != installstate.BaselineVerified || baseline.Pending != nil || baseline.Version != installbaseline.Version || baseline.ArtifactDigest != c.engine.baselinePlan().Digest() || len(baseline.Resources) != installbaseline.ResourceCount {
 		return nil, ErrSecurityBaseline
 	}
-	witness := make(map[installstate.Key]admissionIdentity, installbaseline.ResourceCount)
-	policies := make(map[string]bool, installbaseline.ResourceCount/2)
-	bindings := make(map[string]string, installbaseline.ResourceCount/2)
+	// Freeze and validate the entire signed membership before either read lane
+	// starts. Each lane preserves its original resource order; observations are
+	// still uncached and both complete passes retain separate closing fences.
+	type configuredResource struct {
+		resource installstate.BaselineResource
+		template *installcontract.Template
+	}
+	frozen := make([]configuredResource, 0, installbaseline.ResourceCount)
+	var lanes [2][]int
+	seen := make(map[installstate.Key]bool, installbaseline.ResourceCount)
 	for _, resource := range baseline.Resources {
 		template, err := c.engine.baseline.contract.Template(resource.Key, false)
-		if err != nil || template.Hash() != resource.TemplateSHA256 || resource.Key.Namespace != "" || witness[resource.Key].UID != "" {
+		if err != nil || template.Hash() != resource.TemplateSHA256 || resource.Key.Namespace != "" || seen[resource.Key] {
 			return nil, ErrSecurityBaseline
 		}
-		live, err := c.access.Get(ctx, resource.Key)
-		if err != nil || template.MatchLive(live, resource.UID) != nil {
-			return nil, ErrSecurityBaseline
-		}
+		lane := 0
 		switch resource.Key.Kind {
 		case "ValidatingAdmissionPolicy":
-			var policy admissionv1.ValidatingAdmissionPolicy
-			if decodeServing(live, &policy) != nil || !healthyAdmissionPolicy(&policy) || policies[resource.Key.Name] {
-				return nil, ErrSecurityBaseline
-			}
-			policies[resource.Key.Name] = true
 		case "ValidatingAdmissionPolicyBinding":
-			var binding admissionv1.ValidatingAdmissionPolicyBinding
-			if decodeServing(live, &binding) != nil || bindings[resource.Key.Name] != "" {
-				return nil, ErrSecurityBaseline
-			}
-			bindings[resource.Key.Name] = binding.Spec.PolicyName
+			lane = 1
 		default:
 			return nil, ErrSecurityBaseline
 		}
-		witness[resource.Key] = admissionIdentity{UID: resource.UID, ResourceVersion: live.GetResourceVersion(), TemplateSHA256: template.Hash()}
+		seen[resource.Key] = true
+		lanes[lane] = append(lanes[lane], len(frozen))
+		frozen = append(frozen, configuredResource{resource: resource, template: template})
+	}
+	if len(lanes[0]) != installbaseline.ResourceCount/2 || len(lanes[1]) != installbaseline.ResourceCount/2 {
+		return nil, ErrSecurityBaseline
+	}
+	type configuredObservation struct {
+		identity   admissionIdentity
+		policyName string
+	}
+	observed := make([]configuredObservation, len(frozen))
+	var failures [2]error
+	readCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var readers sync.WaitGroup
+	for lane, indices := range lanes {
+		readers.Go(func() {
+			for _, index := range indices {
+				entry := frozen[index]
+				live, err := c.access.Get(readCtx, entry.resource.Key)
+				if err != nil || entry.template.MatchLive(live, entry.resource.UID) != nil {
+					failures[lane] = ErrSecurityBaseline
+					cancel()
+					return
+				}
+				if lane == 0 {
+					var policy admissionv1.ValidatingAdmissionPolicy
+					if decodeServing(live, &policy) != nil || !healthyAdmissionPolicy(&policy) {
+						failures[lane] = ErrSecurityBaseline
+						cancel()
+						return
+					}
+				} else {
+					var binding admissionv1.ValidatingAdmissionPolicyBinding
+					if decodeServing(live, &binding) != nil {
+						failures[lane] = ErrSecurityBaseline
+						cancel()
+						return
+					}
+					observed[index].policyName = binding.Spec.PolicyName
+				}
+				observed[index].identity = admissionIdentity{UID: entry.resource.UID, ResourceVersion: live.GetResourceVersion(), TemplateSHA256: entry.template.Hash()}
+			}
+		})
+	}
+	// No early return, second pass or journal close may outlive either reader.
+	// Workers own disjoint result slots; only this joined caller builds maps.
+	readers.Wait()
+	if failures[0] != nil || failures[1] != nil || ctx.Err() != nil {
+		return nil, ErrSecurityBaseline
+	}
+	witness := make(map[installstate.Key]admissionIdentity, installbaseline.ResourceCount)
+	policies := make(map[string]bool, installbaseline.ResourceCount/2)
+	bindings := make(map[string]string, installbaseline.ResourceCount/2)
+	for index, entry := range frozen {
+		key := entry.resource.Key
+		witness[key] = observed[index].identity
+		if key.Kind == "ValidatingAdmissionPolicy" {
+			policies[key.Name] = true
+		} else {
+			bindings[key.Name] = observed[index].policyName
+		}
 	}
 	if len(witness) != installbaseline.ResourceCount || len(policies) != installbaseline.ResourceCount/2 || len(bindings) != installbaseline.ResourceCount/2 {
 		return nil, ErrSecurityBaseline
