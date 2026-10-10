@@ -282,3 +282,48 @@ func TestBaselineAccessTwoLanesCancelAndJoinEitherRefusedSibling(t *testing.T) {
 		})
 	}
 }
+
+func TestBaselineAccessTwoLanesFreezeAllSignedEntriesBeforeReads(t *testing.T) {
+	baseline, snapshot, _ := testOriginalAccessReadLanes(t)
+	var last installstate.Resource
+	for _, resource := range snapshot.Document().Resources {
+		if accessRetirementKey(resource.Key) {
+			last = resource
+		}
+	}
+	if last.UID == "" || baseline.engine.templates[last.Key][last.TemplateSHA256] == nil {
+		t.Fatal("last signed original unavailable")
+	}
+	// Private instrumentation removes the last trusted template, not a live
+	// object or a journal record. No earlier membership may issue a GET first.
+	delete(baseline.engine.templates[last.Key], last.TemplateSHA256)
+	var calls atomic.Int32
+	access := baseline.engine.access.(*HTTPAccess)
+	next := access.client.Transport
+	access.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return next.RoundTrip(r)
+	})
+	if witness, err := baseline.readOriginalRuntimeAccess(t.Context(), snapshot); err != ErrSecurityBaseline || witness != nil || calls.Load() != 0 {
+		t.Fatal("incomplete frozen signed membership issued reads or supplied authority")
+	}
+}
+
+func TestBaselineAccessTwoLanesCloseLateProtectedFileFence(t *testing.T) {
+	baseline, snapshot, paths := testOriginalAccessReadLanes(t)
+	var injected atomic.Bool
+	access := baseline.engine.access.(*HTTPAccess)
+	next := access.client.Transport
+	access.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		response, err := next.RoundTrip(r)
+		if r.URL.Path == paths[1][len(paths[1])-1] && injected.CompareAndSwap(false, true) {
+			if _, createErr := baseline.engine.files.CreateExclusive(fixtureLedgerName(snapshot), []byte("unresolved late fixture")); createErr != nil {
+				t.Error("late protected-file fence unavailable")
+			}
+		}
+		return response, err
+	})
+	if witness, err := baseline.readOriginalRuntimeAccess(t.Context(), snapshot); err != ErrSecurityBaseline || witness != nil || !injected.Load() {
+		t.Fatal("joined signed access reader ignored its trailing protected-file fence")
+	}
+}
