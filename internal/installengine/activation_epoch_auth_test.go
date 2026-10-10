@@ -72,8 +72,47 @@ func TestActivationEpochReadinessHasNoCredentialProbeOrAuthentication(t *testing
 		if checks.activation.waitEpochServing(t.Context(), request) != nil || secretReads.Load() != 0 || fixture.forwards.Load() != 0 || fixture.apiCalls.Load() != 0 {
 			t.Fatal("read-only readiness consumed credentials, proofs or authentication")
 		}
+		// Admission's private pre-WAL wait has the same read-only contract.
+		// The whole-provider responder independently requires zero behavioral
+		// probes/rule reviews; no fake successful runtime guard is installed.
+		ctx, cancel := context.WithTimeout(t.Context(), 12*time.Second)
+		defer cancel()
+		if checks.prerequisites.waitOriginalServingStage(ctx, request.Snapshot, true) != nil || secretReads.Load() != 0 || fixture.forwards.Load() != 0 || fixture.apiCalls.Load() != 0 {
+			t.Fatal("pre-WAL readiness consumed credentials, proofs or authentication")
+		}
 		return nil
 	}, fixture)
+	t.Run("readiness-does-not-authorize-public-observation", func(t *testing.T) {
+		fixture := &baselineBehaviorActivationFixture{}
+		var armed atomic.Bool
+		var injected atomic.Bool
+		fixture.onRead = func(path string, objects map[installstate.Key]*unstructured.Unstructured) {
+			if armed.Load() && strings.Contains(path, "/validatingadmissionpolicies/") && injected.CompareAndSwap(false, true) {
+				for key, object := range objects {
+					if key.Kind == "ValidatingAdmissionPolicy" {
+						object.Object["status"] = map[string]any{"observedGeneration": int64(0)}
+						break
+					}
+				}
+			}
+		}
+		testBaselineBehaviorWholeProviderWithActivation(t, "healthy", func(engine *Engine, snapshot *installstate.Snapshot, _ *ClusterSecurityBaseline, _ func() int) error {
+			_, checks, _ := testOwnedActivationRequest(t, engine, snapshot, fixture)
+			if checks.prerequisites.waitOriginalServingStage(t.Context(), snapshot, true) != nil {
+				t.Fatal("original read-only readiness refused")
+			}
+			// A successful private wait confers no public observation authority.
+			// Withdraw policy health and require the actual native provider's
+			// opening refusal, not a deadline or a fake successful guard.
+			armed.Store(true)
+			ctx, diagnostic := WithLifecycleDiagnostic(t.Context())
+			serving, err := engine.ObserveServing(ctx, snapshot, checks.prerequisites.access.Serving())
+			if err != ErrServing || serving != nil || !injected.Load() || diagnostic.BoundarySnapshot() != "operation=unknown baseline=actors" || fixture.forwards.Load() != 0 || fixture.apiCalls.Load() != 0 {
+				t.Fatal("private readiness authorized unhealthy public observation", diagnostic.BoundarySnapshot())
+			}
+			return nil
+		}, fixture)
+	})
 }
 
 func TestActivationEpochOpeningRefusalBlocksForwardAndToken(t *testing.T) {

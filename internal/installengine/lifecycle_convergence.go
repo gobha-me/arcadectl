@@ -103,7 +103,7 @@ func (p *ClusterPrerequisites) waitOriginalServingStage(ctx context.Context, sna
 		if p.engine.fixtureFence(snapshot) != nil || p.original(ctx, snapshot) != nil {
 			return false, ErrActivation
 		}
-		fresh, err := p.engine.observeServing(ctx, snapshot, p.access.Serving(), admissionApplying)
+		fresh, err := p.engine.observeReadinessServing(ctx, snapshot, p.access.Serving(), admissionApplying)
 		if p.original(ctx, snapshot) != nil || p.engine.fixtureFence(snapshot) != nil {
 			return false, ErrActivation
 		}

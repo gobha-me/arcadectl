@@ -104,6 +104,32 @@ func (e *Engine) observeServing(ctx context.Context, s *installstate.Snapshot, a
 	return serving, nil
 }
 
+// Private read-only convergence, not baseline effectiveness or authority to
+// authenticate or publish fixture WAL. Admission must still run current's full
+// native proof before preparing its ledger; activation has its own fresh gate.
+// Preserve the public observer's exact original/compatibility/fixture fences
+// and bounded whole serving read, without putting two full native proofs inside
+// its one-minute observation budget. No effect consumes this result directly.
+func (e *Engine) observeReadinessServing(ctx context.Context, s *installstate.Snapshot, access ServingAccess, admissionApplying bool) (*Serving, error) {
+	if nilAccess(access) || ctx == nil {
+		return nil, ErrServing
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	fresh, err := e.currentOriginal(ctx, s)
+	if err != nil {
+		return nil, ErrServing
+	}
+	serving, err := e.readOriginalServing(ctx, fresh, access, admissionApplying)
+	if err != nil {
+		return nil, ErrServing
+	}
+	if _, err := e.currentOriginal(ctx, fresh); err != nil || ctx.Err() != nil {
+		return nil, ErrServing
+	}
+	return serving, nil
+}
+
 // The identical whole-shape reader, not an independently guarded observer.
 // Its caller owes the complete original journal/admission opening and closing
 // barriers; no effect or authentication may consume this reader alone.

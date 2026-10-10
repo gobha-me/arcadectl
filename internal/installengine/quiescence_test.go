@@ -674,8 +674,16 @@ func encodeStoppedObject(t *testing.T, w http.ResponseWriter, r *http.Request, o
 	if strings.Contains(r.Header.Get("Accept"), "as=PartialObjectMetadata;") {
 		obj = &unstructured.Unstructured{Object: map[string]any{"apiVersion": "meta.k8s.io/v1", "kind": "PartialObjectMetadata", "metadata": obj.Object["metadata"]}}
 	}
-	if json.NewEncoder(w).Encode(obj.Object) != nil {
+	body, err := json.Marshal(obj.Object)
+	if err != nil {
 		t.Error("fixture encoding")
+		return
+	}
+	// Timeout/refusal tests deliberately close the observing client. Preserve
+	// real fixture encoding failures, but do not report the expected canceled
+	// response write as malformed synthetic inventory.
+	if _, err := w.Write(append(body, '\n')); err != nil && r.Context().Err() == nil {
+		t.Error("fixture response write")
 	}
 }
 
