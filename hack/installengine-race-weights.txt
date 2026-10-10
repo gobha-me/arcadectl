@@ -93,7 +93,24 @@ TestAdmissionReinstallActualBeginHTTPSPreservesSourceAndOriginals 600
 TestAdmissionReinstallBootstrapSecretsOwnOriginalsThroughStageCAS 540
 TestAdmissionReinstallCompletedRetirementSecretsKeepOriginalScope 480
 TestFixtureRecoveryProductionEntryDrainsMixedOriginalsWithoutReplay 600
-TestBaselinePrerequisiteRetainedRecoveryHTTPS 240
+# Exact e148153 hosted race timings exposed compound trees left at default60:
+# settled whole GC283.94s (failed shard27's aggregate budget), unmarked drain
+# 256.66s (shard22), tampering/generic access213.54s (shard30), and complete
+# configuration health136.14s (shard23). Rounded scheduling estimates retain
+# observed headroom; they neither change20m execution budgets nor split trees.
+TestSettledFixturesOriginalWholeShapeAndCompleteGCComposition 360
+TestFixtureRecoveryUnmarkedOriginalsDrainWithoutSetupOrBehavior 330
+TestFixtureWireRejectsRequestTamperingAndGenericAccess 270
+TestAdmissionConfigurationRequiresEveryOriginalSignedHealthyPolicy 180
+# Same candidate measured these45-54s above their prior estimates: recreated
+# withdrawn access113.58s, uninstall recovery112.82s, retained recovery292.81s,
+# retirement-before-latch107.32s, and original warm renewal107.16s. Account for
+# those observed costs too, rather than shifting another known underestimate.
+TestAdmissionRetirementRejectsRecreatedWithdrawnAccess 150
+TestLifecycleUninstallRecoveryAfterAuthorityRemoval 150
+TestBaselinePrerequisiteRetainedRecoveryHTTPS 360
+TestAdmissionRetirementFailureBeforeLatchHasNoEffect 150
+TestFixturePhaseOriginalWarmRenewalBoundsAndFloors 150
 TestBaselinePrerequisiteRetainedCreateHTTPS 300
 TestFixturePhaseCompleteOriginalAndFixedFixtureAccounting 240
 TestFixtureV3CompleteAccountsRefuseIncompleteAndChangingMembership 180
