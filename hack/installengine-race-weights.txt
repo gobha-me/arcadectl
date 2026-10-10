@@ -80,6 +80,13 @@ TestBaselineDeniedProviderClosesOriginalWholeEvidenceAndLateGrants 360
 # Exact 9cf6c36 CI shard23 measured473.99s; retain headroom without changing
 # its package deadline or splitting/omitting any complete test tree.
 TestAdmissionReinstallActualBeginHTTPSPreservesSourceAndOriginals 600
+# Exact e5047d3 successful CI workers measured these complete trees at
+# 406.97s (shard1),365.10s (shard2),455.56s (shard7), respectively. The prior
+# default60 underestimated each; these rounded estimates retain headroom but
+# do not change execution budgets or certify subsequent hosted runtimes.
+TestAdmissionReinstallBootstrapSecretsOwnOriginalsThroughStageCAS 540
+TestAdmissionReinstallCompletedRetirementSecretsKeepOriginalScope 480
+TestFixtureRecoveryProductionEntryDrainsMixedOriginalsWithoutReplay 600
 TestBaselinePrerequisiteRetainedRecoveryHTTPS 240
 TestBaselinePrerequisiteRetainedCreateHTTPS 300
 TestFixturePhaseCompleteOriginalAndFixedFixtureAccounting 240
