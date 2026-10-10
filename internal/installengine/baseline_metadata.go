@@ -146,6 +146,16 @@ func sameBaselineMetadata(a, b *baselineMetadata) bool {
 	if a == nil || b == nil || a.snapshot == nil || b.snapshot == nil || a.snapshot.Anchor() != b.snapshot.Anchor() || a.snapshot.ResourceVersion() != b.snapshot.ResourceVersion() || !reflect.DeepEqual(a.snapshot.Bytes(), b.snapshot.Bytes()) || len(a.objects) != 16 || len(b.objects) != 16 {
 		return false
 	}
+	return sameBaselineMetadataObjects(a, b)
+}
+
+// Whole original objects only, NOT journal continuity or an effect permit.
+// The historical cross-CAS owner separately proves both actual snapshots and
+// the baseline-only transition, without rebasing either metadata observation.
+func sameBaselineMetadataObjects(a, b *baselineMetadata) bool {
+	if a == nil || b == nil || a.snapshot == nil || b.snapshot == nil || a.snapshot.Anchor() != b.snapshot.Anchor() || len(a.objects) != 16 || len(b.objects) != 16 {
+		return false
+	}
 	for _, key := range baselineMetadataKeys(a.snapshot.Anchor().Namespace) {
 		left, leftExists := a.objects[key]
 		right, rightExists := b.objects[key]

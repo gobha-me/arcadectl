@@ -24,6 +24,9 @@ func validMutationOptions(o options) bool {
 	if !absolutePath(o.securityBaseline) || !absolutePath(o.apiCA) || o.clientCredential != "" && !absolutePath(o.clientCredential) {
 		return false
 	}
+	if o.command == "enroll-baseline" {
+		return o.targetPackage == "" && o.apiCertificate == "" && o.apiKey == "" && o.clientCredential == ""
+	}
 	if o.command == "install" {
 		if !absolutePath(o.apiCertificate) || !absolutePath(o.apiKey) {
 			return false
@@ -204,6 +207,12 @@ func (x *mutationInstallation) start(ctx context.Context, o options) (*installst
 		return nil, err
 	}
 	d := s.Document()
+	if o.command == "enroll-baseline" {
+		if d.SecurityBaseline == nil {
+			return x.lifecycle.BeginBaselineEnrollment(ctx, s, x.enrollmentOptions(o, s))
+		}
+		return s, nil // Step authenticates the already-published original source
+	}
 	if o.command == "resume" {
 		if d.Stage == installstate.Complete {
 			return nil, installengine.ErrInvalid
@@ -246,6 +255,9 @@ func runMutation(ctx context.Context, o options, stdout, stderr io.Writer) int {
 		_, _ = io.WriteString(stderr, "installation start refused; inspect protected original evidence before resume\n")
 		return 4
 	}
+	if o.command == "enroll-baseline" {
+		return x.runBaselineEnrollment(ctx, o, s, stdout, stderr)
+	}
 	if o.command == "resume" && x.lifecycle.ResumeFixtures(ctx, s, mutationLifecycleOptions(o, s)) != nil {
 		_, _ = io.WriteString(stderr, "original fixture recovery refused; inspect protected evidence; no uncertain effect was replayed\n")
 		return 4
@@ -276,5 +288,40 @@ func runMutation(ctx context.Context, o options, stdout, stderr io.Writer) int {
 		}
 	}
 	_, _ = io.WriteString(stderr, "installation operation bound reached; inspect before explicit resume\n")
+	return 4
+}
+
+func (x *mutationInstallation) enrollmentOptions(o options, s *installstate.Snapshot) installengine.BaselineEnrollmentOptions {
+	return installengine.BaselineEnrollmentOptions{OriginalBootstrap: x.original, BootstrapReceipt: o.receipt, Lifecycle: mutationLifecycleOptions(o, s)}
+}
+
+// Completed runtime stage is not enrollment success. Only a successful full
+// explicit Step against the actual Verified snapshot ends this command. No
+// failed proof/effect is retried, and no ordinary runtime Step is dispatched.
+func (x *mutationInstallation) runBaselineEnrollment(ctx context.Context, o options, s *installstate.Snapshot, stdout, stderr io.Writer) int {
+	for step := 0; step < 32 && ctx.Err() == nil; step++ {
+		baseline := s.Document().SecurityBaseline
+		if baseline == nil {
+			break
+		}
+		if _, err := fmt.Fprintf(stdout, "security baseline stage %s revision %d\n", baseline.Stage, s.Document().Revision); err != nil {
+			return 1
+		}
+		next, err := x.lifecycle.StepBaselineEnrollment(ctx, s, x.enrollmentOptions(o, s))
+		if err != nil || next == nil {
+			_, _ = io.WriteString(stderr, "security baseline enrollment stopped at a protected checkpoint; inspect original evidence before rerunning enroll-baseline; no uncertain CREATE was retried\n")
+			return 4
+		}
+		s = next
+		baseline = s.Document().SecurityBaseline
+		if baseline.Stage == installstate.BaselineVerified && baseline.Pending == nil {
+			message := "security baseline enrollment and native enforcement proof complete; historical runtime and worlds retained\n"
+			if n, err := io.WriteString(stdout, message); err != nil || n != len(message) {
+				return 1
+			}
+			return 0
+		}
+	}
+	_, _ = io.WriteString(stderr, "security baseline enrollment bound reached; inspect before explicit rerun\n")
 	return 4
 }

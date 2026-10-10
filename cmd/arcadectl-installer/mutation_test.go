@@ -235,7 +235,7 @@ func TestMutationArgumentsClosedCommandsAndNoRetargeting(t *testing.T) {
 }
 
 func TestMutationCommandsRequireSecurityBaseline(t *testing.T) {
-	for _, command := range []string{"install", "upgrade", "rollback", "uninstall", "resume"} {
+	for _, command := range []string{"install", "upgrade", "rollback", "uninstall", "resume", "enroll-baseline"} {
 		t.Run(command, func(t *testing.T) {
 			args := mutationArguments(command)
 			without := make([]string, 0, len(args))
@@ -259,6 +259,25 @@ func TestMutationCommandsRequireSecurityBaseline(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBaselineEnrollmentArgumentsUseOriginalInputsOnly(t *testing.T) {
+	args := mutationArguments("enroll-baseline")
+	o, err := parseOptions(args)
+	if err != nil || o.command != "enroll-baseline" || o.timeout != 2*time.Hour || o.receipt == "" || o.bootstrapPackage == "" || o.apiCA == "" {
+		t.Fatal("explicit enrollment lost authenticated original inputs", err)
+	}
+	for _, extra := range [][]string{
+		{"--target-package", "/private/current"},
+		{"--api-certificate", "/private/cert", "--api-key", "/private/key"},
+		{"--client-credential", "/private/rotated-client"},
+		{"--token", "PRIVATE-CANARY"},
+		{"--api-ca", "relative"},
+	} {
+		if _, err := parseOptions(append(mutationArguments("enroll-baseline"), extra...)); err == nil {
+			t.Fatal("enrollment allowed retargeting, regeneration or unrelated credential selection")
+		}
 	}
 }
 

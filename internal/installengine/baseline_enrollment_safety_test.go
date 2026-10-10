@@ -5,10 +5,14 @@ package installengine
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -20,26 +24,40 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // Genuine fake-lifecycle completed history mirrored by an independent TLS
 // responder, then consumed through the actual closed production composition.
 // Health, storage and RBAC decisions are synthetic, NOT native certification.
 type enrollmentSafetyTLSFixture struct {
-	lifecycle *Lifecycle
-	snapshot  *installstate.Snapshot
-	inputs    *baselineEnrollmentInputs
-	legacy    *lifecycleFixture
-	objects   map[installstate.Key]*unstructured.Unstructured
-	mu        sync.Mutex
-	onRead    func(string)
-	onRules   func(string)
-	writes    int
-	actors    map[string]int
-	rules     map[string]int
-	reviews   map[string]map[authv1.ResourceAttributes]int
-	expected  map[string]map[authv1.ResourceAttributes]bool
-	trace     []string
+	lifecycle               *Lifecycle
+	snapshot                *installstate.Snapshot
+	inputs                  *baselineEnrollmentInputs
+	legacy                  *lifecycleFixture
+	objects                 map[installstate.Key]*unstructured.Unstructured
+	mu                      sync.Mutex
+	onRead                  func(string)
+	onRules                 func(string)
+	writes                  int
+	actors                  map[string]int
+	rules                   map[string]int
+	reviews                 map[string]map[authv1.ResourceAttributes]int
+	expected                map[string]map[authv1.ResourceAttributes]bool
+	trace                   []string
+	allowIntroduction       bool
+	namespaceUpdateRequests int
+	namespaceUpdates        int
+	rejectNamespaceStatus   int
+	namespaceReplyStatus    int
+	beforeNamespaceUpdate   func()
+	afterNamespaceUpdate    func()
+	allowEnrollmentSteps    bool
+	baselinePreviews        int
+	baselineCreates         int
+	baselineCreateReviews   int
+	afterBaselineCreate     func()
+	baselineReplyStatus     int
 }
 
 func newEnrollmentSafetyTLSFixture(t *testing.T, mode installstate.Mode) *enrollmentSafetyTLSFixture {
@@ -96,6 +114,7 @@ func newEnrollmentSafetyTLSFixture(t *testing.T, mode installstate.Mode) *enroll
 		{"rbac.authorization.k8s.io/v1", "Role", "roles", true}, {"rbac.authorization.k8s.io/v1", "RoleBinding", "rolebindings", true}, {"rbac.authorization.k8s.io/v1", "ClusterRole", "clusterroles", false}, {"rbac.authorization.k8s.io/v1", "ClusterRoleBinding", "clusterrolebindings", false},
 		{"apiextensions.k8s.io/v1", "CustomResourceDefinition", "customresourcedefinitions", false},
 		{"admissionregistration.k8s.io/v1", "ValidatingAdmissionPolicy", "validatingadmissionpolicies", false}, {"admissionregistration.k8s.io/v1", "ValidatingAdmissionPolicyBinding", "validatingadmissionpolicybindings", false},
+		{"authorization.k8s.io/v1", "SelfSubjectAccessReview", "selfsubjectaccessreviews", false}, {"authorization.k8s.io/v1", "SelfSubjectRulesReview", "selfsubjectrulesreviews", false},
 		{"arcade.gobha.me/v1alpha1", "GameServer", "gameservers", true}, {"arcade.gobha.me/v1alpha1", "GameBackup", "gamebackups", true}, {"arcade.gobha.me/v1alpha1", "GameRestore", "gamerestores", true}, {"arcade.gobha.me/v1alpha1", "GameDestroy", "gamedestroys", true}, {"arcade.gobha.me/v1alpha1", "ArcadeOperation", "arcadeoperations", true},
 		{"coordination.k8s.io/v1", "Lease", "leases", true}, {"storage.k8s.io/v1", "VolumeAttachment", "volumeattachments", false}, {"discovery.k8s.io/v1", "EndpointSlice", "endpointslices", true},
 	}
@@ -132,14 +151,136 @@ func newEnrollmentSafetyTLSFixture(t *testing.T, mode installstate.Mode) *enroll
 					f.reviews[user][attributes]++
 				}
 			} else {
+				introduction := attributes == (authv1.ResourceAttributes{Version: "v1", Resource: "namespaces", Name: source.Anchor().Namespace, Verb: "update"})
+				baselineCreate := attributes.Group == "admissionregistration.k8s.io" && attributes.Version == "v1" && (attributes.Resource == "validatingadmissionpolicies" || attributes.Resource == "validatingadmissionpolicybindings") && attributes.Namespace == "" && attributes.Name == "" && attributes.Subresource == "" && attributes.Verb == "create"
 				allowed = attributes.Verb == "get" || attributes.Verb == "list" || attributes == (authv1.ResourceAttributes{Version: "*", Resource: "serviceaccounts", Namespace: source.Anchor().Namespace, Name: "arcadectl-controller", Verb: "impersonate"}) || attributes == (authv1.ResourceAttributes{Version: "*", Resource: "serviceaccounts", Namespace: source.Anchor().Namespace, Name: "arcadectl-destroy-controller", Verb: "impersonate"})
-				if !allowed || attributes.FieldSelector != nil || attributes.LabelSelector != nil {
+				allowed = allowed || introduction && f.allowIntroduction
+				if baselineCreate && f.allowEnrollmentSteps {
+					allowed = true
+					f.baselineCreateReviews++
+				}
+				if !allowed && !introduction || attributes.FieldSelector != nil || attributes.LabelSelector != nil {
 					t.Error("historical administrator requested unexpected mutation/identity authority")
 				}
 			}
 			review.TypeMeta = metav1.TypeMeta{APIVersion: "authorization.k8s.io/v1", Kind: "SelfSubjectAccessReview"}
 			review.Status = authv1.SubjectAccessReviewStatus{Allowed: allowed}
 			_ = json.NewEncoder(w).Encode(review)
+			return
+		}
+		if r.Method == http.MethodPut && r.URL.Path == "/api/v1/namespaces/"+source.Anchor().Namespace && user == "" && f.allowIntroduction {
+			f.namespaceUpdateRequests++
+			if f.beforeNamespaceUpdate != nil {
+				f.beforeNamespaceUpdate()
+			}
+			if f.rejectNamespaceStatus != 0 {
+				w.WriteHeader(f.rejectNamespaceStatus)
+				return
+			}
+			var candidate, original corev1.Namespace
+			key := namespaceKey(source.Anchor().Namespace)
+			if r.URL.RawQuery != "fieldValidation=Strict" || json.NewDecoder(r.Body).Decode(&candidate) != nil || decodeServing(f.objects[key], &original) != nil || candidate.Name != original.Name || candidate.UID != original.UID || candidate.ResourceVersion != original.ResourceVersion {
+				w.WriteHeader(http.StatusConflict)
+				return
+			}
+			plans := []*installrender.Plan{}
+			for _, plan := range f.lifecycle.engine.plans {
+				plans = append(plans, plan)
+			}
+			before, beforeErr := installstate.DecodeWithBaseline([]byte(original.Annotations[installstate.Annotation]), f.lifecycle.engine.baselinePlan(), plans...)
+			after, afterErr := installstate.DecodeWithBaseline([]byte(candidate.Annotations[installstate.Annotation]), f.lifecycle.engine.baselinePlan(), plans...)
+			if beforeErr != nil || afterErr != nil || after.SecurityBaseline == nil || after.SecurityBaseline.Enrollment == nil || after.Revision != before.Revision+1 {
+				t.Error("historical introduction changed more than preparing provenance")
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if before.SecurityBaseline == nil {
+				journalHash := sha256.Sum256([]byte(original.Annotations[installstate.Annotation]))
+				sourceName := fmt.Sprintf("baseline-enrollment-source-%s-%d.json", before.InstallationID, before.Revision)
+				sourceBody, _, sourceErr := f.lifecycle.engine.files.ReadEvidence(sourceName, 32*1024*1024)
+				sourceHash := sha256.Sum256(sourceBody)
+				provenance := after.SecurityBaseline.Enrollment
+				if after.SecurityBaseline.Stage != installstate.BaselinePreparing || after.SecurityBaseline.Pending != nil || len(after.SecurityBaseline.Resources) != 0 || sourceErr != nil || provenance.SourceRevision != before.Revision || provenance.SourceJournalSHA256 != hex.EncodeToString(journalHash[:]) || provenance.SourceEvidenceSHA256 != hex.EncodeToString(sourceHash[:]) {
+					t.Error("historical introduction lacked actual protected literal-source evidence")
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+			} else if !f.allowEnrollmentSteps || !f.originalBaselineTransition(before.SecurityBaseline, after.SecurityBaseline) {
+				t.Error("historical step escaped original baseline-only ownership transition")
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			runtimeBefore := before
+			runtimeBefore.SecurityBaseline = nil
+			runtimeAfter := after
+			runtimeAfter.SecurityBaseline, runtimeAfter.Revision = nil, before.Revision
+			copy := candidate.DeepCopy()
+			copy.Annotations[installstate.Annotation] = original.Annotations[installstate.Annotation]
+			if !reflect.DeepEqual(runtimeBefore, runtimeAfter) || !reflect.DeepEqual(copy, &original) {
+				t.Error("historical introduction altered runtime or Namespace metadata")
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			rv, err := strconv.ParseUint(original.ResourceVersion, 10, 64)
+			if err != nil {
+				t.Error("historical fixture original Namespace RV malformed")
+				w.WriteHeader(http.StatusConflict)
+				return
+			}
+			candidate.ResourceVersion = strconv.FormatUint(rv+1, 10)
+			f.objects[key] = servingObject(t, &candidate)
+			f.namespaceUpdates++
+			if f.afterNamespaceUpdate != nil {
+				f.afterNamespaceUpdate()
+			}
+			if f.namespaceReplyStatus != 0 {
+				w.WriteHeader(f.namespaceReplyStatus)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(candidate)
+			return
+		}
+		if f.allowEnrollmentSteps && user == "" && r.Method == http.MethodPost && (r.URL.Path == "/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicies" || r.URL.Path == "/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicybindings") {
+			var candidate unstructured.Unstructured
+			if json.NewDecoder(r.Body).Decode(&candidate) != nil || !f.originalBaselineCandidate(&candidate, r.URL.Path) {
+				t.Error("historical CREATE escaped exact signed baseline candidate")
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			key := baselineObjectKey(&candidate)
+			dry := r.URL.Query().Get("dryRun") == "All"
+			query := "fieldValidation=Strict"
+			if dry {
+				query = "dryRun=All&" + query
+			}
+			if r.URL.RawQuery != query || f.objects[key] != nil {
+				t.Error("historical CREATE query changed or occupied target was overwritten")
+				w.WriteHeader(http.StatusConflict)
+				return
+			}
+			if dry {
+				f.baselinePreviews++
+			} else {
+				var current corev1.Namespace
+				var journal installstate.Document
+				if decodeServing(f.objects[namespaceKey(source.Anchor().Namespace)], &current) != nil || json.Unmarshal([]byte(current.Annotations[installstate.Annotation]), &journal) != nil || journal.Pending != nil || journal.SecurityBaseline == nil || journal.SecurityBaseline.Pending == nil || journal.SecurityBaseline.Pending.Key != key || journal.SecurityBaseline.Pending.CreateNonce != candidate.GetAnnotations()[installstate.MutationAnnotation] {
+					t.Error("historical CREATE preceded genuine exact Namespace intent")
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				f.baselineCreates++
+				candidate.SetUID(types.UID("historical-baseline-" + strconv.Itoa(f.baselineCreates)))
+				candidate.SetResourceVersion(strconv.Itoa(1000 + f.baselineCreates))
+				f.objects[key] = candidate.DeepCopy()
+				if f.afterBaselineCreate != nil {
+					f.afterBaselineCreate()
+				}
+				if f.baselineReplyStatus != 0 {
+					w.WriteHeader(f.baselineReplyStatus)
+					return
+				}
+			}
+			_ = json.NewEncoder(w).Encode(candidate.Object)
 			return
 		}
 		if r.Method == http.MethodPost && r.URL.Path == "/apis/authorization.k8s.io/v1/selfsubjectrulesreviews" {
@@ -175,7 +316,14 @@ func newEnrollmentSafetyTLSFixture(t *testing.T, mode installstate.Mode) *enroll
 				list := metav1.APIResourceList{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "APIResourceList"}, GroupVersion: collection.gv}
 				for _, row := range resources {
 					if row.gv == collection.gv {
-						list.APIResources = append(list.APIResources, metav1.APIResource{Name: row.plural, Kind: row.kind, Namespaced: row.namespaced, Verbs: metav1.Verbs{"get", "list"}})
+						verbs := metav1.Verbs{"get", "list"}
+						if f.allowEnrollmentSteps && row.kind == "Namespace" {
+							verbs = append(verbs, "update")
+						}
+						if f.allowEnrollmentSteps && (row.kind == "ValidatingAdmissionPolicy" || row.kind == "ValidatingAdmissionPolicyBinding") {
+							verbs = append(verbs, "create")
+						}
+						list.APIResources = append(list.APIResources, metav1.APIResource{Name: row.plural, Kind: row.kind, Namespaced: row.namespaced, Verbs: verbs})
 					}
 				}
 				_ = json.NewEncoder(w).Encode(list)
@@ -362,7 +510,8 @@ func TestBaselineEnrollmentSafetyOriginalAndLateEvidenceClosedTLS(t *testing.T) 
 					} else {
 						probe, err := baselineProducerProbe(f.lifecycle.engine.plans[f.snapshot.Document().TargetPackage], "Job", strings.Repeat("c", 32))
 						if err != nil {
-							t.Fatal("inert foreign producer control unavailable")
+							t.Error("inert foreign producer control unavailable")
+							return
 						}
 						probe.SetName("arcadectl-controller")
 						probe.SetUID("late-foreign-producer")

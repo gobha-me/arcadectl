@@ -4,6 +4,7 @@
 package installengine
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"slices"
@@ -15,6 +16,7 @@ import (
 	"github.com/gobha-me/arcadectl/internal/privatefs"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 var ErrSecurityBaseline = errors.New("installation security baseline is absent, incomplete or unproved; preserve original evidence before resume")
@@ -169,6 +171,10 @@ func (e *Engine) EstablishBaselineOwnership(ctx context.Context, snapshot *insta
 }
 
 func (b *baselineWorkflow) create(ctx context.Context, snapshot *installstate.Snapshot, key installstate.Key) (*installstate.Snapshot, error) {
+	return b.createEnrollment(ctx, snapshot, key, nil)
+}
+
+func (b *baselineWorkflow) createEnrollment(ctx context.Context, snapshot *installstate.Snapshot, key installstate.Key, enrollment *baselineEnrollmentEffect) (*installstate.Snapshot, error) {
 	fresh, err := b.original(ctx, snapshot)
 	if err != nil {
 		return snapshot, err
@@ -177,6 +183,9 @@ func (b *baselineWorkflow) create(ctx context.Context, snapshot *installstate.Sn
 	baseline := document.SecurityBaseline
 	if baseline.Stage != installstate.BaselineApplying || baseline.Pending != nil {
 		return fresh, ErrInvalid
+	}
+	if enrollment == nil && !freshBaselineEnrollment(document) || enrollment != nil && (!enrollment.matches(b, fresh) || enrollment.key != key || enrollment.used || enrollment.nonce != "") {
+		return fresh, ErrSecurityBaseline
 	}
 	template, err := b.contract.Template(key, false)
 	if err != nil || slices.ContainsFunc(baseline.Resources, func(entry installstate.BaselineResource) bool { return entry.Key == key }) {
@@ -193,6 +202,9 @@ func (b *baselineWorkflow) create(ctx context.Context, snapshot *installstate.Sn
 	if err != nil {
 		return fresh, ErrInvalid
 	}
+	if enrollment != nil && enrollment.close(ctx, b, fresh) != nil {
+		return fresh, ErrSecurityBaseline
+	}
 	admitted, err := b.engine.access.Create(ctx, key, candidate, true)
 	if err != nil || template.MatchAdmitted(admitted) != nil || admitted.GetAnnotations()[installstate.MutationAnnotation] != nonce {
 		return fresh, ErrRead
@@ -204,6 +216,9 @@ func (b *baselineWorkflow) create(ctx context.Context, snapshot *installstate.Sn
 	if err != nil {
 		return snapshot, err
 	}
+	if enrollment != nil && enrollment.close(ctx, b, fresh) != nil {
+		return fresh, ErrSecurityBaseline
+	}
 	baseline.Pending = &installstate.Pending{Action: installstate.Create, Key: key, CreateNonce: nonce, AfterSHA256: template.Hash()}
 	document.Revision++
 	intent, err := b.engine.journal.Commit(ctx, fresh, document)
@@ -213,30 +228,62 @@ func (b *baselineWorkflow) create(ctx context.Context, snapshot *installstate.Sn
 	if err := b.prepareReceipt(intent); err != nil {
 		return intent, ErrOutcomeUnknown
 	}
+	// Keep the exact empty original receipt through all new remote proof reads.
+	// It is replaced with the known ACK identity only after the one actual call.
+	var originalReceipt *privatefs.FilePin
+	if enrollment != nil {
+		originalReceipt, err = b.pinEnrollmentReceipt(intent.Document(), "")
+		defer originalReceipt.Close()
+		enrollment.receipt = originalReceipt
+		if err != nil || enrollment.follow(ctx, intent) != nil {
+			return intent, ErrOutcomeUnknown
+		}
+	}
 	if _, err := b.original(ctx, intent); err != nil {
 		return intent, ErrOutcomeUnknown
 	}
 	if b.verifyOwned(ctx, intent) != nil {
 		return intent, ErrOutcomeUnknown
 	}
+	if enrollment != nil {
+		if enrollment.close(ctx, b, intent) != nil || originalReceipt.Confirm() != nil || enrollment.used {
+			return intent, ErrOutcomeUnknown
+		}
+		enrollment.nonce, enrollment.used = nonce, true // consumed BEFORE transport
+	}
 	ack, effectErr := b.engine.access.Create(ctx, key, candidate, false)
+	if enrollment != nil && originalReceipt.Confirm() != nil {
+		return intent, ErrOutcomeUnknown
+	}
 	if effectErr == nil && ack != nil {
 		// Persist any known ACK identity BEFORE accepting its shape. A malformed
 		// ACK cannot leave an empty receipt that later adopts a replacement.
 		if err := b.pinReceiptUID(intent.Document(), ack.GetUID()); err != nil {
 			return intent, ErrOutcomeUnknown
 		}
+		if enrollment != nil {
+			ackReceipt, err := b.pinEnrollmentReceipt(intent.Document(), ack.GetUID())
+			if err != nil {
+				return intent, ErrOutcomeUnknown
+			}
+			defer ackReceipt.Close()
+			enrollment.receipt = ackReceipt // only this known ACK rollover is allowed
+		}
 	}
 	if effectErr == nil && (ack == nil || !effectMatches(template, baseline.Pending, ack)) {
 		return intent, ErrOutcomeUnknown
 	}
-	return b.recover(ctx, intent, ack, effectErr == nil, ambiguousCreateResponse(effectErr))
+	return b.recoverEnrollment(ctx, intent, ack, effectErr == nil, ambiguousCreateResponse(effectErr), enrollment)
 }
 
 // Recovery never retries any CREATE or dry-run. Only the original ambiguous
 // call may bind first identity from its immediate checked readback. Explicit
 // resume requires the protected already-pinned UID, not matching public labels.
 func (b *baselineWorkflow) recover(ctx context.Context, snapshot *installstate.Snapshot, ack *unstructured.Unstructured, hasAck, initialObservation bool) (*installstate.Snapshot, error) {
+	return b.recoverEnrollment(ctx, snapshot, ack, hasAck, initialObservation, nil)
+}
+
+func (b *baselineWorkflow) recoverEnrollment(ctx context.Context, snapshot *installstate.Snapshot, ack *unstructured.Unstructured, hasAck, initialObservation bool, enrollment *baselineEnrollmentEffect) (*installstate.Snapshot, error) {
 	fresh, err := b.original(ctx, snapshot)
 	if err != nil {
 		return snapshot, ErrOutcomeUnknown
@@ -246,6 +293,9 @@ func (b *baselineWorkflow) recover(ctx context.Context, snapshot *installstate.S
 	pending := baseline.Pending
 	if baseline.Stage != installstate.BaselineApplying || pending == nil || pending.Action != installstate.Create {
 		return fresh, ErrInvalid
+	}
+	if enrollment == nil && !freshBaselineEnrollment(document) || enrollment != nil && (!enrollment.matches(b, fresh) || (hasAck || initialObservation) && (!enrollment.used || enrollment.key != pending.Key || enrollment.nonce != pending.CreateNonce)) {
+		return fresh, ErrSecurityBaseline
 	}
 	template, err := b.contract.Template(pending.Key, false)
 	if err != nil || template.Hash() != pending.AfterSHA256 || slices.ContainsFunc(baseline.Resources, func(entry installstate.BaselineResource) bool { return entry.Key == pending.Key }) {
@@ -259,15 +309,36 @@ func (b *baselineWorkflow) recover(ctx context.Context, snapshot *installstate.S
 		return fresh, ErrOutcomeUnknown
 	}
 	if initialObservation {
+		if enrollment != nil && (enrollment.receipt == nil || enrollment.receipt.Confirm() != nil) {
+			return fresh, ErrOutcomeUnknown
+		}
 		if b.pinReceiptUID(document, live.GetUID()) != nil {
 			return fresh, ErrOutcomeUnknown
+		}
+		if enrollment != nil {
+			observedReceipt, err := b.pinEnrollmentReceipt(document, live.GetUID())
+			if err != nil {
+				return fresh, ErrOutcomeUnknown
+			}
+			defer observedReceipt.Close()
+			enrollment.receipt = observedReceipt
 		}
 	}
 	original, err := b.loadReceiptUID(document)
 	if err != nil || original != live.GetUID() {
 		return fresh, ErrOutcomeUnknown
 	}
+	var originalReceipt *privatefs.FilePin
+	if enrollment != nil {
+		originalReceipt = enrollment.receipt
+		if originalReceipt == nil || originalReceipt.Confirm() != nil {
+			return fresh, ErrOutcomeUnknown
+		}
+	}
 	if _, err := b.original(ctx, fresh); err != nil {
+		return fresh, ErrOutcomeUnknown
+	}
+	if enrollment != nil && (enrollment.close(ctx, b, fresh) != nil || originalReceipt.Confirm() != nil) {
 		return fresh, ErrOutcomeUnknown
 	}
 	baseline.Resources = append(baseline.Resources, installstate.BaselineResource{Key: pending.Key, UID: original, TemplateSHA256: template.Hash()})
@@ -278,5 +349,22 @@ func (b *baselineWorkflow) recover(ctx context.Context, snapshot *installstate.S
 	if err != nil {
 		return fresh, ErrOutcomeUnknown
 	}
+	if enrollment != nil && (enrollment.follow(ctx, settled) != nil || enrollment.close(ctx, b, settled) != nil || originalReceipt.Confirm() != nil) {
+		return settled, ErrOutcomeUnknown
+	}
 	return settled, nil
+}
+
+func (b *baselineWorkflow) pinEnrollmentReceipt(document installstate.Document, uid types.UID) (*privatefs.FilePin, error) {
+	name, err := b.receiptName(document)
+	if err != nil {
+		return nil, ErrOutcomeUnknown
+	}
+	body, _, pin, err := b.engine.files.Pin(name, 4096)
+	want, bodyErr := b.receiptBody(document, uid)
+	if err != nil || bodyErr != nil || !bytes.Equal(body, want) || pin.Confirm() != nil {
+		_ = pin.Close()
+		return nil, ErrOutcomeUnknown
+	}
+	return pin, nil
 }

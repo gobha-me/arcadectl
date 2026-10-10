@@ -32,7 +32,7 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-const usage = "usage: arcadectl-installer COMMAND --namespace NAME --profile ID --bootstrap-package ABS_PATH --package ABS_PATH [--package ABS_PATH ...] --trust-key ABS_PATH --state-dir ABS_PATH --bootstrap-receipt NAME --kubeconfig ABS_PATH --context NAME [--timeout DURATION]\nCommands: inspect (read-only), install, upgrade, rollback, uninstall, resume.\nInspect accepts optional --security-baseline ABS_PATH for explicitly trusted baseline-aware records; this reports ownership progress, not current enforcement health.\nMutation commands require --security-baseline ABS_PATH and --api-ca ABS_PATH. The baseline is separately signed, namespace/profile-bound and never rolled back with runtime packages. Install requires --api-certificate ABS_PATH --api-key ABS_PATH; install/upgrade/rollback require --target-package ABS_PATH from the signed --package inputs. Optional --client-credential ABS_PATH selects current protected credentials, never inline secrets. Uninstall retains namespace, worlds, credentials and protections.\n"
+const usage = "usage: arcadectl-installer COMMAND --namespace NAME --profile ID --bootstrap-package ABS_PATH --package ABS_PATH [--package ABS_PATH ...] --trust-key ABS_PATH --state-dir ABS_PATH --bootstrap-receipt NAME --kubeconfig ABS_PATH --context NAME [--timeout DURATION]\nCommands: inspect (read-only), install, upgrade, rollback, uninstall, resume, enroll-baseline.\nInspect accepts optional --security-baseline ABS_PATH for explicitly trusted baseline-aware records; this reports ownership progress, not current enforcement health.\nMutation commands require --security-baseline ABS_PATH and --api-ca ABS_PATH. The baseline is separately signed, namespace/profile-bound and never rolled back with runtime packages. Install requires --api-certificate ABS_PATH --api-key ABS_PATH; install/upgrade/rollback require --target-package ABS_PATH from the signed --package inputs. Optional --client-credential ABS_PATH selects current protected credentials, never inline secrets. Uninstall retains namespace, worlds, credentials and protections.\nEnroll-baseline explicitly protects a completed historical installation using its original bootstrap receipt and API CA; rerun the same command for observation-only pending recovery. It never retargets runtime packages, creates a namespace or regenerates credentials/TLS.\n"
 
 var errArguments = errors.New("invalid installation inspection arguments")
 var errInputs = errors.New("trusted installation inspection inputs are unavailable or invalid")
@@ -117,7 +117,7 @@ func parseOptions(args []string) (options, error) {
 		return o, errArguments
 	}
 	switch args[0] {
-	case "inspect", "install", "upgrade", "rollback", "uninstall", "resume":
+	case "inspect", "install", "upgrade", "rollback", "uninstall", "resume", "enroll-baseline":
 		o.command = args[0]
 	default:
 		return o, errArguments

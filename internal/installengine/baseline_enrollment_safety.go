@@ -4,6 +4,7 @@
 package installengine
 
 import (
+	"bytes"
 	"context"
 	"reflect"
 
@@ -193,6 +194,18 @@ func (w *baselineEnrollmentSafety) collect(ctx context.Context) (*baselineEnroll
 	if w.closeAuthority(ctx, observed) != nil {
 		return nil, ErrSecurityBaseline
 	}
+	// Source-backed ownership is a separate catalog from legacy admission.
+	// Close it after the remote safety bundle, before the final Namespace and
+	// whole-Secret joint fence; an earlier ownership read is not enough.
+	if w.source != nil {
+		if d.SecurityBaseline.Stage == installstate.BaselineVerified {
+			if w.baseline.VerifyConfigured(ctx, w.snapshot) != nil {
+				return nil, ErrSecurityBaseline
+			}
+		} else if e.baseline.verifyOwned(ctx, w.snapshot) != nil {
+			return nil, ErrSecurityBaseline
+		}
+	}
 	if _, err := l.original(ctx, w.snapshot); err != nil {
 		return nil, ErrSecurityBaseline
 	}
@@ -238,14 +251,46 @@ func baselineEnrollmentColdExecutables(observation *installobserve.Observation) 
 }
 
 func sameBaselineEnrollmentSafety(a, b *baselineEnrollmentSafetyEvidence) bool {
+	return sameBaselineEnrollmentRuntime(a, b) && sameBaselineMetadata(a.metadata, b.metadata)
+}
+
+// Original runtime contents across independently proved actual CAS snapshots.
+// Unlike a same-snapshot close, this does not assert identical journal bytes.
+func sameBaselineEnrollmentRuntime(a, b *baselineEnrollmentSafetyEvidence) bool {
 	if a == nil || b == nil || a.worlds == nil || b.worlds == nil || len(a.secrets) != 2 || len(b.secrets) != 2 || a.access == nil || b.access == nil || len(a.policies) != 12 || len(b.policies) != 12 || a.family == nil || b.family == nil || a.coldFamily == nil || b.coldFamily == nil {
 		return false
 	}
 	before, err := a.worlds.witness()
 	after, afterErr := b.worlds.witness()
 	return err == nil && afterErr == nil && before == after && reflect.DeepEqual(a.secrets, b.secrets) && reflect.DeepEqual(a.access, b.access) && reflect.DeepEqual(a.policies, b.policies) &&
-		sameBaselineExecutables(a.executables, b.executables) && sameBaselineMetadata(a.metadata, b.metadata) && sameBaselineParents(a.parents, b.parents) &&
+		sameBaselineExecutables(a.executables, b.executables) && sameBaselineMetadata(a.metadata, a.metadata) && sameBaselineMetadata(b.metadata, b.metadata) && sameBaselineMetadataObjects(a.metadata, b.metadata) && sameBaselineParents(a.parents, b.parents) &&
 		reflect.DeepEqual(a.family, b.family) && reflect.DeepEqual(a.coldFamily, b.coldFamily)
+}
+
+// Transfer only after a real baseline-only Namespace CAS. Both observations
+// keep their own genuine journal bindings. Original local descriptors survive
+// the entire new remote proof; no reacquired equivalent file can replace them.
+// Failure leaves the old owner held for caller cleanup, never effect authority.
+func (w *baselineEnrollmentSafety) follow(ctx context.Context, next *installstate.Snapshot, source *baselineEnrollmentSourceWitness) (*baselineEnrollmentSafety, error) {
+	if w == nil || w.opening == nil || w.confirmLocal(ctx, w.opening) != nil || next == nil || source == nil || source.inputs != w.inputs || next.Anchor() != w.snapshot.Anchor() ||
+		next.Document().Revision != w.snapshot.Document().Revision+1 || w.lifecycle.engine.confirmBaselineEnrollmentSource(ctx, source, w.snapshot) != nil || source.matchesWorlds(w.opening.worlds) != nil {
+		return nil, ErrSecurityBaseline
+	}
+	// Source/current equality fixes every historical runtime field. The actual
+	// next journal must have advanced only its independent baseline epoch.
+	if w.lifecycle.engine.confirmBaselineEnrollmentSource(ctx, source, next) != nil {
+		return nil, ErrSecurityBaseline
+	}
+	closing, err := w.lifecycle.openBaselineEnrollmentSafety(ctx, next, w.inputs, source, w.options)
+	if err != nil {
+		return nil, ErrSecurityBaseline
+	}
+	if !sameBaselineEnrollmentRuntime(w.opening, closing.opening) || w.confirmLocal(ctx, w.opening) != nil || closing.confirmLocal(ctx, closing.opening) != nil {
+		closing.release()
+		return nil, ErrSecurityBaseline
+	}
+	w.release()
+	return closing, nil
 }
 
 // Final local checks follow the LAST original remote fence. Keep the opening
@@ -255,6 +300,10 @@ func (w *baselineEnrollmentSafety) confirmLocal(ctx context.Context, evidence *b
 		return ErrSecurityBaseline
 	}
 	e := w.lifecycle.engine
+	metadataSnapshot := evidence.metadata.snapshot
+	if metadataSnapshot == nil || metadataSnapshot.Anchor() != w.snapshot.Anchor() || metadataSnapshot.ResourceVersion() != w.snapshot.ResourceVersion() || !bytes.Equal(metadataSnapshot.Bytes(), w.snapshot.Bytes()) {
+		return ErrSecurityBaseline
+	}
 	family, err := e.baselineDescendants(w.snapshot.Document(), evidence.parents, evidence.access, evidence.executables.observation.Collections())
 	if err != nil || !reflect.DeepEqual(family, evidence.family) || !reflect.DeepEqual(family, evidence.coldFamily) {
 		return ErrSecurityBaseline
