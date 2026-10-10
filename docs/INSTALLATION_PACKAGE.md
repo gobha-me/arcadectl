@@ -447,7 +447,8 @@ Each binary fixture has a finite 330-minute outer budget, below its 340-minute
 Go test and 350-minute CI job bounds. Every individual command and behavioral
 proof still has its own shorter deadline; no old result replaces current proof.
 Current-package install commands in the fresh-profile fixtures explicitly
-select the supported `--timeout 3h`, including retaining reinstall. The prior
+select the supported `--timeout 3h`. These native fixtures exercise fresh
+install and retaining uninstall, not retaining reinstall. The prior
 1.35 CI install reached final admission post-observation but refused exactly
 two hours after command start; default-timeout installation was not proved.
 This changes that test-selected caller budget, not the CLI's two-hour default,
