@@ -50,6 +50,8 @@ import (
 // The only later direct setup is two inert, nonbinding retained claims. This
 // proves claim retention, not game bytes/CSI backup (those have separate gates).
 func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
+	testInstallerBinaryProgressCapture(t)
+	testInstallerBinaryProgressSubprocess(t)
 	for _, profile := range []struct{ id, node string }{{installrender.Profile135, targetKind135}, {installrender.Profile137, targetKind137}} {
 		t.Run(profile.id, func(t *testing.T) {
 			modes := []string{"fresh"}
@@ -221,7 +223,15 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 						c := exec.CommandContext(ctx, executable, args...)
 						c.Dir = root
 						c.Env = append(os.Environ(), "GOMAXPROCS=2", "GOMEMLIMIT=1GiB")
-						output, err := c.CombinedOutput()
+						started := time.Now()
+						capture := &installerBinaryProgressCapture{log: func(line string) {
+							t.Logf("actual installer %s progress elapsed=%s: %s", command, time.Since(started).Round(time.Second), line)
+						}}
+						// Share one writer for both streams, preserving CombinedOutput
+						// capture while exposing only closed stage/revision lines live.
+						c.Stdout, c.Stderr = capture, capture
+						err := c.Run()
+						output := capture.output()
 						if err != nil {
 							// This executable deliberately emits only fixed diagnostics and
 							// journal stages/revisions, not cluster bodies/credential paths.
