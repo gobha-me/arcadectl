@@ -1,0 +1,49 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: arcadectl-destroy-unsafe-admin
+  labels:
+    app.kubernetes.io/name: arcadectl-destroy-controller
+    app.kubernetes.io/part-of: arcadectl
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    resourceRules:
+    - apiGroups: ["arcade.gobha.me"]
+      apiVersions: ["v1alpha1"]
+      operations: ["CREATE", "UPDATE"]
+      resources: ["gamedestroys"]
+      scope: Namespaced
+  variables:
+  - name: isUnsafe
+    expression: >-
+      object.spec.mode == 'UnsafeNoBackup' ||
+      (oldObject != null && oldObject.spec.mode == 'UnsafeNoBackup')
+  validations:
+  - expression: >-
+      !variables.isUnsafe ||
+      request.userInfo.username == 'system:serviceaccount:arcadectl-system:arcadectl-destroy-admin' ||
+      (request.operation == 'UPDATE' && oldObject != null &&
+       request.userInfo.username == 'system:serviceaccount:arcadectl-system:arcadectl-destroy-controller' &&
+       object.spec == oldObject.spec)
+    message: Unsafe no-backup destroy requires the distinct Arcadectl destroy admin identity.
+  - expression: >-
+      !variables.isUnsafe ||
+      (has(object.metadata.annotations) &&
+       'arcade.gobha.me/unsafe-requested-by' in object.metadata.annotations &&
+       object.metadata.annotations['arcade.gobha.me/unsafe-requested-by'] ==
+         'system:serviceaccount:arcadectl-system:arcadectl-destroy-admin' &&
+       (oldObject == null ||
+        (has(oldObject.metadata.annotations) &&
+         'arcade.gobha.me/unsafe-requested-by' in oldObject.metadata.annotations &&
+         object.metadata.annotations['arcade.gobha.me/unsafe-requested-by'] ==
+           oldObject.metadata.annotations['arcade.gobha.me/unsafe-requested-by'])))
+    message: Unsafe destroy must retain its immutable administrator audit identity annotation.
+  auditAnnotations:
+  - key: unsafe-destroy-target-uid
+    valueExpression: >-
+      object.spec.mode == 'UnsafeNoBackup' ? string(object.spec.target.gameServer.uid) : ''

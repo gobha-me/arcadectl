@@ -1,0 +1,135 @@
+// Copyright 2026 gobha-me
+// SPDX-License-Identifier: Apache-2.0
+
+package installengine
+
+import (
+	"bytes"
+	"context"
+
+	"github.com/gobha-me/arcadectl/internal/installobserve"
+	authv1 "k8s.io/api/authorization/v1"
+)
+
+// Read-only GC-domain metadata, bound to this original actor/WAL/journal and
+// frozen administrator. This is NOT inertness, world safety, fixture adoption,
+// permission to delete or recovery/retirement. Whole original fixture and world
+// witnesses must independently justify every effect and every allowed child.
+func (w *fixtureWire) gcMetadata(ctx context.Context) (*installobserve.GCObservation, error) {
+	if ctx == nil || w == nil || w.ledger == nil {
+		return nil, ErrFixtures
+	}
+	w.ledger.wireMu.Lock()
+	defer w.ledger.wireMu.Unlock()
+	return w.gcMetadataLocked(ctx)
+}
+
+// Caller holds this ledger's wireMu; all original checks remain mandatory.
+func (w *fixtureWire) gcMetadataLocked(ctx context.Context) (*installobserve.GCObservation, error) {
+	return w.gcMetadataModeLocked(ctx, false)
+}
+
+func (w *fixtureWire) gcMetadataModeLocked(ctx context.Context, pairLeases bool) (*installobserve.GCObservation, error) {
+	return w.gcMetadataReadLocked(ctx, pairLeases, nil)
+}
+
+// Only the complete phase passes a pinned local read boundary. All unbound GC
+// callers retain live remote witnesses at every original boundary. No source,
+// permission, metadata page, final discovery or journal check is omitted.
+func (w *fixtureWire) gcMetadataReadLocked(ctx context.Context, pairLeases bool, reads *fixturePhaseRead) (*installobserve.GCObservation, error) {
+	observation, _, err := w.gcMetadataAttempt(ctx, pairLeases, reads, nil)
+	return observation, err
+}
+
+func (w *fixtureWire) gcMetadataAttempt(ctx context.Context, pairLeases bool, reads *fixturePhaseRead, budget *installobserve.GCReadBudget) (*installobserve.GCObservation, *installobserve.LeaseRVConflict, error) {
+	if w.gcReadCurrent(ctx, reads) != nil {
+		return nil, nil, ErrFixtures
+	}
+	p := w.actors.admission.prerequisites
+	s := w.actors.request.Snapshot
+	reader, err := installobserve.NewGCReader(p.access.readConfig(), p.engine.journal, w.actors.request.Target)
+	if err != nil {
+		return nil, nil, ErrFixtures
+	}
+	discovery, err := reader.Discover(ctx, s.Anchor())
+	if err != nil || w.gcReadCurrent(ctx, reads) != nil {
+		return nil, nil, ErrFixtures
+	}
+	for _, source := range discovery.Resources() {
+		permission := gcMetadataPermission(source, s.Anchor().Namespace)
+		// Only the original administrator's current exact LIST right. No new
+		// grant, TokenRequest, impersonation or full-object fallback is used.
+		if p.access.authorize(ctx, permission.spec) != nil {
+			return nil, nil, ErrFixtures
+		}
+	}
+	if w.gcReadCurrent(ctx, reads) != nil {
+		return nil, nil, ErrFixtures
+	}
+	var observation *installobserve.GCObservation
+	var refusal *installobserve.LeaseRVConflict
+	if pairLeases && budget != nil {
+		observation, refusal, err = reader.CollectWithLeaseRefusal(ctx, discovery, budget)
+	} else if pairLeases {
+		observation, err = reader.CollectWithLeases(ctx, discovery)
+	} else {
+		observation, err = reader.Collect(ctx, discovery)
+	}
+	if err != nil || observation == nil {
+		// Fixed same-attempt diagnostics only. The public refusal and every
+		// required read remain unchanged; this is not a retry decision.
+		var step admissionPhaseStep
+		switch reader.DiagnosticStage() {
+		case "opening":
+			step = admissionPhaseGCOpening
+		case "metadata-pages":
+			step = admissionPhaseGCMetadataPages
+		case "metadata-shape":
+			step = admissionPhaseGCMetadataShape
+		case "metadata-uid-correlation":
+			step = admissionPhaseGCMetadataUIDs
+		case "event-alias-rv-conflict":
+			step = admissionPhaseGCEventAliasRV
+		case "event-alias-metadata-conflict":
+			step = admissionPhaseGCEventAliasMetadata
+		case "metadata-graph-bound":
+			step = admissionPhaseGCGraphBound
+		case "lease-pages":
+			step = admissionPhaseGCLeasePages
+		case "lease-membership":
+			step = admissionPhaseGCLeaseMembership
+		case "lease-correlation":
+			step = admissionPhaseGCLeaseCorrelation
+		case "lease-source":
+			step = admissionPhaseGCLeaseSource
+		case "closing":
+			step = admissionPhaseGCClosing
+		}
+		traceAdmissionPhase(ctx, step, -1)
+		if refusal != nil {
+			journal := refusal.Journal()
+			if journal == nil || journal.Anchor() != s.Anchor() || journal.ResourceVersion() != s.ResourceVersion() || !bytes.Equal(journal.Bytes(), s.Bytes()) || w.gcReadCurrent(ctx, reads) != nil {
+				return nil, nil, ErrFixtures
+			}
+		}
+		return nil, refusal, ErrFixtures
+	}
+	journal := observation.Journal()
+	if journal == nil || journal.Anchor() != s.Anchor() || journal.ResourceVersion() != s.ResourceVersion() || !bytes.Equal(journal.Bytes(), s.Bytes()) || w.gcReadCurrent(ctx, reads) != nil {
+		return nil, nil, ErrFixtures
+	}
+	return observation, nil, nil
+}
+
+func (w *fixtureWire) gcReadCurrent(ctx context.Context, reads *fixturePhaseRead) error {
+	if reads != nil {
+		return reads.local(ctx, w)
+	}
+	return w.current(ctx)
+}
+
+func gcMetadataPermission(source installobserve.GCResource, namespace string) proofPermission {
+	return proofPermission{spec: authv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &authv1.ResourceAttributes{
+		Group: source.GVR.Group, Version: source.GVR.Version, Resource: source.GVR.Resource, Namespace: namespace, Verb: "list",
+	}}, kind: source.Kind}
+}

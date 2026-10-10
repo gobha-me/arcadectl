@@ -1,0 +1,92 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: arcadectl-api
+  namespace: arcadectl-system
+  labels:
+    app.kubernetes.io/name: arcadectl-api
+    app.kubernetes.io/part-of: arcadectl
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: arcadectl-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: arcadectl-api
+        app.kubernetes.io/part-of: arcadectl
+    spec:
+      serviceAccountName: arcadectl-api
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: api
+        image: @@API_IMAGE@@
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+        ports:
+        - name: https
+          containerPort: 8443
+        - name: health
+          containerPort: 8081
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: "1"
+            memory: 256Mi
+        env:
+        - name: GOMAXPROCS
+          value: "2"
+        - name: GOMEMLIMIT
+          value: 192MiB
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: health
+          periodSeconds: 2
+          timeoutSeconds: 1
+        livenessProbe:
+          httpGet:
+            path: /livez
+            port: health
+          periodSeconds: 10
+          timeoutSeconds: 1
+        volumeMounts:
+        - name: verifier
+          mountPath: /var/run/arcadectl/auth
+          readOnly: true
+        - name: tls
+          mountPath: /var/run/arcadectl/tls
+          readOnly: true
+      volumes:
+      - name: verifier
+        secret:
+          secretName: arcadectl-admin-credential
+          defaultMode: 0440
+          items:
+          - key: auth.json
+            path: auth.json
+      - name: tls
+        secret:
+          secretName: arcadectl-api-tls
+          defaultMode: 0440
+          items:
+          - key: tls.crt
+            path: tls.crt
+          - key: tls.key
+            path: tls.key

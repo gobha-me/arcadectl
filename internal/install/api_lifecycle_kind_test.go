@@ -11,7 +11,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -49,16 +48,6 @@ type kindAPILifecycleFixture struct {
 	cluster                                            kubernetes.Interface
 	public                                             func(string, ...string) string
 	runCLI                                             func(...string) []byte
-}
-
-type kindAPIResult struct {
-	status    int
-	etag      string
-	operation adminv1.Operation
-	server    adminv1.Server
-	retained  adminv1.RetainedWorld
-	code      string
-	err       bool
 }
 
 func runKindAPILifecycle(t *testing.T, f kindAPILifecycleFixture) {
@@ -221,43 +210,7 @@ func runKindAPILifecycle(t *testing.T, f kindAPILifecycleFixture) {
 		t.Fatal("owned prebound Retain storage fixture unavailable")
 	}
 	request := func(method, path, key, etag string, body []byte) kindAPIResult {
-		result := kindAPIResult{}
-		r, err := http.NewRequestWithContext(f.ctx, method, f.apiBaseURL+path, bytes.NewReader(body))
-		if err != nil {
-			result.err = true
-			return result
-		}
-		r.Header.Set("Authorization", "Bearer "+f.token)
-		if body != nil {
-			r.Header.Set("Content-Type", "application/json")
-		}
-		if key != "" {
-			r.Header.Set("Idempotency-Key", key)
-		}
-		if etag == "*" {
-			r.Header.Set("If-None-Match", "*")
-		} else if etag != "" {
-			r.Header.Set("If-Match", etag)
-		}
-		response, err := f.httpClient.Do(r)
-		if err != nil {
-			result.err = true
-			return result
-		}
-		defer response.Body.Close()
-		contents, err := io.ReadAll(io.LimitReader(response.Body, 65537))
-		if err != nil || len(contents) > 65536 || !json.Valid(contents) {
-			result.err = true
-			return result
-		}
-		result.status, result.etag = response.StatusCode, response.Header.Get("ETag")
-		_ = json.Unmarshal(contents, &result.operation)
-		_ = json.Unmarshal(contents, &result.server)
-		_ = json.Unmarshal(contents, &result.retained)
-		var problem adminv1.Error
-		_ = json.Unmarshal(contents, &problem)
-		result.code = problem.Code
-		return result
+		return kindAPIRequest(f.ctx, f.httpClient, f.apiBaseURL, f.token, method, path, key, etag, body)
 	}
 	encode := func(value any) []byte {
 		contents, err := json.Marshal(value)
@@ -273,31 +226,12 @@ func runKindAPILifecycle(t *testing.T, f kindAPILifecycleFixture) {
 		}
 		return result
 	}
-	// Kind intentionally has no cloud load-balancer provider. This test-only
-	// admin fixture supplies the owned Service endpoint; the API never does it.
-	provideEndpoint := func() {
-		service, err := f.cluster.CoreV1().Services(namespace).Get(f.ctx, name, metav1.GetOptions{})
-		if apierrors.IsNotFound(err) {
-			return
-		}
-		if err != nil {
-			t.Fatal("owned Service read unavailable")
-		}
-		if service.Labels["app.kubernetes.io/instance"] != name || service.Spec.ClusterIP == "" || service.Spec.ClusterIP == "None" {
-			t.Fatal("unexpected lifecycle Service identity")
-		}
-		if len(service.Status.LoadBalancer.Ingress) == 1 && service.Status.LoadBalancer.Ingress[0].IP == service.Spec.ClusterIP {
-			return
-		}
-		service.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{IP: service.Spec.ClusterIP}}
-		if _, err := f.cluster.CoreV1().Services(namespace).UpdateStatus(f.ctx, service, metav1.UpdateOptions{}); err != nil {
-			t.Fatal("test-only load-balancer endpoint unavailable")
-		}
-	}
+	// Kind has no cloud load-balancer provider. Only endpoint-producing actions
+	// use the test-only owned status helper; stop/decommission never write it.
+	var endpointServerUID types.UID
 	waitOperation := func(id string) adminv1.Operation {
 		var operation adminv1.Operation
 		waitKindAPI(t, f.ctx, func() bool {
-			provideEndpoint()
 			result := request("GET", "/v1/operations/"+id, "", "", nil)
 			if result.err || result.status != 200 {
 				t.Fatal("durable operation poll unavailable")
@@ -309,6 +243,21 @@ func runKindAPILifecycle(t *testing.T, f kindAPILifecycleFixture) {
 			if operation.Action == "server.create" && (operation.Child == nil || operation.Child.UID == "") {
 				return false
 			}
+			if operation.Action == "server.create" {
+				if operation.Child.Kind != "GameServer" || operation.Child.Name != name || endpointServerUID != "" && endpointServerUID != types.UID(operation.Child.UID) {
+					t.Fatal("endpoint fixture original server receipt changed")
+				}
+				endpointServerUID = types.UID(operation.Child.UID)
+			}
+			if kindEndpointAction(operation.Action) && operation.Phase != "Succeeded" {
+				ready, err := provideOwnedKindEndpoint(f.ctx, f.cluster.CoreV1().Services(namespace), namespace, name, endpointServerUID)
+				if err != nil {
+					t.Fatalf("test-only endpoint action=%s: %s", operation.Action, err)
+				}
+				if !ready {
+					return false
+				}
+			}
 			return operation.Phase == "Succeeded" && operation.ObservedGeneration == operation.Generation && operation.CompletedAt != ""
 		})
 		return operation
@@ -317,7 +266,7 @@ func runKindAPILifecycle(t *testing.T, f kindAPILifecycleFixture) {
 	body := encode(create)
 	accepted := request("POST", "/v1/servers", run+"-create", "*", body)
 	if accepted.err || accepted.status != 202 || accepted.operation.OperationID == "" {
-		t.Fatal("HTTP create did not admit a durable receipt")
+		t.Fatalf("HTTP create did not admit a durable receipt: %s", accepted.diagnostic())
 	}
 	// In-flight storms and numeric-equivalent retries must converge on one
 	// receipt even while the controller is binding its first native child.
@@ -384,13 +333,23 @@ func runKindAPILifecycle(t *testing.T, f kindAPILifecycleFixture) {
 		}
 		pod := pods.Items[0]
 		wanted := "ghcr.io/gobha-me/arcadectl-factorio@" + digest
+		failureDiagnostic := func(status corev1.ContainerStatus) string {
+			return kindRuntimeTerminationDiagnostic(kindRuntimeDiagnosticStage(stage), status) + kindRuntimeLogDiagnostic(f.ctx, f.config, &pod, wanted, func(ctx context.Context) (*corev1.Pod, error) {
+				return f.cluster.CoreV1().Pods(namespace).Get(ctx, pod.Name, metav1.GetOptions{})
+			})
+		}
 		if pod.DeletionTimestamp != nil || pod.Status.Phase != corev1.PodRunning || pod.UID == "" {
+			for _, status := range pod.Status.ContainerStatuses {
+				if status.Name == "game" {
+					t.Fatal("Factorio runtime is not live: " + failureDiagnostic(status))
+				}
+			}
 			t.Fatal("Factorio runtime is not live")
 		}
 		found := false
 		for _, status := range pod.Status.ContainerStatuses {
-			if status.Name == "game" && (status.RestartCount != 0 || status.LastTerminationState.Terminated != nil && status.LastTerminationState.Terminated.Reason == "OOMKilled") {
-				t.Fatalf("fresh Factorio runtime crashed or was OOM killed (%s); private output withheld", nativeRuntimeDiagnostic(stage, status))
+			if status.Name == "game" && (status.RestartCount != 0 || status.State.Terminated != nil || status.LastTerminationState.Terminated != nil && status.LastTerminationState.Terminated.Reason == "OOMKilled") {
+				t.Fatalf("fresh Factorio runtime terminated (%s): %s; private output withheld", nativeRuntimeDiagnostic(stage, status), failureDiagnostic(status))
 			}
 			if status.Name == "game" && status.Ready && status.RestartCount == 0 && strings.Contains(status.ImageID, digest) {
 				found = true

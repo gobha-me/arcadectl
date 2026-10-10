@@ -13,6 +13,144 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  kind-install-baseline:
+    name: Kind installation security baseline ${{ matrix.profile }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [135, 137]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Prove native baseline typechecking and original prerequisite effects
+        run: make test-kind-install-baseline INSTALL_BASELINE_PROFILE='${{ matrix.profile }}'
+
+  kind-install-precontroller:
+    name: Kind pre-controller runtime ${{ matrix.profile }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [135, 137]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Prove genuine pre-controller originals and retained runtime barriers
+        run: make test-kind-install-precontroller INSTALL_PRECONTROLLER_PROFILE='${{ matrix.profile }}'
+
+  kind-install-binary:
+    name: Kind signed installer binary ${{ matrix.profile }} ${{ matrix.mode }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [135, 137]
+        mode: [fresh, transition]
+        exclude:
+          - profile: 135
+            mode: transition
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0 # exact declared predecessor source must be locally available
+      - name: Acquire exact historical installer source
+        if: matrix.mode == 'transition'
+        run: |
+          git fetch --no-tags --no-recurse-submodules --no-write-fetch-head \
+            https://github.com/gobha-me/arcadectl.git \
+            '+refs/pull/62/head:refs/arcadectl-fixtures/pr62'
+          test "$(git rev-parse '2e897ca3b76617ac63c4a294d7ba8c908dcc368b^{commit}')" = 2e897ca3b76617ac63c4a294d7ba8c908dcc368b
+          git merge-base --is-ancestor 2e897ca3b76617ac63c4a294d7ba8c908dcc368b refs/arcadectl-fixtures/pr62
+          test "$(git rev-parse '2e897ca3b76617ac63c4a294d7ba8c908dcc368b^{tree}')" = 6ba09e173b112c60a7c38d78cebf62e6d2859ec9
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Prove actual signed installer fresh install and retaining lifecycle
+        run: make test-kind-install-binary INSTALL_BINARY_PROFILE='${{ matrix.profile }}' INSTALL_BINARY_MODE='${{ matrix.mode }}'
+
+  kind-install-admission:
+    name: Kind installer full admission ${{ matrix.profile }} ${{ matrix.mode }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [135, 137]
+        mode: [cold, warm]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Prove full production admission, original cleanup and retirement
+        run: make test-kind-install-admission INSTALL_ADMISSION_PROFILE='${{ matrix.profile }}' INSTALL_ADMISSION_MODE='${{ matrix.mode }}'
+
+  kind-install-admission-v3:
+    name: Kind baseline-active v3 admission ${{ matrix.profile }} ${{ matrix.mode }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [135, 137]
+        mode: [cold, warm]
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Prove full v3 matrix and original cleanup with security active
+        run: make test-kind-install-admission-v3 INSTALL_ADMISSION_PROFILE='${{ matrix.profile }}' INSTALL_ADMISSION_MODE='${{ matrix.mode }}'
+
+  kind-install-auth:
+    name: Kind installer native authentication
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Prove native authentication and inert fixtures on both profiles
+        run: make test-kind-install-auth
+
   kind-api:
     name: Kind authenticated admin API
     runs-on: ubuntu-24.04
@@ -20,6 +158,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -35,6 +175,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -54,13 +196,62 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
-  go-and-policy:
-    name: Go and policy
+  install-engine-race:
+    name: Installer engine race shard ${{ matrix.shard }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+                16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+    env:
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 1GiB
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Discover and run every assigned race test
+        run: bash ./hack/test-installengine-race-shard.sh '${{ matrix.shard }}'
+
+  go-and-policy:
+    name: Go and policy
+    needs: [install-engine-race, kind-install-admission, kind-install-admission-v3, kind-install-binary, kind-install-baseline, kind-install-precontroller]
+    # Do not turn failed/cancelled dependencies into a skipped passing gate.
+    # Whole-workflow cancellation can cancel this gate too; it is never green.
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 1GiB
+    steps:
+      - name: Require every installer race, full admission and signed binary profile
+        env:
+          ENGINE_RACE_RESULT: ${{ needs.install-engine-race.result }}
+          INSTALL_ADMISSION_RESULT: ${{ needs.kind-install-admission.result }}
+          INSTALL_BINARY_RESULT: ${{ needs.kind-install-binary.result }}
+          INSTALL_BASELINE_RESULT: ${{ needs.kind-install-baseline.result }}
+          INSTALL_ADMISSION_V3_RESULT: ${{ needs.kind-install-admission-v3.result }}
+          INSTALL_PRECONTROLLER_RESULT: ${{ needs.kind-install-precontroller.result }}
+        run: |
+          test "$ENGINE_RACE_RESULT" = success
+          test "$INSTALL_ADMISSION_RESULT" = success
+          test "$INSTALL_BINARY_RESULT" = success
+          test "$INSTALL_BASELINE_RESULT" = success
+          test "$INSTALL_ADMISSION_V3_RESULT" = success
+          test "$INSTALL_PRECONTROLLER_RESULT" = success
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -75,9 +266,13 @@ jobs:
       - name: Verify pinned runtime assets
         run: make verify-runtime-assets
       - name: Vet
-        run: go vet ./...
+        run: go vet -p 1 ./...
       - name: Test with race detector
-        run: go test -race ./...
+        run: |
+          discovered=$(go list ./...)
+          mapfile -t packages < <(printf '%s\n' "$discovered" | awk '$0 != "github.com/gobha-me/arcadectl/internal/installengine"')
+          test "${#packages[@]}" -gt 0
+          go test -race -p 1 -timeout=15m "${packages[@]}"
       - name: Test API-server lifecycle transitions
         run: make test-envtest
       - name: Build reproducible controller image
@@ -119,6 +314,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:

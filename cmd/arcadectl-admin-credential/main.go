@@ -11,6 +11,10 @@ import (
 	"os"
 	"time"
 
+	"github.com/gobha-me/arcadectl/internal/adminauth"
+	"github.com/gobha-me/arcadectl/internal/admincredential"
+	"k8s.io/apimachinery/pkg/util/validation"
+
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -29,6 +33,7 @@ type commandOptions struct {
 	apiURL        string
 	caFile        string
 	tlsServerName string
+	namespace     string
 }
 
 func main() {
@@ -56,19 +61,24 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), options.timeout)
 	defer cancel()
-	cluster := clientGoAccess{client: client}
+	workflow, err := admincredential.New(client, admincredential.Config{Namespace: options.namespace})
+	if err != nil {
+		writeFixedFailure(stderr, err)
+		return failureExitCode(err)
+	}
 	switch options.command {
 	case "init":
-		err = initializeCredential(ctx, cluster, options.output, time.Now(), options.lifetime)
+		err = workflow.Initialize(ctx, admincredential.InitializeOptions{OutputPath: options.output, Now: time.Now(), Lifetime: options.lifetime})
 		if err == nil {
 			_, _ = io.WriteString(stdout, "administrator credential initialized; API activation not yet verified\n")
 			return 0
 		}
 	case "rotate":
-		var probe *httpCredentialProbe
-		probe, err = newHTTPCredentialProbe(options.apiURL, options.caFile, options.tlsServerName)
+		var probe *admincredential.HTTPSProbe
+		probe, err = admincredential.NewHTTPSProbe(admincredential.ProbeOptions{Namespace: options.namespace, Endpoint: options.apiURL, CAFile: options.caFile, TLSServerName: options.tlsServerName})
 		if err == nil {
-			err = rotateCredential(ctx, cluster, probe, options.output, time.Now(), options.lifetime, defaultActivationPollInterval)
+			defer probe.Close()
+			err = workflow.Rotate(ctx, probe, admincredential.RotateOptions{OutputPath: options.output, Now: time.Now(), Lifetime: options.lifetime, PollInterval: defaultActivationPollInterval})
 		}
 		if err == nil {
 			_, _ = io.WriteString(stdout, "administrator credential rotated and activated\n")
@@ -83,12 +93,13 @@ func parseOptions(arguments []string) (commandOptions, error) {
 	if len(arguments) == 0 || (arguments[0] != "init" && arguments[0] != "rotate") {
 		return commandOptions{}, errors.New("invalid command")
 	}
-	options := commandOptions{command: arguments[0], lifetime: defaultCredentialLifetime, timeout: 5 * time.Minute}
+	options := commandOptions{command: arguments[0], lifetime: defaultCredentialLifetime, timeout: 5 * time.Minute, namespace: adminauth.CredentialNamespace}
 	flags := flag.NewFlagSet(arguments[0], flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&options.output, "output", "", "private credential output path")
 	flags.StringVar(&options.kubeconfig, "kubeconfig", "", "Kubernetes administrator configuration")
 	flags.StringVar(&options.kubeContext, "context", "", "Kubernetes context")
+	flags.StringVar(&options.namespace, "namespace", options.namespace, "single trusted installation namespace")
 	flags.DurationVar(&options.lifetime, "lifetime", options.lifetime, "credential lifetime")
 	flags.DurationVar(&options.timeout, "timeout", options.timeout, "operation timeout")
 	if options.command == "rotate" {
@@ -96,7 +107,7 @@ func parseOptions(arguments []string) (commandOptions, error) {
 		flags.StringVar(&options.caFile, "ca-file", "", "trusted API certificate authority")
 		flags.StringVar(&options.tlsServerName, "tls-server-name", "", "trusted API TLS server name")
 	}
-	if err := flags.Parse(arguments[1:]); err != nil || flags.NArg() != 0 || options.output == "" || options.lifetime <= 0 || options.timeout <= 0 {
+	if err := flags.Parse(arguments[1:]); err != nil || flags.NArg() != 0 || options.output == "" || options.lifetime <= 0 || options.timeout <= 0 || len(validation.IsDNS1123Label(options.namespace)) != 0 {
 		return commandOptions{}, errors.New("invalid options")
 	}
 	if options.command == "rotate" && (options.apiURL == "" || options.caFile == "") {
@@ -107,15 +118,15 @@ func parseOptions(arguments []string) (commandOptions, error) {
 
 func writeFixedFailure(writer io.Writer, err error) {
 	switch {
-	case errors.Is(err, errPrivateOutput):
+	case errors.Is(err, admincredential.ErrPrivateOutput):
 		_, _ = io.WriteString(writer, "private credential output failed before a confirmed cluster mutation\n")
-	case errors.Is(err, errCredentialConflict):
+	case errors.Is(err, admincredential.ErrCredentialConflict):
 		_, _ = io.WriteString(writer, "credential mutation conflicted and was not retried; private output was retained but is inactive\n")
-	case errors.Is(err, errMutationUnconfirmed):
+	case errors.Is(err, admincredential.ErrMutationUnconfirmed):
 		_, _ = io.WriteString(writer, "credential mutation is unconfirmed; private output was retained\n")
-	case errors.Is(err, errTopologyUnavailable):
+	case errors.Is(err, admincredential.ErrTopologyUnavailable):
 		_, _ = io.WriteString(writer, "API topology is not eligible for credential rotation; no mutation was attempted\n")
-	case errors.Is(err, errActivationIncomplete):
+	case errors.Is(err, admincredential.ErrActivationIncomplete):
 		_, _ = io.WriteString(writer, "credential activation is incomplete; private output and committed Secret were retained\n")
 	default:
 		_, _ = io.WriteString(writer, "administrator credential operation failed safely\n")
@@ -124,11 +135,11 @@ func writeFixedFailure(writer io.Writer, err error) {
 
 func failureExitCode(err error) int {
 	switch {
-	case errors.Is(err, errCredentialConflict):
+	case errors.Is(err, admincredential.ErrCredentialConflict):
 		return 4
-	case errors.Is(err, errMutationUnconfirmed):
+	case errors.Is(err, admincredential.ErrMutationUnconfirmed):
 		return 5
-	case errors.Is(err, errActivationIncomplete), errors.Is(err, errTopologyUnavailable):
+	case errors.Is(err, admincredential.ErrActivationIncomplete), errors.Is(err, admincredential.ErrTopologyUnavailable):
 		return 6
 	default:
 		return 3

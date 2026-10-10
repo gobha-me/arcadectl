@@ -62,6 +62,16 @@ go build -o ./arcadectl-admin-credential ./cmd/arcadectl-admin-credential
 Create an owner-only private output directory. Supply an absolute, new output
 filename in that directory and a trusted cluster-admin kubeconfig/context:
 
+The directory must have mode 0700 and belong to the current user. Paths must be
+clean and absolute, with no symlink in any ancestor. The new filename must be
+1–128 ASCII characters, start with a letter or digit, and contain only letters,
+digits, `.`, `_`, or `-`. Existing files are never overwritten.
+
+The trusted administrator utility and API accept `--namespace`, defaulting to
+`arcadectl-system`; both must use the same installation namespace. This is
+trusted deployment configuration, not a request parameter or an ordinary
+client namespace override.
+
 ```sh
 ./arcadectl-admin-credential init \
   --kubeconfig /absolute/private/admin.kubeconfig --context evaluation \

@@ -854,6 +854,7 @@ func assertRole(t *testing.T, object *unstructured.Unstructured) {
 		{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get"}},
 		{APIGroups: []string{""}, Resources: []string{"serviceaccounts"}, Verbs: []string{"create", "delete", "get", "list", "watch"}},
 		{APIGroups: []string{"apps"}, Resources: []string{"deployments"}, Verbs: []string{"create", "delete", "get", "list", "patch", "update", "watch"}},
+		{APIGroups: []string{"apps"}, Resources: []string{"replicasets"}, Verbs: []string{"get", "list", "watch"}},
 		{APIGroups: []string{"arcade.gobha.me"}, Resources: []string{"arcadeoperations"}, Verbs: []string{"get", "list", "patch", "update", "watch"}},
 		{APIGroups: []string{"arcade.gobha.me"}, Resources: []string{"arcadeoperations/status", "gamebackups/status", "gamerestores/status", "gameservers/status"}, Verbs: []string{"get", "patch", "update"}},
 		{APIGroups: []string{"arcade.gobha.me"}, Resources: []string{"gamebackups", "gamerestores"}, Verbs: []string{"create", "get", "list", "patch", "update", "watch"}},

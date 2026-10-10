@@ -1,0 +1,17 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: arcadectl-controller
+  namespace: arcadectl-system
+  labels:
+    app.kubernetes.io/name: arcadectl-controller
+    app.kubernetes.io/part-of: arcadectl
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: arcadectl-controller
+subjects:
+  - kind: ServiceAccount
+    name: arcadectl-controller
+    namespace: arcadectl-system

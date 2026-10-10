@@ -704,7 +704,10 @@ func (r *GameDestroyReconciler) cleanupWorker(ctx context.Context, d *arcade.Gam
 			return false, errors.New("refuse to delete foreign destroy Job")
 		}
 		foreground := metav1.DeletePropagationForeground
-		return true, r.Delete(ctx, job, &client.DeleteOptions{PropagationPolicy: &foreground})
+		// A same-name replacement or changed ownership after this read must
+		// not become cleanup authority. Preserve the whole original witness.
+		return true, r.Delete(ctx, job, &client.DeleteOptions{PropagationPolicy: &foreground,
+			Preconditions: &metav1.Preconditions{UID: ptr.To(job.UID), ResourceVersion: ptr.To(job.ResourceVersion)}})
 	}
 	if !apierrors.IsNotFound(err) {
 		return false, err
