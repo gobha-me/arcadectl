@@ -234,6 +234,33 @@ but different signed artifact or regenerate the original receipt. Historical
 read-only `inspect` remains available without the flag. Historical receipt
 readability does not authorize implicit enrollment or mutation.
 
+The development command `enroll-baseline` is the separate explicit historical
+path. Supply the same original `--bootstrap-package`, `--bootstrap-receipt`,
+protected `--state-dir`, exact namespace/profile, static administrator
+kubeconfig/context, trusted runtime `--package` inputs, separately signed
+`--security-baseline` and original `--api-ca`. It rejects `--target-package`,
+`--api-certificate`, `--api-key` and `--client-credential`: enrollment does not
+retarget the runtime, create a namespace, rotate credentials or regenerate TLS.
+
+Only an original completed installed runtime is eligible. Its protected first
+source envelope records the authentic journal and retained world identities;
+losing a claim cannot redefine that floor on retry. Introduction and ownership
+use baseline-only Namespace CAS updates and at most one signed baseline CREATE
+per Step, while keeping original bootstrap/CA/source and CREATE receipt
+descriptors through proof intervals. A pending restart requests no CREATE
+permission and performs no preview or CREATE; it can settle only the already
+acknowledged original UID. After an error, inspect the protected checkpoint and
+explicitly rerun `enroll-baseline`; a missing/empty original ACK receipt does not
+authorize adoption or resend.
+
+Runtime `Complete` is not enrollment success. The command must finish a
+successful full enforcement proof against the actual baseline `Verified`
+snapshot. A post-CAS proof failure preserves that actual checkpoint and reports
+failure; it does not undo enrollment or change runtime/world intent. These
+development paths have synthetic direct-TLS component coverage, not genuine
+historical-binary/native migration certification. The latter and whole
+exact-head CI remain mandatory before deployment or issue closure.
+
 The closed lifecycle constructor binds the same complete live/retired baseline
 verifier to ordinary runtime effects and the separate nonexecuting prerequisite
 protocol. Completed baseline ownership alone is not current enforcement proof.
@@ -354,12 +381,38 @@ unchanged. Diagnostics are progress, not proof or established root cause.
 The development native gates are separate and mandatory in the committed CI:
 four complete public admission runs (profiles 135/137, cold/warm) and three actual
 signed-installer executable runs. Both profiles exercise current-package fresh
-install and retaining uninstall. A separate profile-137 transition run installs
-the exact declared legacy package, upgrades to the current package, rolls back
-and retains worlds on uninstall. Its predecessor runtime images are built from the pinned original
+install and retaining uninstall. The profile-137 transition fixture builds the
+unmodified pre-baseline installer at
+`2e897ca3b76617ac63c4a294d7ba8c908dcc368b` to install the exact declared legacy
+package without a baseline flag. The current executable explicitly enrolls
+that genuine historical journal, then upgrades, rolls back and retains worlds
+on uninstall. Independent checkpoints require an initially absent baseline,
+unchanged original runtime and bootstrap/client/CA bytes, a nonempty original
+claim floor, preserved predecessor manifest/signature/payload bytes and durable
+source provenance. This expanded native journey still needs successful
+execution; fixture source and component passes are not migration certification.
+Its predecessor runtime images are built from the pinned original
 Git tree, not current code carrying predecessor labels; that CI job fetches the
 original tracked history. The binary harness creates no Arcade resource before
 invoking the installer and does not directly bind/fabricate a journal stage.
+The pre-baseline installer commit was a PR ancestor, not a linear-main ancestor.
+CI therefore fetches the preserved read-only `refs/pull/62/head` from the exact
+authoritative repository into a local fixture ref, then checks that the pinned
+commit is its ancestor and has tree `6ba09e173b112c60a7c38d78cebf62e6d2859ec9`.
+Only the exact pinned commit is archived/built, never the moving PR tip. This
+keeps the test available after squash merge and branch deletion without changing
+branch protection or creating a release tag. Clean local clones running the
+transition gate must acquire the same history first:
+
+```sh
+git fetch --no-tags --no-recurse-submodules --no-write-fetch-head \
+  https://github.com/gobha-me/arcadectl.git \
+  '+refs/pull/62/head:refs/arcadectl-fixtures/pr62'
+git merge-base --is-ancestor \
+  2e897ca3b76617ac63c4a294d7ba8c908dcc368b refs/arcadectl-fixtures/pr62
+test "$(git rev-parse '2e897ca3b76617ac63c4a294d7ba8c908dcc368b^{tree}')" \
+  = 6ba09e173b112c60a7c38d78cebf62e6d2859ec9
+```
 Each binary fixture has a finite 330-minute outer budget, below its 340-minute
 Go test and 350-minute CI job bounds. Every individual command and behavioral
 proof still has its own shorter deadline; no old result replaces current proof.

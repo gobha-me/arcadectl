@@ -73,6 +73,15 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0 # exact declared predecessor source must be locally available
+      - name: Acquire exact historical installer source
+        if: matrix.mode == 'transition'
+        run: |
+          git fetch --no-tags --no-recurse-submodules --no-write-fetch-head \
+            https://github.com/gobha-me/arcadectl.git \
+            '+refs/pull/62/head:refs/arcadectl-fixtures/pr62'
+          test "$(git rev-parse '2e897ca3b76617ac63c4a294d7ba8c908dcc368b^{commit}')" = 2e897ca3b76617ac63c4a294d7ba8c908dcc368b
+          git merge-base --is-ancestor 2e897ca3b76617ac63c4a294d7ba8c908dcc368b refs/arcadectl-fixtures/pr62
+          test "$(git rev-parse '2e897ca3b76617ac63c4a294d7ba8c908dcc368b^{tree}')" = 6ba09e173b112c60a7c38d78cebf62e6d2859ec9
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:

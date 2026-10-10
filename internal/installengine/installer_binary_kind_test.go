@@ -11,6 +11,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"os"
 	"os/exec"
@@ -134,11 +135,17 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 						return plan, path
 					}
 					var previous *installrender.Plan
+					var historicalBinary string
 					var previousPath string
 					var predecessors []installpackage.Predecessor
 					if mode == "transition" {
+						historicalBinary = buildHistoricalInstallerBinary(t, ctx, root, base)
 						previous, previousPath = publish("previous-package", true, previousImages, nil)
 						predecessors = []installpackage.Predecessor{{ID: "issue-26", PackageSHA256: previous.Digest(), SourceSHA: previous.Manifest().SourceSHA, Images: previous.Manifest().Images, Namespace: previous.Namespace(), ProfileIDs: []string{profile.id}}}
+					}
+					var previousFiles map[string]string
+					if previous != nil {
+						previousFiles = binaryPackageFileDigests(t, previousPath)
 					}
 					current, currentPath := publish("current-package", false, currentImages, predecessors)
 					original, originalPath := current, currentPath
@@ -188,10 +195,16 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 						t.Fatal("protected explicit cluster configuration unavailable")
 					}
 					tls := fixtureTLS(t, original.Namespace(), time.Now().UTC())
-					run := func(command, target string) {
+					runUsing := func(executable, command, target string, historical bool) {
 						t.Helper()
-						args := []string{command, "--namespace", original.Namespace(), "--profile", profile.id, "--bootstrap-package", originalPath, "--trust-key", trust, "--state-dir", state, "--bootstrap-receipt", "bootstrap.json", "--kubeconfig", kubeconfig, "--context", "owned-installer", "--api-ca", tls.CAFile, "--security-baseline", baselinePath, "--timeout", "2h"}
-						for _, path := range paths {
+						args := []string{command, "--namespace", original.Namespace(), "--profile", profile.id, "--bootstrap-package", originalPath, "--trust-key", trust, "--state-dir", state, "--bootstrap-receipt", "bootstrap.json", "--kubeconfig", kubeconfig, "--context", "owned-installer", "--api-ca", tls.CAFile, "--timeout", "2h"}
+						packageInputs := paths
+						if historical {
+							packageInputs = []string{originalPath}
+						} else {
+							args = append(args, "--security-baseline", baselinePath)
+						}
+						for _, path := range packageInputs {
 							args = append(args, "--package", path)
 						}
 						if target != "" {
@@ -201,7 +214,7 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 							args = append(args, "--api-certificate", tls.CertificateFile, "--api-key", tls.KeyFile)
 						}
 						t.Log("running actual signed installer binary: " + command)
-						c := exec.CommandContext(ctx, binary, args...)
+						c := exec.CommandContext(ctx, executable, args...)
 						c.Dir = root
 						c.Env = append(os.Environ(), "GOMAXPROCS=2", "GOMEMLIMIT=1GiB")
 						output, err := c.CombinedOutput()
@@ -213,7 +226,11 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 						if command == "uninstall" && !bytes.Contains(output, []byte("namespace, world claims, credentials and protections retained")) {
 							t.Fatal("actual uninstall omitted retained-world recovery guidance")
 						}
+						if command == "enroll-baseline" && !bytes.Contains(output, []byte("security baseline enrollment and native enforcement proof complete")) {
+							t.Fatal("actual enrollment omitted full enforcement completion")
+						}
 					}
+					run := func(command, target string) { runUsing(binary, command, target, false) }
 					access, err := NewDirectHTTPAccess(config)
 					if err != nil {
 						t.Fatal("owned observer unavailable")
@@ -232,6 +249,9 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 					retainedFiles := map[string][]byte{}
 					originalRetained := map[installstate.Key]types.UID{}
 					var originalBaseline []installstate.BaselineResource
+					var originalEnrollment *installstate.BaselineEnrollmentProvenance
+					var enrollmentSourceBody []byte
+					var enrollmentSourceName string
 					checkComplete := func(mode installstate.Mode, target *installrender.Plan, installed bool) *installstate.Snapshot {
 						t.Helper()
 						files, err := privatefs.Open(state, false)
@@ -263,6 +283,18 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 							originalBaseline = append([]installstate.BaselineResource{}, d.SecurityBaseline.Resources...)
 						} else if !reflect.DeepEqual(originalBaseline, d.SecurityBaseline.Resources) {
 							t.Fatal("runtime operation rolled back or replaced baseline UID/hash inventory")
+						}
+						if originalEnrollment == nil && d.SecurityBaseline.Enrollment != nil {
+							copy := *d.SecurityBaseline.Enrollment
+							originalEnrollment = &copy
+						} else if !reflect.DeepEqual(originalEnrollment, d.SecurityBaseline.Enrollment) {
+							t.Fatal("runtime operation replaced original enrollment provenance")
+						}
+						if enrollmentSourceName != "" {
+							body, _, err := files.ReadEvidence(enrollmentSourceName, privatefs.MaxEvidenceFileBytes)
+							if err != nil || !bytes.Equal(body, enrollmentSourceBody) {
+								t.Fatal("runtime operation rewrote original enrollment source evidence")
+							}
 						}
 						baselineContract, err := installcontract.NewBaseline(baseline)
 						if err != nil {
@@ -301,7 +333,7 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 							retained[name] = secret.UID
 							retainedSecretRV[name] = secret.ResourceVersion
 						}
-						for _, name := range []string{"admin-client-" + anchor.InstallationID + ".json", "api-ca-" + anchor.InstallationID + ".pem"} {
+						for _, name := range []string{"bootstrap.json", "admin-client-" + anchor.InstallationID + ".json", "api-ca-" + anchor.InstallationID + ".pem"} {
 							body, _, err := files.Read(name, 65536)
 							if err != nil || retainedFiles[name] != nil && !bytes.Equal(retainedFiles[name], body) {
 								t.Fatal("binary lost protected retained client recovery evidence")
@@ -312,10 +344,36 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 						if err != nil || engine.fixtureFence(s) != nil {
 							t.Fatal("binary left unresolved original fixture evidence")
 						}
+						if previous != nil && !reflect.DeepEqual(previousFiles, binaryPackageFileDigests(t, previousPath)) {
+							t.Fatal("binary rewrote authentic predecessor manifest, signature or payload bytes")
+						}
 						return s
 					}
-					run("install", originalPath)
-					checkComplete(installstate.Install, original, true)
+					var historicalSnapshot *installstate.Snapshot
+					var historicalInputs map[string][]byte
+					if previous == nil {
+						run("install", originalPath)
+						checkComplete(installstate.Install, original, true)
+					} else {
+						runUsing(historicalBinary, "install", originalPath, true)
+						historicalSnapshot, historicalInputs = checkBinaryHistoricalInstall(t, ctx, access, store, state, original, baseline)
+						anchor = historicalSnapshot.Anchor()
+						for _, row := range historicalSnapshot.Document().Resources {
+							if row.Retained {
+								originalRetained[row.Key] = row.UID
+							}
+						}
+						for name, body := range historicalInputs {
+							retainedFiles[name] = bytes.Clone(body)
+						}
+						for _, name := range []string{adminauth.CredentialSecretName, "arcadectl-api-tls"} {
+							secret, err := meta.Resource(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}).Namespace(anchor.Namespace).Get(ctx, name, metav1.GetOptions{})
+							if err != nil || secret.UID == "" {
+								t.Fatal("historical original retained Secret metadata unavailable")
+							}
+							retained[name], retainedSecretRV[name] = secret.UID, secret.ResourceVersion
+						}
+					}
 					client, err := kubernetes.NewForConfig(access.readConfig())
 					if err != nil {
 						t.Fatal("owned inert claim setup unavailable")
@@ -345,6 +403,30 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 						}
 					}
 					if previous != nil {
+						// The first world floor is nonempty before explicit enrollment.
+						listed, err := client.CoreV1().PersistentVolumeClaims(anchor.Namespace).List(ctx, metav1.ListOptions{})
+						if err != nil || len(listed.Items) != len(claims) {
+							t.Fatal("historical initial claim floor unavailable")
+						}
+						rows := []fixtureWorldRow{}
+						for _, claim := range listed.Items {
+							originalClaim := claims[claim.Name]
+							if originalClaim == nil || originalClaim.UID != claim.UID {
+								t.Fatal("historical initial claim was replaced")
+							}
+							// Dynamic List decoding supplies omitted item TypeMeta;
+							// normalize only this independent typed-client loop copy.
+							claim.APIVersion, claim.Kind = "v1", "PersistentVolumeClaim"
+							body, err := json.Marshal(&claim)
+							if err != nil {
+								t.Fatal("historical initial claim hashing refused")
+							}
+							rows = append(rows, fixtureWorldRow{Key: installstate.Key{APIVersion: "v1", Kind: "PersistentVolumeClaim", Namespace: claim.Namespace, Name: claim.Name}, UID: claim.UID, ResourceVersion: claim.ResourceVersion, SHA256: fixtureWorldDigest(body)})
+						}
+						sortFixtureWorlds(rows)
+						run("enroll-baseline", "")
+						enrolled := checkComplete(installstate.Install, original, true)
+						enrollmentSourceBody, enrollmentSourceName = checkBinaryHistoricalEnrollment(t, ctx, access, state, original, historicalSnapshot, enrolled, historicalInputs, rows)
 						run("upgrade", currentPath)
 						checkComplete(installstate.Upgrade, current, true)
 						run("rollback", previousPath)
