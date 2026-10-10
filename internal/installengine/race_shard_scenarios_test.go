@@ -29,6 +29,8 @@ func TestInstallerWholeProviderScenarioShardsPreserveLiteralCoverage(t *testing.
 			"TestBaselineBehaviorWholeProviderCompleteRollback":                     "complete-rollback",
 			"TestBaselineBehaviorWholeProviderWrongPodFamily":                       "wrong-pod-family",
 			"TestBaselineBehaviorWholeProviderMissingDenial":                        "missing-denial",
+			"TestBaselineBehaviorWholeProviderProducerDenialBefore":                 "producer-denial-before",
+			"TestBaselineBehaviorWholeProviderProducerDenialAfter":                  "producer-denial-after",
 			"TestBaselineBehaviorWholeProviderBadPositive":                          "bad-positive",
 			"TestBaselineBehaviorWholeProviderClosingNewPod":                        "closing-new-pod",
 			"TestBaselineBehaviorWholeProviderClosingProxyGrant":                    "closing-proxy-grant",

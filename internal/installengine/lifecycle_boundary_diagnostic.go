@@ -223,6 +223,7 @@ func traceOperationBoundary(ctx context.Context, step operationBoundary) {
 	if d, ok := ctx.Value(lifecycleDiagnosticKey{}).(*LifecycleDiagnostic); ok && d != nil {
 		d.baselineBoundary.Store(0)
 		d.baselineBeforeDeadline.Store(0)
+		d.baselineFailure.Store(0)
 		d.operationBoundary.Store(uint32(step))
 	}
 }
@@ -234,6 +235,7 @@ func traceBaselineBoundary(ctx context.Context, step baselineBoundary) {
 	if d, ok := ctx.Value(lifecycleDiagnosticKey{}).(*LifecycleDiagnostic); ok && d != nil {
 		if step == baselineBoundaryScope {
 			d.baselineBeforeDeadline.Store(0)
+			d.baselineFailure.Store(0)
 		}
 		if step == baselineBoundaryRuntimeDeadline {
 			previous := d.baselineBoundary.Load()

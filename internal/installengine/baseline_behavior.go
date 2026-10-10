@@ -243,19 +243,31 @@ func baselineObjectKey(object *unstructured.Unstructured) installstate.Key {
 
 func (b *baselineBehavior) denial(ctx context.Context, actor admissionActor, operation admissionProbeOperation, candidate, original *unstructured.Unstructured, policy string) error {
 	key := baselineObjectKey(candidate)
-	if b.readExact(ctx, key, original) != nil {
+	if b.readExactDiagnostic(ctx, key, original, baselineFailureDenialBefore) != nil {
 		return ErrSecurityBaseline
 	}
 	reply, err := b.actors.probe(ctx, actor, operation, candidate, policy, policy, installbaseline.DenialMessage)
-	if err != nil || reply != nil || b.readExact(ctx, key, original) != nil {
+	if err != nil || reply != nil {
+		traceBaselineFailure(ctx, baselineFailureDenialProbe, key.Kind, 0)
+		return ErrSecurityBaseline
+	}
+	if b.readExactDiagnostic(ctx, key, original, baselineFailureDenialAfter) != nil {
 		return ErrSecurityBaseline
 	}
 	return nil
 }
 
 func (b *baselineBehavior) readExact(ctx context.Context, key installstate.Key, original *unstructured.Unstructured) error {
-	if b == nil || b.actors == nil || b.actors.baseline == nil || b.actors.snapshot == nil || key.Namespace != b.actors.snapshot.Anchor().Namespace {
+	return b.readExactDiagnostic(ctx, key, original, 0)
+}
+
+func (b *baselineBehavior) readExactDiagnostic(ctx context.Context, key installstate.Key, original *unstructured.Unstructured, check baselineFailureCheck) error {
+	refuse := func(fields baselineDifference) error {
+		traceBaselineFailure(ctx, check, key.Kind, fields)
 		return ErrSecurityBaseline
+	}
+	if b == nil || b.actors == nil || b.actors.baseline == nil || b.actors.snapshot == nil || key.Namespace != b.actors.snapshot.Anchor().Namespace {
+		return refuse(0)
 	}
 	c := b.actors.baseline
 	path, permission, err := baselineExecutableRead(key, "get")
@@ -266,19 +278,25 @@ func (b *baselineBehavior) readExact(ctx context.Context, key installstate.Key, 
 		}
 	}
 	if err != nil {
-		return ErrSecurityBaseline
+		return refuse(0)
 	}
 	discovery, err := c.access.discover(ctx, key.APIVersion)
 	if err != nil || !discoveredPermission(discovery, permission) || c.access.authorize(ctx, permission.spec) != nil {
-		return ErrSecurityBaseline
+		return refuse(0)
 	}
 	live, err := c.access.requestAt(ctx, http.MethodGet, key, nil, false, path, nil)
 	if original == nil {
 		if !apierrors.IsNotFound(err) {
-			return ErrSecurityBaseline
+			if err == nil && live != nil {
+				return refuse(baselineDifferenceMembership)
+			}
+			return refuse(0)
 		}
 	} else if err != nil || live == nil || !reflect.DeepEqual(live.Object, original.Object) {
-		return ErrSecurityBaseline
+		if err == nil && live != nil {
+			return refuse(baselineObjectDifference(original, live))
+		}
+		return refuse(0)
 	}
 	return nil
 }

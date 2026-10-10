@@ -73,6 +73,14 @@ func TestBaselineBehaviorWholeProviderMissingDenial(t *testing.T) {
 	testBaselineBehaviorWholeProvider(t, "missing-denial")
 }
 
+func TestBaselineBehaviorWholeProviderProducerDenialBefore(t *testing.T) {
+	testBaselineBehaviorWholeProvider(t, "producer-denial-before")
+}
+
+func TestBaselineBehaviorWholeProviderProducerDenialAfter(t *testing.T) {
+	testBaselineBehaviorWholeProvider(t, "producer-denial-after")
+}
+
 func TestBaselineBehaviorWholeProviderBadPositive(t *testing.T) {
 	testBaselineBehaviorWholeProvider(t, "bad-positive")
 }
@@ -584,6 +592,11 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 					w.WriteHeader(http.StatusNotFound)
 					return
 				}
+				if mode == "producer-denial-before" && probes == 20 && key == deploymentKey(d.Namespace, "arcadectl-controller") && !injected {
+					objects[key].SetResourceVersion("18")
+					objects[key].Object["status"] = map[string]any{"private": "PRIVATE-CANARY"}
+					injected = true
+				}
 				if probes == 97 && key == serviceKey && !injected {
 					switch mode {
 					case "closing-new-pod":
@@ -719,6 +732,11 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 		if mode == "missing-denial" {
 			status.Message, injected = "PRIVATE-CANARY", true
 		}
+		if mode == "producer-denial-after" && probes == 21 && key == deploymentKey(d.Namespace, "arcadectl-controller") && !injected {
+			objects[key].SetResourceVersion("18")
+			objects[key].Object["status"] = map[string]any{"private": "PRIVATE-CANARY"}
+			injected = true
+		}
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		_ = json.NewEncoder(w).Encode(status)
 	})
@@ -810,7 +828,16 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 			t.Fatal("actual guarded current boundary lost original snapshot or admitted changing evidence")
 		}
 	} else {
-		err = provider.Verify(t.Context(), snapshot)
+		proofContext, diagnostic := WithLifecycleDiagnostic(t.Context())
+		err = provider.Verify(proofContext, snapshot)
+		wantFailure := map[string]string{
+			"missing-denial":         "check=denial-probe family=Job changes=unknown",
+			"producer-denial-before": "check=denial-read-before family=Deployment changes=resource-version,metadata,status",
+			"producer-denial-after":  "check=denial-read-after family=Deployment changes=resource-version,metadata,status",
+		}[mode]
+		if wantFailure != "" && diagnostic.FailureSnapshot() != wantFailure {
+			t.Fatal("actual negative proof lost fixed refusal attribution", diagnostic.FailureSnapshot())
+		}
 	}
 	if (err == nil) != positive {
 		t.Fatal("whole behavior driver confused healthy composition and injected refusal")

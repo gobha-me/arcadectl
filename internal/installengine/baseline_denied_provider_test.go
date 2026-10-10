@@ -394,6 +394,17 @@ func TestBaselineDeniedProviderClosesOriginalWholeEvidenceAndLateGrants(t *testi
 			if wantBoundary == "" || diagnostic.BoundarySnapshot() != "operation=unknown baseline="+wantBoundary {
 				t.Fatal("actual denied proof lost its fixed refusal boundary", diagnostic.BoundarySnapshot())
 			}
+			wantFailure := map[string]string{
+				"first-closing-new-pod":     "check=executables-stable family=Pod changes=membership",
+				"second-closing-new-pod":    "check=executables-stable family=Pod changes=membership",
+				"closing-pod-rv":            "check=executables-stable family=Pod changes=resource-version,metadata",
+				"closing-unselected-rv":     "check=executables-stable family=Pod changes=resource-version,metadata",
+				"closing-pod-port":          "check=executables-stable family=Pod changes=spec",
+				"closing-deployment-status": "check=executables-stable family=Deployment changes=resource-version,metadata,status",
+			}[mode]
+			if diagnostic.FailureSnapshot() != wantFailure {
+				t.Fatal("actual whole refusal lost fixed family/field diagnostic", diagnostic.FailureSnapshot())
+			}
 			mu.Lock()
 			defer mu.Unlock()
 			if mutations != 0 {

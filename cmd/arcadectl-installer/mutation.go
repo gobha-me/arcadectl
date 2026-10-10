@@ -283,6 +283,9 @@ func runMutation(ctx context.Context, o options, stdout, stderr io.Writer) int {
 		if err != nil || s == nil {
 			_, _ = fmt.Fprintf(stderr, "installation diagnostic progress %s\n", diagnostic.Snapshot())
 			_, _ = fmt.Fprintf(stderr, "installation diagnostic boundary %s\n", diagnostic.BoundarySnapshot())
+			if failure := diagnostic.FailureSnapshot(); failure != "" {
+				_, _ = fmt.Fprintf(stderr, "installation diagnostic refusal %s\n", failure)
+			}
 			if deadline := diagnostic.DeadlineSnapshot(); deadline != "" {
 				_, _ = fmt.Fprintf(stderr, "installation diagnostic deadline %s\n", deadline)
 			}

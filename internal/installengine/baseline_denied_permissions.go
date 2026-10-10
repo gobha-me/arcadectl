@@ -350,6 +350,7 @@ func (actors *baselineActors) verifyDeniedComposition(ctx context.Context, execu
 		}
 		traceBaselineBoundary(ctx, baselineBoundaryDeniedExecutablesStable)
 		if !sameBaselineExecutables(executables, closing) {
+			traceBaselineExecutableDifference(ctx, executables, closing)
 			return ErrSecurityBaseline
 		}
 		traceBaselineBoundary(ctx, baselineBoundaryDeniedOriginalsClosing)
