@@ -236,6 +236,9 @@ func testKindBaselineNative(t *testing.T, precontroller bool) {
 			}
 			t.Log("actual baseline typechecking, original CRD/SA CREATE, restart, foreign-inventory refusal and runtime fence proved")
 			if !precontroller {
+				t.Run("protected-access-leaf-gc", func(t *testing.T) {
+					testKindProtectedAccessLeafGC(t, ctx, config, access, engine, snapshot, plan)
+				})
 				return // preserve the original small component and its time bounds
 			}
 

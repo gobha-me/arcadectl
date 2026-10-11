@@ -391,9 +391,19 @@ func (e *Engine) delete(ctx context.Context, s *installstate.Snapshot, key insta
 		return intent, ErrOutcomeUnknown
 	}
 	uid, rv := p.BeforeUID, p.BeforeResourceVersion
-	foreground := metav1.DeletePropagationForeground
+	propagation := metav1.DeletePropagationForeground
+	// Only the closed HTTP lifecycle route may delete a proved retired leaf
+	// without foreground GC's protected finalizer UPDATE. Instrumented Access
+	// implementations and the public primitive keep their existing foreground
+	// contract. A failed leaf proof never falls back or sends a DELETE.
+	if _, native := e.access.(*HTTPAccess); native && awaitAcknowledgement && retiredNamespaceAccessLeaf(d) {
+		if err := e.prepareRetiredLeafDelete(ctx, intent); err != nil {
+			return intent, ErrOutcomeUnknown
+		}
+		propagation = metav1.DeletePropagationBackground
+	}
 	traceOperationBoundary(ctx, boundaryDeleteEffectRequest)
-	deleteErr := e.access.Delete(ctx, key, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &rv}, PropagationPolicy: &foreground})
+	deleteErr := e.access.Delete(ctx, key, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &rv}, PropagationPolicy: &propagation})
 	traceOperationBoundary(ctx, boundaryDeleteEffectResult)
 	if awaitAcknowledgement && deleteErr == nil {
 		return e.waitAcknowledgedDelete(ctx, intent)

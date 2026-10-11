@@ -364,7 +364,7 @@ initial phase capture or WAL creation, with original journal and fixture-fence
 barriers; it opens no forwarding/authentication channel. Missing original API
 identity refuses. Partial Applying and uninstall phase semantics are unchanged;
 changes after sealing still fail the exact whole-object/RV comparisons.
-After a reliably acknowledged original UID/RV foreground DELETE, the lifecycle
+After a reliably acknowledged original UID/RV DELETE, the lifecycle
 only observes that exact intent for up to five minutes and independently
 CAS-settles actual absence. Lost responses, replacement UIDs, journal drift or
 read refusal remain pending; no DELETE is replayed by that wait. The lower-level
@@ -725,7 +725,8 @@ lifecycle CI remain engine responsibilities.
 ## Journal-before-effect resource writes
 
 The internal administrator effect layer now executes signed public-resource
-creates/updates and original-UID/RV foreground deletes. It confirms the exact
+creates/updates and original-UID/RV deletes (foreground except for the separately
+proved retired namespace-access leaves described below). It confirms the exact
 Namespace journal and full signed Namespace shape, independently checks dry-run
 admission, saves the public intent, then sends at most one real mutation request.
 It never adopts an existing object by name or labels. Updates preserve original
@@ -757,7 +758,7 @@ genuinely ambiguous transport/response loss for public resources, bootstrap and
 private Secrets; a raced object with copied nonce/shape is not adopted.
 
 Recovery observes and settles only; it does not repeat dry-run or real writes.
-Accepted foreground deletion is not absence. Deleting objects, replacements,
+Accepted deletion is not absence. Deleting objects, replacements,
 unchanged before-state, unreadable evidence and journal races retain pending
 intent. Recovery also enforces the original stage/package/action contract:
 quiescence may delete API admission and pause the original controllers;
@@ -997,6 +998,28 @@ receipt's original revision. Accounts and permissions are not retained merely
 to run tests. Later removal, pending-delete recovery and final verification use
 the distinct administrator read-only `RetainedAdmission` checkpoint, alongside
 fresh cold-data, runtime-absence and retained-credential observations.
+
+The closed HTTP lifecycle uses background DELETE only for an original,
+non-retained namespaced Role, RoleBinding or ServiceAccount after retirement.
+Foreground GC would require a finalizer UPDATE denied by the retained identity
+policy; that policy and its signed artifact remain unchanged. Before the sole
+UID/resource-version-preconditioned send, a fresh complete discovery and exact
+administrator LIST reviews authorize every unfiltered namespace metadata
+collection. The exact original target must be present at its saved UID/RV,
+with no observed descendant, including foreign Secrets, Leases, Events and
+custom resources. Omitted LIST sources, partial discovery, denied reads,
+replacements, live policy drift and protected-receipt replacement refuse
+without sending DELETE. The original retirement policy/access core, exact
+whole target, journal and pinned receipt close the added read interval.
+
+This is temporal evidence, not a namespace lock: a concurrent child created
+after its collection page cannot be excluded atomically. All preceding cold,
+runtime-absence and retained-data checks remain mandatory. The public primitive,
+instrumented Access implementations and every other resource keep foreground
+propagation. There is no timeout fallback, finalizer edit, widened GC policy,
+new permission or replay. Reliable acknowledgement still requires independent
+actual-absence observation and original-journal settlement; a refused or lost
+effect remains pending for observation-only recovery.
 
 Missing/corrupt receipts, changed or unhealthy protections, substituted
 inventory, and recreation of removed access objects fail closed. This proves

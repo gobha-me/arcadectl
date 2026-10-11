@@ -9,6 +9,8 @@
 # Expanded retired-access trees: local whole-tree race PASS on 2026-10-11,
 # foreground retirement333.52 seconds and closed HTTPS pending access48.05 seconds
 # (whole-tree PASS after preserving the literal wrapper contract; previous47.24).
+# Closed retired-leaf/zero-send expansion: local whole-tree race PASS on
+# 2026-10-11, original HTTPS wrapper67.97 seconds and leaf evidence438.50 seconds.
 # For each measured tree: maximum observed cost across those measurements, plus15%
 # and5 seconds, rounded up to5 seconds with minimum10. Keep the existing
 # retained-worlds1200 reservation exclusive; it is not a certified bound.
@@ -280,7 +282,7 @@ TestBaselineRetiredHTTPSReviewDenied 35
 TestBaselineRetiredHTTPSRuntimeCompleteHealthy 35
 TestBaselineRetiredHTTPSRuntimeCompleteReceiptReplaced 50
 TestBaselineRetiredHTTPSRuntimeHealthy 35
-TestBaselineRetiredHTTPSRuntimePendingOriginalAccessDelete 65
+TestBaselineRetiredHTTPSRuntimePendingOriginalAccessDelete 85
 TestBaselineRetiredHTTPSRuntimeReceiptReplacedBetweenCores 35
 TestBaselineRetiredHTTPSSecondColdControllerImage 35
 TestBaselineRetiredHTTPSSecondColdWorldChange 35
@@ -587,6 +589,8 @@ TestRetainedMarkerLearningMissingIdentityAndDualCaptureTamperingSendNothing 45
 TestRetainedMarkerLearningOriginalAckPrivacyAndNoReplay 25
 TestRetainedMarkerLearningPreflightAndPrivacyCapture 30
 TestRetainedMarkerLearningUnknownAndLateRefusals 55
+TestRetiredAccessLeafRequiresCompleteOriginalReadEvidence 510
+TestRetiredAccessLeafSelectionNeverGrantsPublicDeleteAuthority 10
 TestSafetyObservationUsesFrozenMutationIdentityAndExactJournal 10
 TestSecretCreatesAreRetainedAndDoNotPublishPrivateValuesOrHashes 10
 TestSecretDriftForeignObjectsAndChangedPrivateCandidatesFailBeforeEffect 15

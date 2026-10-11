@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -170,10 +171,14 @@ func testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t *testing.T, t
 		t.Run("acknowledged-drain", func(t *testing.T) {
 			testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "runtime-acknowledged-original-access-delete")
 		})
+		t.Run("foreign-leaf-child-refuses-without-send-or-replay", func(t *testing.T) {
+			testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "runtime-acknowledged-original-access-delete-child")
+		})
 	}
 	runtime := strings.HasPrefix(testCase, "runtime-")
 	scenario := strings.TrimPrefix(testCase, "runtime-")
-	acknowledged := scenario == "acknowledged-original-access-delete"
+	acknowledged := strings.HasPrefix(scenario, "acknowledged-original-access-delete")
+	leafChild := scenario == "acknowledged-original-access-delete-child"
 	v, snapshot := retirementFixture(t)
 	completed := strings.HasPrefix(scenario, "complete-")
 	if completed {
@@ -307,6 +312,21 @@ func testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t *testing.T, t
 	// Independent protocol oracle: do not derive authorization
 	// expectations with the production helper being exercised.
 	expectedReviews := map[string]int{}
+	leafExpectedReviews, leafSeenReviews := map[string]int{}, map[string]int{}
+	leafExpectedPaths, leafSeenPaths := map[string]int{}, map[string]int{}
+	leafReading, leafLists := false, 0
+	if acknowledged {
+		for _, tuple := range [][3]string{{"arcade.gobha.me", "gameservers", "v1alpha1"}, {"arcade.gobha.me", "gamebackups", "v1alpha1"}, {"arcade.gobha.me", "gamerestores", "v1alpha1"}, {"arcade.gobha.me", "gamedestroys", "v1alpha1"}, {"arcade.gobha.me", "arcadeoperations", "v1alpha1"}, {"batch", "jobs", "v1"}, {"", "pods", "v1"}, {"coordination.k8s.io", "leases", "v1"}, {"", "persistentvolumeclaims", "v1"}, {"", "secrets", "v1"}, {"apps", "replicasets", "v1"}, {"apps", "deployments", "v1"}, {"apps", "statefulsets", "v1"}, {"apps", "daemonsets", "v1"}, {"", "replicationcontrollers", "v1"}, {"batch", "cronjobs", "v1"}, {"discovery.k8s.io", "endpointslices", "v1"}, {"rbac.authorization.k8s.io", "roles", "v1"}, {"rbac.authorization.k8s.io", "rolebindings", "v1"}, {"", "serviceaccounts", "v1"}, {"", "services", "v1"}} {
+			spec := authv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &authv1.ResourceAttributes{Group: tuple[0], Resource: tuple[1], Version: tuple[2], Namespace: namespace.Name, Verb: "list"}}
+			encoded, _ := json.Marshal(spec)
+			leafExpectedReviews[string(encoded)] = 1
+			prefix := "/apis/" + tuple[0] + "/" + tuple[2]
+			if tuple[0] == "" {
+				prefix = "/api/" + tuple[2]
+			}
+			leafExpectedPaths[prefix+"/namespaces/"+namespace.Name+"/"+tuple[1]] = 1
+		}
+	}
 	for _, target := range []struct{ group, resource string }{{"", "pods"}, {"batch", "jobs"}, {"apps", "deployments"}, {"apps", "replicasets"}, {"apps", "statefulsets"}, {"apps", "daemonsets"}, {"", "replicationcontrollers"}, {"batch", "cronjobs"}} {
 		spec := authv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &authv1.ResourceAttributes{Group: target.group, Version: "v1", Resource: target.resource, Namespace: namespace.Name, Verb: "list"}}
 		encoded, _ := json.Marshal(spec)
@@ -418,8 +438,8 @@ func testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t *testing.T, t
 			var options metav1.DeleteOptions
 			intent, intentErr := installstate.DecodeWithBaseline([]byte(namespace.Annotations[installstate.Annotation]), baseline, v.f.plan)
 			live := v.f.access.objects[deleteKey]
-			if json.NewDecoder(r.Body).Decode(&options) != nil || intentErr != nil || intent.Pending == nil || intent.Pending.Key != deleteKey || deletes != 0 || live == nil || options.Preconditions == nil || options.Preconditions.UID == nil || options.Preconditions.ResourceVersion == nil || *options.Preconditions.UID != live.GetUID() || *options.Preconditions.ResourceVersion != live.GetResourceVersion() || intent.Pending.BeforeUID != live.GetUID() || intent.Pending.BeforeResourceVersion != live.GetResourceVersion() || options.PropagationPolicy == nil || *options.PropagationPolicy != metav1.DeletePropagationForeground || len(options.DryRun) != 0 {
-				t.Error("retirement effect was replayed or escaped exact UID/RV foreground intent")
+			if json.NewDecoder(r.Body).Decode(&options) != nil || intentErr != nil || intent.Pending == nil || intent.Pending.Key != deleteKey || deletes != 0 || live == nil || options.Preconditions == nil || options.Preconditions.UID == nil || options.Preconditions.ResourceVersion == nil || *options.Preconditions.UID != live.GetUID() || *options.Preconditions.ResourceVersion != live.GetResourceVersion() || intent.Pending.BeforeUID != live.GetUID() || intent.Pending.BeforeResourceVersion != live.GetResourceVersion() || options.PropagationPolicy == nil || *options.PropagationPolicy != metav1.DeletePropagationBackground || len(options.DryRun) != 0 || leafLists != 21 || !reflect.DeepEqual(leafExpectedReviews, leafSeenReviews) || !reflect.DeepEqual(leafExpectedPaths, leafSeenPaths) {
+				t.Error("retirement effect was replayed or escaped proved UID/RV background leaf intent")
 				w.WriteHeader(409)
 				return
 			}
@@ -447,6 +467,15 @@ func testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t *testing.T, t
 			}
 			attributes := review.Spec.ResourceAttributes
 			encoded, _ := json.Marshal(review.Spec)
+			if acknowledged && leafReading {
+				if leafExpectedReviews[string(encoded)] != 1 {
+					t.Error("leaf proof escaped exact complete namespace LIST scope")
+				}
+				leafSeenReviews[string(encoded)]++
+				review.Status.Allowed = true
+				_ = json.NewEncoder(w).Encode(review)
+				return
+			}
 			if expectedReviews[string(encoded)] == 0 {
 				t.Error("retired proof review escaped exact executable read scope")
 			}
@@ -475,6 +504,52 @@ func testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t *testing.T, t
 			w.WriteHeader(403)
 			return
 		}
+		if acknowledged && r.URL.Path == "/api" {
+			leafReading = true
+			_ = json.NewEncoder(w).Encode(metav1.APIVersions{TypeMeta: metav1.TypeMeta{Kind: "APIVersions"}, Versions: []string{"v1"}})
+			return
+		}
+		if acknowledged && r.URL.Path == "/apis" {
+			groups := metav1.APIGroupList{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "APIGroupList"}, Groups: []metav1.APIGroup{}}
+			for _, gv := range proofGroups {
+				version, _ := schema.ParseGroupVersion(gv)
+				if version.Group != "" {
+					v := metav1.GroupVersionForDiscovery{GroupVersion: gv, Version: version.Version}
+					groups.Groups = append(groups.Groups, metav1.APIGroup{Name: version.Group, Versions: []metav1.GroupVersionForDiscovery{v}, PreferredVersion: v})
+				}
+			}
+			_ = json.NewEncoder(w).Encode(groups)
+			return
+		}
+		if acknowledged && leafReading && strings.Contains(r.Header.Get("Accept"), "PartialObjectMetadataList") {
+			leafLists++
+			if leafExpectedPaths[r.URL.Path] != 1 || leafSeenPaths[r.URL.Path] != 0 || r.URL.Query().Has("labelSelector") || r.URL.Query().Has("fieldSelector") {
+				t.Error("leaf metadata escaped independent complete collection paths")
+			}
+			leafSeenPaths[r.URL.Path]++
+			rows := []any{}
+			for key, object := range v.f.access.objects {
+				path, err := resourcePath(key, true)
+				if err == nil && path == r.URL.Path && key.Namespace == namespace.Name {
+					rows = append(rows, map[string]any{"apiVersion": "meta.k8s.io/v1", "kind": "PartialObjectMetadata", "metadata": object.Object["metadata"]})
+				}
+			}
+			if r.URL.Path == "/api/v1/namespaces/"+namespace.Name+"/secrets" {
+				for _, secret := range v.private.objects {
+					object := servingObject(t, secret)
+					rows = append(rows, map[string]any{"apiVersion": "meta.k8s.io/v1", "kind": "PartialObjectMetadata", "metadata": object.Object["metadata"]})
+				}
+				if leafChild {
+					root := v.f.access.objects[deleteKey]
+					rows = append(rows, map[string]any{"apiVersion": "meta.k8s.io/v1", "kind": "PartialObjectMetadata", "metadata": map[string]any{"name": "foreign-owned-child", "namespace": namespace.Name, "uid": "foreign-child-original", "resourceVersion": "80", "ownerReferences": []any{map[string]any{"apiVersion": deleteKey.APIVersion, "kind": deleteKey.Kind, "name": deleteKey.Name, "uid": string(root.GetUID())}}}})
+				}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"apiVersion": "meta.k8s.io/v1", "kind": "PartialObjectMetadataList", "metadata": map[string]any{"resourceVersion": "100"}, "items": rows})
+			return
+		}
+		if acknowledged && leafReading && r.URL.Path == deletePath {
+			leafReading = false // complete collection closed; original whole GET follows
+		}
 		if r.URL.Path == "/version" {
 			_ = json.NewEncoder(w).Encode(map[string]any{"major": "1", "minor": "35", "gitVersion": "v" + v.f.plan.Profile().KubernetesVersion})
 			return
@@ -495,7 +570,11 @@ func testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t *testing.T, t
 			add := func(kind, plural string, namespaced bool) {
 				if !seen[plural] {
 					seen[plural] = true
-					resources = append(resources, metav1.APIResource{Name: plural, Kind: kind, Namespaced: namespaced, Verbs: metav1.Verbs{"get", "list"}})
+					verbs := metav1.Verbs{"get", "list"}
+					if acknowledged {
+						verbs = metav1.Verbs{"get", "list", "delete", "watch"}
+					}
+					resources = append(resources, metav1.APIResource{Name: plural, Kind: kind, Namespaced: namespaced, Verbs: verbs})
 				}
 			}
 			for _, c := range proofCollections {
@@ -659,6 +738,25 @@ func testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t *testing.T, t
 	if acknowledged {
 		original := snapshot
 		snapshot, err = engine.delete(t.Context(), snapshot, deleteKey, true)
+		if leafChild {
+			mu.Lock()
+			completeLeaf := deletes == 0 && namespaceCAS == 1 && leafLists == 21 && reflect.DeepEqual(leafExpectedReviews, leafSeenReviews) && reflect.DeepEqual(leafExpectedPaths, leafSeenPaths)
+			priorLeafPaths, priorLeafReviews := maps.Clone(leafSeenPaths), maps.Clone(leafSeenReviews)
+			leafReading = false // refused leaf phase ended before its final whole GET
+			mu.Unlock()
+			if !errors.Is(err, ErrOutcomeUnknown) || snapshot == nil || snapshot.Document().Pending == nil || snapshot.Document().Pending.Key != deleteKey || snapshot.Document().Revision != original.Document().Revision+1 || len(snapshot.Document().Resources) != len(original.Document().Resources) || !completeLeaf {
+				t.Fatal("foreign descendant refusal sent DELETE, settled WAL, or failed before full leaf proof", err)
+			}
+			pending := snapshot
+			observed, recoverErr := engine.Recover(t.Context(), pending)
+			mu.Lock()
+			noReplay := deletes == 0 && namespaceCAS == 1 && leafLists == 21 && reflect.DeepEqual(priorLeafPaths, leafSeenPaths) && reflect.DeepEqual(priorLeafReviews, leafSeenReviews)
+			mu.Unlock()
+			if !errors.Is(recoverErr, ErrOutcomeUnknown) || observed == nil || !bytes.Equal(observed.Bytes(), pending.Bytes()) || !noReplay {
+				t.Fatal("pending leaf refusal replayed DELETE or invented settlement", recoverErr)
+			}
+			return
+		}
 		mu.Lock()
 		gotDeletes, gotNamespaceCAS, gotDrainReads := deletes, namespaceCAS, drainReads
 		mu.Unlock()
