@@ -53,8 +53,32 @@ func (s *Snapshot) Document() Document {
 	if s == nil {
 		return Document{}
 	}
-	var d Document
-	_ = jsonCopy(s.document, &d)
+	// The stored document was already decoded and validated when this sealed
+	// observation was created. Copy its mutable graph without re-encoding the
+	// same journal on every accessor; this grants no new observation/authority.
+	d := s.document
+	d.Resources = slices.Clone(d.Resources)
+	if d.Pending != nil {
+		pending := *d.Pending
+		d.Pending = &pending
+	}
+	if d.AdmissionReinstall != nil {
+		provenance := *d.AdmissionReinstall
+		d.AdmissionReinstall = &provenance
+	}
+	if d.SecurityBaseline != nil {
+		baseline := *d.SecurityBaseline
+		baseline.Resources = slices.Clone(baseline.Resources)
+		if baseline.Pending != nil {
+			pending := *baseline.Pending
+			baseline.Pending = &pending
+		}
+		if baseline.Enrollment != nil {
+			provenance := *baseline.Enrollment
+			baseline.Enrollment = &provenance
+		}
+		d.SecurityBaseline = &baseline
+	}
 	return d
 }
 func (s *Snapshot) Anchor() Anchor {
