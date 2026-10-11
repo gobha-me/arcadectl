@@ -74,13 +74,18 @@ func (f *fixtureLedger) originalWorldsName() (string, error) {
 
 func (f *fixtureLedger) worldsBody(d fixtureWorldsDocument) ([]byte, error) {
 	journal, err := f.worldsJournal()
-	if err != nil || d.Version != "original-worlds-v1" || d.RunID != f.document.RunID || !bytes.Equal(d.Journal, f.document.Journal) || d.JournalResourceVersion != f.document.JournalResourceVersion || d.Rows == nil || len(d.Rows) > 3*installsafety.MaxObjectsPerList {
-		return nil, ErrFixtures
-	}
-	if d.Phase != nil && !fixtureAccountsRecipeMatches(f.document, d.Phase) || d.Phase == nil && f.document.Recipe == fixtureRecipeV3 {
+	if err != nil || !f.worldsBindingMatches(d) {
 		return nil, ErrFixtures
 	}
 	return fixtureWorldsShapeBody(d, journal.Namespace)
+}
+
+// Current WAL/journal binding is never memoized with the immutable shape.
+func (f *fixtureLedger) worldsBindingMatches(d fixtureWorldsDocument) bool {
+	if d.Version != "original-worlds-v1" || d.RunID != f.document.RunID || !bytes.Equal(d.Journal, f.document.Journal) || d.JournalResourceVersion != f.document.JournalResourceVersion || d.Rows == nil || len(d.Rows) > 3*installsafety.MaxObjectsPerList {
+		return false
+	}
+	return d.Phase == nil && f.document.Recipe != fixtureRecipeV3 || d.Phase != nil && fixtureAccountsRecipeMatches(f.document, d.Phase)
 }
 
 // Package-independent immutable shape validation also applies to historical
@@ -169,6 +174,23 @@ func fixtureWorldsShapeBody(d fixtureWorldsDocument, namespace string) ([]byte, 
 }
 
 func (f *fixtureLedger) decodeWorlds(body []byte) (fixtureWorldsDocument, error) {
+	if len(body) == 0 || int64(len(body)) > privatefs.MaxEvidenceFileBytes {
+		return fixtureWorldsDocument{}, ErrFixtures
+	}
+	// worldsJournal uses the decode-cache mutex itself. Revalidate the current
+	// WAL and sealed journal BEFORE entering the pure shape-cache critical section.
+	journal, err := f.worldsJournal()
+	if err != nil {
+		return fixtureWorldsDocument{}, ErrFixtures
+	}
+	d, err := f.decodeCurrentWorldsShape(body, journal.Namespace)
+	if err != nil || !f.worldsBindingMatches(d) {
+		return fixtureWorldsDocument{}, ErrFixtures
+	}
+	return d, nil
+}
+
+func decodeFixtureWorldsShape(body []byte, namespace string) (fixtureWorldsDocument, error) {
 	var d fixtureWorldsDocument
 	if len(body) == 0 || int64(len(body)) > privatefs.MaxEvidenceFileBytes {
 		return d, ErrFixtures
@@ -182,7 +204,7 @@ func (f *fixtureLedger) decodeWorlds(body []byte) (fixtureWorldsDocument, error)
 	if !errors.Is(decoder.Decode(&extra), io.EOF) {
 		return fixtureWorldsDocument{}, ErrFixtures
 	}
-	want, err := f.worldsBody(d)
+	want, err := fixtureWorldsShapeBody(d, namespace)
 	if err != nil || !bytes.Equal(body, want) {
 		return fixtureWorldsDocument{}, ErrFixtures
 	}

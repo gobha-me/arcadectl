@@ -82,6 +82,9 @@ func TestFixtureOriginalWorldsPublicationResumeAndPrivateIdentity(t *testing.T) 
 	if err != nil || !reflect.DeepEqual(witness.Rows, rows) || loaded.advance(next) != nil {
 		t.Fatal("exact durable original companion could not be pinned")
 	}
+	if loaded.originalWorldsCurrent() != nil || loaded.decodeCache.worldsBody == nil {
+		t.Fatal("same-byte replacement control did not warm pure companion shape")
+	}
 	// Replacement bytes alone cannot preserve this loaded session's inode.
 	id := *loaded.worldIdentity
 	if _, err := f.engine.files.AtomicWrite(name, body, &id); err != nil {
@@ -183,9 +186,18 @@ func TestFixtureOriginalWorldsMissingCompanionCannotPrepareAnyEffect(t *testing.
 			if effect != "create" {
 				acknowledgeAllRecipeFixtures(t, ledger)
 			}
+			if ledger.originalWorldsCurrent() != nil || ledger.decodeCache.worldsBody == nil {
+				t.Fatal("missing-companion control did not warm pure companion shape")
+			}
 			name, _ := ledger.originalWorldsName()
-			if f.engine.files.RemoveEvidence(name, *ledger.worldIdentity) != nil || ledger.close() != nil {
+			if f.engine.files.RemoveEvidence(name, *ledger.worldIdentity) != nil {
 				t.Fatal("missing-companion injection failed")
+			}
+			if ledger.originalWorldsCurrent() != ErrFixtures || ledger.decodeCache.worldsBody == nil {
+				t.Fatal("hot same-instance shape hid a deleted companion")
+			}
+			if _, err := ledger.loadOriginalWorlds(); err != ErrFixtures || ledger.close() != nil {
+				t.Fatal("deleted companion was adopted or close failed")
 			}
 			loaded, err := f.engine.loadFixtureLedger(t.Context(), f.snapshot)
 			if err != nil {
@@ -339,7 +351,7 @@ func TestFixtureOriginalWorldsPerKindBoundsAndLargeEvidence(t *testing.T) {
 		t.Fatal("large companion did not exercise distinct evidence limit")
 	}
 	d, err := ledger.loadOriginalWorlds()
-	if err != nil || len(d.Rows) != installsafety.MaxObjectsPerList {
+	if err != nil || len(d.Rows) != installsafety.MaxObjectsPerList || ledger.decodeCache.worldsBody != nil {
 		t.Fatal("large original inventory lost members")
 	}
 	extra := rows[len(rows)-1]

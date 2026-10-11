@@ -13,6 +13,7 @@ import (
 )
 
 func TestFixtureDecodeCacheExactBytesCopiesAndBoundedLifetime(t *testing.T) {
+	t.Run("worlds-shape", testFixtureWorldsShapeCache)
 	h := newFixture(t, false)
 	f, err := h.engine.prepareFixtureLedger(t.Context(), h.snapshot)
 	if err != nil {
@@ -97,7 +98,7 @@ func TestFixtureDecodeCacheExactBytesCopiesAndBoundedLifetime(t *testing.T) {
 		t.Fatal("input aliases retained bytes")
 	}
 	journalBody := bytes.Clone(f.document.Journal)
-	if f.close() != nil || f.decodeCache.engine != nil || f.decodeCache.plans != nil || f.decodeCache.walBody != nil || f.decodeCache.journalBody != nil || !reflect.DeepEqual(f.decodeCache.wal, fixtureLedgerDocument{}) || !reflect.DeepEqual(f.decodeCache.journal, installstate.Document{}) {
+	if f.close() != nil || f.decodeCache.engine != nil || f.decodeCache.plans != nil || f.decodeCache.walBody != nil || f.decodeCache.journalBody != nil || f.decodeCache.worldsBody != nil || f.decodeCache.worldsNS != "" || !reflect.DeepEqual(f.decodeCache.worlds, fixtureWorldsDocument{}) || !reflect.DeepEqual(f.decodeCache.wal, fixtureLedgerDocument{}) || !reflect.DeepEqual(f.decodeCache.journal, installstate.Document{}) {
 		t.Fatal("closed ledger retained decoded evidence")
 	}
 	if _, err := f.decodeCurrentWAL(body); err != ErrFixtures {

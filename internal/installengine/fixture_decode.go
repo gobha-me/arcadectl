@@ -13,10 +13,10 @@ import (
 	"github.com/gobha-me/arcadectl/internal/installstate"
 )
 
-// One WAL and one embedded journal, local to this ledger instance. Only pure
-// strict decoding is memoized. Exact bytes, engine identity, the entire sealed
-// plan registry and both closed catalogs must still match. This does NOT cache
-// protected-file reads/identity/durability, companions, authorization, cluster
+// One WAL, embedded journal and bounded companion shape, local to this ledger
+// instance. Only pure strict decoding is memoized. Exact bytes, engine identity,
+// the entire sealed plan registry and all closed catalogs must still match. This does NOT cache
+// protected-file or companion reads/identity/durability, authorization, cluster
 // observations, phases or any effect/completion capability.
 type fixtureDecodeCache struct {
 	mu          sync.Mutex
@@ -30,7 +30,14 @@ type fixtureDecodeCache struct {
 	wal         fixtureLedgerDocument
 	journalBody []byte
 	journal     installstate.Document
+	worldsBody  []byte
+	worldsNS    string
+	worlds      fixtureWorldsDocument
 }
+
+// A retention bound, not an evidence-validity limit. Larger valid companions
+// follow the same strict decoder without retaining another body/shape copy.
+const fixtureWorldsDecodeRetentionBytes = 1024 * 1024
 
 func (c *fixtureDecodeCache) bind(e *Engine) {
 	match := c.engine == e && c.baseline == e.baselinePlan() && len(c.plans) == len(e.plans) && c.v1 == fixtureCatalog && c.v2 == fixtureCatalogV2 && c.v3 == fixtureCatalogV3
@@ -55,6 +62,54 @@ func (c *fixtureDecodeCache) bind(e *Engine) {
 	}
 	c.walBody, c.wal = nil, fixtureLedgerDocument{}
 	c.journalBody, c.journal = nil, installstate.Document{}
+	c.worldsBody, c.worldsNS, c.worlds = nil, "", fixtureWorldsDocument{}
+}
+
+func cloneFixtureWorldsDocument(d fixtureWorldsDocument) fixtureWorldsDocument {
+	d.Journal = bytes.Clone(d.Journal)
+	d.Rows = slices.Clone(d.Rows)
+	if d.Phase != nil {
+		phase := *d.Phase
+		phase.Rows = slices.Clone(phase.Rows)
+		phase.Public = slices.Clone(phase.Public)
+		phase.Leaders = slices.Clone(phase.Leaders)
+		for i := range phase.Leaders {
+			phase.Leaders[i].ManagedTimes = slices.Clone(phase.Leaders[i].ManagedTimes)
+		}
+		if phase.Accounts != nil {
+			accounts := *phase.Accounts
+			accounts.Rows = slices.Clone(accounts.Rows)
+			phase.Accounts = &accounts
+		}
+		d.Phase = &phase
+	}
+	return d
+}
+
+// Only strict parse/canonical shape is reusable, keyed by exact owned bytes
+// AND namespace. The caller revalidates current WAL/journal/run/recipe on every
+// invocation; no cache entry is a read witness or an execution capability.
+func (f *fixtureLedger) decodeCurrentWorldsShape(body []byte, namespace string) (fixtureWorldsDocument, error) {
+	if f == nil || f.engine == nil || f.lock == nil {
+		return fixtureWorldsDocument{}, ErrFixtures
+	}
+	c := &f.decodeCache
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.bind(f.engine)
+	if c.worldsBody != nil && c.worldsNS == namespace && bytes.Equal(body, c.worldsBody) {
+		return cloneFixtureWorldsDocument(c.worlds), nil
+	}
+	d, err := decodeFixtureWorldsShape(body, namespace)
+	if err != nil {
+		return fixtureWorldsDocument{}, ErrFixtures
+	}
+	if len(body) <= fixtureWorldsDecodeRetentionBytes {
+		c.worldsBody, c.worldsNS, c.worlds = bytes.Clone(body), namespace, cloneFixtureWorldsDocument(d)
+	} else {
+		c.worldsBody, c.worldsNS, c.worlds = nil, "", fixtureWorldsDocument{}
+	}
+	return d, nil
 }
 
 func cloneFixtureLedgerDocument(d fixtureLedgerDocument) fixtureLedgerDocument {
@@ -139,6 +194,7 @@ func (c *fixtureDecodeCache) clearWAL() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.walBody, c.wal = nil, fixtureLedgerDocument{}
+	c.worldsBody, c.worldsNS, c.worlds = nil, "", fixtureWorldsDocument{}
 }
 
 func (c *fixtureDecodeCache) clear() {
@@ -150,4 +206,5 @@ func (c *fixtureDecodeCache) clear() {
 	c.v3 = [len(fixtureCatalogV3)]fixtureRecipe{}
 	c.walBody, c.wal = nil, fixtureLedgerDocument{}
 	c.journalBody, c.journal = nil, installstate.Document{}
+	c.worldsBody, c.worldsNS, c.worlds = nil, "", fixtureWorldsDocument{}
 }
