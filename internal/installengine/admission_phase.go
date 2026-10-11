@@ -254,10 +254,13 @@ type phaseCollection struct {
 }
 
 func phaseCollections(o *installobserve.Observation) []phaseCollection {
-	if o == nil || o.Snapshot() == nil || o.Runtime() == nil {
+	if o == nil {
 		return nil
 	}
 	s, r := o.Snapshot(), o.Runtime()
+	if s == nil || r == nil {
+		return nil
+	}
 	return []phaseCollection{
 		{"arcade.gobha.me/v1alpha1", "GameServer", s.GameServers}, {"arcade.gobha.me/v1alpha1", "GameBackup", s.Backups},
 		{"arcade.gobha.me/v1alpha1", "GameRestore", s.Restores}, {"arcade.gobha.me/v1alpha1", "GameDestroy", s.Destroys},

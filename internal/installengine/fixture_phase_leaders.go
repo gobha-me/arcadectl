@@ -46,6 +46,11 @@ func (w *fixtureWire) refreshPhaseLeadersRead(ctx context.Context, o *installobs
 	if leases == nil || readAt.IsZero() {
 		return fixturePhaseBaseline{}, nil, ErrFixtures
 	}
+	rows := gc.Objects()
+	byUID, err := phaseLeaderIndex(phaseCollections(o))
+	if err != nil {
+		return fixturePhaseBaseline{}, nil, ErrFixtures
+	}
 	for index, original := range before.Leaders {
 		key := original.Row.Key // closed validated sealed original leader names
 		var lease *coordinationv1.Lease
@@ -62,7 +67,7 @@ func (w *fixtureWire) refreshPhaseLeadersRead(ctx context.Context, o *installobs
 			return fixturePhaseBaseline{}, nil, ErrFixtures
 		}
 		matches := 0
-		for _, row := range gc.Objects() {
+		for _, row := range rows {
 			if row.Metadata.UID == original.Row.UID || row.Source.GVR.GroupResource() == (schema.GroupResource{Group: "coordination.k8s.io", Resource: "leases"}) && row.Metadata.Namespace == key.Namespace && row.Metadata.Name == key.Name {
 				if row.Source.Kind != "Lease" || row.Source.GVR.GroupResource() != (schema.GroupResource{Group: "coordination.k8s.io", Resource: "leases"}) || !reflect.DeepEqual(row.Metadata, fixtureGCMetadata(lease)) {
 					return fixturePhaseBaseline{}, nil, ErrFixtures
@@ -70,7 +75,7 @@ func (w *fixtureWire) refreshPhaseLeadersRead(ctx context.Context, o *installobs
 				matches++
 			}
 		}
-		state, err := phaseLeaderState(o, original)
+		state, err := phaseLeaderStateByUID(byUID, original)
 		if matches != 1 || err != nil {
 			return fixturePhaseBaseline{}, nil, ErrFixtures
 		}
@@ -86,27 +91,33 @@ func (w *fixtureWire) refreshPhaseLeadersRead(ctx context.Context, o *installobs
 	return after, refreshed, nil
 }
 
-// Reconstruct ONLY the original sealed UID chain from the same complete typed
-// observation. No pre-fixture classifier is applied to post-fixture objects.
-func phaseLeaderState(o *installobserve.Observation, original fixturePhaseLeader) (admissionControllerState, error) {
-	zero := admissionControllerState{}
-	if o == nil || o.Snapshot() == nil || o.Runtime() == nil {
-		return zero, ErrFixtures
+// Private invocation-local materialization of one sealed observation, not a
+// cached live read or authority result. Callers retain all collection fences.
+func phaseLeaderIndex(collections []phaseCollection) (map[types.UID]runtime.Object, error) {
+	if len(collections) == 0 {
+		return nil, ErrFixtures
 	}
 	byUID := map[types.UID]runtime.Object{}
-	for _, collection := range phaseCollections(o) {
+	for _, collection := range collections {
 		items, err := meta.ExtractList(collection.list)
 		if err != nil {
-			return zero, ErrFixtures
+			return nil, ErrFixtures
 		}
 		for _, object := range items {
 			m, err := meta.Accessor(object)
 			if err != nil || byUID[m.GetUID()] != nil {
-				return zero, ErrFixtures
+				return nil, ErrFixtures
 			}
 			byUID[m.GetUID()] = object
 		}
 	}
+	return byUID, nil
+}
+
+// Reconstruct ONLY the original sealed UID chain from the same complete typed
+// observation. No pre-fixture classifier is applied to post-fixture objects.
+func phaseLeaderStateByUID(byUID map[types.UID]runtime.Object, original fixturePhaseLeader) (admissionControllerState, error) {
+	zero := admissionControllerState{}
 	parent, parentOK := byUID[original.ParentUID].(*appsv1.Deployment)
 	set, setOK := byUID[original.SetUID].(*appsv1.ReplicaSet)
 	pod, podOK := byUID[original.PodUID].(*corev1.Pod)

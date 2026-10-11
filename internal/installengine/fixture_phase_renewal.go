@@ -12,6 +12,8 @@ import (
 	"github.com/gobha-me/arcadectl/internal/installstate"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // Only this serialized GET/LIST-only phase can classify a complete refusal.
@@ -67,12 +69,24 @@ func (w *fixtureWire) classifyLeaseRVConflict(ctx context.Context, o *installobs
 
 func (w *fixtureWire) classifyLeaseRVConflictAccounts(ctx context.Context, o *installobserve.Observation, before fixturePhaseBaseline, objects [fixtureMaxSlots]*unstructured.Unstructured, refusal *installobserve.LeaseRVConflict, reads *fixturePhaseRead, accounts *phaseServiceAccounts) (fixturePhaseBaseline, error) {
 	zero := fixturePhaseBaseline{}
-	if refusal == nil || o == nil || o.Snapshot() == nil || reads == nil || reads.local(ctx, w) != nil || before.validate(w.actors.request.Snapshot.Anchor().Namespace) != nil {
+	if refusal == nil || o == nil || reads == nil || reads.local(ctx, w) != nil || before.validate(w.actors.request.Snapshot.Anchor().Namespace) != nil {
+		return zero, ErrFixtures
+	}
+	snapshot := o.Snapshot()
+	if snapshot == nil {
 		return zero, ErrFixtures
 	}
 	leases, at := refusal.WholeLeases()
-	if leases == nil || at.IsZero() || len(leases.Items) != len(o.Snapshot().Leases.Items) {
+	if leases == nil || at.IsZero() || len(leases.Items) != len(snapshot.Leases.Items) {
 		return zero, ErrFixtures
+	}
+	var byUID map[types.UID]runtime.Object
+	if len(before.Leaders) != 0 {
+		var err error
+		byUID, err = phaseLeaderIndex(phaseCollections(o))
+		if err != nil {
+			return zero, ErrFixtures
+		}
 	}
 	after := before
 	after.Leaders = append([]fixturePhaseLeader{}, before.Leaders...)
@@ -91,7 +105,7 @@ func (w *fixtureWire) classifyLeaseRVConflictAccounts(ctx context.Context, o *in
 		if lease == nil || lease.UID != original.Row.UID || lease.APIVersion != original.Row.Key.APIVersion || lease.Kind != original.Row.Key.Kind {
 			return zero, ErrFixtures
 		}
-		state, err := phaseLeaderState(o, original)
+		state, err := phaseLeaderStateByUID(byUID, original)
 		if err != nil {
 			return zero, ErrFixtures
 		}
@@ -111,7 +125,7 @@ func (w *fixtureWire) classifyLeaseRVConflictAccounts(ctx context.Context, o *in
 			continue
 		}
 		found := false
-		for _, original := range o.Snapshot().Leases.Items {
+		for _, original := range snapshot.Leases.Items {
 			if reflect.DeepEqual(lease, original) {
 				found = true
 				break

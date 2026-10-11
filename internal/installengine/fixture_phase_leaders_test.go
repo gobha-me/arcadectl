@@ -15,11 +15,14 @@ import (
 
 	"github.com/gobha-me/arcadectl/internal/installobserve"
 	"github.com/gobha-me/arcadectl/internal/installstate"
+	appsv1 "k8s.io/api/apps/v1"
 	authv1 "k8s.io/api/authorization/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 )
 
@@ -28,6 +31,7 @@ import (
 // claim a complete warm phase, native admission, or any effect authorization.
 // The native warm test exercises the complete composed observer on both profiles.
 func TestFixturePhaseLeaderRefreshWholeGCAndMonotonicTypedFloor(t *testing.T) {
+	t.Run("private-index-guards", testPhaseLeaderIndexGuards)
 	newPhase := fixturePhaseFactory(t)
 	for _, scenario := range []string{"renewal", "gc-superseded", "gc-missing", "gc-wrong-rv", "uid", "holder", "acquire", "transition", "fieldset", "data-label", "rv-regression", "renew-regression", "managed-regression", "list-denied", "unknown-list-field", "original-chain-missing"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -50,6 +54,43 @@ func TestFixturePhaseLeaderRefreshWholeGCAndMonotonicTypedFloor(t *testing.T) {
 			before, err := capturePhaseBaseline(observation, states, now)
 			if err != nil || len(before.Leaders) != 2 {
 				t.Fatal("sealed typed original leader chains unavailable", err)
+			}
+			if scenario == "renewal" {
+				snapshot, runtimeSnapshot := observation.Snapshot(), observation.Runtime()
+				byUID, err := phaseLeaderIndex(phaseCollections(observation))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, original := range before.Leaders {
+					state, err := phaseLeaderStateByUID(byUID, original)
+					if err != nil {
+						t.Fatal(err)
+					}
+					state.Deployment.Labels = map[string]string{"changed": "local"}
+					state.Sets[0].OwnerReferences[0].UID = "local-owner"
+					state.Pods[0].Spec.Containers[0].Image = "local-image"
+				}
+				fresh, err := phaseLeaderIndex(phaseCollections(observation))
+				if err != nil || !reflect.DeepEqual(snapshot, observation.Snapshot()) || !reflect.DeepEqual(runtimeSnapshot, observation.Runtime()) {
+					t.Fatal("private materialization changed sealed observation", err)
+				}
+				for _, original := range before.Leaders {
+					if _, err := phaseLeaderStateByUID(fresh, original); err != nil {
+						t.Fatal("later invocation inherited local mutation", err)
+					}
+				}
+				allocations := testing.AllocsPerRun(100, func() {
+					byUID, err := phaseLeaderIndex(phaseCollections(observation))
+					if err != nil {
+						t.Fatal("complete leader index unavailable", err)
+					}
+					for _, leader := range before.Leaders {
+						if _, err := phaseLeaderStateByUID(byUID, leader); err != nil {
+							t.Fatal("original leader materialization failed", err)
+						}
+					}
+				})
+				t.Logf("two-leader materialization allocations/run=%.0f", allocations)
 			}
 			whole := map[string]*unstructured.Unstructured{}
 			for index := range leases.Items {
@@ -171,6 +212,70 @@ func TestFixturePhaseLeaderRefreshWholeGCAndMonotonicTypedFloor(t *testing.T) {
 			}
 			unchanged()
 		})
+	}
+}
+
+// Malformed rows are exercised only at the private pure helper, not presented
+// as fabricated live authority. Real sealed-observer isolation is tested above.
+func testPhaseLeaderIndexGuards(t *testing.T) {
+	original := fixturePhaseLeader{ParentUID: "parent", SetUID: "set", PodUID: "pod"}
+	for _, fault := range []string{"none", "empty", "not-list", "duplicate-kind", "duplicate-cross-kind", "missing-parent", "missing-set", "missing-pod", "wrong-parent-type", "wrong-set-type", "wrong-pod-type", "no-owner", "two-owners", "wrong-owner"} {
+		t.Run(fault, func(t *testing.T) {
+			parent := &appsv1.DeploymentList{Items: []appsv1.Deployment{{ObjectMeta: metav1.ObjectMeta{Name: "original", UID: original.ParentUID}}}}
+			sets := &appsv1.ReplicaSetList{Items: []appsv1.ReplicaSet{{ObjectMeta: metav1.ObjectMeta{UID: original.SetUID, OwnerReferences: []metav1.OwnerReference{{UID: original.ParentUID}}}}}}
+			pods := &corev1.PodList{Items: []corev1.Pod{{ObjectMeta: metav1.ObjectMeta{UID: original.PodUID}}}}
+			collections := []phaseCollection{{"apps/v1", "Deployment", parent}, {"apps/v1", "ReplicaSet", sets}, {"v1", "Pod", pods}}
+			switch fault {
+			case "empty":
+				collections = nil
+			case "not-list":
+				collections[0].list = &corev1.Pod{}
+			case "duplicate-kind":
+				pods.Items = append(pods.Items, pods.Items[0])
+			case "duplicate-cross-kind":
+				pods.Items[0].UID = original.ParentUID
+			case "missing-parent":
+				parent.Items = nil
+			case "missing-set":
+				sets.Items = nil
+			case "missing-pod":
+				pods.Items = nil
+			case "wrong-parent-type", "wrong-set-type", "wrong-pod-type":
+				index := map[string]int{"wrong-parent-type": 0, "wrong-set-type": 1, "wrong-pod-type": 2}[fault]
+				uid := []types.UID{original.ParentUID, original.SetUID, original.PodUID}[index]
+				collections[index].list = &corev1.ConfigMapList{Items: []corev1.ConfigMap{{ObjectMeta: metav1.ObjectMeta{UID: uid}}}}
+			case "no-owner":
+				sets.Items[0].OwnerReferences = nil
+			case "two-owners":
+				sets.Items[0].OwnerReferences = append(sets.Items[0].OwnerReferences, sets.Items[0].OwnerReferences[0])
+			case "wrong-owner":
+				sets.Items[0].OwnerReferences[0].UID = "foreign"
+			}
+			byUID, err := phaseLeaderIndex(collections)
+			indexRefusal := fault == "empty" || fault == "not-list" || fault == "duplicate-kind" || fault == "duplicate-cross-kind"
+			if indexRefusal && (err == nil || byUID != nil) {
+				t.Fatal("malformed collection did not refuse at the complete index boundary")
+			}
+			if err != nil {
+				if byUID != nil || !indexRefusal {
+					t.Fatal("index returned partial evidence or unexpected refusal", err)
+				}
+				return
+			}
+			state, err := phaseLeaderStateByUID(byUID, original)
+			if (err == nil) != (fault == "none") {
+				t.Fatalf("typed original chain classification disagreed for %s", fault)
+			}
+			if err == nil && (state.Deployment != &parent.Items[0] || state.Sets[0] != &sets.Items[0] || state.Pods[0] != &pods.Items[0]) {
+				t.Fatal("selector did not preserve exact materialized objects")
+			}
+		})
+	}
+	// The index accounts for every collection, including an unrelated malformed
+	// object; it never silently indexes only the selected controller family.
+	malformed := &metav1.List{Items: []runtime.RawExtension{{Object: &runtime.Unknown{}}}}
+	if rows, err := phaseLeaderIndex([]phaseCollection{{list: malformed}}); err == nil || rows != nil {
+		t.Fatal("malformed unrelated collection accepted")
 	}
 }
 
