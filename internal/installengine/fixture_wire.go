@@ -78,7 +78,7 @@ func (actors *admissionActors) fixtures(ctx context.Context, ledger *fixtureLedg
 			identity.authorization = "Basic " + base64.StdEncoding.EncodeToString([]byte(config.Username+":"+config.Password))
 		}
 		config.WrapTransport = func(next http.RoundTripper) http.RoundTripper { return fixtureIdentityTransport{next, identity} }
-		client, err := NewDirectHTTPAccess(config)
+		client, err := parent.derivedDirectAccess(config.Impersonate, config.WrapTransport)
 		if err != nil {
 			return nil, ErrFixtures
 		}

@@ -1,0 +1,279 @@
+// Copyright 2026 gobha-me
+// SPDX-License-Identifier: Apache-2.0
+
+package installengine
+
+import (
+	"bytes"
+	"crypto/tls"
+	"encoding/json"
+	"fmt"
+	"maps"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/gobha-me/arcadectl/internal/installobserve"
+	"github.com/gobha-me/arcadectl/internal/installstate"
+	authv1 "k8s.io/api/authorization/v1"
+	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/rest"
+)
+
+// Real complete sealed SDK observations and alternating private actor reviews,
+// not fabricated evidence or cached proof results. A test-owned mutex joins
+// handler observations with caller snapshots, including forbidden requests.
+func testDirectReadPool(t *testing.T) {
+	plan := fixturePlan(t)
+	v, namespace, lists := readyControllerFixture(t, plan)
+	objects := maps.Clone(v.f.access.objects)
+	for name, secret := range v.secrets.objects {
+		objects[secretKey(namespace.Name, name)] = servingObject(t, secret)
+	}
+	connections := map[string]bool{}
+	requests, reviews := 0, 0
+	var mu sync.Mutex
+	base, _ := controllerProofAccessWithRequests(t, namespace, objects, lists, nil, "", func(w http.ResponseWriter, r *http.Request) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		connections[r.RemoteAddr] = true
+		requests++
+		if r.ProtoMajor != 1 || r.Header.Get("Authorization") != "Bearer TEST-ONLY-POOL" {
+			t.Error("reader/actor escaped frozen static HTTP1 identity")
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews" {
+			var review authv1.SelfSubjectAccessReview
+			if json.NewDecoder(r.Body).Decode(&review) != nil || review.Spec.NonResourceAttributes != nil || review.Spec.ResourceAttributes == nil {
+				t.Error("invalid private actor review")
+				w.WriteHeader(400)
+				return true
+			}
+			actor := ordinaryControllerActor
+			if reviews%2 != 0 {
+				actor = destroyControllerActor
+			}
+			if r.Header.Get("Impersonate-User") != "system:serviceaccount:"+namespace.Name+":"+actor.account() || review.Spec.ResourceAttributes.Resource != "pods" || review.Spec.ResourceAttributes.Verb != "update" || review.Spec.ResourceAttributes.Namespace != namespace.Name {
+				t.Error("shared pool crossed fresh actor identity or operation")
+			}
+			reviews++
+			review.Status.Allowed = true
+			_ = json.NewEncoder(w).Encode(review)
+			return true
+		}
+		if r.Header.Get("Impersonate-User") != "" || r.Method != http.MethodGet {
+			t.Error("SDK read inherited actor impersonation or mutation authority")
+		}
+		return false
+	})
+	config := rest.CopyConfig(base.frozen)
+	config.BearerToken = "TEST-ONLY-POOL"
+	access, err := NewDirectHTTPAccess(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := installstate.New(access.Namespaces(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		observer, err := installobserve.New(access.readConfig(), store, plan)
+		if err != nil {
+			t.Fatal("strict SDK observer refused frozen pool", err)
+		}
+		observation, err := observer.Collect(t.Context(), v.f.snapshot.Anchor())
+		if err != nil || observation == nil || len(observation.Runtime().Deployments.Items) != 2 {
+			t.Fatal("reconstructed observer did not collect complete live evidence", err)
+		}
+		for _, actor := range []admissionActor{ordinaryControllerActor, destroyControllerActor} {
+			client, err := access.actorClient(actor, namespace.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec := authv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &authv1.ResourceAttributes{Version: "v1", Resource: "pods", Verb: "update", Namespace: namespace.Name, Name: "arcadectl-probe"}}
+			if err := client.authorize(t.Context(), spec); err != nil {
+				t.Fatal("fresh private review refused", err)
+			}
+			mu.Lock()
+			before := requests
+			mu.Unlock()
+			_, getErr := client.Get(t.Context(), installstate.Key{APIVersion: "v1", Kind: "ServiceAccount", Namespace: namespace.Name, Name: "arcadectl-controller"})
+			mu.Lock()
+			after := requests
+			mu.Unlock()
+			if getErr == nil || after != before {
+				t.Fatal("pool reuse exposed generic actor access")
+			}
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if reviews != 6 {
+		t.Fatal("private reviews omitted or replayed")
+	}
+	if len(connections) != 1 {
+		t.Fatal("same frozen direct lineage rebuilt independent TCP/TLS pools", len(connections))
+	}
+	if requests != 141 {
+		t.Fatal("connection reuse changed the complete live request count", requests)
+	}
+	if access.frozen.Transport != nil || access.frozen.Proxy != nil || len(access.frozen.CAData) == 0 || !access.actorCompatible() || access.native == nil {
+		t.Fatal("pool derivation changed canonical actor or native TLS provenance")
+	}
+	t.Logf("complete SDK observations=3 private actor reviews=%d requests=%d TCP connections=%d", reviews, requests, len(connections))
+}
+
+// Independent parent lineages must not share TLS or HTTP identities even at
+// the same host. Each parent concurrently reconstructs SDK and actor clients;
+// every request is observed at the actual TLS server, not a fake RoundTripper.
+func testDirectReadPoolParentIsolation(t *testing.T) {
+	for _, separateHosts := range []bool{false, true} {
+		name := "same-host-distinct-certificates"
+		if separateHosts {
+			name = "distinct-hosts"
+		}
+		t.Run(name, func(t *testing.T) {
+			const namespace = "isolated-pool"
+			var mu sync.Mutex
+			certificates := make(map[string][]byte)
+			connections := make(map[string]bool)
+			requests, reviews := 0, 0
+			pairs := make([]tls.Certificate, 2)
+			configs := make([]*rest.Config, 2)
+			for i := range 2 {
+				opts := fixtureTLS(t, namespace, time.Now())
+				certificate, err := os.ReadFile(opts.CertificateFile)
+				if err != nil {
+					t.Fatal(err)
+				}
+				key, err := os.ReadFile(opts.KeyFile)
+				if err != nil {
+					t.Fatal(err)
+				}
+				pairs[i], err = tls.X509KeyPair(certificate, key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				token := fmt.Sprintf("TEST-ONLY-POOL-PARENT-%d", i)
+				certificates["Bearer "+token] = pairs[i].Certificate[0]
+				configs[i] = &rest.Config{BearerToken: token, TLSClientConfig: rest.TLSClientConfig{CertData: certificate, KeyData: key}}
+			}
+			newServer := func(owner int) *httptest.Server {
+				server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					mu.Lock()
+					defer mu.Unlock()
+					requests++
+					connections[fmt.Sprintf("%d/%s", owner, r.RemoteAddr)] = true
+					want := certificates[r.Header.Get("Authorization")]
+					if r.ProtoMajor != 1 || len(want) == 0 || r.TLS == nil || len(r.TLS.PeerCertificates) != 1 || !bytes.Equal(r.TLS.PeerCertificates[0].Raw, want) || separateHosts && r.Header.Get("Authorization") != "Bearer "+configs[owner].BearerToken {
+						t.Error("parent pool crossed host, static HTTP identity or client certificate")
+						w.WriteHeader(http.StatusForbidden)
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					if r.Method == http.MethodGet && r.URL.Path == "/version" && r.Header.Get("Impersonate-User") == "" {
+						_, _ = w.Write([]byte(`{"major":"1","minor":"37","gitVersion":"v1.37.0"}`))
+						return
+					}
+					if r.Method == http.MethodPost && r.URL.Path == "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews" {
+						var review authv1.SelfSubjectAccessReview
+						if json.NewDecoder(r.Body).Decode(&review) != nil || review.Spec.NonResourceAttributes != nil || review.Spec.ResourceAttributes == nil || review.Spec.ResourceAttributes.Namespace != namespace || review.Spec.ResourceAttributes.Resource != "pods" || review.Spec.ResourceAttributes.Verb != "update" {
+							t.Error("pool accepted an unbound private review")
+							w.WriteHeader(http.StatusBadRequest)
+							return
+						}
+						actor := ordinaryControllerActor
+						if review.Spec.ResourceAttributes.Name == destroyControllerActor.account() {
+							actor = destroyControllerActor
+						}
+						if review.Spec.ResourceAttributes.Name != actor.account() || r.Header.Get("Impersonate-User") != "system:serviceaccount:"+namespace+":"+actor.account() {
+							t.Error("concurrent parent pool crossed fresh actor identity")
+							w.WriteHeader(http.StatusForbidden)
+							return
+						}
+						reviews++
+						review.Status.Allowed = true
+						_ = json.NewEncoder(w).Encode(review)
+						return
+					}
+					w.WriteHeader(http.StatusForbidden)
+					t.Error("pool exposed a foreign operation")
+				}))
+				server.TLS = &tls.Config{MinVersion: tls.VersionTLS12, ClientAuth: tls.RequireAnyClientCert}
+				server.StartTLS()
+				t.Cleanup(server.Close)
+				return server
+			}
+			servers := []*httptest.Server{newServer(0)}
+			if separateHosts {
+				servers = append(servers, newServer(1))
+			}
+			parents := make([]*HTTPAccess, 2)
+			for i := range 2 {
+				server := servers[0]
+				if separateHosts {
+					server = servers[i]
+				}
+				configs[i].Host, configs[i].CAData = server.URL, serverConfig(server).CAData
+				var err error
+				parents[i], err = NewDirectHTTPAccess(configs[i])
+				if err != nil {
+					t.Fatal("independent frozen parent refused", err)
+				}
+				pool, ok := parents[i].pool.(*http.Transport)
+				if !ok || pool.TLSClientConfig == nil || pool.Proxy == nil || !parents[i].actorCompatible() || len(parents[i].frozen.CertData) == 0 || len(parents[i].frozen.CAData) == 0 {
+					t.Fatal("parent lost frozen TLS/direct provenance")
+				}
+				request, _ := http.NewRequest(http.MethodGet, "https://cluster.example/version", nil)
+				if proxy, err := pool.Proxy(request); err != nil || proxy != nil {
+					t.Fatal("pool admitted environment proxy routing")
+				}
+				t.Cleanup(pool.CloseIdleConnections)
+			}
+			if parents[0].pool == parents[1].pool {
+				t.Fatal("independent parent identities inherited one raw pool")
+			}
+			var workers sync.WaitGroup
+			failures := make(chan error, 2)
+			for _, parent := range parents {
+				workers.Go(func() {
+					for range 3 {
+						reader, err := discovery.NewDiscoveryClientForConfig(parent.readConfig())
+						if err != nil {
+							failures <- fmt.Errorf("fresh SDK reader: %w", err)
+							return
+						}
+						if version, err := reader.ServerVersionWithContext(t.Context()); err != nil || version == nil || version.GitVersion != "v1.37.0" {
+							failures <- fmt.Errorf("fresh SDK TLS request refused: %v", err)
+							return
+						}
+						for _, actor := range []admissionActor{ordinaryControllerActor, destroyControllerActor} {
+							client, err := parent.actorClient(actor, namespace)
+							if err != nil {
+								failures <- err
+								return
+							}
+							spec := authv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &authv1.ResourceAttributes{Version: "v1", Resource: "pods", Verb: "update", Namespace: namespace, Name: actor.account()}}
+							if err := client.authorize(t.Context(), spec); err != nil {
+								failures <- err
+								return
+							}
+						}
+					}
+				})
+			}
+			workers.Wait()
+			close(failures)
+			for err := range failures {
+				t.Error(err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if requests != 18 || reviews != 12 || len(connections) != 2 {
+				t.Fatal("fresh concurrent SDK/actor requests were skipped, replayed or independently repooled", requests, reviews, len(connections))
+			}
+		})
+	}
+}

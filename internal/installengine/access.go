@@ -61,6 +61,10 @@ type HTTPAccess struct {
 	// direct records explicitly selected no-environment-proxy routing. The
 	// caller's configuration has no callbacks; only our constructor adds one.
 	direct bool
+	// Raw connection infrastructure only, captured below all purpose, attempt,
+	// instrumentation and auth wrappers. Never share a wrapped actor client or
+	// authority result; direct descendants keep fresh independent wire guards.
+	pool http.RoundTripper
 	// actor is set only by the closed admission factory. Its wire guard rejects
 	// ordinary Access methods; only bound dry-run probes and actor SSARs pass.
 	actor *actorWireIdentity
@@ -150,9 +154,16 @@ func NewDirectHTTPAccess(config *rest.Config) (*HTTPAccess, error) {
 }
 
 func newHTTPAccess(config *rest.Config, direct bool) (*HTTPAccess, error) {
+	return newHTTPAccessWithPool(config, direct, nil)
+}
+
+// Only private derivation below may inherit a pool. Public constructors still
+// reject caller transports, and inherited configuration cannot select a host,
+// certificate or static identity independently from its frozen parent.
+func newHTTPAccessWithPool(config *rest.Config, direct bool, inherited http.RoundTripper) (*HTTPAccess, error) {
 	// External credential plugins may print secrets or log raw refresh errors;
 	// v1 deliberately supports static client certificates/bearer credentials.
-	if config == nil || config.ExecProvider != nil || config.AuthProvider != nil || config.Transport != nil {
+	if config == nil || config.ExecProvider != nil || config.AuthProvider != nil || config.Transport != nil || inherited != nil && !direct {
 		return nil, ErrInvalid
 	}
 	u, err := url.Parse(config.Host)
@@ -180,7 +191,9 @@ func newHTTPAccess(config *rest.Config, direct bool) (*HTTPAccess, error) {
 		c.Proxy = func(*http.Request) (*url.URL, error) { return nil, nil }
 	}
 	previous := c.WrapTransport
+	pool := inherited
 	c.WrapTransport = func(base http.RoundTripper) http.RoundTripper {
+		pool = base // raw TLS transport, before any client-specific wrapper
 		// Place the guard below any supplied wrapper or auth-refresh transport.
 		var guarded http.RoundTripper = attemptTransport{base}
 		if previous != nil {
@@ -188,16 +201,40 @@ func newHTTPAccess(config *rest.Config, direct bool) (*HTTPAccess, error) {
 		}
 		return guarded
 	}
-	h, err := rest.HTTPClientFor(c)
-	if err != nil {
+	var h *http.Client
+	if inherited == nil {
+		h, err = rest.HTTPClientFor(c)
+	} else {
+		var wrapped http.RoundTripper
+		wrapped, err = rest.HTTPWrappersForConfig(c, inherited)
+		h = &http.Client{Transport: wrapped, Timeout: c.Timeout}
+	}
+	if err != nil || pool == nil {
 		return nil, ErrInvalid
 	}
 	h.CheckRedirect = func(*http.Request, []*http.Request) error { return ErrRead }
-	a := &HTTPAccess{client: h, base: u, native: native, frozen: frozen, direct: direct}
+	a := &HTTPAccess{client: h, base: u, native: native, frozen: frozen, direct: direct, pool: pool}
 	if frozen.RateLimiter == nil && frozen.QPS == 0 && frozen.Burst == 0 {
 		a.readLimiter = flowcontrol.NewTokenBucketRateLimiter(installerReadQPS, installerReadBurst)
 	}
 	return a, nil
+}
+
+// Closed callers supply only already-validated request identity/purpose, not
+// transport routing or TLS credentials. Canonical frozen provenance remains
+// callback-free and complete for later actor compatibility and native TLS.
+func (a *HTTPAccess) derivedDirectAccess(identity rest.ImpersonationConfig, wrapper func(http.RoundTripper) http.RoundTripper) (*HTTPAccess, error) {
+	if !a.actorCompatible() || a.pool == nil || wrapper == nil {
+		return nil, ErrInvalid
+	}
+	c := rest.CopyConfig(a.frozen)
+	c.Impersonate, c.WrapTransport = identity, wrapper
+	derived, err := newHTTPAccessWithPool(c, true, a.pool)
+	if err != nil {
+		return nil, err
+	}
+	derived.readLimiter = a.readLimiter
+	return derived, nil
 }
 
 // Observer clients must inherit explicit direct routing too. Keep the source
@@ -212,6 +249,15 @@ func (a *HTTPAccess) readConfig() *rest.Config {
 		c.QPS, c.Burst, c.RateLimiter = installerReadQPS, installerReadBurst, a.readLimiter
 	}
 	if a.direct {
+		if a.pool == nil {
+			return nil
+		}
+		// The private raw pool already owns this parent's frozen TLS and
+		// fixed direct routing. client-go rejects custom Transport plus TLS
+		// options, so clear them ONLY in this trusted SDK derivative. Static
+		// HTTP auth/read wrappers and the aggregate limiter remain separate.
+		c.Transport = a.pool
+		c.TLSClientConfig = rest.TLSClientConfig{}
 		c.Proxy = func(*http.Request) (*url.URL, error) { return nil, nil }
 	}
 	return c

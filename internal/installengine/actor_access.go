@@ -156,7 +156,7 @@ func (a *HTTPAccess) frozenActorClient(actor admissionActor, namespace string, p
 	config.WrapTransport = func(next http.RoundTripper) http.RoundTripper {
 		return actorWireTransport{next: next, identity: identity}
 	}
-	access, err := NewDirectHTTPAccess(config)
+	access, err := a.derivedDirectAccess(config.Impersonate, config.WrapTransport)
 	if err != nil {
 		return nil, ErrInvalid
 	}

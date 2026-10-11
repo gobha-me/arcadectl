@@ -657,7 +657,10 @@ func testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t *testing.T, t
 	if acknowledged {
 		original := snapshot
 		snapshot, err = engine.delete(t.Context(), snapshot, deleteKey, true)
-		if err != nil || snapshot == nil || snapshot.Document().Pending != nil || snapshot.Document().Revision != original.Document().Revision+2 || snapshot.Anchor() != original.Anchor() || len(snapshot.Document().Resources) != len(original.Document().Resources)-1 || deletes != 1 || namespaceCAS != 2 || drainReads < 3 {
+		mu.Lock()
+		gotDeletes, gotNamespaceCAS, gotDrainReads := deletes, namespaceCAS, drainReads
+		mu.Unlock()
+		if err != nil || snapshot == nil || snapshot.Document().Pending != nil || snapshot.Document().Revision != original.Document().Revision+2 || snapshot.Anchor() != original.Anchor() || len(snapshot.Document().Resources) != len(original.Document().Resources)-1 || gotDeletes != 1 || gotNamespaceCAS != 2 || gotDrainReads < 3 {
 			t.Fatal("whole closed provider did not converge exact acknowledged access deletion", err)
 		}
 	} else if runtime && completed {

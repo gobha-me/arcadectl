@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -55,6 +56,18 @@ func instrumentDirectObserver(t *testing.T, access *HTTPAccess) *atomic.Int32 {
 		calls.Add(1)
 		return (&net.Dialer{}).DialContext(ctx, network, original)
 	}
+	// Direct SDK derivatives now reuse the already-verified raw TLS pool.
+	// Instrument only this test-owned clone, before its first observer request;
+	// production still rejects caller callbacks and never mutates a live pool.
+	pool, ok := access.pool.(*http.Transport)
+	if !ok || pool.TLSClientConfig == nil {
+		t.Fatal("missing original direct TLS pool")
+	}
+	instrumented := pool.Clone()
+	instrumented.DialContext = access.frozen.Dial
+	instrumented.TLSClientConfig.ServerName = host
+	access.pool = instrumented
+	t.Cleanup(instrumented.CloseIdleConnections)
 	return calls
 }
 

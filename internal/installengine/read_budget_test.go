@@ -11,6 +11,8 @@ import (
 )
 
 func TestInstallerReadBudgetSharedOnlyForUnspecifiedSettings(t *testing.T) {
+	t.Run("direct-pool", testDirectReadPool)
+	t.Run("direct-pool-parent-isolation", testDirectReadPoolParentIsolation)
 	for _, direct := range []bool{false, true} {
 		for _, settings := range []struct {
 			name    string
