@@ -149,9 +149,6 @@ func TestBaselineRetiredHTTPSRuntimeHealthy(t *testing.T) {
 }
 
 func TestBaselineRetiredHTTPSRuntimePendingOriginalAccessDelete(t *testing.T) {
-	t.Run("acknowledged-drain", func(t *testing.T) {
-		testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "runtime-acknowledged-original-access-delete")
-	})
 	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "runtime-pending-original-access-delete")
 }
 
@@ -169,6 +166,11 @@ func TestBaselineRetiredHTTPSRuntimeCompleteReceiptReplaced(t *testing.T) {
 
 func testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t *testing.T, testCase string) {
 	t.Helper()
+	if testCase == "runtime-pending-original-access-delete" {
+		t.Run("acknowledged-drain", func(t *testing.T) {
+			testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "runtime-acknowledged-original-access-delete")
+		})
+	}
 	runtime := strings.HasPrefix(testCase, "runtime-")
 	scenario := strings.TrimPrefix(testCase, "runtime-")
 	acknowledged := scenario == "acknowledged-original-access-delete"

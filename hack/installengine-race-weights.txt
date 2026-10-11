@@ -7,7 +7,8 @@
 # Expanded cancellation tree: local whole-tree race PASS on 2026-10-10,
 # measured 483.66 seconds (then 481.38 seconds in the final focused run).
 # Expanded retired-access trees: local whole-tree race PASS on 2026-10-11,
-# foreground retirement333.52 seconds and closed HTTPS pending access47.24 seconds.
+# foreground retirement333.52 seconds and closed HTTPS pending access48.05 seconds
+# (whole-tree PASS after preserving the literal wrapper contract; previous47.24).
 # For each measured tree: maximum observed cost across those measurements, plus15%
 # and5 seconds, rounded up to5 seconds with minimum10. Keep the existing
 # retained-worlds1200 reservation exclusive; it is not a certified bound.
@@ -279,7 +280,7 @@ TestBaselineRetiredHTTPSReviewDenied 35
 TestBaselineRetiredHTTPSRuntimeCompleteHealthy 35
 TestBaselineRetiredHTTPSRuntimeCompleteReceiptReplaced 50
 TestBaselineRetiredHTTPSRuntimeHealthy 35
-TestBaselineRetiredHTTPSRuntimePendingOriginalAccessDelete 60
+TestBaselineRetiredHTTPSRuntimePendingOriginalAccessDelete 65
 TestBaselineRetiredHTTPSRuntimeReceiptReplacedBetweenCores 35
 TestBaselineRetiredHTTPSSecondColdControllerImage 35
 TestBaselineRetiredHTTPSSecondColdWorldChange 35
