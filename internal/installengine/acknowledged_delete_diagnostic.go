@@ -58,6 +58,34 @@ func (s acknowledgedDeleteStep) label() string {
 
 type acknowledgedDeleteStatus uint8
 
+type acknowledgedDeleteObservation uint8
+
+const (
+	ackObservedDraining acknowledgedDeleteObservation = iota + 1
+	ackObservedQuietness
+)
+
+func (o acknowledgedDeleteObservation) label() string {
+	switch o {
+	case ackObservedDraining:
+		return "draining"
+	case ackObservedQuietness:
+		return "quietness"
+	}
+	return "unknown"
+}
+
+// Record only a completed preparation observation. A later callback's opening
+// fence must not erase it. This is not proof of native GC progress or authority.
+func traceAcknowledgedDeleteObservation(ctx context.Context, observation acknowledgedDeleteObservation) {
+	if ctx == nil || observation.label() == "unknown" {
+		return
+	}
+	if d, ok := ctx.Value(lifecycleDiagnosticKey{}).(*LifecycleDiagnostic); ok && d != nil {
+		d.ackObservation.Store(uint32(observation))
+	}
+}
+
 const (
 	ackActive acknowledgedDeleteStatus = iota + 1
 	ackRefused
@@ -138,4 +166,19 @@ func (d *LifecycleDiagnostic) AcknowledgedDeleteSnapshot() string {
 	}
 	status = acknowledgedDeleteStatus(packed & 255).label()
 	return fmt.Sprintf("step=%s status=%s", step, status)
+}
+
+// Read after the SAME Step returns, separately from the current-stage record.
+// Preserve the last completed observation across later opening/refusal stages;
+// unknown means no completed preparation observation was recorded. Neither
+// objects, raw errors, identities nor timing values enter this closed record.
+func (d *LifecycleDiagnostic) AcknowledgedDeleteObservationSnapshot() string {
+	if d == nil || d.ackPreparation.Load() == 0 {
+		return ""
+	}
+	label := "unknown"
+	if value := d.ackObservation.Load(); value <= 255 {
+		label = acknowledgedDeleteObservation(value).label()
+	}
+	return "last-completed=" + label
 }

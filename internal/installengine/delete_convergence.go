@@ -79,6 +79,7 @@ func (e *Engine) waitAcknowledgedDelete(ctx context.Context, intent *installstat
 				}
 				previous, quiet = nil, time.Time{}
 				traceAcknowledgedDeleteStep(ctx, ackDraining)
+				traceAcknowledgedDeleteObservation(ctx, ackObservedDraining)
 				return false, nil // acknowledged original is still draining
 			}
 			traceAcknowledgedDeleteStep(ctx, ackExecutableCollection)
@@ -100,6 +101,7 @@ func (e *Engine) waitAcknowledgedDelete(ctx context.Context, intent *installstat
 			}
 			if time.Since(quiet) < 5*time.Second {
 				traceAcknowledgedDeleteStep(ctx, ackQuietness)
+				traceAcknowledgedDeleteObservation(ctx, ackObservedQuietness)
 				return false, nil // complete read-only observations only
 			}
 			traceAcknowledgedDeleteStep(ctx, ackFullGuardOpening)

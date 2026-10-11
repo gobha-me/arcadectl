@@ -4,14 +4,16 @@
 # Completed whole-tree race PASS timings: b57818e/run38060299469,
 # 380072a/run38070774426 (including whole PASS before worker timeouts), and
 # 3ea092a/run38083379847. Interrupted and unstarted trees are not measurements.
-# For each measured tree: maximum observed cost across those runs, plus15%
+# Expanded cancellation tree: local whole-tree race PASS on 2026-10-10,
+# measured 483.66 seconds (then 481.38 seconds in the final focused run).
+# For each measured tree: maximum observed cost across those measurements, plus15%
 # and5 seconds, rounded up to5 seconds with minimum10. Keep the existing
 # retained-worlds1200 reservation exclusive; it is not a certified bound.
 # Calibration changes only relative placement: all compiled names still run
 # exactly once in32 workers with unchanged20m process budgets. Unknown future
 # names keep the script's initial default60; stale/duplicate entries refuse CI.
 FuzzForwardFrameGuard 10
-TestAcknowledgedDeleteCancellationKeepsOriginalIntent 185
+TestAcknowledgedDeleteCancellationKeepsOriginalIntent 565
 TestAcknowledgedDeleteDiagnosticActualEarlyRefusals 10
 TestAcknowledgedDeleteDiagnosticClosedFreshAndConcurrent 10
 TestAcknowledgedDeletePreparesWholeAbsenceBeforeProof 460

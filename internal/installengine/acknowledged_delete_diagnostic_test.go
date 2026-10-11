@@ -18,6 +18,7 @@ import (
 )
 
 func TestAcknowledgedDeleteDiagnosticClosedFreshAndConcurrent(t *testing.T) {
+	t.Run("completed-observation", testAcknowledgedDeleteCompletedObservation)
 	steps := map[acknowledgedDeleteStep]string{
 		ackOriginalOpening: "original-opening", ackTargetRead: "target-read", ackOriginalClosing: "original-closing",
 		ackTargetOriginalCheck: "target-original-check", ackDraining: "draining", ackExecutableCollection: "executable-collection",
@@ -123,6 +124,93 @@ func TestAcknowledgedDeleteDiagnosticClosedFreshAndConcurrent(t *testing.T) {
 				traceAcknowledgedDeleteRefusal(ctx, errors.New("PRIVATE"))
 				if got := d.AcknowledgedDeleteSnapshot(); len(got) > 80 || strings.Contains(got, "PRIVATE") {
 					t.Error("concurrent recorder escaped bounded labels")
+				}
+			}
+		})
+	}
+	group.Wait()
+}
+
+func testAcknowledgedDeleteCompletedObservation(t *testing.T) {
+	var absent *LifecycleDiagnostic
+	if absent.AcknowledgedDeleteObservationSnapshot() != "" {
+		t.Fatal("absent recorder invented a completed observation")
+	}
+	for value := range 256 {
+		ctx, d := WithLifecycleDiagnostic(t.Context())
+		label := "unknown"
+		switch acknowledgedDeleteObservation(value) {
+		case ackObservedDraining:
+			label = "draining"
+		case ackObservedQuietness:
+			label = "quietness"
+		}
+		if acknowledgedDeleteObservation(value).label() != label {
+			t.Fatal("observation escaped closed labels")
+		}
+		traceAcknowledgedDeleteStep(ctx, ackOriginalOpening)
+		traceAcknowledgedDeleteObservation(ctx, acknowledgedDeleteObservation(value))
+		if got := d.AcknowledgedDeleteObservationSnapshot(); got != "last-completed="+label {
+			t.Fatal("unknown observation manufactured completed progress", got)
+		}
+	}
+	for _, observation := range []acknowledgedDeleteObservation{ackObservedDraining, ackObservedQuietness} {
+		ctx, d := WithLifecycleDiagnostic(t.Context())
+		traceAcknowledgedDeleteStep(ctx, ackDraining)
+		traceAcknowledgedDeleteObservation(ctx, observation)
+		traceOperationBoundary(ctx, boundaryDeleteACKWait)
+		traceAcknowledgedDeleteStep(ctx, ackOriginalOpening)
+		traceAcknowledgedDeleteRefusal(ctx, context.DeadlineExceeded)
+		if d.AcknowledgedDeleteSnapshot() != "step=original-opening status=deadline" || d.AcknowledgedDeleteObservationSnapshot() != "last-completed="+observation.label() {
+			t.Fatal("later opening erased completed observation")
+		}
+		traceAcknowledgedDeleteStep(ctx, ackExecutableCollection)
+		child, cancel := context.WithDeadline(ctx, time.Time{})
+		traceAcknowledgedDeleteRefusal(child, child.Err())
+		cancel()
+		traceAcknowledgedDeleteRefusal(ctx, errors.New("PRIVATE-COLLECTOR-CANARY"))
+		if d.AcknowledgedDeleteSnapshot() != "step=executable-collection status=deadline" || d.AcknowledgedDeleteObservationSnapshot() != "last-completed="+observation.label() {
+			t.Fatal("collector deadline changed separate completed observation")
+		}
+		_, fresh := WithLifecycleDiagnostic(ctx)
+		if fresh.AcknowledgedDeleteObservationSnapshot() != "" {
+			t.Fatal("new Step retained previous observation")
+		}
+		for _, checkpoint := range []bool{true, false} {
+			if checkpoint {
+				traceLifecycleCheckpoint(ctx, ColdSafety, lifecycleDiagnosticEntered)
+			} else {
+				traceOperationBoundary(ctx, boundaryDeleteOpening)
+			}
+			if d.AcknowledgedDeleteObservationSnapshot() != "" || d.ackObservation.Load() != 0 {
+				t.Fatal("new operation/checkpoint retained previous observation")
+			}
+			traceAcknowledgedDeleteStep(ctx, ackOriginalOpening)
+			if d.AcknowledgedDeleteObservationSnapshot() != "last-completed=unknown" {
+				t.Fatal("fresh preparation inherited previous observation")
+			}
+			traceAcknowledgedDeleteObservation(ctx, observation)
+		}
+	}
+	ctx, d := WithLifecycleDiagnostic(t.Context())
+	traceAcknowledgedDeleteStep(ctx, ackTargetRead)
+	for _, value := range []uint32{256, ^uint32(0)} {
+		d.ackObservation.Store(value)
+		if d.AcknowledgedDeleteObservationSnapshot() != "last-completed=unknown" {
+			t.Fatal("corrupt observation wrapped into a known label")
+		}
+	}
+	traceAcknowledgedDeleteObservation(nil, ackObservedDraining)
+	traceAcknowledgedDeleteObservation(context.WithValue(t.Context(), lifecycleDiagnosticKey{}, "PRIVATE"), ackObservedQuietness)
+	var group sync.WaitGroup
+	for range 8 {
+		group.Go(func() {
+			for range 100 {
+				traceAcknowledgedDeleteObservation(ctx, ackObservedQuietness)
+				traceAcknowledgedDeleteStep(ctx, ackOriginalOpening)
+				traceAcknowledgedDeleteRefusal(ctx, errors.New("PRIVATE"))
+				if got := d.AcknowledgedDeleteObservationSnapshot(); got != "last-completed=quietness" {
+					t.Error("concurrent recorder escaped fixed completed label", got)
 				}
 			}
 		})

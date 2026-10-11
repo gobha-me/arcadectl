@@ -95,6 +95,11 @@ func targetKindFixtureImagesForScope(t *testing.T, nodeImage string, withControl
 }
 
 func targetKindFixtureImagesForBudget(t *testing.T, nodeImage string, withController, recipeV2, binary, predecessor, precontroller bool) (context.Context, *rest.Config, installpackage.Images, installpackage.Images) {
+	ctx, config, current, previous, _ := targetKindFixtureImagesWithOwnedNode(t, nodeImage, withController, recipeV2, binary, predecessor, precontroller)
+	return ctx, config, current, previous
+}
+
+func targetKindFixtureImagesWithOwnedNode(t *testing.T, nodeImage string, withController, recipeV2, binary, predecessor, precontroller bool) (context.Context, *rest.Config, installpackage.Images, installpackage.Images, *gcOwnedKindNode) {
 	t.Helper()
 	if precontroller && (withController || recipeV2 || binary || predecessor) {
 		t.Fatal("pre-controller fixture cannot acquire executable or historical scope")
@@ -310,7 +315,7 @@ func targetKindFixtureImagesForBudget(t *testing.T, nodeImage string, withContro
 	if err != nil {
 		t.Fatal("isolated kubeconfig unavailable")
 	}
-	return ctx, configuration, installpackage.Images{API: apiImage, Controller: controllerImage}, previous
+	return ctx, configuration, installpackage.Images{API: apiImage, Controller: controllerImage}, previous, &gcOwnedKindNode{name: node, id: nodeID, cluster: name}
 }
 
 // Shared signed-template setup; the boolean is a test-only closed choice, not

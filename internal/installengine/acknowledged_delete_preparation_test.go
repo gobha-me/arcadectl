@@ -54,7 +54,9 @@ func TestAcknowledgedDeleteRejectsProtectedFileFenceDuringPreparation(t *testing
 }
 
 func TestAcknowledgedDeleteCancellationKeepsOriginalIntent(t *testing.T) {
-	testAcknowledgedDeletePreparation(t, "cancel")
+	for _, failure := range []string{"cancel", "late-draining-cancel", "late-quietness-cancel"} {
+		t.Run(failure, func(t *testing.T) { testAcknowledgedDeletePreparation(t, failure) })
+	}
 }
 
 func TestAcknowledgedDeleteRejectsCollectedTargetReappearance(t *testing.T) {
@@ -286,13 +288,23 @@ func testAcknowledgedDeletePreparation(t *testing.T, failure string) {
 			return
 		}
 		if r.Method == http.MethodGet {
+			if deletes == 1 && !injected && currentDiagnostic != nil && r.URL.Path == "/api/v1/namespaces/"+d.Namespace && currentDiagnostic.AcknowledgedDeleteSnapshot() == "step=original-opening status=active" {
+				want := map[string]string{"late-draining-cancel": "last-completed=draining", "late-quietness-cancel": "last-completed=quietness"}[failure]
+				if want != "" && currentDiagnostic.AcknowledgedDeleteObservationSnapshot() == want {
+					injected = true
+					cancel()
+					// The actual later opening read must refuse, never race a
+					// valid Namespace response against transport cancellation.
+					return
+				}
+			}
 			if failure == "postproof-reappearance" && deletes == 1 && proofOpened && postRules == 12 && r.URL.Path == targetPath && currentDiagnostic != nil && currentDiagnostic.BoundarySnapshot() == "operation=delete-ack-wait baseline=complete" && !injected {
 				objects[key] = before.DeepCopy()
 				injected = true
 			}
 			if deletes == 1 && r.URL.Path == targetPath && !proofOpened {
 				targetReads++
-				if targetReads == 1 && failure != "" && failure != "late-pod" && failure != "collected-reappearance" && failure != "postproof-reappearance" {
+				if targetReads == 1 && failure != "" && failure != "late-pod" && failure != "collected-reappearance" && failure != "postproof-reappearance" && failure != "late-draining-cancel" && failure != "late-quietness-cancel" {
 					injected = true
 					switch failure {
 					case "replacement":
@@ -543,10 +555,31 @@ func testAcknowledgedDeletePreparation(t *testing.T, failure string) {
 			"read-refusal": "step=target-read status=refused", "journal": "step=original-closing status=refused",
 			"protected-file": "step=original-closing status=refused", "cancel": "step=target-read status=cancelled",
 			"collected-reappearance": "step=target-absent-check status=refused", "postproof-reappearance": "step=post-guard-target-read status=refused",
-			"late-pod": "step=full-guard-opening status=refused",
+			"late-pod":             "step=full-guard-opening status=refused",
+			"late-draining-cancel": "step=original-opening status=cancelled", "late-quietness-cancel": "step=original-opening status=cancelled",
 		}[failure]
 		if diagnostic.AcknowledgedDeleteSnapshot() != preparation {
 			t.Fatal("actual preparation refusal lost its closed step/context labels", diagnostic.AcknowledgedDeleteSnapshot())
+		}
+		observation := "last-completed=unknown"
+		if want := map[string]string{"late-draining-cancel": "last-completed=draining", "late-quietness-cancel": "last-completed=quietness", "late-pod": "last-completed=quietness", "postproof-reappearance": "last-completed=quietness", "collected-reappearance": "last-completed=draining"}[failure]; want != "" {
+			observation = want
+		}
+		if diagnostic.AcknowledgedDeleteObservationSnapshot() != observation {
+			t.Fatal("genuine one-DELETE preparation lost its last completed observation", diagnostic.AcknowledgedDeleteObservationSnapshot())
+		}
+		if failure == "late-draining-cancel" && (targetReads < 1 || collections != 0) {
+			t.Fatal("late draining injection lacked independent prior original-target reads")
+		}
+		if failure == "late-quietness-cancel" {
+			if targetReads < 4 || collections < 1 {
+				t.Fatal("late quietness injection lacked independent absent-target and whole observations")
+			}
+			for _, count := range preparationLists {
+				if count != collections {
+					t.Fatal("late quietness injection omitted a whole executable collection")
+				}
+			}
 		}
 		if failure == "late-pod" {
 			if diagnostic.FailureSnapshot() != "check=executables-stable family=Pod changes=resource-version,metadata,status" || proofStarts != 2 || postRules != 2 || !proofOpened {

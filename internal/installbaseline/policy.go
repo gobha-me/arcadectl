@@ -41,7 +41,7 @@ func Render(namespace string) ([]*unstructured.Unstructured, error) {
 		}, templateProducer},
 		{"replicaset", "spec.template.spec", []admissionv1.NamedRuleWithOperations{rule("apps", "v1", "replicasets")}, replicaSetProducer},
 		{"cronjob", "spec.jobTemplate.spec.template.spec", []admissionv1.NamedRuleWithOperations{rule("batch", "v1", "cronjobs")}, "false"},
-		{"identity", "", []admissionv1.NamedRuleWithOperations{rule("", "v1", "serviceaccounts", "services"), rule("rbac.authorization.k8s.io", "v1", "roles", "rolebindings")}, "false"},
+		{"identity", "", []admissionv1.NamedRuleWithOperations{rule("", "v1", "serviceaccounts", "services"), rule("rbac.authorization.k8s.io", "v1", "roles", "rolebindings")}, serviceGarbageCollectorProducer},
 		{"scale", "", []admissionv1.NamedRuleWithOperations{rule("apps", "v1", "deployments/scale", "replicasets/scale", "statefulsets/scale"), rule("", "v1", "replicationcontrollers/scale")}, "false"},
 	}
 	result := make([]*unstructured.Unstructured, 0, ResourceCount)
@@ -141,7 +141,14 @@ const podProducer = `
     'system:serviceaccount:kube-system:replication-controller',
     'system:serviceaccount:kube-system:daemon-set-controller',
     'system:serviceaccount:kube-system:statefulset-controller'] ||
-  (request.operation == 'DELETE' && request.userInfo.username == 'system:serviceaccount:kube-system:generic-garbage-collector'))`
+  ((!has(request.subResource) || request.subResource == '') && request.operation in ['DELETE', 'UPDATE'] && request.userInfo.username == 'system:serviceaccount:kube-system:generic-garbage-collector')) ||
+ (request.operation == 'DELETE' && (!has(request.subResource) || request.subResource == '') &&
+  oldObject != null && has(oldObject.spec.nodeName) && oldObject.spec.nodeName != '' &&
+  request.userInfo.username == 'system:node:' + oldObject.spec.nodeName &&
+  has(request.userInfo.groups) && 'system:nodes' in request.userInfo.groups &&
+  has(oldObject.metadata.deletionTimestamp) && has(oldObject.status) && has(oldObject.status.phase) &&
+  oldObject.status.phase in ['Succeeded', 'Failed'] &&
+  (!has(oldObject.metadata.annotations) || !('kubernetes.io/config.mirror' in oldObject.metadata.annotations)))`
 
 // ReplicaSetSpec has replicas, minReadySeconds, selector and template. Only the
 // replicas field may change under the producer exception; metadata revisions
@@ -164,8 +171,19 @@ const templateProducer = garbageCollectorProducer + ` ||
 // This is not an original-UID/WAL proof or a finalizer-only exception; the
 // installer's full metadata, owner-chain and UID/RV guards remain mandatory.
 // CREATE, scaling, selector/template substitution and other principals do not
-// acquire authority. Pod/CronJob/identity/Scale families stay unchanged.
+// acquire authority. Pod UPDATE additionally uses its whole-spec outer guard;
+// only Services get the identity-family exception below. CronJob, ServiceAccount,
+// Role, RoleBinding and Scale families acquire no new producer authority.
 const garbageCollectorProducer = `
  (request.userInfo.username == 'system:serviceaccount:kube-system:generic-garbage-collector' &&
   (request.operation == 'DELETE' ||
    (request.operation == 'UPDATE' && object != null && oldObject != null && object.spec == oldObject.spec)))`
+
+// This family also matches identities without a spec. The explicit kind guard
+// confines the exception to Services; dyn avoids spurious static schema warnings
+// for the other kinds without broadening the runtime whole-spec equality check.
+const serviceGarbageCollectorProducer = `
+ (request.kind.kind == 'Service' && (!has(request.subResource) || request.subResource == '') &&
+  request.userInfo.username == 'system:serviceaccount:kube-system:generic-garbage-collector' &&
+  (request.operation == 'DELETE' ||
+   (request.operation == 'UPDATE' && object != null && oldObject != null && dyn(object).spec == dyn(oldObject).spec)))`

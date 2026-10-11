@@ -70,21 +70,48 @@ identity decisions; the finite review catalog is not an attestation of an
 arbitrary external authorizer or a guarantee against future administrator
 changes. No additional actor credentials are required by that model.
 
-The template and ReplicaSet producer policies allow the exact native
+The template, ReplicaSet and Pod producer policies allow the exact native
 `system:serviceaccount:kube-system:generic-garbage-collector` to DELETE, or to
 UPDATE with non-null old/new objects and the **whole executable spec unchanged**.
+The Pod allowance is limited to the root resource, not executable subresources.
+The identity family separately permits that same root-resource behavior for
+Services only, with the whole Service spec unchanged. ServiceAccounts, Roles
+and RoleBindings do not acquire GC producer authority.
 This accommodates the resource-version-preconditioned foreground-finalizer
 [MergePatch used by Kubernetes GC](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/controller/garbagecollector/operations.go#L95-L133),
 which admission evaluates as UPDATE. It deliberately permits metadata-only
 updates by this already trusted native principal, not only finalizer removal;
 it is not an original-UID or installer-WAL authorization proof. It does not
-grant CREATE, scaling, selector/template/spec changes or ordinary/runtime-actor
-access, and adds no new Pod/CronJob/identity/Scale/PVC authority. Existing complete
+grant CREATE, scaling, selector/template/spec changes, username-prefix exemptions
+or ordinary/runtime-actor access, and adds no CronJob/Scale/PVC authority. Existing complete
 metadata, owner-chain, UID/RV, receipt and stability proofs remain mandatory.
+The Pod family additionally permits only root DELETE completion by the exact
+`system:node:` identity for the old Pod's nonempty assigned node, with the
+`system:nodes` group, an existing deletion timestamp and terminal `Succeeded`
+or `Failed` API phase. Mirror Pods (including an empty mirror annotation) are
+excluded. This cannot initiate deletion of a live Pod or authorize CREATE,
+UPDATE, executable subresources or other resource families. Terminal API phase
+is not an independent attestation that a compromised node finished termination;
+native control-plane/node identities are trusted, while actual lifecycle proofs
+still require full original-resource absence and retain their UID/RV fences.
 Authenticated API-only tests cover native foreground-finalizer PATCH/absence
 and negatively attributed boundary controls on both profiles. They contain no
-controller-manager/kubelet: actual descendant GC and full retaining lifecycle
-still require the separate signed-binary gates to complete successfully.
+controller-manager/kubelet. A separate disposable Kubernetes 1.37 component gate
+requires actual native Deployment/ReplicaSet/scheduling-gated Pod and Service
+foreground GC, exact policy denials for unauthorized/spec-changing probes, and
+zero native policy typechecking warnings. Its mandatory sequential node case
+also starts an inert digest-pinned pause Pod on the actual owned node and requires
+the original foreground chain to disappear without manual finalizer removal or
+force deletion. Authenticated API-only controls on both profiles independently
+cover exact node identity/group, terminal/deleting prerequisites, mirror and
+wrong-UID refusals, and no CREATE/UPDATE/subresource/other-family authority.
+Only the two mirror-key predicate controls use an additional API-only namespace
+containing the authenticated standalone baseline: historical worker gates fail
+closed when a valid mirror Pod omits `serviceAccountName`. Those controls do not
+claim mirror compatibility with historical runtime policies. All regular node
+controls and the real native foreground gate retain combined-policy coverage.
+It creates no Secret, world or PVC and
+does not replace the separate signed-binary retaining lifecycle gates.
 
 The private dry-run transport also has finite, negatively attributed identity
 CREATE/DELETE and ordinary-controller Service UPDATE/PATCH and Deployment
@@ -432,6 +459,14 @@ five-minute ACK wait or its two-minute collection child is distinct from the
 outer command context, which may still be active. A collection refusal remains
 coarse: it does not identify a provider cause. No error text, object value,
 timeout override, extra observation, exemption, or retry is introduced.
+Its separate `acknowledged-delete-observation last-completed` line preserves
+`unknown`, `draining` or `quietness` across a later opening/refusal step.
+`draining` means a completed observation still found the original deleting
+target; `quietness` means a completed whole-executable observation was waiting
+for the quiet window, not that the window or full proof passed. `unknown` means
+neither observation completed. Each fresh Step/checkpoint resets this record.
+These labels distinguish prior progress from the final overwritten opening
+label; they do not identify why a collection was slow or why objects changed.
 
 The development native gates are separate and mandatory in the committed CI:
 four complete public admission runs (profiles 135/137, cold/warm) and three actual

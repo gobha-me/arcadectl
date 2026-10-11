@@ -223,6 +223,7 @@ func traceOperationBoundary(ctx context.Context, step operationBoundary) {
 	if d, ok := ctx.Value(lifecycleDiagnosticKey{}).(*LifecycleDiagnostic); ok && d != nil {
 		if step != boundaryDeleteACKWait && step != boundaryDeleteACKClose {
 			d.ackPreparation.Store(0)
+			d.ackObservation.Store(0)
 		}
 		d.baselineBoundary.Store(0)
 		d.baselineBeforeDeadline.Store(0)

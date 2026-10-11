@@ -287,6 +287,9 @@ func runMutation(ctx context.Context, o options, stdout, stderr io.Writer) int {
 			if preparation := diagnostic.AcknowledgedDeleteSnapshot(); preparation != "" {
 				_, _ = fmt.Fprintf(stderr, "installation diagnostic acknowledged-delete %s\n", preparation)
 			}
+			if observation := diagnostic.AcknowledgedDeleteObservationSnapshot(); observation != "" {
+				_, _ = fmt.Fprintf(stderr, "installation diagnostic acknowledged-delete-observation %s\n", observation)
+			}
 			if failure := diagnostic.FailureSnapshot(); failure != "" {
 				_, _ = fmt.Fprintf(stderr, "installation diagnostic refusal %s\n", failure)
 			}

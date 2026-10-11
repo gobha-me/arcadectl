@@ -6,18 +6,14 @@
 package installengine
 
 import (
-	"bytes"
 	"context"
-	"crypto/ed25519"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/gobha-me/arcadectl/internal/installbaseline"
-	"github.com/gobha-me/arcadectl/internal/installcontract"
 	"github.com/gobha-me/arcadectl/internal/installrender"
-	"github.com/gobha-me/arcadectl/internal/installstate"
 	admissionv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	authv1 "k8s.io/api/authorization/v1"
@@ -263,6 +259,7 @@ func testPrivilegedIdentityBoundary(t *testing.T, standaloneGuard bool) {
 			deny("delete the reserved privileged ServiceAccount", "identity", err)
 			if standaloneGuard {
 				testStandaloneProducerBoundary(t, ctx, environment, config, admin, ordinary, plan.Namespace(), job, installed, actorCan)
+				testStandaloneNodeTerminationBoundary(t, ctx, environment, config, admin, plan.Namespace(), profile, &job.Spec.Template.Spec, actorCan)
 			}
 			current, err := admin.AppsV1().Deployments(plan.Namespace()).Get(ctx, installed.Name, metav1.GetOptions{})
 			if err != nil || current.UID != installed.UID || current.ResourceVersion != installed.ResourceVersion || current.Spec.Template.Spec.Containers[0].Image != installed.Spec.Template.Spec.Containers[0].Image {
@@ -288,70 +285,6 @@ func testPrivilegedIdentityBoundary(t *testing.T, standaloneGuard bool) {
 	}
 }
 
-// The fixture's acknowledged native UID proves matching behavior only. There
-// is no production journal/effect receipt here, so it cannot certify durable
-// ownership or recovery and must not replace the signed executable gates.
-func installStandaloneBaselineContract(t *testing.T, ctx context.Context, access *HTTPAccess, namespace, profile string) (*installbaseline.Plan, map[installstate.Key]*unstructured.Unstructured) {
-	t.Helper()
-	manifest, payload, err := installbaseline.Build(strings.Repeat("a", 40), 1)
-	if err != nil {
-		t.Fatal("reviewed baseline fixture build failed")
-	}
-	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x35}, ed25519.SeedSize))
-	signature, err := installbaseline.Sign(manifest, key)
-	if err != nil {
-		t.Fatal("baseline fixture signing failed")
-	}
-	verified, err := installbaseline.Verify(manifest, signature, payload, key.Public().(ed25519.PublicKey))
-	if err != nil {
-		t.Fatal("baseline fixture authentication failed")
-	}
-	plan, err := installbaseline.Compile(verified, namespace, profile)
-	if err != nil {
-		t.Fatal("baseline fixture semantic compilation failed")
-	}
-	contract, err := installcontract.NewBaseline(plan)
-	if err != nil {
-		t.Fatal("baseline matching contract unavailable")
-	}
-	acknowledgements := map[installstate.Key]*unstructured.Unstructured{}
-	for _, resource := range plan.Resources() {
-		object := resource.Object
-		address := installstate.Key{APIVersion: object.GetAPIVersion(), Kind: object.GetKind(), Name: object.GetName()}
-		template, err := contract.Template(address, false)
-		if err != nil || template.Hash() != resource.TemplateSHA256 {
-			t.Fatal("baseline parameterized template identity changed")
-		}
-		candidate, err := template.Candidate(strings.Repeat("b", 32))
-		if err != nil {
-			t.Fatal("baseline fixture candidate unavailable")
-		}
-		admitted, err := access.Create(ctx, address, candidate, true)
-		if err != nil || template.MatchAdmitted(admitted) != nil {
-			t.Fatal("native baseline dry run differs from reviewed defaults")
-		}
-		ack, err := access.Create(ctx, address, candidate, false)
-		if err != nil || ack == nil || ack.GetUID() == "" || template.MatchLive(ack, ack.GetUID()) != nil {
-			t.Fatal("native baseline create acknowledgement differs from reviewed contract")
-		}
-		acknowledgements[address] = ack.DeepCopy()
-		live, err := access.Get(ctx, address)
-		if err != nil || template.MatchLive(live, ack.GetUID()) != nil || live.GetAnnotations()[installstate.MutationAnnotation] != strings.Repeat("b", 32) {
-			t.Fatal("native baseline independent readback differs from its original acknowledgement")
-		}
-	}
-	return plan, acknowledgements
-}
-
-func baselineDenial(err error, family, namespace string) bool {
-	if err == nil || (!apierrors.IsForbidden(err) && !apierrors.IsInvalid(err)) {
-		return false
-	}
-	name := "arcadectl-identity-" + family + "-" + namespace
-	return strings.Contains(err.Error(), "ValidatingAdmissionPolicy '"+name+"'") &&
-		strings.Contains(err.Error(), "binding '"+name+"'") && strings.Contains(err.Error(), installbaseline.DenialMessage)
-}
-
 // Explicit local RBAC lets these tests distinguish admission from authorization.
 // None of these users can impersonate the maintenance ServiceAccount. There are
 // still no controllers or kubelets. Caller mutations are dry runs apart from
@@ -371,7 +304,8 @@ func testStandaloneProducerBoundary(t *testing.T, ctx context.Context, environme
 	}
 	users := []string{"baseline-nonadmin", "system:kube-controller-manager", "system:serviceaccount:kube-system:deployment-controller",
 		"system:serviceaccount:kube-system:replicaset-controller", "system:serviceaccount:kube-system:job-controller",
-		"system:serviceaccount:kube-system:cronjob-controller", "system:serviceaccount:kube-system:generic-garbage-collector"}
+		"system:serviceaccount:kube-system:cronjob-controller", "system:serviceaccount:kube-system:generic-garbage-collector",
+		"system:serviceaccount:kube-system:generic-garbage-collector-foreign"}
 	subjects := make([]rbacv1.Subject, 0, len(users))
 	for _, name := range users {
 		subjects = append(subjects, rbacv1.Subject{Kind: "User", APIGroup: rbacv1.GroupName, Name: name})
@@ -421,6 +355,8 @@ func testStandaloneProducerBoundary(t *testing.T, ctx context.Context, environme
 		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "no-execution-pod", Namespace: namespace}, Spec: *copy.Spec.Template.Spec.DeepCopy()}
 		_, err = nonadmin.CoreV1().Pods(namespace).Create(ctx, pod, createDry)
 		deny("pod", err)
+		_, err = clients[users[6]].CoreV1().Pods(namespace).Create(ctx, pod, createDry)
+		deny("pod", err)
 		for _, producer := range []string{users[1], users[3], users[4]} {
 			if _, err := clients[producer].CoreV1().Pods(namespace).Create(ctx, pod, createDry); err != nil {
 				t.Fatal("legitimate authenticated Pod producer was refused")
@@ -466,6 +402,15 @@ func testStandaloneProducerBoundary(t *testing.T, ctx context.Context, environme
 	for _, account := range []string{"arcadectl-controller", "arcadectl-api", "arcadectl-destroy-controller", "arcadectl-destroy-admin"} {
 		actorCan(nonadmin, "delete", "", "serviceaccounts", "", account, true)
 		deny("identity", nonadmin.CoreV1().ServiceAccounts(namespace).Delete(ctx, account, deleteDry))
+		deny("identity", clients[users[6]].CoreV1().ServiceAccounts(namespace).Delete(ctx, account, deleteDry))
+		original, err := admin.CoreV1().ServiceAccounts(namespace).Get(ctx, account, metav1.GetOptions{})
+		if err != nil {
+			t.Fatal("original reserved identity unavailable")
+		}
+		changed := original.DeepCopy()
+		changed.Annotations = map[string]string{"test": "gc-metadata-only"}
+		_, err = clients[users[6]].CoreV1().ServiceAccounts(namespace).Update(ctx, changed, updateDry)
+		deny("identity", err)
 	}
 	roles, err := admin.RbacV1().Roles(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -476,6 +421,7 @@ func testStandaloneProducerBoundary(t *testing.T, ctx context.Context, environme
 		if candidate.Name == "arcadectl-controller" || candidate.Name == "arcadectl-destroy-controller" {
 			actorCan(nonadmin, "delete", rbacv1.GroupName, "roles", "", candidate.Name, true)
 			deny("identity", nonadmin.RbacV1().Roles(namespace).Delete(ctx, candidate.Name, deleteDry))
+			deny("identity", clients[users[6]].RbacV1().Roles(namespace).Delete(ctx, candidate.Name, deleteDry))
 			roleProofs++
 		}
 	}
@@ -490,6 +436,7 @@ func testStandaloneProducerBoundary(t *testing.T, ctx context.Context, environme
 	for _, candidate := range bindings.Items {
 		if candidate.Name == "arcadectl-controller" || candidate.Name == "arcadectl-destroy-controller" {
 			deny("identity", nonadmin.RbacV1().RoleBindings(namespace).Delete(ctx, candidate.Name, deleteDry))
+			deny("identity", clients[users[6]].RbacV1().RoleBindings(namespace).Delete(ctx, candidate.Name, deleteDry))
 			bindingProofs++
 		}
 	}
@@ -499,6 +446,33 @@ func testStandaloneProducerBoundary(t *testing.T, ctx context.Context, environme
 	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "arcadectl-api", Namespace: namespace}, Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 443}}}}
 	_, err = nonadmin.CoreV1().Services(namespace).Create(ctx, service, createDry)
 	deny("identity", err)
+	_, err = clients[users[6]].CoreV1().Services(namespace).Create(ctx, service, createDry)
+	deny("identity", err)
+	seedService, err := admin.CoreV1().Services(namespace).Create(ctx, service, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatal("owned original Service unavailable")
+	}
+	serviceMetadata := seedService.DeepCopy()
+	serviceMetadata.Annotations = map[string]string{"test": "gc-metadata-only"}
+	if _, err := clients[users[6]].CoreV1().Services(namespace).Update(ctx, serviceMetadata, updateDry); err != nil {
+		t.Fatal("exact GC metadata-only Service update was refused")
+	}
+	_, err = clients[users[7]].CoreV1().Services(namespace).Update(ctx, serviceMetadata, updateDry)
+	deny("identity", err)
+	serviceSpec := seedService.DeepCopy()
+	serviceSpec.Spec.Ports[0].Port = 444
+	if _, err := admin.CoreV1().Services(namespace).Update(ctx, serviceSpec, updateDry); err != nil {
+		t.Fatal("native Service spec-change negative candidate was not valid")
+	}
+	_, err = clients[users[6]].CoreV1().Services(namespace).Update(ctx, serviceSpec, updateDry)
+	deny("identity", err)
+	if err := clients[users[6]].CoreV1().Services(namespace).Delete(ctx, seedService.Name, deleteDry); err != nil {
+		t.Fatal("exact GC Service deletion was refused")
+	}
+	currentService, err := admin.CoreV1().Services(namespace).Get(ctx, seedService.Name, metav1.GetOptions{})
+	if err != nil || currentService.UID != seedService.UID || currentService.ResourceVersion != seedService.ResourceVersion || !reflect.DeepEqual(currentService.Spec, seedService.Spec) || !reflect.DeepEqual(currentService.Annotations, seedService.Annotations) || !reflect.DeepEqual(currentService.Finalizers, seedService.Finalizers) {
+		t.Fatal("Service dry runs changed the original")
+	}
 	// Seed only an inert ReplicaSet in this API-only fixture. No child is made.
 	rs := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Name: "owned-producer-proof", Namespace: namespace}, Spec: appsv1.ReplicaSetSpec{
 		Replicas: ptr.To(int32(1)), Selector: installed.Spec.Selector.DeepCopy(), Template: *installed.Spec.Template.DeepCopy(),
@@ -571,11 +545,18 @@ func testStandaloneProducerBoundary(t *testing.T, ctx context.Context, environme
 	deny("pod", err)
 	_, err = clients[users[3]].CoreV1().Pods(namespace).Update(ctx, imageChange, updateDry)
 	deny("pod", err)
+	_, err = clients[users[6]].CoreV1().Pods(namespace).Update(ctx, imageChange, updateDry)
+	deny("pod", err)
 	metadataOnly := seedPod.DeepCopy()
 	metadataOnly.Annotations = map[string]string{"test": "producer-metadata"}
 	if _, err := clients[users[3]].CoreV1().Pods(namespace).Update(ctx, metadataOnly, updateDry); err != nil {
 		t.Fatal("legitimate producer metadata-only Pod update was refused")
 	}
+	if _, err := clients[users[6]].CoreV1().Pods(namespace).Update(ctx, metadataOnly, updateDry); err != nil {
+		t.Fatal("exact GC metadata-only Pod update was refused")
+	}
+	_, err = clients[users[7]].CoreV1().Pods(namespace).Update(ctx, metadataOnly, updateDry)
+	deny("pod", err)
 	_, err = ordinary.CoreV1().Pods(namespace).Update(ctx, metadataOnly, updateDry)
 	deny("pod", err)
 	actorCan(nonadmin, "update", "", "pods", "ephemeralcontainers", seedPod.Name, true)
@@ -590,6 +571,8 @@ func testStandaloneProducerBoundary(t *testing.T, ctx context.Context, environme
 	deny("pod", err)
 	_, err = clients[users[3]].CoreV1().Pods(namespace).UpdateEphemeralContainers(ctx, seedPod.Name, ephemeral, updateDry)
 	deny("pod", err)
+	_, err = clients[users[6]].CoreV1().Pods(namespace).UpdateEphemeralContainers(ctx, seedPod.Name, ephemeral, updateDry)
+	deny("pod", err)
 	actorCan(nonadmin, "update", "", "pods", "resize", seedPod.Name, true)
 	resized := seedPod.DeepCopy()
 	resized.Spec.Containers[0].Resources.Requests[corev1.ResourceCPU] = resource.MustParse("200m")
@@ -598,6 +581,8 @@ func testStandaloneProducerBoundary(t *testing.T, ctx context.Context, environme
 		t.Fatal("native Pod resize probe was not valid")
 	}
 	_, err = nonadmin.CoreV1().Pods(namespace).UpdateResize(ctx, seedPod.Name, resized, updateDry)
+	deny("pod", err)
+	_, err = clients[users[6]].CoreV1().Pods(namespace).UpdateResize(ctx, seedPod.Name, resized, updateDry)
 	deny("pod", err)
 	if err := clients[users[6]].CoreV1().Pods(namespace).Delete(ctx, seedPod.Name, deleteDry); err != nil {
 		t.Fatal("legitimate Pod garbage collection was refused")

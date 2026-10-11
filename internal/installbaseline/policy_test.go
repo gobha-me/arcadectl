@@ -88,8 +88,20 @@ func TestReviewedGarbageCollectorProducerBoundaries(t *testing.T) {
     'system:serviceaccount:kube-system:replication-controller',
     'system:serviceaccount:kube-system:daemon-set-controller',
     'system:serviceaccount:kube-system:statefulset-controller'] ||
-  (request.operation == 'DELETE' && request.userInfo.username == 'system:serviceaccount:kube-system:generic-garbage-collector'))`,
-		"cronjob": "false", "identity": "false", "scale": "false",
+  ((!has(request.subResource) || request.subResource == '') && request.operation in ['DELETE', 'UPDATE'] && request.userInfo.username == 'system:serviceaccount:kube-system:generic-garbage-collector')) ||
+ (request.operation == 'DELETE' && (!has(request.subResource) || request.subResource == '') &&
+  oldObject != null && has(oldObject.spec.nodeName) && oldObject.spec.nodeName != '' &&
+  request.userInfo.username == 'system:node:' + oldObject.spec.nodeName &&
+  has(request.userInfo.groups) && 'system:nodes' in request.userInfo.groups &&
+  has(oldObject.metadata.deletionTimestamp) && has(oldObject.status) && has(oldObject.status.phase) &&
+  oldObject.status.phase in ['Succeeded', 'Failed'] &&
+  (!has(oldObject.metadata.annotations) || !('kubernetes.io/config.mirror' in oldObject.metadata.annotations)))`,
+		"identity": `
+ (request.kind.kind == 'Service' && (!has(request.subResource) || request.subResource == '') &&
+  request.userInfo.username == 'system:serviceaccount:kube-system:generic-garbage-collector' &&
+  (request.operation == 'DELETE' ||
+   (request.operation == 'UPDATE' && object != null && oldObject != null && dyn(object).spec == dyn(oldObject).spec)))`,
+		"cronjob": "false", "scale": "false",
 	}
 	seen := map[string]bool{}
 	for index := 0; index < len(objects); index += 2 {
