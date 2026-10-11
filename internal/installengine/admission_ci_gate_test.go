@@ -137,6 +137,35 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 		t.Fatal("genuine pre-controller profile or required dependency omitted")
 	}
 	binary := workflow.Jobs["kind-install-binary"]
+	if binary.If != "" || !slices.Equal(binary.Needs, []string{"kind-install-gc", "kind-install-admission", "kind-install-admission-v3"}) {
+		t.Fatal("long signed lifecycle proofs bypass native foundations or override fail-closed scheduling")
+	}
+	// Every prerequisite must exist and the full workflow must remain a DAG.
+	// In particular, binary may never depend on its own required aggregate.
+	visited := map[string]uint8{}
+	var acyclic func(string) bool
+	acyclic = func(name string) bool {
+		job, exists := workflow.Jobs[name]
+		if !exists || visited[name] == 1 {
+			return false
+		}
+		if visited[name] == 2 {
+			return true
+		}
+		visited[name] = 1
+		for _, dependency := range job.Needs {
+			if !acyclic(dependency) {
+				return false
+			}
+		}
+		visited[name] = 2
+		return true
+	}
+	for name := range workflow.Jobs {
+		if !acyclic(name) {
+			t.Fatal("CI prerequisites are missing or cyclic")
+		}
+	}
 	v3 := workflow.Jobs["kind-install-admission-v3"]
 	v3Run := false
 	for _, step := range v3.Steps {
