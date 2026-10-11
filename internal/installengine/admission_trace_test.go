@@ -147,6 +147,10 @@ func TestAdmissionPhaseTraceClosedStagesAndNoArbitraryValues(t *testing.T) {
 		admissionPhaseNamedLocalOpening: "named-local-opening", admissionPhaseNamedDiscovery: "named-discovery",
 		admissionPhaseNamedAuthorization: "named-authorization", admissionPhaseNamedRequest: "named-request",
 		admissionPhaseNamedLocalClosing: "named-local-closing", admissionPhaseNamedResult: "named-result",
+		admissionPhaseOwnerBinding: "owner-binding", admissionPhaseOwnerTyped: "owner-typed-correlation",
+		admissionPhaseOwnerTypedMetadata: "owner-typed-metadata", admissionPhaseOwnerMembership: "owner-gc-membership",
+		admissionPhaseOwnerFixtures: "owner-fixture-correlation", admissionPhaseOwnerDescendants: "owner-descendants",
+		admissionPhaseOwnerLocalClosing: "owner-local-closing",
 	}
 	for value := range 256 {
 		step := admissionPhaseStep(value)

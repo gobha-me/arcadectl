@@ -186,10 +186,31 @@ const (
 	admissionPhaseNamedRequest
 	admissionPhaseNamedLocalClosing
 	admissionPhaseNamedResult
+	admissionPhaseOwnerBinding
+	admissionPhaseOwnerTyped
+	admissionPhaseOwnerTypedMetadata
+	admissionPhaseOwnerMembership
+	admissionPhaseOwnerFixtures
+	admissionPhaseOwnerDescendants
+	admissionPhaseOwnerLocalClosing
 )
 
 func (step admissionPhaseStep) String() string {
 	switch step {
+	case admissionPhaseOwnerBinding:
+		return "owner-binding"
+	case admissionPhaseOwnerTyped:
+		return "owner-typed-correlation"
+	case admissionPhaseOwnerTypedMetadata:
+		return "owner-typed-metadata"
+	case admissionPhaseOwnerMembership:
+		return "owner-gc-membership"
+	case admissionPhaseOwnerFixtures:
+		return "owner-fixture-correlation"
+	case admissionPhaseOwnerDescendants:
+		return "owner-descendants"
+	case admissionPhaseOwnerLocalClosing:
+		return "owner-local-closing"
 	case admissionPhaseGCWitnessBefore:
 		return "gc-witness-before"
 	case admissionPhaseGCWitnessAfter:
@@ -377,7 +398,7 @@ func validAdmissionPhasePosition(step admissionPhaseStep, slot int) bool {
 	if step == admissionPhaseNamedGet || step == admissionPhaseWholeFixture || step >= admissionPhaseNamedLocalOpening && step <= admissionPhaseNamedResult {
 		return slot >= 0 && slot < fixtureMaxSlots
 	}
-	return step >= admissionPhaseOriginal && step <= admissionPhaseGCLocalClosing && slot == -1
+	return (step >= admissionPhaseOriginal && step <= admissionPhaseGCLocalClosing || step >= admissionPhaseOwnerBinding && step <= admissionPhaseOwnerLocalClosing) && slot == -1
 }
 
 func traceAdmissionPhase(ctx context.Context, step admissionPhaseStep, slot int) {

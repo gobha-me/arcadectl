@@ -262,14 +262,10 @@ func proveKindNodeTermination(t *testing.T, ctx context.Context, admin, nodeActo
 	if err := nodeActor.CoreV1().Pods(namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{DryRun: []string{metav1.DryRunAll}, GracePeriodSeconds: ptr.To(int64(0)), Preconditions: &metav1.Preconditions{UID: &pod.UID}}); !baselineDenial(err, "pod", namespace) {
 		t.Fatal("own node initial Running Pod DELETE lacks exact baseline refusal")
 	}
-	live, err := admin.AppsV1().Deployments(namespace).Get(ctx, deployment.Name, metav1.GetOptions{})
-	if err != nil || live.UID != deployment.UID {
-		t.Fatal("original node-termination Deployment changed before DELETE")
-	}
-	uid, rv, foreground := live.UID, live.ResourceVersion, metav1.DeletePropagationForeground
+	uid := deployment.UID
 	since := time.Now().UTC()
-	if admin.AppsV1().Deployments(namespace).Delete(ctx, live.Name, metav1.DeleteOptions{PropagationPolicy: &foreground, Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &rv}}) != nil {
-		t.Fatal("one original node-termination foreground DELETE refused")
+	if err := gcDeleteReadyNodeDeployment(ctx, admin, deployment); err != nil {
+		t.Fatal("one original node-termination foreground DELETE refused: outcome=" + gcComponentOutcome(err) + " " + gcComponentDenialFlags(err, "template", namespace))
 	}
 	var terminal, deleting bool
 	err = wait.PollUntilContextTimeout(ctx, 200*time.Millisecond, 5*time.Minute, true, func(ctx context.Context) (bool, error) {

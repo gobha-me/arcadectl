@@ -242,7 +242,11 @@ func (w *fixtureWire) observePhaseLocked(ctx context.Context) (*fixturePhaseObse
 			return nil, ErrFixtures
 		}
 		traceAdmissionPhase(ctx, admissionPhaseOwners, -1)
-		if f.phaseGCRowsWithAccounts(o, live, gc, refreshed, accounts) != nil || !local() {
+		if f.phaseGCRowsWithAccountsTrace(ctx, o, live, gc, refreshed, accounts) != nil {
+			return nil, ErrFixtures
+		}
+		traceAdmissionPhase(ctx, admissionPhaseOwnerLocalClosing, -1)
+		if !local() {
 			return nil, ErrFixtures
 		}
 		traceAdmissionPhase(ctx, admissionPhasePublicAfter, -1)
@@ -547,6 +551,13 @@ func (f *fixtureLedger) phaseGCRows(o *installobserve.Observation, objects [fixt
 }
 
 func (f *fixtureLedger) phaseGCRowsWithAccounts(o *installobserve.Observation, objects [fixtureMaxSlots]*unstructured.Unstructured, gc fixtureGCRows, refreshed map[installstate.Key]*coordinationv1.Lease, accounts *phaseServiceAccounts) error {
+	return f.phaseGCRowsWithAccountsTrace(nil, o, objects, gc, refreshed, accounts)
+}
+
+// Closed, same-attempt diagnostics only. Neither a diagnostic nor an unsealed
+// projection supplies accepted observation, owner closure or mutation authority.
+func (f *fixtureLedger) phaseGCRowsWithAccountsTrace(ctx context.Context, o *installobserve.Observation, objects [fixtureMaxSlots]*unstructured.Unstructured, gc fixtureGCRows, refreshed map[installstate.Key]*coordinationv1.Lease, accounts *phaseServiceAccounts) error {
+	traceAdmissionPhase(ctx, admissionPhaseOwnerBinding, -1)
 	if f == nil || !validFixtureRecipe(f.document) || gc == nil || gc.Journal() == nil || !bytes.Equal(gc.Journal().Bytes(), f.document.Journal) || gc.Journal().ResourceVersion() != f.document.JournalResourceVersion {
 		return ErrFixtures
 	}
@@ -567,6 +578,7 @@ func (f *fixtureLedger) phaseGCRowsWithAccounts(o *installobserve.Observation, o
 	typed := map[types.UID]bool{}
 	// Correlate the complete typed namespace inventory, not just fixture rows.
 	for _, collection := range phaseCollectionsWithAccounts(o, accounts) {
+		traceAdmissionPhase(ctx, admissionPhaseOwnerTyped, -1)
 		gv, err := schema.ParseGroupVersion(collection.version)
 		if err != nil {
 			return ErrFixtures
@@ -609,17 +621,24 @@ func (f *fixtureLedger) phaseGCRowsWithAccounts(o *installobserve.Observation, o
 			// reader selects one exact version per GroupResource. Correlate its
 			// canonical resource and public metadata; do not invent a second
 			// source from the typed object's Kind or accept duplicate identities.
-			if len(matches) != 1 || matches[0].Source.Kind != collection.kind || matches[0].Source.GVR.GroupResource() != (schema.GroupResource{Group: gv.Group, Resource: plural}) || !reflect.DeepEqual(matches[0].Metadata, fixtureGCMetadata(m)) {
+			if len(matches) != 1 || matches[0].Source.Kind != collection.kind || matches[0].Source.GVR.GroupResource() != (schema.GroupResource{Group: gv.Group, Resource: plural}) {
 				return ErrFixtures
 			}
+			traceAdmissionPhase(ctx, admissionPhaseOwnerTypedMetadata, -1)
+			if !reflect.DeepEqual(matches[0].Metadata, fixtureGCMetadata(m)) {
+				return ErrFixtures
+			}
+			traceAdmissionPhase(ctx, admissionPhaseOwnerTyped, -1)
 		}
 	}
+	traceAdmissionPhase(ctx, admissionPhaseOwnerMembership, -1)
 	for _, row := range rows {
 		if known[row.Source.GVR.GroupResource()] && !typed[row.Metadata.UID] {
 			return ErrFixtures // a GC-only typed object is not complete-list absence
 		}
 	}
 	for slot, entry := range f.document.Entries {
+		traceAdmissionPhase(ctx, admissionPhaseOwnerFixtures, -1)
 		source, err := fixtureGCSource(entry)
 		if err != nil {
 			return ErrFixtures
@@ -637,6 +656,7 @@ func (f *fixtureLedger) phaseGCRowsWithAccounts(o *installobserve.Observation, o
 		if entry.OriginalUID == "" {
 			continue
 		}
+		traceAdmissionPhase(ctx, admissionPhaseOwnerDescendants, -1)
 		children, err := gc.Descendants([]types.UID{entry.OriginalUID})
 		if err != nil {
 			return ErrFixtures

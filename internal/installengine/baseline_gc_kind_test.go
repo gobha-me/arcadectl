@@ -39,6 +39,7 @@ import (
 // does not replace signed-installer lifecycle, enrollment or durable WAL proof.
 func TestKindBaselineNativeForegroundGarbageCollection(t *testing.T) {
 	t.Run("diagnostic-controls", testGCNativeDiagnosticControls)
+	t.Run("node-delete-controls", testGCNodeDeleteControls)
 	ctx, config, images, _, node := targetKindFixtureImagesWithOwnedNode(t, targetKind137, false, false, false, false, false)
 	apiImage := images.API
 	admin, err := kubernetes.NewForConfig(config)

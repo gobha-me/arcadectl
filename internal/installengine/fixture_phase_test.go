@@ -403,7 +403,7 @@ func TestFixturePhaseCompleteOriginalAndFixedFixtureAccounting(t *testing.T) {
 			if valid && (err != nil || o == nil) || !valid && err != ErrFixtures {
 				t.Fatalf("phase %s acceptance incorrect: %v", scenario, err)
 			}
-			wantRows := map[string]string{"missing-list": "original-row-missing-fixture", "foreign-same-name": "original-row-fixture-identity", "extra-workload": "original-row-floor", "delete-present": "original-row-fixture-identity"}
+			wantRows := map[string]string{"missing-list": "original-row-missing-fixture", "foreign-same-name": "original-row-fixture-identity", "extra-workload": "original-row-floor", "delete-present": "original-row-fixture-identity", "gc-metadata-drift": "owner-typed-metadata", "custom-descendant": "gc-metadata-pages", "absent-orphan": "gc-metadata-pages"}
 			if wanted := wantRows[scenario]; wanted != "" {
 				if stage, slot := trace.phaseSnapshot(); stage != wanted || slot != -1 {
 					t.Fatal("same-attempt row refusal did not retain its closed predicate classification", scenario, stage, slot)
