@@ -6,6 +6,8 @@
 # 3ea092a/run38083379847. Interrupted and unstarted trees are not measurements.
 # Expanded cancellation tree: local whole-tree race PASS on 2026-10-10,
 # measured 483.66 seconds (then 481.38 seconds in the final focused run).
+# Expanded retired-access trees: local whole-tree race PASS on 2026-10-11,
+# foreground retirement333.52 seconds and closed HTTPS pending access47.24 seconds.
 # For each measured tree: maximum observed cost across those measurements, plus15%
 # and5 seconds, rounded up to5 seconds with minimum10. Keep the existing
 # retained-worlds1200 reservation exclusive; it is not a certified bound.
@@ -98,7 +100,7 @@ TestAdmissionRetirementBaselineV2CaptureClosesBothProtectionSets 250
 TestAdmissionRetirementClosedProvidersObservePendingAccessDeletion 35
 TestAdmissionRetirementCoreClosesProtectedReceiptAfterRemoteReads 80
 TestAdmissionRetirementFailureBeforeLatchHasNoEffect 130
-TestAdmissionRetirementForegroundDeletionRemainsPendingUntilAbsent 35
+TestAdmissionRetirementForegroundDeletionRemainsPendingUntilAbsent 390
 TestAdmissionRetirementLegacyV1LiteralReceiptBytesRemainUnchanged 30
 TestAdmissionRetirementRejectsMissingCorruptOrChangedEvidence 255
 TestAdmissionRetirementRejectsRecreatedWithdrawnAccess 135
@@ -277,7 +279,7 @@ TestBaselineRetiredHTTPSReviewDenied 35
 TestBaselineRetiredHTTPSRuntimeCompleteHealthy 35
 TestBaselineRetiredHTTPSRuntimeCompleteReceiptReplaced 50
 TestBaselineRetiredHTTPSRuntimeHealthy 35
-TestBaselineRetiredHTTPSRuntimePendingOriginalAccessDelete 35
+TestBaselineRetiredHTTPSRuntimePendingOriginalAccessDelete 60
 TestBaselineRetiredHTTPSRuntimeReceiptReplacedBetweenCores 35
 TestBaselineRetiredHTTPSSecondColdControllerImage 35
 TestBaselineRetiredHTTPSSecondColdWorldChange 35
