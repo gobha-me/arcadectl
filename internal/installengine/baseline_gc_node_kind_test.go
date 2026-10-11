@@ -182,6 +182,18 @@ func gcNameCorrelatedKubeletDenial(output []byte, pod *corev1.Pod) bool {
 
 func testGCNativeDiagnosticControls(t *testing.T) {
 	t.Helper()
+	const serviceMessage = "ValidatingAdmissionPolicy 'arcadectl-identity-identity-owned-ns' with binding 'arcadectl-identity-identity-owned-ns': Arcadectl installation identities and executables require trusted maintenance authority."
+	serviceError := &apierrors.StatusError{ErrStatus: metav1.Status{Reason: metav1.StatusReasonForbidden, Message: serviceMessage,
+		Details: &metav1.StatusDetails{Causes: []metav1.StatusCause{{Type: metav1.CauseTypeFieldValueInvalid, Field: "metadata.finalizers", Message: serviceMessage}}}}}
+	if gcComponentDenialFlags(serviceError, "identity", "owned-ns") != "policy-present=true message-present=true cause-policy-present=true field=metadata.finalizers cause-type=FieldValueInvalid" || gcComponentOutcome(serviceError) != "forbidden" {
+		t.Fatal("Service diagnostic lacks its exact fixed-family classifications")
+	}
+	if gcComponentDenialFlags(serviceError, "pod", "owned-ns") != "policy-present=false message-present=true cause-policy-present=false field=metadata.finalizers cause-type=FieldValueInvalid" {
+		t.Fatal("Service diagnostic falsely attributed the Pod family")
+	}
+	if gcComponentDenialFlags(errors.New("fixture-sensitive-unclassified-error"), "identity", "owned-ns") != "policy-present=false message-present=false cause-policy-present=false field=unknown cause-type=unknown" || gcComponentOutcome(errors.New("fixture-sensitive-unclassified-error")) != "unknown" || gcComponentOutcome(nil) != "accepted" {
+		t.Fatal("native diagnostics exposed unclassified input or lost the closed outcome")
+	}
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "owned-ns", Name: "owned-pod"}}
 	const line = `I1010 "Failed to delete status for pod" pod="owned-ns/owned-pod" err="ValidatingAdmissionPolicy 'arcadectl-identity-pod-owned-ns' with binding 'arcadectl-identity-pod-owned-ns': Arcadectl installation identities and executables require trusted maintenance authority."`
 	if !gcNameCorrelatedKubeletDenial([]byte(line), pod) {

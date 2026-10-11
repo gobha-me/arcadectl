@@ -171,7 +171,7 @@ func TestKindBaselineNativeForegroundGarbageCollection(t *testing.T) {
 	}) != nil {
 		t.Fatal("actual native original Deployment/ReplicaSet/Pod chain unavailable")
 	}
-	patch := func(client *kubernetes.Clientset, resource, name string, body map[string]any) error {
+	patch := func(patchCtx context.Context, client *kubernetes.Clientset, resource, name string, body map[string]any) error {
 		encoded, err := json.Marshal(body)
 		if err != nil {
 			t.Fatal("closed metadata patch encoding unavailable")
@@ -179,11 +179,11 @@ func TestKindBaselineNativeForegroundGarbageCollection(t *testing.T) {
 		// DoRaw deliberately discards structured Status attribution on errors.
 		// Error decodes the native policy/binding/message; generic HTTP 422 is
 		// never sufficient evidence that the expected policy denied this request.
-		return client.CoreV1().RESTClient().Patch(types.MergePatchType).Namespace(namespace).Resource(resource).Name(name).Body(encoded).Param("dryRun", "All").Do(ctx).Error()
+		return client.CoreV1().RESTClient().Patch(types.MergePatchType).Namespace(namespace).Resource(resource).Name(name).Body(encoded).Param("dryRun", "All").Do(patchCtx).Error()
 	}
 	metadata := map[string]any{"metadata": map[string]any{"uid": string(pod.UID), "resourceVersion": pod.ResourceVersion, "finalizers": []string{}}}
-	if err := patch(admin, "pods", pod.Name, metadata); err != nil {
-		t.Fatal("admin identical metadata PATCH refused: outcome=" + gcComponentOutcome(err) + " " + gcComponentDenialFlags(err, namespace))
+	if err := patch(ctx, admin, "pods", pod.Name, metadata); err != nil {
+		t.Fatal("admin identical metadata PATCH refused: outcome=" + gcComponentOutcome(err) + " " + gcComponentDenialFlags(err, "pod", namespace))
 	}
 	// Typechecking status is not a serving barrier: policy and binding
 	// informers converge independently. Repeating this identical dry run has
@@ -191,22 +191,25 @@ func TestKindBaselineNativeForegroundGarbageCollection(t *testing.T) {
 	// This is test readiness only, not a retry of a production mutation.
 	var lastDenial error
 	if wait.PollUntilContextTimeout(ctx, 200*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
-		lastDenial = patch(foreign, "pods", pod.Name, metadata)
+		lastDenial = patch(ctx, foreign, "pods", pod.Name, metadata)
+		if lastDenial != nil && !baselineDenial(lastDenial, "pod", namespace) {
+			return false, lastDenial
+		}
 		return baselineDenial(lastDenial, "pod", namespace), nil
 	}) != nil {
-		t.Fatal("foreign metadata PATCH lacks exact Pod policy denial: outcome=" + gcComponentOutcome(lastDenial) + " " + gcComponentDenialFlags(lastDenial, namespace))
+		t.Fatal("foreign metadata PATCH lacks exact Pod policy denial: outcome=" + gcComponentOutcome(lastDenial) + " " + gcComponentDenialFlags(lastDenial, "pod", namespace))
 	}
-	if err := patch(gc, "pods", pod.Name, metadata); err != nil {
+	if err := patch(ctx, gc, "pods", pod.Name, metadata); err != nil {
 		if baselineDenial(err, "pod", namespace) {
 			t.Error("native GC metadata-only Pod UPDATE denied by exact Pod baseline policy")
 		} else {
-			t.Fatal("native GC metadata-only Pod UPDATE refused without expected attribution: outcome=" + gcComponentOutcome(err) + " " + gcComponentDenialFlags(err, namespace))
+			t.Fatal("native GC metadata-only Pod UPDATE refused without expected attribution: outcome=" + gcComponentOutcome(err) + " " + gcComponentDenialFlags(err, "pod", namespace))
 		}
 	}
 	changedContainers := pod.DeepCopy().Spec.Containers
 	changedContainers[0].Image = "registry.example/foreign@sha256:" + strings.Repeat("b", 64)
 	changed := map[string]any{"metadata": metadata["metadata"], "spec": map[string]any{"containers": changedContainers}}
-	if err := patch(gc, "pods", pod.Name, changed); !baselineDenial(err, "pod", namespace) {
+	if err := patch(ctx, gc, "pods", pod.Name, changed); !baselineDenial(err, "pod", namespace) {
 		t.Fatal("native GC executable substitution lacks exact Pod baseline denial")
 	}
 	livePod, err := admin.CoreV1().Pods(namespace).Get(ctx, pod.Name, metav1.GetOptions{})
@@ -242,19 +245,32 @@ func TestKindBaselineNativeForegroundGarbageCollection(t *testing.T) {
 		t.Fatal("owned reserved-name API Service unavailable")
 	}
 	serviceMetadata := map[string]any{"metadata": map[string]any{"uid": string(service.UID), "resourceVersion": service.ResourceVersion, "finalizers": []string{}}}
-	if err := patch(foreign, "services", service.Name, serviceMetadata); !baselineDenial(err, "identity", namespace) {
-		t.Fatal("foreign Service PATCH lacks exact identity policy denial")
+	if err := patch(ctx, admin, "services", service.Name, serviceMetadata); err != nil {
+		t.Fatal("admin identical Service PATCH refused: outcome=" + gcComponentOutcome(err) + " " + gcComponentDenialFlags(err, "identity", namespace))
 	}
-	if err := patch(gc, "services", service.Name, serviceMetadata); err != nil {
+	// The Pod-family serving barrier does not establish identity-family
+	// readiness. Keep this same administrator-valid, frozen UID/RV candidate:
+	// only identical effect-free dry runs may wait for the exact Service denial.
+	// Conflicts or other refusals cannot authorize refresh/reseed or a pass.
+	if wait.PollUntilContextTimeout(ctx, 200*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
+		lastDenial = patch(ctx, foreign, "services", service.Name, serviceMetadata)
+		if lastDenial != nil && !baselineDenial(lastDenial, "identity", namespace) {
+			return false, lastDenial
+		}
+		return baselineDenial(lastDenial, "identity", namespace), nil
+	}) != nil {
+		t.Fatal("foreign Service PATCH lacks exact identity policy denial: outcome=" + gcComponentOutcome(lastDenial) + " " + gcComponentDenialFlags(lastDenial, "identity", namespace))
+	}
+	if err := patch(ctx, gc, "services", service.Name, serviceMetadata); err != nil {
 		if baselineDenial(err, "identity", namespace) {
 			t.Error("native GC metadata-only Service UPDATE denied by exact identity baseline policy")
 		} else {
-			t.Fatal("native GC Service UPDATE refused without expected attribution: outcome=" + gcComponentOutcome(err) + " " + gcComponentDenialFlags(err, namespace))
+			t.Fatal("native GC Service UPDATE refused without expected attribution: outcome=" + gcComponentOutcome(err) + " " + gcComponentDenialFlags(err, "identity", namespace))
 		}
 	}
 	changedPorts := append([]corev1.ServicePort(nil), service.Spec.Ports...)
 	changedPorts[0].Port = 8444
-	if err := patch(gc, "services", service.Name, map[string]any{"metadata": serviceMetadata["metadata"], "spec": map[string]any{"ports": changedPorts}}); !baselineDenial(err, "identity", namespace) {
+	if err := patch(ctx, gc, "services", service.Name, map[string]any{"metadata": serviceMetadata["metadata"], "spec": map[string]any{"ports": changedPorts}}); !baselineDenial(err, "identity", namespace) {
 		t.Fatal("native GC Service spec change lacks exact identity baseline denial")
 	}
 	liveService, err := admin.CoreV1().Services(namespace).Get(ctx, service.Name, metav1.GetOptions{})
@@ -309,8 +325,8 @@ func gcComponentOutcome(err error) string {
 	return "unknown"
 }
 
-func gcComponentDenialFlags(err error, namespace string) string {
-	policy := "arcadectl-identity-pod-" + namespace
+func gcComponentDenialFlags(err error, family, namespace string) string {
+	policy := "arcadectl-identity-" + family + "-" + namespace
 	policyPresent, messagePresent, causePresent := false, false, false
 	if err != nil {
 		policyPresent = strings.Contains(err.Error(), policy)
