@@ -468,6 +468,25 @@ neither observation completed. Each fresh Step/checkpoint resets this record.
 These labels distinguish prior progress from the final overwritten opening
 label; they do not identify why a collection was slow or why objects changed.
 
+Only after an authentic historical installer subprocess fails, the native test
+harness may perform a separate failure-only observation. It reads the existing
+bootstrap, original journal and canonical RecipeV2 WAL, and addresses only the
+already acknowledged original plain-Pod UID. An unknown CREATE never gains
+identity from a name lookup. It emits fixed categories/booleans for original
+GET, timestamp presence/ordering, initial status and manager-record shape,
+one complete bounded LIST/GET correlation, and closing GET/journal/WAL drift.
+The LIST uses one fixed guarded GET with `limit=64`, no continuation or retry,
+and the original 1MiB response cap. Only literal omission of both native item
+TypeMeta fields is normalized; explicit null/empty/partial/wrong envelopes are
+refused. A 30-second child context bounds network observation beneath the
+original fixture budget; synchronous local bootstrap durability checks are not
+a hard wall-clock bound. This path performs no object or private-file mutation,
+cleanup, fixture locking, UID adoption, admission probe or lifecycle replay.
+It leaves the predecessor bytes and failed result unchanged. These later
+observations neither certify the earlier CREATE response nor establish its
+root cause; timestamp presence and manager strings are not full validity or
+authenticated software identity.
+
 The development native gates are separate and mandatory in the committed CI:
 four complete public admission runs (profiles 135/137, cold/warm) and three actual
 signed-installer executable runs. Both profiles exercise current-package fresh

@@ -85,6 +85,7 @@ func installerBinaryProgressLine(line string) bool {
 func TestInstallerBinaryProgressCapture(t *testing.T) {
 	testInstallerBinaryProgressCapture(t)
 	testInstallerBinaryProgressSubprocess(t)
+	testHistoricalInstallerFailureObservation(t)
 }
 
 // A local inert shell, not an installer or cluster probe. Its stdin handshake
