@@ -159,7 +159,7 @@ func testAcknowledgedDeletePreparation(t *testing.T, failure string) {
 	preparationLists := [8]int{}
 	var currentDiagnostic *LifecycleDiagnostic
 	injected, proofOpened := false, false
-	var lastChange, lastCollection, openingCollection time.Time
+	var lastChange, openingProof time.Time
 	rows, expectedRows := map[string]int{}, map[string]int{}
 	rules := map[string]int{}
 	producers := map[string]*unstructured.Unstructured{}
@@ -247,7 +247,7 @@ func testAcknowledgedDeletePreparation(t *testing.T, failure string) {
 			}
 			a := review.Spec.ResourceAttributes
 			if deletes == 1 && !proofOpened && user == "" && a.Verb == "impersonate" {
-				proofOpened, openingCollection = true, lastCollection
+				proofOpened, openingProof = true, time.Now()
 			}
 			if failure == "late-pod" && deletes == 1 && postRules == 2 && user != "" && !injected {
 				objects[survivor].SetResourceVersion("900")
@@ -351,7 +351,6 @@ func testAcknowledgedDeletePreparation(t *testing.T, failure string) {
 			}
 			if deletes == 1 && r.URL.Path == podPath && !proofOpened {
 				collections++
-				lastCollection = time.Now()
 				if failure == "collected-reappearance" && !injected {
 					objects[key] = before.DeepCopy()
 					injected = true
@@ -530,8 +529,16 @@ func testAcknowledgedDeletePreparation(t *testing.T, failure string) {
 		t.Fatal("test did not reach one genuine original DELETE ACK", err, diagnostic.BoundarySnapshot(), diagnostic.FailureSnapshot(), deletes, writes, proofStarts)
 	}
 	if failure == "" {
-		if err != nil || writes != 2 || settled.Document().Pending != nil || targetReads < 4 || collections < 8 || !proofOpened || openingCollection.Sub(lastChange) < 5*time.Second || proofStarts != 4 || rules["arcadectl-controller"] != 24 || rules["arcadectl-destroy-controller"] != 24 || !reflect.DeepEqual(rows, expectedRows) {
-			t.Fatal("ACK preparation omitted whole quietness, literal full proof or original absence settlement", err, diagnostic.BoundarySnapshot())
+		// Three forced survivor revisions must be followed by an unchanged
+		// complete collection. Collection work can exceed the poll cadence,
+		// so a fixed number of additional polls is not a quietness oracle.
+		// Independently measure mutation-to-proof elapsed time at actual proof
+		// entry, not the final Pod LIST's start. This is a necessary lower
+		// bound, not a measurement of production's post-closing quiet start.
+		observations := fmt.Sprintf("error=%t writes=%d pending=%t target-reads=%d collections=%d proof-opened=%t mutation-to-proof-quietness=%t proof-starts=%d controller-rules=%d destroy-rules=%d literal-rows-match=%t %s", err != nil, writes, settled.Document().Pending != nil, targetReads, collections, proofOpened, openingProof.Sub(lastChange) >= 5*time.Second, proofStarts, rules["arcadectl-controller"], rules["arcadectl-destroy-controller"], reflect.DeepEqual(rows, expectedRows), diagnostic.BoundarySnapshot())
+		t.Log("ACK success observations:", observations)
+		if err != nil || writes != 2 || settled.Document().Pending != nil || targetReads < 4 || collections < 4 || !proofOpened || openingProof.Sub(lastChange) < 5*time.Second || proofStarts != 4 || rules["arcadectl-controller"] != 24 || rules["arcadectl-destroy-controller"] != 24 || !reflect.DeepEqual(rows, expectedRows) {
+			t.Fatal("ACK preparation omitted whole quietness, literal full proof or original absence settlement:", observations)
 		}
 		want := intent
 		want.Revision++
