@@ -83,9 +83,25 @@ func observeHistoricalInstallerFailure(ctx context.Context, config *rest.Config,
 	if err != nil {
 		return o
 	}
-	return collectHistoricalInstallerFailure(ctx, engine, snapshot, func(ctx context.Context, namespace string) (*unstructured.Unstructured, error) {
+	return collectHistoricalInstallerFailure(ctx, engine, snapshot, func(ctx context.Context, key installstate.Key) (*unstructured.Unstructured, error) {
+		return historicalFailurePodGet(ctx, access, key)
+	}, func(ctx context.Context, namespace string) (*unstructured.Unstructured, error) {
 		return historicalFailurePodList(ctx, access, namespace)
 	})
+}
+
+// The generic installation accessor deliberately has no Pod mapping. This
+// failure-only observer reads the original WAL-bound Pod using its separate,
+// fixed fixture route; it does not widen ordinary installation read authority.
+func historicalFailurePodGet(ctx context.Context, access *HTTPAccess, key installstate.Key) (*unstructured.Unstructured, error) {
+	if key.APIVersion != "v1" || key.Kind != "Pod" {
+		return nil, ErrRead
+	}
+	path, _, err := fixturePath(key, false)
+	if err != nil {
+		return nil, ErrRead
+	}
+	return access.requestAt(ctx, http.MethodGet, key, nil, false, path, nil)
 }
 
 // Fixed one-attempt route under HTTPAccess's original response/privacy bounds;
@@ -131,9 +147,9 @@ func decodeHistoricalFailurePodList(raw *unstructured.Unstructured, namespace st
 	return &list, nil
 }
 
-func collectHistoricalInstallerFailure(ctx context.Context, engine *Engine, snapshot *installstate.Snapshot, list func(context.Context, string) (*unstructured.Unstructured, error)) historicalInstallerFailureObservation {
+func collectHistoricalInstallerFailure(ctx context.Context, engine *Engine, snapshot *installstate.Snapshot, get func(context.Context, installstate.Key) (*unstructured.Unstructured, error), list func(context.Context, string) (*unstructured.Unstructured, error)) historicalInstallerFailureObservation {
 	o := historicalInstallerFailureObservation{status: "unavailable", slotState: "unknown"}
-	if ctx == nil || ctx.Err() != nil || engine == nil || engine.files == nil || snapshot == nil || list == nil {
+	if ctx == nil || ctx.Err() != nil || engine == nil || engine.files == nil || snapshot == nil || get == nil || list == nil {
 		return o
 	}
 	name := fixtureLedgerName(snapshot)
@@ -157,7 +173,7 @@ func collectHistoricalInstallerFailure(ctx context.Context, engine *Engine, snap
 	o.uidKnown = nativeFixtureUID(string(entry.OriginalUID))
 	o.status = "observed"
 	if entry.State == fixtureOriginal && o.uidKnown {
-		before, getErr := engine.access.Get(ctx, entry.Key)
+		before, getErr := get(ctx, entry.Key)
 		o.originalGET = getErr == nil && historicalFailureOriginalPod(before, entry)
 		if o.originalGET {
 			var typed corev1.Pod
@@ -199,7 +215,7 @@ func collectHistoricalInstallerFailure(ctx context.Context, engine *Engine, snap
 					}
 				}
 			}
-			after, trailingErr := engine.access.Get(ctx, entry.Key)
+			after, trailingErr := get(ctx, entry.Key)
 			o.trailingOriginal = trailingErr == nil && historicalFailureOriginalPod(after, entry)
 			o.getUnchanged = o.trailingOriginal && reflect.DeepEqual(before, after)
 		}
@@ -220,7 +236,9 @@ func historicalFailureOriginalPod(pod *unstructured.Unstructured, entry fixtureE
 
 func testHistoricalInstallerFailureObservation(t *testing.T) {
 	t.Helper()
+	testHistoricalFailurePodGetWire(t)
 	testHistoricalFailurePodListWire(t)
+	testHistoricalFailureObserverPodWire(t)
 	for _, scenario := range []string{"earlier-managed-time", "same-managed-time", "status-change", "manager-change", "omitted-list-type", "partial-list-type", "wrong-list-type", "replaced-get", "replaced-list", "list-rv-change", "list-whole-change", "incomplete-list", "duplicate-list", "unknown-create", "malformed-wal", "journal-change", "wal-change", "trailing-replacement", "unknown-pod-field"} {
 		t.Run("historical-failure-"+scenario, func(t *testing.T) {
 			f := newFixture(t, false)
@@ -332,7 +350,7 @@ func testHistoricalInstallerFailureObservation(t *testing.T) {
 				}
 				return result, nil
 			}
-			report := collectHistoricalInstallerFailure(t.Context(), f.engine, f.snapshot, list)
+			report := collectHistoricalInstallerFailure(t.Context(), f.engine, f.snapshot, f.access.Get, list)
 			if strings.Contains(report.String(), "PRIVATE-CANARY") || entry.OriginalUID != "" && strings.Contains(report.String(), string(entry.OriginalUID)) || strings.Contains(report.String(), entry.Key.Name) || f.access.writes != 0 || f.access.dryRuns != 0 || f.nsUpdates != 0 {
 				t.Fatal("failure observation leaked private values or issued an effect")
 			}
@@ -393,6 +411,165 @@ func testHistoricalInstallerFailureObservation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func testHistoricalFailurePodGetWire(t *testing.T) {
+	t.Helper()
+	key := installstate.Key{APIVersion: "v1", Kind: "Pod", Namespace: "isolated-install", Name: "reviewed"}
+	const original = `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"reviewed","namespace":"isolated-install","uid":"a0000000-0000-4000-8000-000000000007","resourceVersion":"101"},"spec":{},"status":{}}`
+	for _, scenario := range []string{"canonical", "wrong-kind", "wrong-version", "wrong-name", "wrong-namespace", "duplicate-field", "exact-byte-limit", "oversized", "not-found", "forbidden", "retry-429", "retry-503", "redirect", "invalid-key-kind", "invalid-key-version", "invalid-key-name", "invalid-key-namespace", "cancelled"} {
+		t.Run("historical-get-wire-"+scenario, func(t *testing.T) {
+			body := original
+			switch scenario {
+			case "wrong-kind":
+				body = strings.Replace(body, `"kind":"Pod"`, `"kind":"Service"`, 1)
+			case "wrong-version":
+				body = strings.Replace(body, `"apiVersion":"v1"`, `"apiVersion":"apps/v1"`, 1)
+			case "wrong-name":
+				body = strings.Replace(body, `"name":"reviewed"`, `"name":"PRIVATE-CANARY"`, 1)
+			case "wrong-namespace":
+				body = strings.Replace(body, `"namespace":"isolated-install"`, `"namespace":"other-install"`, 1)
+			case "duplicate-field":
+				body = strings.Replace(body, `"kind":"Pod"`, `"kind":"Pod","kind":"Pod"`, 1)
+			case "exact-byte-limit":
+				body += strings.Repeat(" ", 1024*1024-len(body))
+			case "oversized":
+				body += strings.Repeat(" ", 1024*1024+1-len(body))
+			}
+			var requests atomic.Int32
+			var wrongRoute atomic.Bool
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				if r.Method != http.MethodGet || r.URL.Path != "/api/v1/namespaces/isolated-install/pods/reviewed" || r.URL.RawQuery != "" || r.ProtoMajor != 1 || r.Header.Get("Accept") != "application/json" {
+					wrongRoute.Store(true)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Warning", "PRIVATE-CANARY")
+				code := http.StatusOK
+				switch scenario {
+				case "not-found":
+					code = http.StatusNotFound
+				case "forbidden":
+					code = http.StatusForbidden
+				case "retry-429":
+					code = http.StatusTooManyRequests
+				case "retry-503":
+					code = http.StatusServiceUnavailable
+				case "redirect":
+					w.Header().Set("Location", "/PRIVATE-CANARY")
+					code = http.StatusTemporaryRedirect
+				}
+				if code != http.StatusOK {
+					w.Header().Set("Retry-After", "0")
+					w.WriteHeader(code)
+					_, _ = io.WriteString(w, "PRIVATE-CANARY")
+					return
+				}
+				_, _ = io.WriteString(w, body)
+			}))
+			defer server.Close()
+			access, err := NewDirectHTTPAccess(serverConfig(server))
+			if err != nil {
+				t.Fatal("closed TLS diagnostic GET fixture unavailable")
+			}
+			// This is the regression: ordinary installer resource mappings must
+			// still reject Pods without a request; only the private route reads it.
+			if _, err := access.Get(t.Context(), key); !errors.Is(err, ErrInvalid) || requests.Load() != 0 {
+				t.Fatal("ordinary installation accessor unexpectedly gained Pod authority")
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			selected := key
+			switch scenario {
+			case "invalid-key-kind":
+				selected.Kind = "Service"
+			case "invalid-key-version":
+				selected.APIVersion = "apps/v1"
+			case "invalid-key-name":
+				selected.Name = "../PRIVATE-CANARY"
+			case "invalid-key-namespace":
+				selected.Namespace = "../PRIVATE-CANARY"
+			case "cancelled":
+				cancel()
+			}
+			raw, readErr := historicalFailurePodGet(ctx, access, selected)
+			accepted := readErr == nil
+			want := scenario == "canonical" || scenario == "exact-byte-limit"
+			if accepted != want || wrongRoute.Load() || readErr != nil && strings.Contains(readErr.Error(), "PRIVATE-CANARY") {
+				t.Fatal("private diagnostic GET violated its exact route or response privacy")
+			}
+			expectedRequests := int32(1)
+			if strings.HasPrefix(scenario, "invalid-key-") || scenario == "cancelled" {
+				expectedRequests = 0
+			}
+			if requests.Load() != expectedRequests {
+				t.Fatal("private diagnostic GET retried, redirected or escaped its context")
+			}
+			if accepted && !historicalFailureOriginalPod(raw, fixtureEntry{Key: key, OriginalUID: "a0000000-0000-4000-8000-000000000007"}) {
+				t.Fatal("native original Pod response was not observable")
+			}
+		})
+	}
+}
+
+func testHistoricalFailureObserverPodWire(t *testing.T) {
+	t.Helper()
+	t.Run("historical-observer-real-pod-route", func(t *testing.T) {
+		f := newFixture(t, false)
+		ledger, err := f.engine.prepareFixtureLedgerV2(t.Context(), f.snapshot)
+		if err != nil {
+			t.Fatal("observer WAL fixture unavailable")
+		}
+		for slot := 0; slot <= fixturePlainPod; slot++ {
+			acknowledgeRecipeFixture(t, ledger, slot, types.UID(fmt.Sprintf("a0000000-0000-4000-8000-%012x", slot+1)))
+		}
+		entry := ledger.document.Entries[fixturePlainPod]
+		object := fixtureResultExample(t, ledger, fixturePlainPod, fixtureAcknowledgedResult, time.Now().UTC().Truncate(time.Second).Add(-time.Minute))
+		body, err := json.Marshal(object.Object)
+		if err != nil || ledger.close() != nil {
+			t.Fatal("observer original fixture unavailable")
+		}
+		var pod corev1.Pod
+		if decodeServing(object, &pod) != nil {
+			t.Fatal("observer typed Pod unavailable")
+		}
+		listBody, err := json.Marshal(&corev1.PodList{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "PodList"}, ListMeta: metav1.ListMeta{ResourceVersion: "101"}, Items: []corev1.Pod{pod}})
+		if err != nil {
+			t.Fatal("observer typed list unavailable")
+		}
+		var gets, lists atomic.Int32
+		var wrongRoute atomic.Bool
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.Method != http.MethodGet {
+				wrongRoute.Store(true)
+			}
+			switch {
+			case r.URL.Path == "/api/v1/namespaces/"+entry.Key.Namespace+"/pods/"+entry.Key.Name && r.URL.RawQuery == "":
+				gets.Add(1)
+				_, _ = w.Write(body)
+			case r.URL.Path == "/api/v1/namespaces/"+entry.Key.Namespace+"/pods" && r.URL.RawQuery == "limit=64":
+				lists.Add(1)
+				_, _ = w.Write(listBody)
+			default:
+				wrongRoute.Store(true)
+				w.WriteHeader(http.StatusForbidden)
+			}
+		}))
+		defer server.Close()
+		access, err := NewDirectHTTPAccess(serverConfig(server))
+		if err != nil {
+			t.Fatal("observer TLS accessor unavailable")
+		}
+		report := collectHistoricalInstallerFailure(t.Context(), f.engine, f.snapshot, func(ctx context.Context, key installstate.Key) (*unstructured.Unstructured, error) {
+			return historicalFailurePodGet(ctx, access, key)
+		}, func(ctx context.Context, ns string) (*unstructured.Unstructured, error) {
+			return historicalFailurePodList(ctx, access, ns)
+		})
+		if wrongRoute.Load() || gets.Load() != 2 || lists.Load() != 1 || !report.originalGET || !report.podDecoded || !report.listComplete || !report.listOriginal || !report.listGETSameUIDRV || !report.listGETWhole || !report.trailingOriginal || !report.getUnchanged || !report.journalUnchanged || !report.walUnchanged || f.access.writes != 0 || f.access.dryRuns != 0 || f.nsUpdates != 0 {
+			t.Fatal("complete failure observer lost actual native Pod route or original evidence")
+		}
+	})
 }
 
 func testHistoricalFailurePodListWire(t *testing.T) {
