@@ -32,6 +32,13 @@ import (
 // Real direct HTTP/1.1 lineage: native Kubernetes absence has a nonempty
 // Status body. Empty fixture 404s alone cannot prove connection reuse.
 func testDirectReadPoolGetNotFound(t *testing.T) {
+	testDirectReadPoolGetNotFoundAtFixture(t, false)
+}
+
+// The fixture capture returns before the generic absence sanitizer. Exercise
+// that real private transport branch too; this primitive control grants no
+// fixture permission and does not substitute for a phase's fresh witnesses.
+func testDirectReadPoolGetNotFoundAtFixture(t *testing.T, fixture bool) {
 	for _, scenario := range []struct {
 		name  string
 		reuse bool
@@ -96,22 +103,30 @@ func testDirectReadPoolGetNotFound(t *testing.T) {
 				t.Fatal("direct static parent refused")
 			}
 			t.Cleanup(access.pool.(*http.Transport).CloseIdleConnections)
+			fixtureAccess := access
+			observedAccesses := []*HTTPAccess{access}
+			if fixture {
+				fixtureAccess = derivedFixturePoolAccess(t, access, key)
+				observedAccesses = append(observedAccesses, fixtureAccess)
+			}
 			// Observe above the real guard after construction, without altering
 			// frozen configuration, pool provenance or native TLS routing.
-			outer := access.client.Transport
-			access.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
-				response, err := outer.RoundTrip(r)
-				if err == nil && response != nil && response.StatusCode == http.StatusNotFound {
-					body, readErr := io.ReadAll(response.Body)
-					_ = response.Body.Close()
-					if readErr != nil || string(body) != `{}` || len(response.Header) != 1 || response.Header.Get("Content-Type") != "application/json" || response.Status != "404 Not Found" || response.Trailer != nil || response.ContentLength != 2 {
-						t.Error("private absence response escaped below-wrapper sanitizer")
+			for _, observedAccess := range observedAccesses {
+				outer := observedAccess.client.Transport
+				observedAccess.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+					response, err := outer.RoundTrip(r)
+					if err == nil && response != nil && response.StatusCode == http.StatusNotFound {
+						body, readErr := io.ReadAll(response.Body)
+						_ = response.Body.Close()
+						if readErr != nil || string(body) != `{}` || len(response.Header) != 1 || response.Header.Get("Content-Type") != "application/json" || response.Status != "404 Not Found" || response.Trailer != nil || response.ContentLength != 2 {
+							t.Error("private absence response escaped below-wrapper sanitizer")
+						}
+						sanitized.Add(1)
+						response.Body = io.NopCloser(bytes.NewReader(body))
 					}
-					sanitized.Add(1)
-					response.Body = io.NopCloser(bytes.NewReader(body))
-				}
-				return response, err
-			})
+					return response, err
+				})
+			}
 			trace := &httptrace.ClientTrace{
 				GotConn: func(info httptrace.GotConnInfo) {
 					got.Add(1)
@@ -123,6 +138,16 @@ func testDirectReadPoolGetNotFound(t *testing.T) {
 			}
 			ctx := httptrace.WithClientTrace(t.Context(), trace)
 			for i := range 3 {
+				if fixture && i == 1 {
+					capture, response, err := fixturePoolRead(ctx, fixtureAccess, key, false)
+					if response != nil && response.Body != nil {
+						_ = response.Body.Close()
+					}
+					if err != nil || response == nil || capture == nil || response.StatusCode != http.StatusNotFound || !capture.success || !capture.notFound || capture.result != nil || capture.uid != "" || capture.strictNotFound {
+						t.Fatal("private absence capture changed its non-strict classification")
+					}
+					continue
+				}
 				live, err := access.Get(ctx, key)
 				if i == 1 {
 					if !apierrors.IsNotFound(err) || live != nil || strings.Contains(err.Error(), "CANARY") {

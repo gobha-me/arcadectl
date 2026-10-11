@@ -479,8 +479,16 @@ func (c *fixtureCapture) capture(response *http.Response) {
 		defer response.Body.Close()
 	}
 	if c.method == http.MethodGet && response.StatusCode == http.StatusNotFound {
-		if c.strictNotFound && !fixtureCounterpartNotFound(response, c.key) {
-			return
+		if c.strictNotFound {
+			if !fixtureCounterpartNotFound(response, c.key) {
+				return
+			}
+		} else {
+			// This private capture bypasses the generic GET-404 sanitizer.
+			// Consume only the same bounded small native body to preserve
+			// the frozen TLS pool. Discarded bytes confer no authority;
+			// strict CREATE-counterpart Status evidence remains unchanged.
+			discardSmallAbsentRead(response)
 		}
 		c.notFound, c.success = true, true
 		return

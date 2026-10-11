@@ -17,6 +17,7 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
 )
 
@@ -116,6 +117,10 @@ func testDirectReadPoolAbsentDrainBounds(t *testing.T) {
 // No sleep or new production timer: server headers/body readiness triggers
 // caller cancellation, and both operation and native handler are joined.
 func testDirectReadPoolAbsentDrainCancellation(t *testing.T) {
+	testDirectReadPoolAbsentDrainCancellationAtFixture(t, false)
+}
+
+func testDirectReadPoolAbsentDrainCancellationAtFixture(t *testing.T, fixture bool) {
 	key, object := accessObject()
 	ready, draining, handlerDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	var requests, got, reused, handshakes atomic.Int32
@@ -158,7 +163,14 @@ func testDirectReadPoolAbsentDrainCancellation(t *testing.T) {
 		}
 		return response, err
 	})
-	access.client.Transport, err = rest.HTTPWrappersForConfig(access.frozen, attemptTransport{observed})
+	// Keep the actual derived pool/identity lineage. Only this test's body
+	// observer sits below capture, signalling entry into native Body.Read.
+	var guarded http.RoundTripper = attemptTransport{observed}
+	if fixture {
+		access = derivedFixturePoolAccess(t, access, key)
+		guarded = fixtureIdentityTransport{next: guarded, identity: fixturePoolIdentity(access, key)}
+	}
+	access.client.Transport, err = rest.HTTPWrappersForConfig(config, guarded)
 	if err != nil {
 		t.Fatal("unchanged frozen auth wrapper refused")
 	}
@@ -171,8 +183,29 @@ func testDirectReadPoolAbsentDrainCancellation(t *testing.T) {
 		}
 	}, TLSHandshakeStart: func() { handshakes.Add(1) }}
 	ctx = httptrace.WithClientTrace(ctx, trace)
-	result := make(chan error, 1)
-	go func() { _, err := access.Get(ctx, key); result <- err }()
+	type cancellationResult struct {
+		err     error
+		private bool
+	}
+	result := make(chan cancellationResult, 1)
+	go func() {
+		if fixture {
+			capture, response, err := fixturePoolRead(ctx, access, key, false)
+			// Inspect actual native-returned error and above-wrapper bytes
+			// BEFORE replacing errors with the fixed test result category.
+			private := !fixturePoolCancellationPublicSafe(response, err)
+			if err != nil || capture == nil || response == nil || !capture.notFound {
+				result <- cancellationResult{err: ErrRead, private: private}
+			} else {
+				// A non-strict native 404 remains its old classification; only
+				// the enclosing phase may certify complete live evidence.
+				result <- cancellationResult{err: apierrors.NewNotFound(schema.GroupResource{Resource: "serviceaccounts"}, key.Name), private: private}
+			}
+			return
+		}
+		_, err := access.Get(ctx, key)
+		result <- cancellationResult{err: err}
+	}()
 	select {
 	case <-ready:
 	case <-time.After(5 * time.Second):
@@ -193,8 +226,9 @@ func testDirectReadPoolAbsentDrainCancellation(t *testing.T) {
 	}
 	cancel()
 	select {
-	case err := <-result:
-		if err == nil || !apierrors.IsNotFound(err) && !errors.Is(err, ErrRead) || strings.Contains(err.Error(), "CANARY") {
+	case outcome := <-result:
+		err := outcome.err
+		if outcome.private || err == nil || !apierrors.IsNotFound(err) && !errors.Is(err, ErrRead) || strings.Contains(err.Error(), "CANARY") {
 			t.Fatal("cancelled absence lost sanitized error")
 		}
 	case <-time.After(5 * time.Second):
@@ -204,6 +238,14 @@ func testDirectReadPoolAbsentDrainCancellation(t *testing.T) {
 	case <-handlerDone:
 	case <-time.After(5 * time.Second):
 		t.Fatal("native handler not joined")
+	}
+	// A fixture derivative cannot make a generic request. Recreate a normal
+	// direct parent over the same raw pool for the independent post-cancel read.
+	if fixture {
+		access, err = newHTTPAccessWithPool(config, true, access.pool)
+		if err != nil {
+			t.Fatal("independent post-cancel parent refused")
+		}
 	}
 	if live, err := access.Get(httptrace.WithClientTrace(t.Context(), trace), key); err != nil || live == nil || live.GetName() != object.GetName() {
 		t.Fatal("next independent request refused")

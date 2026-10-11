@@ -762,11 +762,13 @@ custom base transports are unsupported. File-backed certificate/key/CA/token
 inputs are read as bounded protected snapshots; no background credential-file
 rotation can reflect private reload errors. The source kubeconfig is not changed.
 
-Generic GET 404 replies may discard at most 8 KiB plus one sentinel byte of
+Generic and non-strict private fixture GET 404 replies may discard at most
+8 KiB plus one sentinel byte of
 uncompressed native body beneath the response sanitizer, allowing a small
 Kubernetes Status to reach its real EOF and reuse the frozen HTTP/1.1 TLS pool.
-Known oversized and auto-decompressed replies skip this discard; mutation,
-probe and fixture reply paths are unchanged. Bytes and read errors are never
+Known oversized and auto-decompressed replies skip this discard. Strict
+CREATE-counterpart fixture reads retain their exact native Status validation;
+mutation and probe reply paths are unchanged. Bytes and read errors are never
 decoded, retained, logged or reflected; the public fixed NotFound classification
 and sanitized body/headers remain unchanged. Incomplete/oversized reads close
 the original body without a retry. This byte bound is not a fast-failure or
