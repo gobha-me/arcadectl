@@ -129,6 +129,13 @@ func (t attemptTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		if attempt.probe != nil {
 			attempt.probe.classify(r, response)
+		} else if r.Method == http.MethodGet && response.StatusCode == http.StatusNotFound {
+			// Native absence is frequent in complete live proofs. Discard a
+			// small uncompressed Status beneath wrappers so HTTP/1.1 can reuse
+			// the original frozen TLS connection. This is not evidence: never
+			// parse, retain, expose, log or retry these bytes. The earlier
+			// request context/frozen client timeout still bounds a slow body.
+			discardSmallAbsentRead(response)
 		}
 		if response.Body != nil {
 			_ = response.Body.Close()
@@ -137,6 +144,19 @@ func (t attemptTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 		copyResponse.ContentLength = 2
 	}
 	return &copyResponse, nil
+}
+
+const absentReadDiscardLimit int64 = 8 * 1024
+
+func discardSmallAbsentRead(response *http.Response) {
+	if response.Body == nil || response.Uncompressed || response.ContentLength > absentReadDiscardLimit {
+		return
+	}
+	// One extra byte distinguishes the real underlying EOF from a limited
+	// reader's synthetic EOF at the accepted bound. Known oversize skips all
+	// reads; unknown/chunked bodies consume at most the limit plus sentinel.
+	// Completion or any native read error is immaterial to public status.
+	_, _ = io.CopyN(io.Discard, response.Body, absentReadDiscardLimit+1)
 }
 
 func NewHTTPAccess(config *rest.Config) (*HTTPAccess, error) {
@@ -420,7 +440,8 @@ func (a *HTTPAccess) requestAt(ctx context.Context, method string, key installst
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		// Never read, log or reflect an error body/Warning/Retry-After header.
+		// The guarded transport has replaced the native error body and
+		// headers. Never decode, log or reflect private rejection diagnostics.
 		gr := schema.GroupResource{Resource: key.Kind}
 		switch response.StatusCode {
 		case 404:

@@ -743,6 +743,19 @@ custom base transports are unsupported. File-backed certificate/key/CA/token
 inputs are read as bounded protected snapshots; no background credential-file
 rotation can reflect private reload errors. The source kubeconfig is not changed.
 
+Generic GET 404 replies may discard at most 8 KiB plus one sentinel byte of
+uncompressed native body beneath the response sanitizer, allowing a small
+Kubernetes Status to reach its real EOF and reuse the frozen HTTP/1.1 TLS pool.
+Known oversized and auto-decompressed replies skip this discard; mutation,
+probe and fixture reply paths are unchanged. Bytes and read errors are never
+decoded, retained, logged or reflected; the public fixed NotFound classification
+and sanitized body/headers remain unchanged. Incomplete/oversized reads close
+the original body without a retry. This byte bound is not a fast-failure or
+total-wire bound: a slow body can wait until the earlier caller cancellation or
+existing 30-second client ceiling, with no added timer, goroutine or deadline
+extension. Pool reuse is connection hygiene, not cached authority or proof that
+the hosted installer deadline is met.
+
 Every Create also prepares a protected, durable local receipt before the effect,
 then pins its acknowledged original UID before readback/settlement. The original
 call may pin a lost response's immediately correlated signed readback instead.

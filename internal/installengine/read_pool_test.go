@@ -5,23 +5,146 @@ package installengine
 
 import (
 	"bytes"
+	"compress/gzip"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"os"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gobha-me/arcadectl/internal/installobserve"
 	"github.com/gobha-me/arcadectl/internal/installstate"
 	authv1 "k8s.io/api/authorization/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/rest"
 )
+
+// Real direct HTTP/1.1 lineage: native Kubernetes absence has a nonempty
+// Status body. Empty fixture 404s alone cannot prove connection reuse.
+func testDirectReadPoolGetNotFound(t *testing.T) {
+	for _, scenario := range []struct {
+		name  string
+		reuse bool
+	}{{"empty-control", true}, {"native-status", true}, {"native-known-length", true}, {"exact-bound-known", true}, {"exact-bound-chunked", true}, {"oversize-known", false}, {"oversize-chunked", false}, {"truncated", false}, {"compressed", false}} {
+		t.Run(scenario.name, func(t *testing.T) {
+			key, object := accessObject()
+			var requests, got, reused, handshakes, sanitized atomic.Int32
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/api/v1/namespaces/isolated-install/serviceaccounts/reviewed" || r.URL.RawQuery != "" || r.ProtoMajor != 1 || r.Header.Get("Authorization") != "Bearer TEST-ONLY-404-POOL" || r.Header.Get("Impersonate-User") != "" {
+					t.Error("absence read changed frozen identity, route or protocol")
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if requests.Add(1) == 2 {
+					w.Header().Set("Warning", "PRIVATE-404-HEADER-CANARY")
+					w.Header().Set("Retry-After", "PRIVATE-404-RETRY-CANARY")
+					body := []byte(`{"apiVersion":"v1","kind":"Status","status":"Failure","reason":"NotFound","code":404,"message":"PRIVATE-404-BODY-CANARY"}`)
+					switch scenario.name {
+					case "empty-control":
+						body = nil
+						w.Header().Set("Content-Length", "0")
+					case "native-known-length":
+						w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+					case "exact-bound-known", "exact-bound-chunked":
+						body = append(body, bytes.Repeat([]byte(" "), 8192-len(body))...)
+						if scenario.name == "exact-bound-known" {
+							w.Header().Set("Content-Length", "8192")
+						} else {
+							w.Header().Set("Trailer", "X-Private-Trailer")
+						}
+					case "oversize-known", "oversize-chunked":
+						body = append(body, bytes.Repeat([]byte(" "), 65536-len(body))...)
+						if scenario.name == "oversize-known" {
+							w.Header().Set("Content-Length", "65536")
+						} else {
+							w.Header().Set("Trailer", "X-Private-Trailer")
+						}
+					case "truncated":
+						w.Header().Set("Content-Length", "1000")
+					case "compressed":
+						var encoded bytes.Buffer
+						zip := gzip.NewWriter(&encoded)
+						_, _ = zip.Write(body)
+						_ = zip.Close()
+						body = encoded.Bytes()
+						w.Header().Set("Content-Encoding", "gzip")
+						w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+					default:
+						w.Header().Set("Trailer", "X-Private-Trailer")
+					}
+					w.WriteHeader(http.StatusNotFound)
+					_, _ = w.Write(body)
+					w.Header().Set("X-Private-Trailer", "PRIVATE-404-TRAILER-CANARY")
+					return
+				}
+				_ = json.NewEncoder(w).Encode(object)
+			}))
+			t.Cleanup(server.Close)
+			config := serverConfig(server)
+			config.BearerToken = "TEST-ONLY-404-POOL"
+			access, err := NewDirectHTTPAccess(config)
+			if err != nil {
+				t.Fatal("direct static parent refused")
+			}
+			t.Cleanup(access.pool.(*http.Transport).CloseIdleConnections)
+			// Observe above the real guard after construction, without altering
+			// frozen configuration, pool provenance or native TLS routing.
+			outer := access.client.Transport
+			access.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				response, err := outer.RoundTrip(r)
+				if err == nil && response != nil && response.StatusCode == http.StatusNotFound {
+					body, readErr := io.ReadAll(response.Body)
+					_ = response.Body.Close()
+					if readErr != nil || string(body) != `{}` || len(response.Header) != 1 || response.Header.Get("Content-Type") != "application/json" || response.Status != "404 Not Found" || response.Trailer != nil || response.ContentLength != 2 {
+						t.Error("private absence response escaped below-wrapper sanitizer")
+					}
+					sanitized.Add(1)
+					response.Body = io.NopCloser(bytes.NewReader(body))
+				}
+				return response, err
+			})
+			trace := &httptrace.ClientTrace{
+				GotConn: func(info httptrace.GotConnInfo) {
+					got.Add(1)
+					if info.Reused && info.WasIdle {
+						reused.Add(1)
+					}
+				},
+				TLSHandshakeStart: func() { handshakes.Add(1) },
+			}
+			ctx := httptrace.WithClientTrace(t.Context(), trace)
+			for i := range 3 {
+				live, err := access.Get(ctx, key)
+				if i == 1 {
+					if !apierrors.IsNotFound(err) || live != nil || strings.Contains(err.Error(), "CANARY") {
+						t.Fatal("native absence lost fixed public classification")
+					}
+				} else if err != nil || live == nil || live.GetName() != key.Name {
+					t.Fatal("surrounding original read refused")
+				}
+			}
+			wantReuse, wantHandshakes := int32(1), int32(2)
+			if scenario.reuse {
+				wantReuse, wantHandshakes = 2, 1
+			}
+			if requests.Load() != 3 || got.Load() != 3 || reused.Load() != wantReuse || handshakes.Load() != wantHandshakes || sanitized.Load() != 1 {
+				t.Fatalf("absence pooled requests=%d connections=%d idle-reused=%d TLS-handshakes=%d sanitized=%d", requests.Load(), got.Load(), reused.Load(), handshakes.Load(), sanitized.Load())
+			}
+			if access.frozen.Transport != nil || access.frozen.WrapTransport != nil || access.frozen.Proxy != nil || !access.actorCompatible() {
+				t.Fatal("absence optimization changed canonical direct parent provenance")
+			}
+		})
+	}
+}
 
 // Real complete sealed SDK observations and alternating private actor reviews,
 // not fabricated evidence or cached proof results. A test-owned mutex joins
