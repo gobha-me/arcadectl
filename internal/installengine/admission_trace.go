@@ -169,10 +169,61 @@ const (
 	admissionPhaseInitialAccounts
 	admissionPhaseInitialMembership
 	admissionPhaseInitialServing
+	admissionPhaseGCWitnessBefore
+	admissionPhaseGCWitnessAfter
+	admissionPhaseGCLocalOpening
+	admissionPhaseGCReader
+	admissionPhaseGCDiscovery
+	admissionPhaseGCLocalPostDiscovery
+	admissionPhaseGCListAuth
+	admissionPhaseGCLocalPreCollect
+	admissionPhaseGCCollect
+	admissionPhaseGCClosingJournal
+	admissionPhaseGCLocalClosing
+	admissionPhaseNamedLocalOpening
+	admissionPhaseNamedDiscovery
+	admissionPhaseNamedAuthorization
+	admissionPhaseNamedRequest
+	admissionPhaseNamedLocalClosing
+	admissionPhaseNamedResult
 )
 
 func (step admissionPhaseStep) String() string {
 	switch step {
+	case admissionPhaseGCWitnessBefore:
+		return "gc-witness-before"
+	case admissionPhaseGCWitnessAfter:
+		return "gc-witness-after"
+	case admissionPhaseGCLocalOpening:
+		return "gc-local-opening"
+	case admissionPhaseGCReader:
+		return "gc-reader"
+	case admissionPhaseGCDiscovery:
+		return "gc-discovery"
+	case admissionPhaseGCLocalPostDiscovery:
+		return "gc-local-post-discovery"
+	case admissionPhaseGCListAuth:
+		return "gc-list-auth"
+	case admissionPhaseGCLocalPreCollect:
+		return "gc-local-pre-collect"
+	case admissionPhaseGCCollect:
+		return "gc-collect"
+	case admissionPhaseGCClosingJournal:
+		return "gc-closing-journal"
+	case admissionPhaseGCLocalClosing:
+		return "gc-local-closing"
+	case admissionPhaseNamedLocalOpening:
+		return "named-local-opening"
+	case admissionPhaseNamedDiscovery:
+		return "named-discovery"
+	case admissionPhaseNamedAuthorization:
+		return "named-authorization"
+	case admissionPhaseNamedRequest:
+		return "named-request"
+	case admissionPhaseNamedLocalClosing:
+		return "named-local-closing"
+	case admissionPhaseNamedResult:
+		return "named-result"
 	case admissionPhaseInitialCold:
 		return "initial-cold-evidence"
 	case admissionPhaseInitialControllers:
@@ -323,10 +374,10 @@ func traceAdmissionPreviewRefusal(ctx context.Context, stage fixturePreviewStage
 }
 
 func validAdmissionPhasePosition(step admissionPhaseStep, slot int) bool {
-	if step == admissionPhaseNamedGet || step == admissionPhaseWholeFixture {
+	if step == admissionPhaseNamedGet || step == admissionPhaseWholeFixture || step >= admissionPhaseNamedLocalOpening && step <= admissionPhaseNamedResult {
 		return slot >= 0 && slot < fixtureMaxSlots
 	}
-	return step >= admissionPhaseOriginal && step <= admissionPhaseInitialServing && slot == -1
+	return step >= admissionPhaseOriginal && step <= admissionPhaseGCLocalClosing && slot == -1
 }
 
 func traceAdmissionPhase(ctx context.Context, step admissionPhaseStep, slot int) {

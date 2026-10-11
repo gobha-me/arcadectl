@@ -20,7 +20,7 @@ import (
 // collection, named scan, source permission and GC rediscovery boundary.
 func TestFixturePhaseReadPassKeepsCompleteCollectionsAndNativeRefusals(t *testing.T) {
 	newPhase := unmarkedRecoveryPhaseFactory(t)
-	for _, fault := range []string{"healthy", "metadata-forbidden", "list-review-denied", "final-discovery-refused", "late-policy-restored"} {
+	for _, fault := range []string{"healthy", "metadata-forbidden", "list-review-denied", "gc-discovery-refused", "gc-opening-refused", "final-discovery-refused", "late-policy-restored"} {
 		t.Run(fault, func(t *testing.T) {
 			h := newPhase(t)
 			f, ledger := h.f, h.f.wire.ledger
@@ -57,6 +57,11 @@ func TestFixturePhaseReadPassKeepsCompleteCollectionsAndNativeRefusals(t *testin
 				}
 				if r.Method == http.MethodGet && r.URL.Path == "/apis" {
 					catalogues++
+					if fault == "gc-discovery-refused" && catalogues == 1 || fault == "gc-opening-refused" && catalogues == 2 {
+						w.WriteHeader(http.StatusForbidden)
+						injected = true
+						return true
+					}
 					if fault == "final-discovery-refused" && catalogues == 3 {
 						w.WriteHeader(http.StatusForbidden)
 						injected = true
@@ -104,7 +109,13 @@ func TestFixturePhaseReadPassKeepsCompleteCollectionsAndNativeRefusals(t *testin
 				if result != nil || err != ErrFixtures || !injected || ledger.phaseFloor != nil {
 					t.Fatal("read pass accepted native refusal or late remote drift", fault, err)
 				}
-				expected := "gc-collections"
+				expected := "gc-list-auth"
+				if fault == "gc-discovery-refused" {
+					expected = "gc-discovery"
+				}
+				if fault == "gc-opening-refused" {
+					expected = "gc-opening"
+				}
 				if fault == "metadata-forbidden" {
 					expected = "gc-metadata-pages"
 				}

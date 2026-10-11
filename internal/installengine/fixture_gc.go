@@ -42,32 +42,42 @@ func (w *fixtureWire) gcMetadataReadLocked(ctx context.Context, pairLeases bool,
 }
 
 func (w *fixtureWire) gcMetadataAttempt(ctx context.Context, pairLeases bool, reads *fixturePhaseRead, budget *installobserve.GCReadBudget) (*installobserve.GCObservation, *installobserve.LeaseRVConflict, error) {
+	traceAdmissionPhase(ctx, admissionPhaseGCLocalOpening, -1)
 	if w.gcReadCurrent(ctx, reads) != nil {
 		return nil, nil, ErrFixtures
 	}
 	p := w.actors.admission.prerequisites
 	s := w.actors.request.Snapshot
+	traceAdmissionPhase(ctx, admissionPhaseGCReader, -1)
 	reader, err := installobserve.NewGCReader(p.access.readConfig(), p.engine.journal, w.actors.request.Target)
 	if err != nil {
 		return nil, nil, ErrFixtures
 	}
+	traceAdmissionPhase(ctx, admissionPhaseGCDiscovery, -1)
 	discovery, err := reader.Discover(ctx, s.Anchor())
-	if err != nil || w.gcReadCurrent(ctx, reads) != nil {
+	if err != nil {
+		return nil, nil, ErrFixtures
+	}
+	traceAdmissionPhase(ctx, admissionPhaseGCLocalPostDiscovery, -1)
+	if w.gcReadCurrent(ctx, reads) != nil {
 		return nil, nil, ErrFixtures
 	}
 	for _, source := range discovery.Resources() {
 		permission := gcMetadataPermission(source, s.Anchor().Namespace)
 		// Only the original administrator's current exact LIST right. No new
 		// grant, TokenRequest, impersonation or full-object fallback is used.
+		traceAdmissionPhase(ctx, admissionPhaseGCListAuth, -1)
 		if p.access.authorize(ctx, permission.spec) != nil {
 			return nil, nil, ErrFixtures
 		}
 	}
+	traceAdmissionPhase(ctx, admissionPhaseGCLocalPreCollect, -1)
 	if w.gcReadCurrent(ctx, reads) != nil {
 		return nil, nil, ErrFixtures
 	}
 	var observation *installobserve.GCObservation
 	var refusal *installobserve.LeaseRVConflict
+	traceAdmissionPhase(ctx, admissionPhaseGCCollect, -1)
 	if pairLeases && budget != nil {
 		observation, refusal, err = reader.CollectWithLeaseRefusal(ctx, discovery, budget)
 	} else if pairLeases {
@@ -114,8 +124,13 @@ func (w *fixtureWire) gcMetadataAttempt(ctx context.Context, pairLeases bool, re
 		}
 		return nil, refusal, ErrFixtures
 	}
+	traceAdmissionPhase(ctx, admissionPhaseGCClosingJournal, -1)
 	journal := observation.Journal()
-	if journal == nil || journal.Anchor() != s.Anchor() || journal.ResourceVersion() != s.ResourceVersion() || !bytes.Equal(journal.Bytes(), s.Bytes()) || w.gcReadCurrent(ctx, reads) != nil {
+	if journal == nil || journal.Anchor() != s.Anchor() || journal.ResourceVersion() != s.ResourceVersion() || !bytes.Equal(journal.Bytes(), s.Bytes()) {
+		return nil, nil, ErrFixtures
+	}
+	traceAdmissionPhase(ctx, admissionPhaseGCLocalClosing, -1)
+	if w.gcReadCurrent(ctx, reads) != nil {
 		return nil, nil, ErrFixtures
 	}
 	return observation, nil, nil

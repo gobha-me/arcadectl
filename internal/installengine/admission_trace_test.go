@@ -137,7 +137,16 @@ func TestAdmissionPhaseTraceClosedStagesAndNoArbitraryValues(t *testing.T) {
 		admissionPhaseInitialCold: "initial-cold-evidence", admissionPhaseInitialControllers: "initial-controller-families",
 		admissionPhaseInitialRows: "initial-whole-rows", admissionPhaseInitialPublic: "initial-public-inventory",
 		admissionPhaseInitialAccounts: "initial-service-accounts", admissionPhaseInitialMembership: "initial-membership-correlation",
-		admissionPhaseInitialServing: "initial-api-serving",
+		admissionPhaseInitialServing:  "initial-api-serving",
+		admissionPhaseGCWitnessBefore: "gc-witness-before", admissionPhaseGCWitnessAfter: "gc-witness-after",
+		admissionPhaseGCLocalOpening: "gc-local-opening", admissionPhaseGCReader: "gc-reader",
+		admissionPhaseGCDiscovery: "gc-discovery", admissionPhaseGCLocalPostDiscovery: "gc-local-post-discovery",
+		admissionPhaseGCListAuth: "gc-list-auth", admissionPhaseGCLocalPreCollect: "gc-local-pre-collect",
+		admissionPhaseGCCollect: "gc-collect", admissionPhaseGCClosingJournal: "gc-closing-journal",
+		admissionPhaseGCLocalClosing:    "gc-local-closing",
+		admissionPhaseNamedLocalOpening: "named-local-opening", admissionPhaseNamedDiscovery: "named-discovery",
+		admissionPhaseNamedAuthorization: "named-authorization", admissionPhaseNamedRequest: "named-request",
+		admissionPhaseNamedLocalClosing: "named-local-closing", admissionPhaseNamedResult: "named-result",
 	}
 	for value := range 256 {
 		step := admissionPhaseStep(value)
@@ -150,7 +159,7 @@ func TestAdmissionPhaseTraceClosedStagesAndNoArbitraryValues(t *testing.T) {
 		}
 		for slot := -2; slot <= 11; slot++ {
 			valid := known && slot == -1
-			if step == admissionPhaseNamedGet || step == admissionPhaseWholeFixture {
+			if step == admissionPhaseNamedGet || step == admissionPhaseWholeFixture || step >= admissionPhaseNamedLocalOpening && step <= admissionPhaseNamedResult {
 				valid = slot >= 0 && slot <= 11
 			}
 			trace := &admissionTrace{}

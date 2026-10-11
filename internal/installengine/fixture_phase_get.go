@@ -16,6 +16,7 @@ import (
 // frozen original authentication, single native capture and local durable
 // evidence at the same per-request boundaries as the ordinary GET route.
 func (w *fixtureWire) getPhaseLocked(ctx context.Context, slot int) (*unstructured.Unstructured, bool, error) {
+	traceAdmissionPhase(ctx, admissionPhaseNamedLocalOpening, slot)
 	if ctx == nil || !w.phaseReadable() || w.localCurrent() != nil || slot < 0 || slot >= len(w.ledger.document.Entries) || w.actors.admission == nil || w.actors.admission.prerequisites == nil || w.actors.admission.prerequisites.access == nil {
 		return nil, false, ErrFixtures
 	}
@@ -25,14 +26,29 @@ func (w *fixtureWire) getPhaseLocked(ctx context.Context, slot int) (*unstructur
 		return nil, false, ErrFixtures
 	}
 	parent := w.actors.admission.prerequisites.access
+	traceAdmissionPhase(ctx, admissionPhaseNamedDiscovery, slot)
 	discovery, err := parent.discover(ctx, key.APIVersion)
-	if err != nil || !discoveredPermission(discovery, permission) || parent.authorize(ctx, permission.spec) != nil || !w.phaseReadable() || w.localCurrent() != nil {
+	if err != nil || !discoveredPermission(discovery, permission) {
 		return nil, false, ErrFixtures
 	}
+	traceAdmissionPhase(ctx, admissionPhaseNamedAuthorization, slot)
+	if parent.authorize(ctx, permission.spec) != nil {
+		return nil, false, ErrFixtures
+	}
+	traceAdmissionPhase(ctx, admissionPhaseNamedLocalOpening, slot)
+	if !w.phaseReadable() || w.localCurrent() != nil {
+		return nil, false, ErrFixtures
+	}
+	traceAdmissionPhase(ctx, admissionPhaseNamedRequest, slot)
 	capture, err := w.request(ctx, slot, fixtureGetRequest)
-	if err != nil || capture == nil || !w.phaseReadable() || w.localCurrent() != nil {
+	if err != nil || capture == nil {
 		return nil, false, ErrFixtures
 	}
+	traceAdmissionPhase(ctx, admissionPhaseNamedLocalClosing, slot)
+	if !w.phaseReadable() || w.localCurrent() != nil {
+		return nil, false, ErrFixtures
+	}
+	traceAdmissionPhase(ctx, admissionPhaseNamedResult, slot)
 	if capture.notFound {
 		return nil, true, nil
 	}

@@ -5,6 +5,7 @@ package installengine
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -146,8 +147,18 @@ func TestFixturePhaseNamedScanKeepsPerGETAuthorizationAndLocalEvidence(t *testin
 				}
 			}
 			before, identity := bytes.Clone(ledger.body), ledger.identity
-			if result, err := f.wire.observePhase(t.Context()); result != nil || err != ErrFixtures || !injected || ledger.phaseFloor != nil || !bytes.Equal(before, ledger.body) || ledger.identity != identity || f.creates != 0 || f.deletes != 0 || f.seeds != 0 || ledger.behaviorCompletion != nil {
+			trace := &admissionTrace{}
+			if result, err := f.wire.observePhase(context.WithValue(t.Context(), admissionTraceKey{}, trace)); result != nil || err != ErrFixtures || !injected || ledger.phaseFloor != nil || !bytes.Equal(before, ledger.body) || ledger.identity != identity || f.creates != 0 || f.deletes != 0 || f.seeds != 0 || ledger.behaviorCompletion != nil {
 				t.Fatal("read-only named scan bypassed exact permission/file/object/journal checks")
+			}
+			if fault == "get-denied" || fault == "get-error" || fault == "get-forbidden" {
+				want := "named-request"
+				if fault == "get-denied" {
+					want = "named-authorization"
+				}
+				if stage, slot := trace.phaseSnapshot(); stage != want || slot != 1 {
+					t.Fatal("named scan did not retain its actual fixed failed call", stage, slot)
+				}
 			}
 			if fault == "get-forbidden" && !refused {
 				t.Fatal("native GET refusal was not exercised")

@@ -31,11 +31,16 @@ func (w *fixtureWire) phaseGCWithAccountRenewals(ctx context.Context, o *install
 	budget := installobserve.NewGCReadBudget()
 	highWater := phase
 	for attempt := 0; attempt < 3; attempt++ {
-		if reads == nil || reads.current(ctx) != nil {
+		if reads == nil {
+			return nil, phase, ErrFixtures
+		}
+		traceAdmissionPhase(ctx, admissionPhaseGCWitnessBefore, -1)
+		if reads.current(ctx) != nil {
 			return nil, phase, ErrFixtures
 		}
 		gc, refusal, err := w.gcMetadataAttempt(ctx, true, reads, budget)
 		if err == nil {
+			traceAdmissionPhase(ctx, admissionPhaseGCWitnessAfter, -1)
 			if reads.current(ctx) != nil {
 				return nil, phase, ErrFixtures
 			}
@@ -45,7 +50,11 @@ func (w *fixtureWire) phaseGCWithAccountRenewals(ctx context.Context, o *install
 			return nil, phase, ErrFixtures
 		}
 		next, err := w.classifyLeaseRVConflictAccounts(ctx, o, highWater, objects, refusal, reads, accounts)
-		if err != nil || reads.current(ctx) != nil {
+		if err != nil {
+			return nil, phase, ErrFixtures
+		}
+		traceAdmissionPhase(ctx, admissionPhaseGCWitnessAfter, -1)
+		if reads.current(ctx) != nil {
 			return nil, phase, ErrFixtures
 		}
 		// Private invocation-local floor, NOT an accepted/durable phaseFloor.
