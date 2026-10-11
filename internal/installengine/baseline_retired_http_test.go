@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -148,6 +149,9 @@ func TestBaselineRetiredHTTPSRuntimeHealthy(t *testing.T) {
 }
 
 func TestBaselineRetiredHTTPSRuntimePendingOriginalAccessDelete(t *testing.T) {
+	t.Run("acknowledged-drain", func(t *testing.T) {
+		testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "runtime-acknowledged-original-access-delete")
+	})
 	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "runtime-pending-original-access-delete")
 }
 
@@ -167,6 +171,7 @@ func testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t *testing.T, t
 	t.Helper()
 	runtime := strings.HasPrefix(testCase, "runtime-")
 	scenario := strings.TrimPrefix(testCase, "runtime-")
+	acknowledged := scenario == "acknowledged-original-access-delete"
 	v, snapshot := retirementFixture(t)
 	completed := strings.HasPrefix(scenario, "complete-")
 	if completed {
@@ -282,6 +287,19 @@ func testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t *testing.T, t
 	claim := servingObject(t, &corev1.PersistentVolumeClaim{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"}, ObjectMeta: metav1.ObjectMeta{Name: "retained-unrelated-world", Namespace: namespace.Name, UID: "original-retained-world", ResourceVersion: "80"}, Status: corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimPending}})
 
 	var mu sync.Mutex
+	var deleteKey installstate.Key
+	if acknowledged {
+		for _, root := range document.Resources {
+			if root.Key.Kind == "RoleBinding" && !root.Retained {
+				deleteKey = root.Key
+				break
+			}
+		}
+		if deleteKey.Kind == "" {
+			t.Fatal("original signed access target unavailable")
+		}
+	}
+	deletes, namespaceCAS, drainReads := 0, 0, 0
 	lists, reviews := map[string]int{}, 0
 	seenReviews := map[string]int{}
 	// Independent protocol oracle: do not derive authorization
@@ -370,6 +388,53 @@ func testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t *testing.T, t
 		w.Header().Set("Content-Type", "application/json")
 		if r.Header.Get("Authorization") != "Bearer FAKE-RETIRED-ADMIN" || r.Header.Get("Impersonate-User") != "" || r.URL.Query().Has("dryRun") {
 			t.Error("retired proof changed identity or attempted a probe")
+		}
+		if acknowledged && r.Method == http.MethodPut && r.URL.Path == "/api/v1/namespaces/"+namespace.Name {
+			var next corev1.Namespace
+			if json.NewDecoder(r.Body).Decode(&next) != nil || next.UID != namespace.UID || next.ResourceVersion != namespace.ResourceVersion || next.Name != namespace.Name || !reflect.DeepEqual(next.Spec, namespace.Spec) || !reflect.DeepEqual(next.Labels, namespace.Labels) || namespaceCAS >= 2 {
+				t.Error("retirement CAS escaped original Namespace")
+				w.WriteHeader(409)
+				return
+			}
+			before, beforeErr := installstate.DecodeWithBaseline([]byte(namespace.Annotations[installstate.Annotation]), baseline, v.f.plan)
+			after, afterErr := installstate.DecodeWithBaseline([]byte(next.Annotations[installstate.Annotation]), baseline, v.f.plan)
+			if beforeErr != nil || afterErr != nil || after.Revision != before.Revision+1 || after.InstallationID != before.InstallationID || namespaceCAS == 0 && (before.Pending != nil || after.Pending == nil || after.Pending.Action != installstate.Delete || after.Pending.Key != deleteKey) || namespaceCAS == 1 && (deletes != 1 || before.Pending == nil || after.Pending != nil || v.f.access.objects[deleteKey] != nil) {
+				t.Error("retirement intent/settlement CAS escaped exact original deletion")
+				w.WriteHeader(409)
+				return
+			}
+			namespaceCAS++
+			rv, _ := strconv.ParseUint(namespace.ResourceVersion, 10, 64)
+			next.ResourceVersion = strconv.FormatUint(rv+1, 10)
+			next.APIVersion, next.Kind = "v1", "Namespace"
+			namespace = next.DeepCopy()
+			_ = json.NewEncoder(w).Encode(next)
+			return
+		}
+		deletePath, _ := resourcePath(deleteKey, false)
+		if acknowledged && r.Method == http.MethodDelete && r.URL.Path == deletePath {
+			var options metav1.DeleteOptions
+			intent, intentErr := installstate.DecodeWithBaseline([]byte(namespace.Annotations[installstate.Annotation]), baseline, v.f.plan)
+			live := v.f.access.objects[deleteKey]
+			if json.NewDecoder(r.Body).Decode(&options) != nil || intentErr != nil || intent.Pending == nil || intent.Pending.Key != deleteKey || deletes != 0 || live == nil || options.Preconditions == nil || options.Preconditions.UID == nil || options.Preconditions.ResourceVersion == nil || *options.Preconditions.UID != live.GetUID() || *options.Preconditions.ResourceVersion != live.GetResourceVersion() || intent.Pending.BeforeUID != live.GetUID() || intent.Pending.BeforeResourceVersion != live.GetResourceVersion() || options.PropagationPolicy == nil || *options.PropagationPolicy != metav1.DeletePropagationForeground || len(options.DryRun) != 0 {
+				t.Error("retirement effect was replayed or escaped exact UID/RV foreground intent")
+				w.WriteHeader(409)
+				return
+			}
+			deletes++
+			rv, _ := strconv.ParseUint(live.GetResourceVersion(), 10, 64)
+			stamp := metav1.Now()
+			live.SetResourceVersion(strconv.FormatUint(rv+1, 10))
+			live.SetDeletionTimestamp(&stamp)
+			live.SetFinalizers([]string{metav1.FinalizerDeleteDependents})
+			_ = json.NewEncoder(w).Encode(metav1.Status{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Status"}, Status: metav1.StatusSuccess, Code: 200})
+			return
+		}
+		if acknowledged && r.Method == http.MethodGet && r.URL.Path == deletePath && deletes == 1 {
+			drainReads++
+			if drainReads == 3 {
+				delete(v.f.access.objects, deleteKey)
+			}
 		}
 		if r.Method == http.MethodPost && r.URL.Path == "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews" {
 			var review authv1.SelfSubjectAccessReview
@@ -589,7 +654,13 @@ func testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t *testing.T, t
 		provider = closed
 	}
 	writes, namespaceWrites := v.f.access.writes, v.f.nsUpdates
-	if runtime && completed {
+	if acknowledged {
+		original := snapshot
+		snapshot, err = engine.delete(t.Context(), snapshot, deleteKey, true)
+		if err != nil || snapshot == nil || snapshot.Document().Pending != nil || snapshot.Document().Revision != original.Document().Revision+2 || snapshot.Anchor() != original.Anchor() || len(snapshot.Document().Resources) != len(original.Document().Resources)-1 || deletes != 1 || namespaceCAS != 2 || drainReads < 3 {
+			t.Fatal("whole closed provider did not converge exact acknowledged access deletion", err)
+		}
+	} else if runtime && completed {
 		err = engine.baseline.verifyRuntime(t.Context(), snapshot)
 	} else if runtime {
 		current, currentErr := engine.current(t.Context(), snapshot)
@@ -604,7 +675,7 @@ func testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t *testing.T, t
 	mu.Lock()
 	hit, listedCounts, reviewCount := faultHit, maps.Clone(lists), reviews
 	mu.Unlock()
-	positive := scenario == "healthy" || scenario == "harmless-terminal-pod" || scenario == "partially-withdrawn-original-access" || scenario == "pending-original-access-delete" || scenario == "complete-healthy"
+	positive := scenario == "healthy" || scenario == "harmless-terminal-pod" || scenario == "partially-withdrawn-original-access" || scenario == "pending-original-access-delete" || scenario == "complete-healthy" || acknowledged
 	if !positive {
 		if !hit || err != ErrSecurityBaseline {
 			t.Fatal("whole provider accepted incomplete or changing evidence", hit, err)
@@ -614,6 +685,16 @@ func testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t *testing.T, t
 			t.Fatal("whole retired provider rejected complete original evidence", err, listedCounts, reviewCount)
 		}
 		mu.Lock()
+		proofs := 1
+		if acknowledged {
+			// Seven independent full current guards: delete opening, its
+			// retired wrapper, pre-effect intent, post-absence opening and its
+			// retired wrapper, independent recovery and its retired wrapper.
+			proofs = 7
+			for review, count := range expectedReviews {
+				expectedReviews[review] = count * proofs
+			}
+		}
 		for _, c := range proofCollections {
 			want := 2
 			for _, executable := range baselineExecutableCollections {
@@ -621,6 +702,7 @@ func testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t *testing.T, t
 					want += 2
 				}
 			}
+			want *= proofs
 			if lists[c.kind] != want {
 				t.Error("whole proof skipped complete evidence pass", c.kind, lists[c.kind], want)
 			}
@@ -632,6 +714,7 @@ func testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t *testing.T, t
 		if scenario == "harmless-terminal-pod" {
 			wantReviews += 2 // exact whole GET review on both executable passes
 		}
+		wantReviews *= proofs
 		if reviews != wantReviews {
 			t.Error("retired executable reader omitted closed administrator reviews", reviews)
 		}

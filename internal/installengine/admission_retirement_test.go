@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -425,12 +426,20 @@ func (g *retirementCaptureGuard) Verify(ctx context.Context, snapshot *installst
 }
 
 func TestAdmissionRetirementForegroundDeletionRemainsPendingUntilAbsent(t *testing.T) {
+	t.Run("full-original-envelope", testRetiredAccessOriginalEnvelope)
+	t.Run("same-ack-convergence", testRetiredAccessACKConvergence)
+	t.Run("same-ack-refusals", testRetiredAccessACKRefusals)
 	v, s := retirementFixture(t)
 	v.f.access.write = func(action installstate.Action, key installstate.Key, object *unstructured.Unstructured) (*unstructured.Unstructured, error) {
 		if action != installstate.Delete {
 			t.Fatal("unexpected effect during access retirement")
 		}
 		now := metav1.Now()
+		rv, rvErr := strconv.ParseUint(v.f.access.objects[key].GetResourceVersion(), 10, 64)
+		if rvErr != nil {
+			t.Fatal("original RV unavailable")
+		}
+		v.f.access.objects[key].SetResourceVersion(strconv.FormatUint(rv+1, 10))
 		v.f.access.objects[key].SetDeletionTimestamp(&now)
 		v.f.access.objects[key].SetFinalizers([]string{metav1.FinalizerDeleteDependents})
 		return nil, nil
@@ -439,8 +448,9 @@ func TestAdmissionRetirementForegroundDeletionRemainsPendingUntilAbsent(t *testi
 	// only the ACK-observation wait, not the later explicit recovery checks.
 	ctx, cancel := context.WithTimeout(t.Context(), 2500*time.Millisecond)
 	defer cancel()
+	ctx, diagnostic := WithLifecycleDiagnostic(ctx)
 	next, err := v.l.Step(ctx, s, v.opts)
-	if err == nil || next == nil || next.Document().Pending == nil {
+	if err == nil || next == nil || next.Document().Pending == nil || ctx.Err() != context.DeadlineExceeded || !strings.Contains(diagnostic.AcknowledgedDeleteSnapshot(), "status=deadline") || !strings.Contains(diagnostic.AcknowledgedDeleteObservationSnapshot(), "draining") {
 		t.Fatal("foreground acceptance was treated as completed removal")
 	}
 	s = next

@@ -21,17 +21,19 @@ func (e *Engine) waitAcknowledgedDelete(ctx context.Context, intent *installstat
 	}
 	p := intent.Document().Pending
 	settled := intent
-	// Only a successfully acknowledged lifecycle Deployment DELETE needs
-	// native descendant preparation. Public Delete and uncertain sends never
+	// Only successfully acknowledged lifecycle Deployment or retired-access
+	// DELETEs get read-only native draining preparation. Public Delete and uncertain sends never
 	// enter this function. Preparation grants no authority: the original full
 	// guard and independent absence/recovery proof still precede settlement.
-	prepare := e.baseline != nil && p.Key.Kind == "Deployment"
+	prepareDeployment := e.baseline != nil && p.Key.Kind == "Deployment"
+	prepareAccess := retiringAccessDelete(intent.Document())
+	prepare := prepareDeployment || prepareAccess
 	var previous *baselineExecutables
 	var quiet time.Time
 	if prepare {
 		d := intent.Document()
 		original, before := e.inventory(d, p.Key)
-		if e.baseline.prerequisites == nil || original == nil || before == nil || !deletionAllowed(d, original, before) || p.BeforeUID != original.UID || p.BeforeSHA256 != before.Hash() || !baselineParentRV(p.BeforeResourceVersion) || !nonceID.MatchString(p.CreateNonce) || p.AfterSHA256 != "" {
+		if prepareDeployment && e.baseline.prerequisites == nil || original == nil || before == nil || !deletionAllowed(d, original, before) || p.BeforeUID != original.UID || p.BeforeSHA256 != before.Hash() || !baselineParentRV(p.BeforeResourceVersion) || !nonceID.MatchString(p.CreateNonce) || p.AfterSHA256 != "" {
 			return intent, ErrOutcomeUnknown
 		}
 	}
@@ -73,7 +75,13 @@ func (e *Engine) waitAcknowledgedDelete(ctx context.Context, intent *installstat
 				if readErr == nil {
 					traceAcknowledgedDeleteStep(ctx, ackTargetOriginalCheck)
 				}
-				if readErr != nil || !baselineDeletingOriginal(before, p, live) {
+				original := false
+				if prepareAccess {
+					original = retiredAccessDeletingOriginal(before, p, live)
+				} else {
+					original = baselineDeletingOriginal(before, p, live)
+				}
+				if readErr != nil || !original {
 					traceAcknowledgedDeleteRefusal(ctx, readErr)
 					return false, ErrOutcomeUnknown
 				}
@@ -82,27 +90,29 @@ func (e *Engine) waitAcknowledgedDelete(ctx context.Context, intent *installstat
 				traceAcknowledgedDeleteObservation(ctx, ackObservedDraining)
 				return false, nil // acknowledged original is still draining
 			}
-			traceAcknowledgedDeleteStep(ctx, ackExecutableCollection)
-			whole, err := e.baseline.prerequisites.collectExecutables(ctx, intent)
-			if err != nil {
-				traceAcknowledgedDeleteRefusal(ctx, err)
-			} else {
-				traceAcknowledgedDeleteStep(ctx, ackExecutableClosing)
-			}
-			if _, fenceErr := e.currentOriginal(ctx, intent); err != nil || fenceErr != nil || whole == nil || ctx.Err() != nil || whole.whole[p.Key] != nil {
-				if err == nil && fenceErr == nil && whole != nil && ctx.Err() == nil {
-					traceAcknowledgedDeleteStep(ctx, ackTargetAbsentCheck)
+			if prepareDeployment {
+				traceAcknowledgedDeleteStep(ctx, ackExecutableCollection)
+				whole, err := e.baseline.prerequisites.collectExecutables(ctx, intent)
+				if err != nil {
+					traceAcknowledgedDeleteRefusal(ctx, err)
+				} else {
+					traceAcknowledgedDeleteStep(ctx, ackExecutableClosing)
 				}
-				traceAcknowledgedDeleteRefusal(ctx, fenceErr)
-				return false, ErrOutcomeUnknown
-			}
-			if previous == nil || !sameBaselineExecutables(previous, whole) {
-				previous, quiet = whole, time.Now()
-			}
-			if time.Since(quiet) < 5*time.Second {
-				traceAcknowledgedDeleteStep(ctx, ackQuietness)
-				traceAcknowledgedDeleteObservation(ctx, ackObservedQuietness)
-				return false, nil // complete read-only observations only
+				if _, fenceErr := e.currentOriginal(ctx, intent); err != nil || fenceErr != nil || whole == nil || ctx.Err() != nil || whole.whole[p.Key] != nil {
+					if err == nil && fenceErr == nil && whole != nil && ctx.Err() == nil {
+						traceAcknowledgedDeleteStep(ctx, ackTargetAbsentCheck)
+					}
+					traceAcknowledgedDeleteRefusal(ctx, fenceErr)
+					return false, ErrOutcomeUnknown
+				}
+				if previous == nil || !sameBaselineExecutables(previous, whole) {
+					previous, quiet = whole, time.Now()
+				}
+				if time.Since(quiet) < 5*time.Second {
+					traceAcknowledgedDeleteStep(ctx, ackQuietness)
+					traceAcknowledgedDeleteObservation(ctx, ackObservedQuietness)
+					return false, nil // complete read-only observations only
+				}
 			}
 			traceAcknowledgedDeleteStep(ctx, ackFullGuardOpening)
 		}
