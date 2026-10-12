@@ -5,6 +5,7 @@ package installengine
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +49,55 @@ func probePolicyName(t *testing.T, plan *installrender.Plan, stem string) string
 	}
 	t.Fatal("signed policy missing")
 	return ""
+}
+
+func TestAdmissionCreateProbeMetadataMembershipAndIndependentResults(t *testing.T) {
+	for _, namespace := range []string{installrender.DefaultNamespace, "isolated-probe-metadata"} {
+		for _, profile := range []string{installrender.Profile135, installrender.Profile137} {
+			plan := fixturePlanProfile(t, namespace, profile)
+			name := "arcadectl-probe-0123456789abcdef0123456789abcdef"
+			resources := plan.Resources()
+			policies := map[string]bool{}
+			for _, resource := range resources {
+				if resource.Object.GetKind() == "ValidatingAdmissionPolicy" {
+					policies[resource.Object.GetName()] = true
+				}
+			}
+			for _, resource := range resources {
+				policy := resource.Object.GetName()
+				positive, negative, index, err := admissionCreateProbe(plan, policy, "arcadectl-controller", name)
+				// A binding can share its policy's name. Preserve the original
+				// predicate: at least one exact Kind/Name policy match exists.
+				if !policies[policy] {
+					if err != ErrInvalid {
+						t.Fatal("non-policy signed metadata became probe authority")
+					}
+					continue
+				}
+				if err != nil || positive == nil || negative == nil || positive.GetNamespace() != namespace {
+					t.Fatal("signed policy constructor parity changed")
+				}
+				wantPositive, wantNegative := positive.DeepCopy(), negative.DeepCopy()
+				positive.SetName("mutated")
+				negative.Object["spec"] = map[string]any{"mutated": true}
+				gotPositive, gotNegative, gotIndex, gotErr := admissionCreateProbe(plan, policy, "arcadectl-controller", name)
+				if gotErr != nil || gotIndex != index || !reflect.DeepEqual(gotPositive, wantPositive) || !reflect.DeepEqual(gotNegative, wantNegative) {
+					t.Fatal("probe results alias prior result or signed plan")
+				}
+				if _, _, _, err := admissionCreateProbe(plan, policy+"-foreign", "arcadectl-controller", name); err != ErrInvalid {
+					t.Fatal("stem similarity bypassed exact signed policy membership")
+				}
+				for _, account := range []string{"", "foreign/account"} {
+					if _, _, _, err := admissionCreateProbe(plan, policy, account, name); err != ErrInvalid {
+						t.Fatal("invalid account became an inert probe principal")
+					}
+				}
+			}
+		}
+	}
+	if _, _, _, err := admissionCreateProbe(nil, "foreign", "arcadectl-controller", "arcadectl-probe-0123456789abcdef0123456789abcdef"); err != ErrInvalid {
+		t.Fatal("untrusted plan became probe authority")
+	}
 }
 
 func TestAdmissionUnsafeProbeAcceptedShapeClosedBranch(t *testing.T) {

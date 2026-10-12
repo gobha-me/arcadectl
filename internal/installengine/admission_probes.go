@@ -27,8 +27,8 @@ func admissionCreateProbe(plan *installrender.Plan, policyName, account, name st
 		return nil, nil, 0, ErrInvalid
 	}
 	known := false
-	for _, resource := range plan.Resources() {
-		if resource.Object.GetKind() == "ValidatingAdmissionPolicy" && resource.Object.GetName() == policyName {
+	for _, resource := range plan.ResourceMetadata() {
+		if resource.Kind == "ValidatingAdmissionPolicy" && resource.Name == policyName {
 			known = true
 		}
 	}

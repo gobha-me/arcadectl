@@ -67,6 +67,9 @@ type Template struct {
 	expected runtime.Object
 	hash     string
 	paused   bool
+	// Private normalized signed-side bytes only. Every live comparison still
+	// normalizes its freshly observed spec; no live match or identity is cached.
+	crdSpec []byte
 }
 
 func New(plan *installrender.Plan) (*Contract, error) {
@@ -127,7 +130,11 @@ func (c *Contract) compileTemplate(key installstate.Key, paused bool) (*Template
 		return nil, err
 	}
 	defaults(expected)
-	return &Template{contract: c, resource: r, key: key, expected: expected, hash: hex.EncodeToString(sum[:]), paused: paused}, nil
+	t := &Template{contract: c, resource: r, key: key, expected: expected, hash: hex.EncodeToString(sum[:]), paused: paused}
+	if key.Kind == "CustomResourceDefinition" {
+		t.crdSpec = normalizedCRDSpec(r.Object)
+	}
+	return t, nil
 }
 
 func (t *Template) Hash() string {
@@ -285,7 +292,7 @@ func (t *Template) match(object *unstructured.Unstructured, journal *installstat
 	case *crdv1.CustomResourceDefinition:
 		// Nested schema unions have custom JSON decoders. Compare their raw
 		// signed shape too, so unknown schema fields cannot disappear there.
-		if !sameCRDSpec(t.resource.Object, object) {
+		if !t.matchCRDSpec(object) {
 			return ErrDrift
 		}
 		o.Status = crdv1.CustomResourceDefinitionStatus{}
@@ -309,7 +316,7 @@ func (t *Template) UpdateCandidate(previous *Template, live *unstructured.Unstru
 	if t == nil || previous == nil || t.contract == nil || previous.contract == nil || t.contract.baseline != nil || previous.contract.baseline != nil || t.key != previous.key || t.contract.plan.Namespace() != previous.contract.plan.Namespace() || t.contract.plan.Profile().ID != previous.contract.plan.Profile().ID || previous.MatchLive(live, originalUID) != nil {
 		return nil, ErrDrift
 	}
-	if t.key.Kind == "CustomResourceDefinition" && !sameCRDSpec(previous.resource.Object, t.resource.Object) {
+	if t.key.Kind == "CustomResourceDefinition" && !previous.sameSignedCRDSpec(t) {
 		return nil, ErrCRD
 	}
 	o, err := t.Candidate(nonce)
@@ -395,27 +402,42 @@ func validAllocation(o *corev1.Service) bool {
 }
 
 func sameCRDSpec(a, b *unstructured.Unstructured) bool {
-	copySpec := func(o *unstructured.Unstructured) map[string]any {
-		spec, exists, err := unstructured.NestedMap(o.Object, "spec")
-		if err != nil || !exists {
-			return nil
-		}
-		if _, exists := spec["conversion"]; !exists {
-			spec["conversion"] = map[string]any{"strategy": "None"}
-		}
-		// An absent deprecated false field is equivalent to explicitly false.
-		if value, exists := spec["preserveUnknownFields"]; exists && value == false {
-			delete(spec, "preserveUnknownFields")
-		}
-		return spec
+	aa, bb := normalizedCRDSpec(a), normalizedCRDSpec(b)
+	return aa != nil && bb != nil && bytes.Equal(aa, bb)
+}
+
+func normalizedCRDSpec(o *unstructured.Unstructured) []byte {
+	if o == nil {
+		return nil
 	}
-	aa, bb := copySpec(a), copySpec(b)
-	if aa == nil || bb == nil {
+	spec, exists, err := unstructured.NestedMap(o.Object, "spec")
+	if err != nil || !exists || spec == nil {
+		return nil
+	}
+	if _, exists := spec["conversion"]; !exists {
+		spec["conversion"] = map[string]any{"strategy": "None"}
+	}
+	// An absent deprecated false field is equivalent to explicitly false.
+	if value, exists := spec["preserveUnknownFields"]; exists && value == false {
+		delete(spec, "preserveUnknownFields")
+	}
+	body, err := json.Marshal(spec)
+	if err != nil {
+		return nil
+	}
+	// Integral int64/float64 values compare by encoded JSON shape, with every
+	// unknown nested key retained. The private copy never aliases the input.
+	return body
+}
+
+func (t *Template) matchCRDSpec(live *unstructured.Unstructured) bool {
+	if t == nil || t.crdSpec == nil {
 		return false
 	}
-	want, wantErr := json.Marshal(aa)
-	got, gotErr := json.Marshal(bb)
-	// Unstructured int64 and typed-schema float64 can describe the same
-	// integral JSON number. Compare their encoded shape without dropping keys.
-	return wantErr == nil && gotErr == nil && bytes.Equal(want, got)
+	got := normalizedCRDSpec(live)
+	return got != nil && bytes.Equal(t.crdSpec, got)
+}
+
+func (t *Template) sameSignedCRDSpec(target *Template) bool {
+	return t != nil && target != nil && t.crdSpec != nil && target.crdSpec != nil && bytes.Equal(t.crdSpec, target.crdSpec)
 }

@@ -16,7 +16,7 @@ import (
 // transition permits only an identical signed CRD spec, no schema/conversion or
 // storage migration. Discovery must independently prove the served resource.
 func (t *Template) CheckCRD(live *unstructured.Unstructured, originalUID types.UID, target *Template) error {
-	if t == nil || target == nil || t.contract == nil || target.contract == nil || t.key.Kind != "CustomResourceDefinition" || t.key != target.key || t.contract.plan.Namespace() != target.contract.plan.Namespace() || t.contract.plan.Profile().ID != target.contract.plan.Profile().ID || !sameCRDSpec(t.resource.Object, target.resource.Object) || t.MatchLive(live, originalUID) != nil {
+	if t == nil || target == nil || t.contract == nil || target.contract == nil || t.key.Kind != "CustomResourceDefinition" || t.key != target.key || t.contract.plan.Namespace() != target.contract.plan.Namespace() || t.contract.plan.Profile().ID != target.contract.plan.Profile().ID || !t.sameSignedCRDSpec(target) || t.MatchLive(live, originalUID) != nil {
 		return ErrCRD
 	}
 	// Presence matters: zero is stale when explicitly provided for generation
