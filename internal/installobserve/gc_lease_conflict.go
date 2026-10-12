@@ -71,6 +71,7 @@ func (c *LeaseRVConflict) Descendants(roots []types.UID) ([]GCObject, error) {
 // returns a successful observation on mismatch. The existing strict entry
 // points remain unchanged. An exhausted/shared invalid budget fails closed.
 func (g *GCReader) CollectWithLeaseRefusal(ctx context.Context, discovery *GCDiscovery, budget *GCReadBudget) (*GCObservation, *LeaseRVConflict, error) {
+	g.resetDiagnostics()
 	if budget == nil || budget.remaining <= 0 || budget.remaining > 32*1024*1024 || budget.attempts >= 3 {
 		return nil, nil, ErrRead
 	}

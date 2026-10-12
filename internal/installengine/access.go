@@ -490,32 +490,51 @@ func (a *HTTPAccess) requestAt(ctx context.Context, method string, key installst
 }
 
 func boundedJSON(raw []byte) bool {
-	d := json.NewDecoder(bytes.NewReader(raw))
-	d.UseNumber()
 	depth, nodes := 0, 0
-	for {
-		token, err := d.Token()
-		if err == io.EOF {
-			return depth == 0
-		}
-		if err != nil {
-			return false
-		}
-		nodes++
-		if nodes > 200000 {
-			return false
-		}
-		if delimiter, ok := token.(json.Delim); ok {
-			switch delimiter {
-			case '{', '[':
-				depth++
-			case '}', ']':
-				depth--
+	// Count the same tokens as Decoder.Token without materializing strings or
+	// numbers. Reject limits BEFORE standard grammar validation, so an invalid
+	// deeply nested response cannot grow the standard scanner's depth stack.
+	// This is only prevalidation: each caller still strictly decodes ONE value,
+	// rejects duplicate fields and checks its original envelope/identity.
+	for i := 0; i < len(raw); i++ {
+		switch raw[i] {
+		case ' ', '\t', '\r', '\n', ',', ':':
+			continue
+		case '{', '[':
+			depth++
+		case '}', ']':
+			depth--
+		case '"':
+			i++
+			for ; i < len(raw) && raw[i] != '"'; i++ {
+				if raw[i] == '\\' {
+					i++ // Escaped quotes and structural bytes are not tokens.
+				}
 			}
-			if depth > 64 || depth < 0 {
+			if i >= len(raw) {
 				return false
 			}
+		default:
+			// A primitive is one token, irrespective of numeric length. The
+			// standard parser below, not this scan, validates its grammar.
+			for i+1 < len(raw) && !jsonTokenBoundary(raw[i+1]) {
+				i++
+			}
 		}
+		nodes++
+		if nodes > 200000 || depth > 64 || depth < 0 {
+			return false
+		}
+	}
+	return depth == 0 && json.Valid(raw)
+}
+
+func jsonTokenBoundary(b byte) bool {
+	switch b {
+	case ' ', '\t', '\r', '\n', ',', ':', '{', '}', '[', ']', '"':
+		return true
+	default:
+		return false
 	}
 }
 

@@ -287,6 +287,9 @@ func runMutation(ctx context.Context, o options, stdout, stderr io.Writer) int {
 			if probe := diagnostic.BaselineProbeSnapshot(); probe != "" {
 				_, _ = fmt.Fprintf(stderr, "installation diagnostic baseline-probe %s\n", probe)
 			}
+			if pages := diagnostic.GCPagesSnapshot(); pages != "" {
+				_, _ = fmt.Fprintf(stderr, "installation diagnostic gc-pages %s\n", pages)
+			}
 			if preparation := diagnostic.AcknowledgedDeleteSnapshot(); preparation != "" {
 				_, _ = fmt.Fprintf(stderr, "installation diagnostic acknowledged-delete %s\n", preparation)
 			}

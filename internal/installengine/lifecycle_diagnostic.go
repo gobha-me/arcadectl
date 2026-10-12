@@ -30,6 +30,7 @@ type LifecycleDiagnostic struct {
 	baselineBeforeDeadline atomic.Uint32
 	baselineFailure        atomic.Uint32
 	baselineProbe          atomic.Pointer[baselineProbeDiagnostic]
+	gcPages                atomic.Pointer[gcPagesDiagnostic]
 	ackPreparation         atomic.Uint32
 	ackObservation         atomic.Uint32
 }
@@ -92,6 +93,7 @@ func traceLifecycleCheckpoint(ctx context.Context, kind Checkpoint, state lifecy
 			diagnostic.baselineBeforeDeadline.Store(0)
 			diagnostic.baselineFailure.Store(0)
 			diagnostic.baselineProbe.Store(nil)
+			diagnostic.gcPages.Store(nil)
 			diagnostic.ackPreparation.Store(0)
 			diagnostic.ackObservation.Store(0)
 		}

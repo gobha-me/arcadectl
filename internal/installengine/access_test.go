@@ -173,9 +173,11 @@ func TestHTTPAccessRefusesRedirectsAndMalformedEvidence(t *testing.T) {
 	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { redirects.Add(1) }))
 	defer target.Close()
 	key, o := accessObject()
-	for _, scenario := range []string{"redirect", "duplicate", "deep", "huge", "wrong-gvk", "wrong-address", "bad-type", "not-found", "conflict"} {
+	for _, scenario := range []string{"redirect", "duplicate", "deep", "huge", "empty", "whitespace", "multiple-values", "wrong-gvk", "wrong-address", "bad-type", "not-found", "conflict"} {
 		t.Run(scenario, func(t *testing.T) {
+			var requests atomic.Int32
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
 				w.Header().Set("Content-Type", "application/json")
 				switch scenario {
 				case "redirect":
@@ -186,6 +188,13 @@ func TestHTTPAccessRefusesRedirectsAndMalformedEvidence(t *testing.T) {
 					_, _ = io.WriteString(w, strings.Repeat("[", 65)+"0"+strings.Repeat("]", 65))
 				case "huge":
 					_, _ = io.WriteString(w, strings.Repeat(" ", 1024*1024+1))
+				case "empty":
+					// No JSON value, even though the original token walk accepted EOF.
+				case "whitespace":
+					_, _ = io.WriteString(w, " \t\r\n")
+				case "multiple-values":
+					_ = json.NewEncoder(w).Encode(o)
+					_, _ = io.WriteString(w, `{}`)
 				case "wrong-gvk":
 					changed := o.DeepCopy()
 					changed.SetKind("Secret")
@@ -211,7 +220,7 @@ func TestHTTPAccessRefusesRedirectsAndMalformedEvidence(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err = a.Get(context.Background(), key)
-			if err == nil || strings.Contains(err.Error(), "CANARY") {
+			if err == nil || strings.Contains(err.Error(), "CANARY") || requests.Load() != 1 {
 				t.Fatal("malformed evidence accepted/reflected")
 			}
 			if scenario == "not-found" && !apierrors.IsNotFound(err) || scenario == "conflict" && !apierrors.IsConflict(err) {

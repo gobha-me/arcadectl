@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -50,11 +51,21 @@ func TestPagesCompleteEmptyIntermediateAndNoSelectors(t *testing.T) {
 }
 
 func TestPagesDiscardIncompleteEvidenceWithoutRestart(t *testing.T) {
-	for _, tc := range []string{"read-error", "nil", "typed-nil", "rv-change", "rv-empty", "rv-large", "repeat", "cycle", "endless-empty", "continue-large", "remaining-negative", "final-remaining", "object-bound", "byte-bound"} {
+	reasons := map[string]pagesRefusalReason{
+		"read-error": pagesRefusalFetch, "page-and-error": pagesRefusalFetch, "nil": pagesRefusalShape, "typed-nil": pagesRefusalShape,
+		"marshal": pagesRefusalShape, "list-accessor": pagesRefusalShape, "extract-list": pagesRefusalShape,
+		"rv-change": pagesRefusalIdentity, "rv-empty": pagesRefusalIdentity, "rv-large": pagesRefusalIdentity,
+		"repeat": pagesRefusalContinuation, "cycle": pagesRefusalContinuation, "endless-empty": pagesRefusalPages,
+		"continue-large": pagesRefusalContinuation, "remaining-negative": pagesRefusalContinuation,
+		"final-remaining": pagesRefusalContinuation, "object-bound": pagesRefusalObjects, "byte-bound": pagesRefusalBytes,
+	}
+	for _, tc := range []string{"read-error", "page-and-error", "nil", "typed-nil", "marshal", "list-accessor", "extract-list", "rv-change", "rv-empty", "rv-large", "repeat", "cycle", "endless-empty", "continue-large", "remaining-negative", "final-remaining", "object-bound", "byte-bound"} {
 		t.Run(tc, func(t *testing.T) {
 			calls := 0
-			items, rv, err := allPages(context.Background(), func(_ context.Context, opts metav1.ListOptions) (runtime.Object, error) {
+			var options []metav1.ListOptions
+			fetch := func(_ context.Context, opts metav1.ListOptions) (runtime.Object, error) {
 				calls++
+				options = append(options, opts)
 				if calls > 1 && opts.Continue == "" {
 					t.Fatal("failed list restarted")
 				}
@@ -65,10 +76,18 @@ func TestPagesDiscardIncompleteEvidenceWithoutRestart(t *testing.T) {
 				switch tc {
 				case "read-error":
 					return nil, errors.New("raw-canary")
+				case "page-and-error":
+					return page, errors.New("raw-canary")
 				case "nil":
 					return nil, nil
 				case "typed-nil":
 					return (*metav1.PartialObjectMetadataList)(nil), nil
+				case "marshal":
+					return &pagesInvalidList{Items: make(chan int)}, nil
+				case "list-accessor":
+					return &metav1.PartialObjectMetadata{}, nil
+				case "extract-list":
+					return &pagesMissingItems{ListMeta: metav1.ListMeta{ResourceVersion: "rv"}}, nil
 				case "rv-change":
 					page.ResourceVersion = "new-rv"
 				case "rv-empty":
@@ -96,13 +115,42 @@ func TestPagesDiscardIncompleteEvidenceWithoutRestart(t *testing.T) {
 					page.Items = []metav1.PartialObjectMetadata{{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{"large": strings.Repeat("x", maxResponseBytes)}}}}
 				}
 				return page, nil
-			})
+			}
+			items, rv, err := allPages(context.Background(), fetch)
 			if !errors.Is(err, ErrRead) || items != nil || rv != "" || calls > maxPages || strings.Contains(err.Error(), "raw-canary") {
 				t.Fatal("incomplete pages used as evidence")
+			}
+			originalOptions := options
+			calls, options = 0, nil
+			budget := maxCollectionBytes
+			items, rv, err, reason := boundedPagesDiagnostic(context.Background(), fetch, &budget)
+			if err != ErrRead || items != nil || rv != "" || reason != reasons[tc] || !reflect.DeepEqual(options, originalOptions) {
+				t.Fatal("diagnostic changed rejecting branch, requests or public refusal", reason)
+			}
+			diagnosticBudget := budget
+			calls, options, budget = 0, nil, maxCollectionBytes
+			items, rv, err = originalBoundedPagesWithoutDiagnostics(context.Background(), fetch, &budget)
+			if err != ErrRead || items != nil || rv != "" || !reflect.DeepEqual(options, originalOptions) || budget != diagnosticBudget {
+				t.Fatal("diagnostic changed original requests, charging or public results")
 			}
 		})
 	}
 }
+
+type pagesInvalidList struct {
+	metav1.TypeMeta
+	metav1.ListMeta
+	Items interface{} `json:"items"`
+}
+
+func (p *pagesInvalidList) DeepCopyObject() runtime.Object { return p }
+
+type pagesMissingItems struct {
+	metav1.TypeMeta
+	metav1.ListMeta
+}
+
+func (p *pagesMissingItems) DeepCopyObject() runtime.Object { return p }
 
 func TestPagesAggregateBudgetAndCancellation(t *testing.T) {
 	calls := 0

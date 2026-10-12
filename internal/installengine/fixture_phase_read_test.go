@@ -103,7 +103,16 @@ func TestFixturePhaseReadPassKeepsCompleteCollectionsAndNativeRefusals(t *testin
 			}
 			body, identity := bytes.Clone(ledger.body), ledger.identity
 			trace := &admissionTrace{}
-			result, err := f.wire.observePhase(context.WithValue(t.Context(), admissionTraceKey{}, trace))
+			ctx, diagnostic := WithLifecycleDiagnostic(t.Context())
+			beginGCPagesDiagnostic(ctx)("reason=bytes inner=deadline caller=active")
+			result, err := f.wire.observePhase(context.WithValue(ctx, admissionTraceKey{}, trace))
+			wantPages := ""
+			if fault == "metadata-forbidden" {
+				wantPages = "reason=fetch-unclassified inner=active caller=active"
+			}
+			if diagnostic.GCPagesSnapshot() != wantPages {
+				t.Fatal("actual GC reader/fixture diagnostic was lost, stale or misattributed", diagnostic.GCPagesSnapshot())
+			}
 			stage, slot := trace.phaseSnapshot()
 			if fault != "healthy" {
 				if result != nil || err != ErrFixtures || !injected || ledger.phaseFloor != nil {

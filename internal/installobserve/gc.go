@@ -45,10 +45,11 @@ type GCObject struct {
 // The engine must independently authorize each exact namespace LIST using its
 // frozen administrator, then bind these reads to its WAL/actor/world witnesses.
 type GCReader struct {
-	observer   *Observer
-	root       *http.Client
-	base       *url.URL
-	diagnostic atomic.Uint32
+	observer        *Observer
+	root            *http.Client
+	base            *url.URL
+	diagnostic      atomic.Uint32
+	pagesDiagnostic atomic.Uint32
 }
 
 // DiagnosticStage reports only a fixed collection boundary, never an object,
@@ -292,12 +293,11 @@ func (g *GCReader) CollectWithLeases(ctx context.Context, discovery *GCDiscovery
 }
 
 func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeases bool, refusal **LeaseRVConflict, sharedBudget *int) (*GCObservation, error) {
-	if g != nil {
-		g.diagnostic.Store(0)
-	}
+	g.resetDiagnostics()
 	if ctx == nil || g == nil || discovery == nil || discovery.reader != g || discovery.journal == nil {
 		return nil, ErrInvalid
 	}
+	callerCtx := ctx
 	ctx, cancel := context.WithTimeout(logr.NewContext(ctx, logr.Discard()), observationTimeout)
 	defer cancel()
 	current := func() bool {
@@ -359,7 +359,7 @@ func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeas
 		start := len(objects)
 		g.diagnostic.Store(gcStageMetadataPages)
 		secondEventAlias := pairedEvents && gcNativeEvent(source) && eventSnapshotRV != ""
-		items, collectionRV, err := boundedPages(ctx, func(ctx context.Context, opts metav1.ListOptions) (runtime.Object, error) {
+		items, collectionRV, err, reason := boundedPagesDiagnostic(ctx, func(ctx context.Context, opts metav1.ListOptions) (runtime.Object, error) {
 			if secondEventAlias && opts.Continue == "" {
 				// Pin the COLLECTION version, never an individual Event RV.
 				// Continuations carry their own exact snapshot and must not
@@ -369,6 +369,7 @@ func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeas
 			return g.observer.clients.Metadata.Resource(source.GVR).Namespace(discovery.journal.Anchor().Namespace).List(ctx, opts)
 		}, sharedBudget)
 		if err != nil {
+			g.recordPagesRefusal(reason, ctx, callerCtx)
 			return nil, ErrRead
 		}
 		if secondEventAlias && collectionRV != eventSnapshotRV {

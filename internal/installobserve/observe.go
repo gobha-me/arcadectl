@@ -373,45 +373,67 @@ func allPages(ctx context.Context, fetch func(context.Context, metav1.ListOption
 }
 
 func boundedPages(ctx context.Context, fetch func(context.Context, metav1.ListOptions) (runtime.Object, error), budget *int) ([]runtime.Object, string, error) {
+	items, rv, err, _ := boundedPagesDiagnostic(ctx, fetch, budget)
+	return items, rv, err
+}
+
+// The diagnostic is a closed rejecting branch, not the underlying fetch cause.
+// Request order, budget charging, results and public errors remain identical.
+func boundedPagesDiagnostic(ctx context.Context, fetch func(context.Context, metav1.ListOptions) (runtime.Object, error), budget *int) ([]runtime.Object, string, error, pagesRefusalReason) {
 	items := []runtime.Object{}
 	rv, token := "", ""
 	bytesRead := 0
 	seen := map[string]bool{}
 	for range maxPages {
 		if ctx.Err() != nil {
-			return nil, "", ErrRead
+			return nil, "", ErrRead, pagesRefusalContext
 		}
 		page, err := fetch(ctx, metav1.ListOptions{Limit: pageLimit, Continue: token})
-		if err != nil || nilClient(page) {
-			return nil, "", ErrRead
+		if err != nil {
+			return nil, "", ErrRead, pagesRefusalFetch
+		}
+		if nilClient(page) {
+			return nil, "", ErrRead, pagesRefusalShape
 		}
 		body, err := json.Marshal(page)
-		if err != nil || len(body) > maxResponseBytes || bytesRead+len(body) > maxCollectionBytes || budget == nil || len(body) > *budget {
-			return nil, "", ErrRead
+		if err != nil {
+			return nil, "", ErrRead, pagesRefusalShape
+		}
+		if len(body) > maxResponseBytes || bytesRead+len(body) > maxCollectionBytes || budget == nil || len(body) > *budget {
+			return nil, "", ErrRead, pagesRefusalBytes
 		}
 		bytesRead += len(body)
 		*budget -= len(body)
 		m, err := meta.ListAccessor(page)
-		if err != nil || !validIdentity(m.GetResourceVersion()) || rv != "" && rv != m.GetResourceVersion() || len(m.GetContinue()) > maxContinueBytes {
-			return nil, "", ErrRead
+		if err != nil {
+			return nil, "", ErrRead, pagesRefusalShape
+		}
+		if !validIdentity(m.GetResourceVersion()) || rv != "" && rv != m.GetResourceVersion() {
+			return nil, "", ErrRead, pagesRefusalIdentity
+		}
+		if len(m.GetContinue()) > maxContinueBytes {
+			return nil, "", ErrRead, pagesRefusalContinuation
 		}
 		rv = m.GetResourceVersion()
 		pageItems, err := meta.ExtractList(page)
-		if err != nil || len(items)+len(pageItems) > installsafety.MaxObjectsPerList {
-			return nil, "", ErrRead
+		if err != nil {
+			return nil, "", ErrRead, pagesRefusalShape
+		}
+		if len(items)+len(pageItems) > installsafety.MaxObjectsPerList {
+			return nil, "", ErrRead, pagesRefusalObjects
 		}
 		items = append(items, pageItems...)
 		token = m.GetContinue()
 		if token == "" {
 			if count := m.GetRemainingItemCount(); count != nil && *count != 0 {
-				return nil, "", ErrRead
+				return nil, "", ErrRead, pagesRefusalContinuation
 			}
-			return items, rv, nil
+			return items, rv, nil, pagesRefusalUnknown
 		}
 		if seen[token] || m.GetRemainingItemCount() != nil && *m.GetRemainingItemCount() < 0 {
-			return nil, "", ErrRead
+			return nil, "", ErrRead, pagesRefusalContinuation
 		}
 		seen[token] = true
 	}
-	return nil, "", ErrRead
+	return nil, "", ErrRead, pagesRefusalPages
 }

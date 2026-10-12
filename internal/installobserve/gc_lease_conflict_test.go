@@ -86,4 +86,26 @@ func TestGCLeaseRefusalBudgetNeverResetsAndCancellationNeverYieldsCandidate(t *t
 	if o, c, e := h.g.CollectWithLeaseRefusal(ctx, discovery, NewGCReadBudget()); o != nil || c != nil || e == nil {
 		t.Fatal("cancelled read supplied partial candidate")
 	}
+	for _, budget := range []*GCReadBudget{nil, {}, {remaining: -1}, {remaining: 32*1024*1024 + 1}, {remaining: 10, attempts: 3}} {
+		h.g.diagnostic.Store(gcStageMetadataPages)
+		h.g.recordPagesRefusal(pagesRefusalFetch, t.Context(), t.Context())
+		beforeLists, beforeReads := h.lists, 0
+		for _, count := range h.reads {
+			beforeReads += count
+		}
+		var beforeBudget GCReadBudget
+		if budget != nil {
+			beforeBudget = *budget
+		}
+		if o, c, e := h.g.CollectWithLeaseRefusal(t.Context(), discovery, budget); o != nil || c != nil || e != ErrRead {
+			t.Fatal("invalid/exhausted budget changed refusal")
+		}
+		afterReads := 0
+		for _, count := range h.reads {
+			afterReads += count
+		}
+		if h.lists != beforeLists || afterReads != beforeReads || budget != nil && *budget != beforeBudget || h.g.DiagnosticStage() != "unknown" || h.g.DiagnosticPagesRefusal() != "reason=unknown inner=unknown caller=unknown" {
+			t.Fatal("invalid budget read, reset counters or retained stale diagnostics")
+		}
+	}
 }

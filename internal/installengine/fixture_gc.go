@@ -42,6 +42,7 @@ func (w *fixtureWire) gcMetadataReadLocked(ctx context.Context, pairLeases bool,
 }
 
 func (w *fixtureWire) gcMetadataAttempt(ctx context.Context, pairLeases bool, reads *fixturePhaseRead, budget *installobserve.GCReadBudget) (*installobserve.GCObservation, *installobserve.LeaseRVConflict, error) {
+	recordPages := beginGCPagesDiagnostic(ctx)
 	traceAdmissionPhase(ctx, admissionPhaseGCLocalOpening, -1)
 	if w.gcReadCurrent(ctx, reads) != nil {
 		return nil, nil, ErrFixtures
@@ -94,6 +95,7 @@ func (w *fixtureWire) gcMetadataAttempt(ctx context.Context, pairLeases bool, re
 			step = admissionPhaseGCOpening
 		case "metadata-pages":
 			step = admissionPhaseGCMetadataPages
+			recordPages(reader.DiagnosticPagesRefusal())
 		case "metadata-shape":
 			step = admissionPhaseGCMetadataShape
 		case "metadata-uid-correlation":
