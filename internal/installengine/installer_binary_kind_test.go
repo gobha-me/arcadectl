@@ -232,6 +232,12 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 						// capture while exposing only closed stage/revision lines live.
 						c.Stdout, c.Stderr = capture, capture
 						err := c.Run()
+						// Process accounting is diagnostic only: no argv, paths,
+						// credentials or provider error escape. CPU totals neither
+						// attribute native wait time nor certify a runtime cure.
+						if c.ProcessState != nil {
+							t.Logf("actual installer %s process timing wall=%s user-cpu=%s system-cpu=%s", command, time.Since(started).Round(time.Millisecond), c.ProcessState.UserTime(), c.ProcessState.SystemTime())
+						}
 						output := capture.output()
 						if err != nil {
 							if historical {

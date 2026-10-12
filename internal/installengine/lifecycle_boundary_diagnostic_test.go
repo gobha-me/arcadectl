@@ -6,8 +6,12 @@ package installengine
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +23,7 @@ import (
 )
 
 func TestLifecycleBoundaryDiagnosticClosedFreshAndConcurrent(t *testing.T) {
+	t.Run("baseline-probe", testBaselineProbeDiagnostic)
 	var absent *LifecycleDiagnostic
 	unknown := "operation=unknown baseline=unknown"
 	if absent.BoundarySnapshot() != unknown {
@@ -98,6 +103,190 @@ func TestLifecycleBoundaryDiagnosticClosedFreshAndConcurrent(t *testing.T) {
 		})
 	}
 	group.Wait()
+}
+
+func testBaselineProbeDiagnostic(t *testing.T) {
+	var absent *LifecycleDiagnostic
+	if absent.BaselineProbeSnapshot() != "" {
+		t.Fatal("absent probe manufactured progress")
+	}
+	ctx, d := WithLifecycleDiagnostic(t.Context())
+	operations := map[admissionProbeOperation]string{probeCreateOperation: "create", probeUpdateOperation: "update", probeDeleteAccountOperation: "delete-account", probeDeleteExecutableOperation: "delete-executable", probeDeleteIdentityOperation: "delete-identity", probePatchMetadataOperation: "patch-metadata"}
+	for value := range 256 {
+		label := operations[admissionProbeOperation(value)]
+		if label == "" {
+			label = "unknown"
+		}
+		if baselineProbeOperationLabel(admissionProbeOperation(value)) != label {
+			t.Fatal("probe operation escaped its independent closed catalog")
+		}
+	}
+	phases := map[baselineProbePhase]string{baselineProbeDiscovery: "discovery", baselineProbeOpening: "opening-authority", baselineProbeDryRun: "dry-run", baselineProbeClosing: "closing-authority", baselineProbeComplete: "complete"}
+	for value := range 256 {
+		label := phases[baselineProbePhase(value)]
+		if label == "" {
+			label = "unknown"
+		}
+		if baselineProbePhase(value).label() != label {
+			t.Fatal("probe phase escaped its independent closed catalog")
+		}
+	}
+	if beginBaselineProbeDiagnostic(nil, probeCreateOperation) != nil {
+		t.Fatal("diagnostic created an execution context")
+	}
+	for _, parent := range []context.Context{t.Context(), context.WithValue(t.Context(), lifecycleDiagnosticKey{}, "PRIVATE-CANARY"), ctx} {
+		operation := probeCreateOperation
+		if parent == ctx {
+			operation = probeDeletePVCOperation // not a baseline operation
+		}
+		if child := beginBaselineProbeDiagnostic(parent, operation); child != parent {
+			t.Fatal("absent or invalid recorder changed context")
+		}
+		child, end := baselineProbePhaseContext(parent, baselineProbePhase(255))
+		end()
+		beginBaselineProbeRoundTrip(parent)()
+		completeBaselineProbeDiagnostic(parent)
+		if child != parent || d.BaselineProbeSnapshot() != "" {
+			t.Fatal("invalid or absent probe manufactured progress")
+		}
+	}
+	probeCtx := beginBaselineProbeDiagnostic(ctx, probeCreateOperation)
+	phaseCtx, finish := baselineProbePhaseContext(probeCtx, baselineProbeOpening)
+	var group sync.WaitGroup
+	for range 2 {
+		group.Go(func() { end := beginBaselineProbeRoundTrip(phaseCtx); end() })
+	}
+	group.Wait()
+	finish()
+	if snapshot := d.BaselineProbeSnapshot(); !strings.HasPrefix(snapshot, "phase=opening-authority operation=create ") || !strings.Contains(snapshot, "opening-authority-direct-attempts=2 ") || len(snapshot) > 1024 {
+		t.Fatal("joined probe lanes lost original phase/operation or bounded counts")
+	}
+	traceBaselineBoundary(ctx, baselineBoundaryIdentity)
+	traceBaselineBoundary(ctx, baselineBoundaryRuntimeDeadline)
+	if !strings.HasPrefix(d.BaselineProbeSnapshot(), "phase=opening-authority operation=create ") {
+		t.Fatal("deadline overwrote nested probe progress")
+	}
+	oldProbe := d.baselineProbe.Load()
+	lateEnd := beginBaselineProbeRoundTrip(phaseCtx)
+	oldCtx, latePhaseEnd := baselineProbePhaseContext(probeCtx, baselineProbeClosing)
+	probeCtx = beginBaselineProbeDiagnostic(ctx, probeUpdateOperation)
+	phaseCtx, finish = baselineProbePhaseContext(probeCtx, baselineProbeDryRun)
+	finish()
+	lateEnd()
+	latePhaseEnd()
+	completeBaselineProbeDiagnostic(oldCtx)
+	if d.baselineProbe.Load() == oldProbe || oldProbe.metrics[1].attempts.Load() != 3 || d.baselineProbe.Load().metrics[1].attempts.Load() != 0 {
+		t.Fatal("late old-scope completion contaminated the current probe")
+	}
+	if snapshot := d.BaselineProbeSnapshot(); !strings.HasPrefix(snapshot, "phase=dry-run operation=update ") || !strings.Contains(snapshot, "opening-authority-direct-attempts=0 ") {
+		t.Fatal("new probe retained prior request counters")
+	}
+	completeBaselineProbeDiagnostic(probeCtx)
+	if !strings.HasPrefix(d.BaselineProbeSnapshot(), "phase=complete operation=update ") {
+		t.Fatal("primitive completion lost its closed label")
+	}
+	for _, position := range []uint32{0, 256*256 + 1, 0xffffffff} {
+		d.baselineProbe.Load().position.Store(position)
+		if snapshot := d.BaselineProbeSnapshot(); !strings.Contains(snapshot, "operation=unknown") || strings.Contains(snapshot, "CANARY") || len(snapshot) > 1024 {
+			t.Fatal("corrupted probe state became a valid operation or raw output")
+		}
+	}
+	for i := range d.baselineProbe.Load().metrics {
+		metric := &d.baselineProbe.Load().metrics[i]
+		metric.wallNS.Store(^uint64(0))
+		metric.attempts.Store(^uint64(0))
+		metric.roundTripNS.Store(^uint64(0))
+	}
+	if len(d.BaselineProbeSnapshot()) > 1024 {
+		t.Fatal("maximum scalar metrics exceeded fixed output bound")
+	}
+	for _, reset := range []func(){func() { traceBaselineBoundary(ctx, baselineBoundaryScope) }, func() { traceOperationBoundary(ctx, boundaryApplyOpening) }, func() { traceLifecycleCheckpoint(ctx, AdmissionEffective, lifecycleDiagnosticEntered) }} {
+		retiredCtx := beginBaselineProbeDiagnostic(ctx, probeCreateOperation)
+		retiredPhaseCtx, retiredFinish := baselineProbePhaseContext(retiredCtx, baselineProbeOpening)
+		retiredRequestFinish := beginBaselineProbeRoundTrip(retiredPhaseCtx)
+		reset()
+		retiredRequestFinish()
+		retiredFinish()
+		completeBaselineProbeDiagnostic(retiredCtx)
+		if d.BaselineProbeSnapshot() != "" {
+			t.Fatal("outer scope retained an unrelated probe")
+		}
+	}
+
+	t.Run("guard-and-headers", func(t *testing.T) {
+		var requests atomic.Int32
+		release, entered := make(chan struct{}), make(chan struct{})
+		var once sync.Once
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(200)
+			w.(http.Flusher).Flush()
+			close(entered)
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+			_, _ = io.WriteString(w, "PRIVATE-BODY-CANARY")
+		}))
+		defer server.Close()
+		defer once.Do(func() { close(release) })
+		guard := attemptTransport{server.Client().Transport}
+		ctx, diagnostic := WithLifecycleDiagnostic(t.Context())
+		probeCtx := beginBaselineProbeDiagnostic(ctx, probeCreateOperation)
+		phaseCtx, endPhase := baselineProbePhaseContext(probeCtx, baselineProbeDryRun)
+		defer endPhase()
+		r, err := http.NewRequestWithContext(phaseCtx, http.MethodGet, server.URL+"/PRIVATE-PATH-CANARY", nil)
+		if err != nil {
+			t.Fatal("unit request unavailable")
+		}
+		if _, err := guard.RoundTrip(r); err != ErrOutcomeUnknown || requests.Load() != 0 || diagnostic.baselineProbe.Load().metrics[2].attempts.Load() != 0 {
+			t.Fatal("guard rejection counted a native delegation")
+		}
+		r = r.WithContext(context.WithValue(phaseCtx, attemptKey{}, &requestAttempt{method: http.MethodGet}))
+		response, err := guard.RoundTrip(r)
+		if err != nil || response == nil || requests.Load() != 1 {
+			t.Fatal("actual TLS delegation failed or replayed")
+		}
+		defer response.Body.Close()
+		<-entered
+		metric := &diagnostic.baselineProbe.Load().metrics[2]
+		atHeaders := metric.roundTripNS.Load()
+		if metric.attempts.Load() != 1 || atHeaders == 0 {
+			t.Fatal("delegation was not recorded at response headers")
+		}
+		if _, err := guard.RoundTrip(r.Clone(r.Context())); err != ErrOutcomeUnknown || metric.attempts.Load() != 1 || requests.Load() != 1 {
+			t.Fatal("retry was counted or reached transport")
+		}
+		once.Do(func() { close(release) })
+		_, _ = io.ReadAll(response.Body)
+		if metric.roundTripNS.Load() != atHeaders || strings.Contains(diagnostic.BaselineProbeSnapshot(), "CANARY") {
+			t.Fatal("body work contaminated header-only timing or private output")
+		}
+	})
+	t.Run("transport-error", func(t *testing.T) {
+		ctx, diagnostic := WithLifecycleDiagnostic(t.Context())
+		probeCtx := beginBaselineProbeDiagnostic(ctx, probeUpdateOperation)
+		phaseCtx, end := baselineProbePhaseContext(probeCtx, baselineProbeDryRun)
+		defer end()
+		calls := 0
+		guard := attemptTransport{roundTripFunc(func(*http.Request) (*http.Response, error) {
+			calls++
+			return nil, errors.New("PRIVATE-TRANSPORT-CANARY")
+		})}
+		requestCtx := context.WithValue(phaseCtx, attemptKey{}, &requestAttempt{method: http.MethodGet})
+		request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, "https://example.invalid/PRIVATE-PATH-CANARY", nil)
+		if err != nil {
+			t.Fatal("unit request unavailable")
+		}
+		if response, err := guard.RoundTrip(request); response != nil || err == nil || calls != 1 {
+			t.Fatal("transport refusal was changed or retried")
+		}
+		metric := &diagnostic.baselineProbe.Load().metrics[2]
+		if metric.attempts.Load() != 1 || metric.roundTripNS.Load() == 0 || strings.Contains(diagnostic.BaselineProbeSnapshot(), "CANARY") {
+			t.Fatal("transport refusal lost bounded delegation timing")
+		}
+	})
 }
 
 func TestLifecycleBoundaryDiagnosticActualRefusalsPreserveEffects(t *testing.T) {

@@ -156,8 +156,15 @@ func TestAttemptGuardIsBelowRetryingWrapperAndSanitizesBeforeWrapper(t *testing.
 		t.Fatal(err)
 	}
 	key, o := accessObject()
-	if _, err := a.Create(context.Background(), key, o, false); !errors.Is(err, ErrRead) || requests.Load() != 1 {
+	ctx, diagnostic := WithLifecycleDiagnostic(t.Context())
+	probeCtx := beginBaselineProbeDiagnostic(ctx, probeCreateOperation)
+	phaseCtx, finish := baselineProbePhaseContext(probeCtx, baselineProbeDryRun)
+	if _, err := a.Create(phaseCtx, key, o, false); !errors.Is(err, ErrRead) || requests.Load() != 1 {
 		t.Fatalf("wrapper replay escaped guard: %d %v", requests.Load(), err)
+	}
+	finish()
+	if snapshot := diagnostic.BaselineProbeSnapshot(); !strings.Contains(snapshot, "dry-run-direct-attempts=1 ") || strings.Contains(snapshot, "CANARY") {
+		t.Fatal("actual TLS failure was omitted, counted twice or exposed")
 	}
 }
 

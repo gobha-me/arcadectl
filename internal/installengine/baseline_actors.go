@@ -244,17 +244,32 @@ func (actors *baselineActors) probe(ctx context.Context, actor admissionActor, o
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	discovery, discoveryErr := actors.baseline.access.discover(ctx, key.APIVersion)
+	ctx = beginBaselineProbeDiagnostic(ctx, operation)
+	phaseCtx, finish := baselineProbePhaseContext(ctx, baselineProbeDiscovery)
+	discovery, discoveryErr := actors.baseline.access.discover(phaseCtx, key.APIVersion)
+	finish()
 	if discoveryErr != nil || !discoveredPermission(discovery, proofPermission{spec: permission, kind: key.Kind}) {
 		return nil, ErrSecurityBaseline
 	}
 	descriptor := &baselineProbeDescriptor{actor: actor, operation: operation, key: key}
-	if actors.verifyWithProbe(ctx, descriptor) != nil {
+	phaseCtx, finish = baselineProbePhaseContext(ctx, baselineProbeOpening)
+	err = actors.verifyWithProbe(phaseCtx, descriptor)
+	finish()
+	if err != nil {
 		return nil, ErrSecurityBaseline
 	}
-	result, err := client.probeOperation(ctx, operation, object, policy, binding, message)
-	if err != nil || actors.verify(ctx) != nil {
+	phaseCtx, finish = baselineProbePhaseContext(ctx, baselineProbeDryRun)
+	result, err := client.probeOperation(phaseCtx, operation, object, policy, binding, message)
+	finish()
+	if err != nil {
 		return nil, ErrSecurityBaseline
 	}
+	phaseCtx, finish = baselineProbePhaseContext(ctx, baselineProbeClosing)
+	err = actors.verify(phaseCtx)
+	finish()
+	if err != nil {
+		return nil, ErrSecurityBaseline
+	}
+	completeBaselineProbeDiagnostic(ctx)
 	return result, nil
 }

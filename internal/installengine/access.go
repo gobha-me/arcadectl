@@ -93,7 +93,9 @@ func (t attemptTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	if attempt.fixture != nil && !attempt.fixture.guard(r) {
 		return nil, ErrFixtures
 	}
+	finishDiagnostic := beginBaselineProbeRoundTrip(r.Context())
 	response, err := t.next.RoundTrip(r)
+	finishDiagnostic()
 	if err != nil || response == nil {
 		return response, err
 	}

@@ -228,6 +228,7 @@ func traceOperationBoundary(ctx context.Context, step operationBoundary) {
 		d.baselineBoundary.Store(0)
 		d.baselineBeforeDeadline.Store(0)
 		d.baselineFailure.Store(0)
+		d.baselineProbe.Store(nil)
 		d.operationBoundary.Store(uint32(step))
 	}
 }
@@ -240,6 +241,7 @@ func traceBaselineBoundary(ctx context.Context, step baselineBoundary) {
 		if step == baselineBoundaryScope {
 			d.baselineBeforeDeadline.Store(0)
 			d.baselineFailure.Store(0)
+			d.baselineProbe.Store(nil)
 		}
 		if step == baselineBoundaryRuntimeDeadline {
 			previous := d.baselineBoundary.Load()

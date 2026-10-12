@@ -31,7 +31,7 @@ import (
 // is inferred from the fake replies.
 func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 	modes := []string{"healthy", "admin-denied", "actor-maintenance-allowed", "actor-cel-maintenance-allowed", "actor-producer-allowed", "negative-review-missing", "actor-operation-denied", "access-replaced", "baseline-drift", "late-access-rv", "late-policy-rv", "review-access-rv", "review-policy-rv", "closing-config-access-rv", "wrong-denial"}
-	modes = append(modes, "two-lane-join-before-probe")
+	modes = append(modes, "two-lane-join-before-probe", "probe-discovery-denied")
 	modes = append(modes, "operation-access-uid", "operation-access-rv", "operation-policy-rv", "operation-policy-shape", "operation-policy-status", "operation-journal", "operation-namespace-uid", "operation-review-missing", "operation-review-malformed", "operation-canceled", "candidate-mutated", "invalid-actor", "swapped-actor", "foreign-namespace", "unsupported-operation", "wrong-purpose")
 	type grant struct {
 		actor     admissionActor
@@ -119,6 +119,10 @@ func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 						return
 					}
 					if r.URL.Path == "/apis/batch/v1" {
+						if mode == "probe-discovery-denied" {
+							w.WriteHeader(500)
+							return
+						}
 						_ = json.NewEncoder(w).Encode(map[string]any{"kind": "APIResourceList", "groupVersion": "batch/v1", "resources": []any{map[string]any{"name": "jobs", "kind": "Job", "namespaced": true, "verbs": []any{"create"}}}})
 						return
 					}
@@ -372,6 +376,7 @@ func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 				client.client = &copyClient
 			}
 			beforeRequests := requests.Load()
+			probeContext, diagnostic := WithLifecycleDiagnostic(probeContext)
 			policy := "arcadectl-identity-template-" + f.plan.Namespace()
 			if mode == "two-lane-join-before-probe" {
 				client := actors.clients[destroyControllerActor]
@@ -440,10 +445,28 @@ func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 				_, err = actors.probe(probeContext, actor, operation, candidate, policy, policy, installbaseline.DenialMessage)
 			}
 			positive := mode == "healthy" || mode == "candidate-mutated" || mode == "two-lane-join-before-probe"
+			phase := "opening-authority"
+			switch {
+			case positive:
+				phase = "complete"
+			case mode == "probe-discovery-denied":
+				phase = "discovery"
+			case mode == "wrong-denial":
+				phase = "dry-run"
+			case strings.HasPrefix(mode, "late-") || grantMode && !change.operation:
+				phase = "closing-authority"
+			}
+			if invalid {
+				if diagnostic.BaselineProbeSnapshot() != "" {
+					t.Fatal("invalid local tuple created a native probe diagnostic")
+				}
+			} else if snapshot := diagnostic.BaselineProbeSnapshot(); !strings.HasPrefix(snapshot, "phase="+phase+" operation=create ") || strings.Contains(snapshot, "CANARY") || !strings.Contains(snapshot, fmt.Sprintf("dry-run-direct-attempts=%d ", probes.Load())) || len(snapshot) > 1024 {
+				t.Fatal("actual probe refusal/completion lost its fixed phase or request count")
+			}
 			if (err == nil) != positive || err != nil && strings.Contains(err.Error(), "CANARY") || probes.Load() > 1 {
 				t.Fatal("baseline probe accepted changed authority, wrong denial or replay")
 			}
-			zeroDryRuns := invalid || mode == "actor-operation-denied" || strings.HasPrefix(mode, "operation-")
+			zeroDryRuns := invalid || mode == "probe-discovery-denied" || mode == "actor-operation-denied" || strings.HasPrefix(mode, "operation-")
 			if zeroDryRuns && probes.Load() != 0 || !zeroDryRuns && probes.Load() != 1 {
 				t.Fatal("unproved actor operation reached wire or proved dry-run was omitted")
 			}
@@ -452,7 +475,7 @@ func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			if !invalid && operationReviews != 1 {
+			if !invalid && mode != "probe-discovery-denied" && operationReviews != 1 || mode == "probe-discovery-denied" && operationReviews != 0 {
 				t.Fatal("exact operation review omitted or repeated", operationReviews)
 			}
 			if positive {

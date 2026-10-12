@@ -284,6 +284,9 @@ func runMutation(ctx context.Context, o options, stdout, stderr io.Writer) int {
 			_, _ = fmt.Fprintf(stderr, "installation diagnostic progress %s\n", diagnostic.Snapshot())
 			_, _ = fmt.Fprintf(stderr, "installation diagnostic context status=%s\n", mutationContextStatus(ctx))
 			_, _ = fmt.Fprintf(stderr, "installation diagnostic boundary %s\n", diagnostic.BoundarySnapshot())
+			if probe := diagnostic.BaselineProbeSnapshot(); probe != "" {
+				_, _ = fmt.Fprintf(stderr, "installation diagnostic baseline-probe %s\n", probe)
+			}
 			if preparation := diagnostic.AcknowledgedDeleteSnapshot(); preparation != "" {
 				_, _ = fmt.Fprintf(stderr, "installation diagnostic acknowledged-delete %s\n", preparation)
 			}
