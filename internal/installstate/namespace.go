@@ -25,10 +25,13 @@ type Anchor struct {
 	InstallationID string
 }
 
+// Store must not be copied after first use. Its bounded pure-decode memo is
+// synchronized; Namespace observations and mutation guards remain uncached.
 type Store struct {
 	namespaces NamespaceAccess
 	plans      []*installrender.Plan
 	baseline   *installbaseline.Plan
+	decoded    journalDecodeCache
 }
 
 // NamespaceAccess is deliberately narrow. Production installers must supply a
@@ -56,7 +59,12 @@ func (s *Snapshot) Document() Document {
 	// The stored document was already decoded and validated when this sealed
 	// observation was created. Copy its mutable graph without re-encoding the
 	// same journal on every accessor; this grants no new observation/authority.
-	d := s.document
+	return cloneDocument(s.document)
+}
+
+// Copy the entire mutable graph for both public snapshots and pure decode
+// memoization. This never creates a new cluster observation or authority.
+func cloneDocument(d Document) Document {
 	d.Resources = slices.Clone(d.Resources)
 	if d.Pending != nil {
 		pending := *d.Pending
@@ -154,7 +162,7 @@ func (s *Store) observe(namespace *corev1.Namespace, anchor Anchor) (*Snapshot, 
 		return nil, ErrOwnership
 	}
 	body := []byte(namespace.Annotations[Annotation])
-	d, err := DecodeWithBaseline(body, s.baseline, s.plans...)
+	d, err := s.decodeJournal(body, anchor)
 	if err != nil || d.NamespaceUID != anchor.UID || d.Namespace != anchor.Namespace || d.InstallationID != anchor.InstallationID {
 		return nil, ErrOwnership
 	}

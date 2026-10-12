@@ -136,12 +136,20 @@ func cloneFixtureJournalDocument(d installstate.Document) installstate.Document 
 		copy := *d.Pending
 		d.Pending = &copy
 	}
+	if d.AdmissionReinstall != nil {
+		copy := *d.AdmissionReinstall
+		d.AdmissionReinstall = &copy
+	}
 	if d.SecurityBaseline != nil {
 		copy := *d.SecurityBaseline
 		copy.Resources = slices.Clone(copy.Resources)
 		if copy.Pending != nil {
 			pending := *copy.Pending
 			copy.Pending = &pending
+		}
+		if copy.Enrollment != nil {
+			enrollment := *copy.Enrollment
+			copy.Enrollment = &enrollment
 		}
 		d.SecurityBaseline = &copy
 	}

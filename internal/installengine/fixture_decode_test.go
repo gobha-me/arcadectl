@@ -5,6 +5,7 @@ package installengine
 
 import (
 	"bytes"
+	"encoding/json"
 	"reflect"
 	"testing"
 
@@ -251,14 +252,36 @@ func TestFixtureDecodeCacheCannotSubstituteInMemoryWALOrGrantCapabilities(t *tes
 }
 
 func TestFixtureJournalCloneDoesNotAliasPending(t *testing.T) {
-	d := installstate.Document{Resources: []installstate.Resource{{UID: "original"}}, Pending: &installstate.Pending{BeforeUID: "original"}, SecurityBaseline: &installstate.SecurityBaseline{Resources: []installstate.BaselineResource{{UID: "baseline-original"}}, Pending: &installstate.Pending{BeforeUID: "baseline-original"}}}
+	// Copying, not journal acceptance: populate all reference-valued branches
+	// even though they need not coexist in a valid lifecycle stage.
+	d := installstate.Document{
+		Resources:          []installstate.Resource{{UID: "original"}},
+		Pending:            &installstate.Pending{BeforeUID: "original"},
+		AdmissionReinstall: &installstate.ReinstallProvenance{SourceRevision: 7, SourceJournalSHA256: "original-reinstall"},
+		SecurityBaseline: &installstate.SecurityBaseline{
+			Resources:  []installstate.BaselineResource{{UID: "baseline-original"}},
+			Pending:    &installstate.Pending{BeforeUID: "baseline-original"},
+			Enrollment: &installstate.BaselineEnrollmentProvenance{SourceRevision: 9, SourceJournalSHA256: "original-enrollment", SourceEvidenceSHA256: "original-evidence"},
+		},
+	}
+	body, err := json.Marshal(d)
+	var want installstate.Document
+	if err != nil || json.Unmarshal(body, &want) != nil {
+		t.Fatal("independent clone control unavailable")
+	}
 	copy := cloneFixtureJournalDocument(d)
+	second := cloneFixtureJournalDocument(d)
 	copy.Resources[0].UID = "foreign"
 	copy.Pending.BeforeUID = "foreign"
+	copy.AdmissionReinstall.SourceRevision++
+	copy.AdmissionReinstall.SourceJournalSHA256 = "foreign"
 	copy.SecurityBaseline.Resources[0].UID = "foreign"
 	copy.SecurityBaseline.Pending.BeforeUID = "foreign"
 	copy.SecurityBaseline.Stage = installstate.BaselineRecovery
-	if d.Resources[0].UID != "original" || d.Pending.BeforeUID != "original" || d.SecurityBaseline.Resources[0].UID != "baseline-original" || d.SecurityBaseline.Pending.BeforeUID != "baseline-original" || d.SecurityBaseline.Stage != "" {
+	copy.SecurityBaseline.Enrollment.SourceRevision++
+	copy.SecurityBaseline.Enrollment.SourceJournalSHA256 = "foreign"
+	copy.SecurityBaseline.Enrollment.SourceEvidenceSHA256 = "foreign"
+	if !reflect.DeepEqual(d, want) || !reflect.DeepEqual(second, want) {
 		t.Fatal("journal clone retained aliases")
 	}
 }
