@@ -24,7 +24,7 @@ func fixtureV3PhaseFactory(t *testing.T) func(*testing.T) *fixturePhaseTest {
 
 func TestFixtureV3CompleteAccountsRefuseIncompleteAndChangingMembership(t *testing.T) {
 	newPhase := fixtureV3PhaseFactory(t)
-	for _, scenario := range []string{"planned", "original", "missing-list", "missing-get", "replacement", "list-get-rv", "default-missing", "default-change", "extra-account", "signed-missing", "signed-change", "late-account-change", "gc-only-account", "descendant"} {
+	for _, scenario := range []string{"planned", "original", "missing-list", "missing-get", "replacement", "list-get-rv", "default-missing", "default-change", "extra-account", "signed-missing", "signed-change", "late-account-change", "gc-only-account", "gc-account-rv", "descendant"} {
 		t.Run(scenario, func(t *testing.T) {
 			h := newPhase(t)
 			f := h.f.wire.ledger
@@ -84,6 +84,13 @@ func TestFixtureV3CompleteAccountsRefuseIncompleteAndChangingMembership(t *testi
 					}
 					return rows
 				}
+			case "gc-account-rv":
+				h.gcRows = func(source installobserve.GCResource, rows []metav1.PartialObjectMetadata) []metav1.PartialObjectMetadata {
+					if source.Kind == "ServiceAccount" && len(rows) > 0 {
+						rows[0].ResourceVersion = "999"
+					}
+					return rows
+				}
 			case "descendant":
 				h.gcRows = func(source installobserve.GCResource, rows []metav1.PartialObjectMetadata) []metav1.PartialObjectMetadata {
 					if source.Kind == "Widget" {
@@ -92,13 +99,24 @@ func TestFixtureV3CompleteAccountsRefuseIncompleteAndChangingMembership(t *testi
 					return rows
 				}
 			}
-			observation, err := h.f.wire.observePhase(t.Context())
+			trace := &admissionTrace{}
+			observation, err := h.f.wire.observePhase(context.WithValue(t.Context(), admissionTraceKey{}, trace))
 			if scenario == "planned" || scenario == "original" {
 				if err != nil || observation == nil || observation.phase.Accounts == nil || len(observation.phase.Accounts.Rows) != 1 || (scenario == "original") != (observation.objects[11] != nil) {
 					t.Fatal("complete v3 phase refused", err)
 				}
 			} else if err != ErrFixtures || observation != nil {
 				t.Fatal("incomplete or changing accounts accepted")
+			}
+			wantMetadata := ""
+			if scenario == "gc-account-rv" {
+				wantMetadata = "kind=ServiceAccount field=resource-version"
+				if phase, slot := trace.phaseSnapshot(); phase != "owner-typed-metadata" || slot != -1 || h.f.wire.ledger.phaseFloor != nil {
+					t.Fatal("account correlation refusal changed its protected boundary", phase, slot)
+				}
+			}
+			if trace.typedMetadataSnapshot() != wantMetadata {
+				t.Fatal("account metadata diagnostic missing or unrelated", trace.typedMetadataSnapshot())
 			}
 			if !bytes.Equal(before, f.body) || h.f.creates != 0 || h.f.deletes != 0 {
 				t.Fatal("read-only refusal changed WAL or sent an effect")

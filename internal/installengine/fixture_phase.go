@@ -558,6 +558,7 @@ func (f *fixtureLedger) phaseGCRowsWithAccounts(o *installobserve.Observation, o
 // Closed, same-attempt diagnostics only. Neither a diagnostic nor an unsealed
 // projection supplies accepted observation, owner closure or mutation authority.
 func (f *fixtureLedger) phaseGCRowsWithAccountsTrace(ctx context.Context, o *installobserve.Observation, objects [fixtureMaxSlots]*unstructured.Unstructured, gc fixtureGCRows, refreshed map[installstate.Key]*coordinationv1.Lease, accounts *phaseServiceAccounts) error {
+	recordMismatch := beginTypedMetadataDiagnostic(ctx)
 	traceAdmissionPhase(ctx, admissionPhaseOwnerBinding, -1)
 	if f == nil || !validFixtureRecipe(f.document) || gc == nil || gc.Journal() == nil || !bytes.Equal(gc.Journal().Bytes(), f.document.Journal) || gc.Journal().ResourceVersion() != f.document.JournalResourceVersion {
 		return ErrFixtures
@@ -626,7 +627,9 @@ func (f *fixtureLedger) phaseGCRowsWithAccountsTrace(ctx context.Context, o *ins
 				return ErrFixtures
 			}
 			traceAdmissionPhase(ctx, admissionPhaseOwnerTypedMetadata, -1)
-			if !reflect.DeepEqual(matches[0].Metadata, fixtureGCMetadata(m)) {
+			wanted := fixtureGCMetadata(m)
+			if !reflect.DeepEqual(matches[0].Metadata, wanted) {
+				recordMismatch(collection.kind, matches[0].Metadata, wanted)
 				return ErrFixtures
 			}
 			traceAdmissionPhase(ctx, admissionPhaseOwnerTyped, -1)

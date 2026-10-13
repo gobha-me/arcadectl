@@ -409,6 +409,13 @@ func TestFixturePhaseCompleteOriginalAndFixedFixtureAccounting(t *testing.T) {
 					t.Fatal("same-attempt row refusal did not retain its closed predicate classification", scenario, stage, slot)
 				}
 			}
+			wantMetadata := ""
+			if scenario == "gc-metadata-drift" {
+				wantMetadata = "kind=Pod field=resource-version"
+			}
+			if trace.typedMetadataSnapshot() != wantMetadata {
+				t.Fatal("typed/GC metadata refusal was missing, stale or misattributed", trace.typedMetadataSnapshot())
+			}
 			if !bytes.Equal(body, ledger.body) || identity != ledger.identity || f.creates != 0 || f.deletes != 0 || f.seeds != 0 {
 				t.Fatal("observation mutated WAL or issued an effect")
 			}
