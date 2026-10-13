@@ -469,6 +469,12 @@ func (e *Engine) recoverPreparedWithOperation(ctx context.Context, s *installsta
 			return s, ErrOutcomeUnknown
 		}
 		defer receipt.release()
+		if hasAck && ack != nil && operation.key.APIVersion == "apiextensions.k8s.io/v1" && operation.key.Kind == "CustomResourceDefinition" {
+			traceBaselineBoundary(ctx, baselineBoundaryPrerequisiteACKQuietness)
+			if e.prepareAcknowledgedPrerequisite(ctx, s, ack, operation, receipt) != nil {
+				return s, ErrOutcomeUnknown
+			}
+		}
 		fresh, err = e.currentPrerequisiteEffect(ctx, s, operation, receipt)
 	} else {
 		fresh, err = e.currentEffect(ctx, s, nil)

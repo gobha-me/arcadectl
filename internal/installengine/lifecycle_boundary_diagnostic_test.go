@@ -55,6 +55,7 @@ func TestLifecycleBoundaryDiagnosticClosedFreshAndConcurrent(t *testing.T) {
 		baselineBoundaryPrerequisiteJournalClosing:   "prerequisite-journal-closing",
 		baselineBoundaryPrerequisiteReceiptClosing:   "prerequisite-receipt-closing",
 		baselineBoundaryPrerequisiteComplete:         "prerequisite-complete",
+		baselineBoundaryPrerequisiteACKQuietness:     "prerequisite-ack-quietness",
 		baselineBoundaryRetiredScope:                 "retired-scope", baselineBoundaryRetiredPin: "retired-pin",
 		baselineBoundaryRetiredCoreOpening: "retired-core-opening", baselineBoundaryRetiredPoliciesOpening: "retired-policies-opening",
 		baselineBoundaryRetiredExecutablesOpening: "retired-executables-opening", baselineBoundaryRetiredColdSetup: "retired-cold-setup",

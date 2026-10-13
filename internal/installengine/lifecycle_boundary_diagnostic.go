@@ -167,6 +167,7 @@ const (
 	baselineBoundaryPrerequisiteJournalClosing
 	baselineBoundaryPrerequisiteReceiptClosing
 	baselineBoundaryPrerequisiteComplete
+	baselineBoundaryPrerequisiteACKQuietness
 )
 
 func (b baselineBoundary) label() string {
@@ -305,6 +306,8 @@ func (b baselineBoundary) label() string {
 		return "prerequisite-receipt-closing"
 	case baselineBoundaryPrerequisiteComplete:
 		return "prerequisite-complete"
+	case baselineBoundaryPrerequisiteACKQuietness:
+		return "prerequisite-ack-quietness"
 	}
 	return "unknown"
 }

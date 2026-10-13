@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -308,6 +309,12 @@ func TestBaselinePrerequisiteReceiptLifetimeAndRecovery(t *testing.T) {
 	}
 }
 
+func TestAcknowledgedPrerequisiteClosedProofAfterQuietness(t *testing.T) {
+	for _, scenario := range []string{"effect-crd-status-converges", "effect-crd-late-rv", "effect-crd-late-policy"} {
+		t.Run(scenario, func(t *testing.T) { testBaselinePrerequisiteCompleteDiscovery(t, scenario) })
+	}
+}
+
 func testBaselinePrerequisiteCompleteDiscovery(t *testing.T, scenario string) {
 	t.Helper()
 	f := newBaselineFixture(t)
@@ -541,6 +548,11 @@ func testBaselinePrerequisiteCompleteDiscovery(t *testing.T, scenario string) {
 	lists, reviews, policyReads := 0, 0, 0
 	previews, creates, journalWrites := 0, 0, 0
 	lateReads := 0
+	ackReads, quietReads, postCreateLists := 0, 0, 0
+	prePolicyTargetReads := 0
+	postCreateProof, lateRVInjected := false, false
+	var intentBytes []byte
+	var intentRV string
 	postPolicyNamespaceReads := 0
 	var receiptReplaced bool
 	replaceReceipt := func() {
@@ -621,6 +633,10 @@ func testBaselinePrerequisiteCompleteDiscovery(t *testing.T, scenario string) {
 				w.WriteHeader(500)
 				return
 			}
+			if journalWrites == 1 && document.Pending != nil {
+				intentBytes = bytes.Clone([]byte(updated.Annotations[installstate.Annotation]))
+				intentRV = updated.ResourceVersion
+			}
 			if scenario == "effect-intent-drift" && document.Pending != nil {
 				weakenBaseline()
 			}
@@ -670,6 +686,7 @@ func testBaselinePrerequisiteCompleteDiscovery(t *testing.T, scenario string) {
 				return
 			}
 			creates++
+			postCreateLists = lists
 			candidate.SetUID("effect-original")
 			candidate.SetResourceVersion("77")
 			path, _ := resourcePath(key, false)
@@ -741,6 +758,21 @@ func testBaselinePrerequisiteCompleteDiscovery(t *testing.T, scenario string) {
 			return
 		}
 		if object := objects[r.URL.Path]; object != nil {
+			if targetPath, _ := resourcePath(key, false); r.URL.Path == targetPath && policyReads == 0 {
+				prePolicyTargetReads++
+			}
+			if targetPath, _ := resourcePath(key, false); r.URL.Path == targetPath && creates == 1 {
+				ackReads++
+				if scenario == "effect-crd-status-converges" && ackReads <= 3 || scenario == "effect-crd-late-rv" && lists > postCreateLists {
+					object = object.DeepCopy()
+					object.SetResourceVersion(strconv.Itoa(77 + ackReads))
+					object.Object["status"] = map[string]any{"conditions": []any{map[string]any{"type": "Established", "status": "True"}}}
+					objects[r.URL.Path] = object
+					if scenario == "effect-crd-late-rv" {
+						lateRVInjected = true
+					}
+				}
+			}
 			if targetPath, _ := resourcePath(key, false); r.URL.Path == targetPath && scenario == "pending-receipt-recovery-get" && postPolicyNamespaceReads == 4 && !receiptReplaced {
 				replaceReceipt()
 			}
@@ -775,6 +807,12 @@ func testBaselinePrerequisiteCompleteDiscovery(t *testing.T, scenario string) {
 				}
 			}
 			if object.GetKind() == "ValidatingAdmissionPolicy" {
+				if creates == 1 && !postCreateProof {
+					postCreateProof, quietReads = true, ackReads
+					if scenario == "effect-crd-late-policy" {
+						weakenBaseline()
+					}
+				}
 				policyReads++
 				if scenario == "pending-receipt-policy" && lists == 2*len(sources) && !receiptReplaced {
 					replaceReceipt()
@@ -933,7 +971,18 @@ func testBaselinePrerequisiteCompleteDiscovery(t *testing.T, scenario string) {
 		if err != nil {
 			t.Fatal("post-effect original journal unavailable")
 		}
-		if scenario == "effect-create" || scenario == "effect-coordinator-create" || scenario == "effect-SA-create" || scenario == "effect-settle-response-lost" {
+		if strings.HasPrefix(scenario, "effect-crd-") && (!postCreateProof || quietReads < 6 || scenario == "effect-crd-late-rv" && !lateRVInjected) {
+			t.Fatal("ACK quietness did not precede the complete proof or intended late drift", quietReads, postCreateProof, lateRVInjected)
+		}
+		if scenario == "effect-crd-late-rv" || scenario == "effect-crd-late-policy" {
+			if journalWrites != 1 || len(intentBytes) == 0 || intentRV == "" || !bytes.Equal(fresh.Bytes(), intentBytes) || fresh.ResourceVersion() != intentRV {
+				t.Fatal("late full-proof refusal changed the exact durable pending intent or repeated CAS")
+			}
+		}
+		if (scenario == "effect-ack-lost" || scenario == "effect-ack-late-copy") && quietReads != 0 {
+			t.Fatal("lost ACK entered pre-proof ACK quietness")
+		}
+		if scenario == "effect-create" || scenario == "effect-coordinator-create" || scenario == "effect-SA-create" || scenario == "effect-settle-response-lost" || scenario == "effect-crd-status-converges" {
 			if effectErr != nil || result == nil || fresh.Document().Pending != nil || previews != 1 || creates != 1 || journalWrites != 2 {
 				t.Fatal("prerequisite single CREATE/settlement failed", effectErr)
 			}
@@ -1016,7 +1065,7 @@ func testBaselinePrerequisiteCompleteDiscovery(t *testing.T, scenario string) {
 				t.Fatal("actual original CRD bookkeeping refusal lost bounded attribution", diagnostic.BoundarySnapshot(), diagnostic.FailureSnapshot())
 			}
 			if scenario == "pending-recovery" {
-				if err != nil || result == nil || result.Document().Pending != nil || result.Document().Revision != snapshot.Document().Revision+1 || journalWrites != 1 {
+				if err != nil || result == nil || result.Document().Pending != nil || result.Document().Revision != snapshot.Document().Revision+1 || journalWrites != 1 || prePolicyTargetReads != 0 {
 					t.Fatal("genuine protected pending ACK could not settle without replay")
 				}
 				entry, _ := engine.inventory(result.Document(), key)

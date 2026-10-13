@@ -692,6 +692,19 @@ live workload safety: the engine must still quiesce admission/controllers,
 repeat complete safety observations, prove actual policy denials, and preserve
 retained worlds and recovery credentials.
 
+A successful original CRD CREATE acknowledgement can precede native
+establishment/status bookkeeping. Before opening the complete prerequisite
+proof, the original invocation observes the whole acknowledged CRD until it is
+unchanged for one second, with a 90-second bound inside the caller deadline.
+Original UID, signed shape, nonce, generation, journal and the same protected
+receipt must remain valid throughout. This read-only preparation neither retries
+a failed proof/Step nor repeats CREATE or journal CAS; explicit recovery and
+unknown/lost acknowledgements do not enter it. The full fresh prerequisite proof
+still runs afterward, with unchanged RV/policy/catalogue checks. Changes detected
+by that proof still refuse and retain the exact pending intent. Quietness is not
+an atomic cluster snapshot, readiness, mutation authority or native lifecycle
+certification.
+
 ## Authoritative retaining-uninstall observations
 
 The internal observer reads all pages of five domain-record collections, Jobs,
