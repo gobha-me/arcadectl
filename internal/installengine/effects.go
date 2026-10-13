@@ -163,8 +163,11 @@ func predecessor(newPlan, oldPlan *installrender.Plan) bool {
 }
 
 func (e *Engine) inventory(d installstate.Document, key installstate.Key) (*installstate.Resource, *installcontract.Template) {
-	for _, r := range d.Resources {
-		if r.Key == key {
+	for i := range d.Resources {
+		if d.Resources[i].Key == key {
+			// Copy only the matching row. The result remains detached from
+			// the caller's document; never return a pointer into its slice.
+			r := d.Resources[i]
 			t := e.templates[key][r.TemplateSHA256]
 			return &r, t
 		}

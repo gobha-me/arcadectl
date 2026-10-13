@@ -112,6 +112,14 @@ func (s *Snapshot) Bytes() []byte {
 	return bytes.Clone(s.body)
 }
 
+// SameJournalBytes compares only the immutable journal encodings, without
+// exposing their backing storage. It is not an identity, resourceVersion,
+// freshness or authority check; callers must retain those separate guards.
+// A nil observation never compares equal, including to another nil.
+func (s *Snapshot) SameJournalBytes(other *Snapshot) bool {
+	return s != nil && other != nil && bytes.Equal(s.body, other.body)
+}
+
 func New(namespaces NamespaceAccess, plans ...*installrender.Plan) (*Store, error) {
 	if namespaces == nil || reflect.ValueOf(namespaces).Kind() == reflect.Pointer && reflect.ValueOf(namespaces).IsNil() || len(plans) < 1 || !plans[0].IsTrusted() {
 		return nil, ErrInvalid

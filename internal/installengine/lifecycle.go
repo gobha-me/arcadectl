@@ -123,7 +123,7 @@ func (l *Lifecycle) original(ctx context.Context, s *installstate.Snapshot) (*in
 	if err != nil {
 		return nil, ErrOwnership
 	}
-	if fresh.ResourceVersion() != s.ResourceVersion() || !bytes.Equal(fresh.Bytes(), s.Bytes()) {
+	if fresh.ResourceVersion() != s.ResourceVersion() || !fresh.SameJournalBytes(s) {
 		return nil, ErrConcurrent
 	}
 	d := fresh.Document()
