@@ -735,9 +735,10 @@ func testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t *testing.T, t
 		provider = closed
 	}
 	writes, namespaceWrites := v.f.access.writes, v.f.nsUpdates
+	proofCtx, diagnostic := WithLifecycleDiagnostic(t.Context())
 	if acknowledged {
 		original := snapshot
-		snapshot, err = engine.delete(t.Context(), snapshot, deleteKey, true)
+		snapshot, err = engine.delete(proofCtx, snapshot, deleteKey, true)
 		if leafChild {
 			mu.Lock()
 			completeLeaf := deletes == 0 && namespaceCAS == 1 && leafLists == 21 && reflect.DeepEqual(leafExpectedReviews, leafSeenReviews) && reflect.DeepEqual(leafExpectedPaths, leafSeenPaths)
@@ -748,7 +749,7 @@ func testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t *testing.T, t
 				t.Fatal("foreign descendant refusal sent DELETE, settled WAL, or failed before full leaf proof", err)
 			}
 			pending := snapshot
-			observed, recoverErr := engine.Recover(t.Context(), pending)
+			observed, recoverErr := engine.Recover(proofCtx, pending)
 			mu.Lock()
 			noReplay := deletes == 0 && namespaceCAS == 1 && leafLists == 21 && reflect.DeepEqual(priorLeafPaths, leafSeenPaths) && reflect.DeepEqual(priorLeafReviews, leafSeenReviews)
 			mu.Unlock()
@@ -764,16 +765,26 @@ func testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t *testing.T, t
 			t.Fatal("whole closed provider did not converge exact acknowledged access deletion", err)
 		}
 	} else if runtime && completed {
-		err = engine.baseline.verifyRuntime(t.Context(), snapshot)
+		err = engine.baseline.verifyRuntime(proofCtx, snapshot)
 	} else if runtime {
-		current, currentErr := engine.current(t.Context(), snapshot)
+		current, currentErr := engine.current(proofCtx, snapshot)
 		err = currentErr
 		positive := scenario == "healthy" || scenario == "pending-original-access-delete"
 		if positive && (current == nil || current.Anchor() != snapshot.Anchor() || current.ResourceVersion() != snapshot.ResourceVersion() || !bytes.Equal(current.Bytes(), snapshot.Bytes())) || !positive && (current != nil || err != ErrSecurityBaseline) {
 			t.Fatal("actual retired current boundary lost original evidence or admitted drift")
 		}
 	} else {
-		err = provider.Verify(t.Context(), snapshot)
+		err = provider.Verify(proofCtx, snapshot)
+	}
+	if want := map[string]string{
+		"opening-raw-controller-image":   "retired-executables-opening",
+		"first-cold-reserved-alias":      "retired-cold-first",
+		"second-cold-controller-image":   "retired-stopped-second",
+		"closing-raw-reserved-name":      "retired-executables-closing",
+		"late-baseline-policy-rv":        "retired-policies-closing",
+		"receipt-replaced-between-cores": "retired-pin-closing",
+	}[scenario]; want != "" && diagnostic.BoundarySnapshot() != "operation=unknown baseline="+want {
+		t.Fatal("whole retired refusal lost its original fixed check", diagnostic.BoundarySnapshot())
 	}
 	mu.Lock()
 	hit, listedCounts, reviewCount := faultHit, maps.Clone(lists), reviews

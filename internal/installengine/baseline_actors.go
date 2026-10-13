@@ -120,6 +120,7 @@ type baselineProbeDescriptor struct {
 }
 
 func (actors *baselineActors) verifyWithProbe(ctx context.Context, probe *baselineProbeDescriptor) error {
+	traceBaselineProbeAuthority(ctx, probeAuthorityScope)
 	if actors == nil || actors.baseline == nil || ctx == nil || actors.snapshot == nil || len(actors.clients) != 2 {
 		return ErrSecurityBaseline
 	}
@@ -141,13 +142,16 @@ func (actors *baselineActors) verifyWithProbe(ctx context.Context, probe *baseli
 		return ErrSecurityBaseline
 	}
 	plan := c.engine.plans[actors.snapshot.Document().TargetPackage]
+	traceBaselineProbeAuthority(ctx, probeAuthorityVersion)
 	if plan == nil || c.access.checkVersion(ctx, plan.Profile()) != nil {
 		return ErrSecurityBaseline
 	}
+	traceBaselineProbeAuthority(ctx, probeAuthorityAccessOpening)
 	current, err := c.engine.baseline.runtimeAccessWitness(ctx, actors.snapshot)
 	if err != nil || !reflect.DeepEqual(current, actors.access) {
 		return ErrSecurityBaseline
 	}
+	traceBaselineProbeAuthority(ctx, probeAuthorityPoliciesOpening)
 	policies, err := c.configured(ctx, actors.snapshot)
 	if err != nil || !reflect.DeepEqual(policies, actors.policies) {
 		return ErrSecurityBaseline
@@ -155,18 +159,24 @@ func (actors *baselineActors) verifyWithProbe(ctx context.Context, probe *baseli
 	// The exact operation must precede the entire containment catalog. A grant
 	// reached during this SSAR must refuse BEFORE any dry-run is sent, not only
 	// during post-verification. Close original access/configuration afterwards.
-	if probe != nil && operationClient.authorize(ctx, operationPermission) != nil {
-		return ErrSecurityBaseline
+	if probe != nil {
+		traceBaselineProbeAuthority(ctx, probeAuthorityOperation)
+		if operationClient.authorize(ctx, operationPermission) != nil {
+			return ErrSecurityBaseline
+		}
 	}
+	traceBaselineProbeAuthority(ctx, probeAuthorityContainment)
 	if actors.verifyContainment(ctx) != nil {
 		return ErrSecurityBaseline
 	}
 	// A successful collection of reviews does not pin original identities.
 	// Repeat both independent witnesses across the entire two-actor catalog.
+	traceBaselineProbeAuthority(ctx, probeAuthorityAccessClosing)
 	current, err = c.engine.baseline.runtimeAccessWitness(ctx, actors.snapshot)
 	if err != nil || !reflect.DeepEqual(current, actors.access) {
 		return ErrSecurityBaseline
 	}
+	traceBaselineProbeAuthority(ctx, probeAuthorityPoliciesClosing)
 	policies, err = c.configured(ctx, actors.snapshot)
 	if err != nil || !reflect.DeepEqual(policies, actors.policies) {
 		return ErrSecurityBaseline
@@ -174,10 +184,12 @@ func (actors *baselineActors) verifyWithProbe(ctx context.Context, probe *baseli
 	// Configuration performs additional remote reads. Close access again so
 	// replacement or withdrawal reached during that closing configuration
 	// cannot disappear between the witness sets and this return.
+	traceBaselineProbeAuthority(ctx, probeAuthorityAccessFinal)
 	current, err = c.engine.baseline.runtimeAccessWitness(ctx, actors.snapshot)
 	if err != nil || !reflect.DeepEqual(current, actors.access) {
 		return ErrSecurityBaseline
 	}
+	traceBaselineProbeAuthority(ctx, probeAuthorityComplete)
 	return nil
 }
 

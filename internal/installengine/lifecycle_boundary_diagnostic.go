@@ -136,6 +136,20 @@ const (
 	baselineBoundaryClosingParents
 	baselineBoundaryClosingFamily
 	baselineBoundaryRuntimeDeadline
+	baselineBoundaryRetiredScope
+	baselineBoundaryRetiredPin
+	baselineBoundaryRetiredCoreOpening
+	baselineBoundaryRetiredPoliciesOpening
+	baselineBoundaryRetiredExecutablesOpening
+	baselineBoundaryRetiredColdSetup
+	baselineBoundaryRetiredColdFirst
+	baselineBoundaryRetiredStoppedFirst
+	baselineBoundaryRetiredColdSecond
+	baselineBoundaryRetiredStoppedSecond
+	baselineBoundaryRetiredExecutablesClosing
+	baselineBoundaryRetiredPoliciesClosing
+	baselineBoundaryRetiredCoreClosing
+	baselineBoundaryRetiredPinClosing
 )
 
 func (b baselineBoundary) label() string {
@@ -212,6 +226,34 @@ func (b baselineBoundary) label() string {
 		return "closing-family"
 	case baselineBoundaryRuntimeDeadline:
 		return "runtime-deadline"
+	case baselineBoundaryRetiredScope:
+		return "retired-scope"
+	case baselineBoundaryRetiredPin:
+		return "retired-pin"
+	case baselineBoundaryRetiredCoreOpening:
+		return "retired-core-opening"
+	case baselineBoundaryRetiredPoliciesOpening:
+		return "retired-policies-opening"
+	case baselineBoundaryRetiredExecutablesOpening:
+		return "retired-executables-opening"
+	case baselineBoundaryRetiredColdSetup:
+		return "retired-cold-setup"
+	case baselineBoundaryRetiredColdFirst:
+		return "retired-cold-first"
+	case baselineBoundaryRetiredStoppedFirst:
+		return "retired-stopped-first"
+	case baselineBoundaryRetiredColdSecond:
+		return "retired-cold-second"
+	case baselineBoundaryRetiredStoppedSecond:
+		return "retired-stopped-second"
+	case baselineBoundaryRetiredExecutablesClosing:
+		return "retired-executables-closing"
+	case baselineBoundaryRetiredPoliciesClosing:
+		return "retired-policies-closing"
+	case baselineBoundaryRetiredCoreClosing:
+		return "retired-core-closing"
+	case baselineBoundaryRetiredPinClosing:
+		return "retired-pin-closing"
 	}
 	return "unknown"
 }

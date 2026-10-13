@@ -31,7 +31,7 @@ import (
 // is inferred from the fake replies.
 func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 	modes := []string{"healthy", "admin-denied", "actor-maintenance-allowed", "actor-cel-maintenance-allowed", "actor-producer-allowed", "negative-review-missing", "actor-operation-denied", "access-replaced", "baseline-drift", "late-access-rv", "late-policy-rv", "review-access-rv", "review-policy-rv", "closing-config-access-rv", "wrong-denial"}
-	modes = append(modes, "two-lane-join-before-probe", "probe-discovery-denied")
+	modes = append(modes, "two-lane-join-before-probe", "probe-discovery-denied", "late-closing-config-access-rv")
 	modes = append(modes, "operation-access-uid", "operation-access-rv", "operation-policy-rv", "operation-policy-shape", "operation-policy-status", "operation-journal", "operation-namespace-uid", "operation-review-missing", "operation-review-malformed", "operation-canceled", "candidate-mutated", "invalid-actor", "swapped-actor", "foreign-namespace", "unsupported-operation", "wrong-purpose")
 	type grant struct {
 		actor     admissionActor
@@ -138,7 +138,9 @@ func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 					}
 					if object := objects[r.URL.Path]; object != nil {
 						_ = json.NewEncoder(w).Encode(object.Object)
-						if mode == "closing-config-access-rv" && catalogReviews == 2*len(catalog) && r.URL.Path == lastConfigurationPath {
+						closingConfiguration := mode == "closing-config-access-rv" && catalogReviews == 2*len(catalog) ||
+							mode == "late-closing-config-access-rv" && probes.Load() == 1 && catalogReviews == 6*len(catalog)
+						if closingConfiguration && r.URL.Path == lastConfigurationPath {
 							closingReads++
 							if closingReads == 2 {
 								objects[accountPath].SetResourceVersion("9000")
@@ -462,6 +464,18 @@ func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 				}
 			} else if snapshot := diagnostic.BaselineProbeSnapshot(); !strings.HasPrefix(snapshot, "phase="+phase+" operation=create ") || strings.Contains(snapshot, "CANARY") || !strings.Contains(snapshot, fmt.Sprintf("dry-run-direct-attempts=%d ", probes.Load())) || len(snapshot) > 1024 {
 				t.Fatal("actual probe refusal/completion lost its fixed phase or request count")
+			}
+			// Independent actual-path assertions: an opening success must not
+			// mask which complete closing witness refused after the dry-run.
+			if authority := map[string]string{
+				"actor-operation-denied":        "exact-operation",
+				"late-access-rv":                "access-opening",
+				"late-policy-rv":                "policies-opening",
+				"operation-access-rv":           "access-closing",
+				"operation-policy-rv":           "policies-closing",
+				"late-closing-config-access-rv": "access-final",
+			}[mode]; authority != "" && !strings.Contains(diagnostic.BaselineProbeSnapshot(), " authority="+authority+" ") {
+				t.Fatal("actual authority refusal lost its exact fixed witness boundary")
 			}
 			if (err == nil) != positive || err != nil && strings.Contains(err.Error(), "CANARY") || probes.Load() > 1 {
 				t.Fatal("baseline probe accepted changed authority, wrong denial or replay")

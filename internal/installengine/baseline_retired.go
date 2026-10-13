@@ -25,6 +25,7 @@ import (
 // does not implement the whole runtime guard: live-phase behavior remains a
 // separate requirement before production composition can install that guard.
 func (c *ClusterSecurityBaseline) verifyRetiredRuntime(ctx context.Context, snapshot *installstate.Snapshot) error {
+	traceBaselineBoundary(ctx, baselineBoundaryRetiredScope)
 	if c == nil || c.engine == nil || c.engine.baseline == nil || c.engine.access != c.access || c.access == nil || !c.access.actorCompatible() || ctx == nil || snapshot == nil {
 		return ErrSecurityBaseline
 	}
@@ -35,6 +36,7 @@ func (c *ClusterSecurityBaseline) verifyRetiredRuntime(ctx context.Context, snap
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	engine := c.engine
+	traceBaselineBoundary(ctx, baselineBoundaryRetiredPin)
 	if engine.files == nil {
 		return ErrSecurityBaseline
 	}
@@ -46,17 +48,21 @@ func (c *ClusterSecurityBaseline) verifyRetiredRuntime(ctx context.Context, snap
 		return ErrSecurityBaseline
 	}
 	defer opening.release()
+	traceBaselineBoundary(ctx, baselineBoundaryRetiredCoreOpening)
 	if engine.verifyRetiredAdmissionCore(ctx, snapshot) != nil {
 		return ErrSecurityBaseline
 	}
+	traceBaselineBoundary(ctx, baselineBoundaryRetiredPoliciesOpening)
 	configuredBefore, err := c.configured(ctx, snapshot)
 	if err != nil {
 		return ErrSecurityBaseline
 	}
+	traceBaselineBoundary(ctx, baselineBoundaryRetiredExecutablesOpening)
 	executablesBefore, err := c.collectExecutables(ctx, snapshot)
 	if err != nil || len(executablesBefore.guarded) != 0 || engine.baselineSoftwareFamiliesAbsent(executablesBefore.observation.Collections()) != nil {
 		return ErrSecurityBaseline
 	}
+	traceBaselineBoundary(ctx, baselineBoundaryRetiredColdSetup)
 	prerequisites, err := NewClusterPrerequisites(engine, c.access)
 	if err != nil {
 		return ErrSecurityBaseline
@@ -69,6 +75,11 @@ func (c *ClusterSecurityBaseline) verifyRetiredRuntime(ctx context.Context, snap
 	var worldBefore [32]byte
 	var stoppedBefore *stoppedWitness
 	for pass := range 2 {
+		if pass == 0 {
+			traceBaselineBoundary(ctx, baselineBoundaryRetiredColdFirst)
+		} else {
+			traceBaselineBoundary(ctx, baselineBoundaryRetiredColdSecond)
+		}
 		collect := cold.collectEvidence
 		if document.Stage == installstate.Complete {
 			collect = cold.collectCompletedRetirementEvidence
@@ -86,20 +97,32 @@ func (c *ClusterSecurityBaseline) verifyRetiredRuntime(ctx context.Context, snap
 		// runtime classifier also rejects renamed/default-SA installation
 		// image, Secret, label and descendant signals the baseline selector
 		// intentionally does not claim to identify.
+		if pass == 0 {
+			traceBaselineBoundary(ctx, baselineBoundaryRetiredStoppedFirst)
+		} else {
+			traceBaselineBoundary(ctx, baselineBoundaryRetiredStoppedSecond)
+		}
 		stopped, err := engine.stopped(ctx, stoppedRequest, observation)
 		if err != nil || stopped == nil || pass != 0 && (world != worldBefore || !reflect.DeepEqual(stoppedBefore, stopped)) {
 			return ErrSecurityBaseline
 		}
 		worldBefore, stoppedBefore = world, stopped
 	}
+	traceBaselineBoundary(ctx, baselineBoundaryRetiredExecutablesClosing)
 	executablesAfter, err := c.collectExecutables(ctx, snapshot)
 	if err != nil || len(executablesAfter.guarded) != 0 || !sameBaselineExecutables(executablesBefore, executablesAfter) || engine.baselineSoftwareFamiliesAbsent(executablesAfter.observation.Collections()) != nil {
 		return ErrSecurityBaseline
 	}
+	traceBaselineBoundary(ctx, baselineBoundaryRetiredPoliciesClosing)
 	configuredAfter, err := c.configured(ctx, snapshot)
-	if err != nil || !reflect.DeepEqual(configuredBefore, configuredAfter) || engine.verifyRetiredAdmissionCore(ctx, snapshot) != nil || ctx.Err() != nil {
+	if err != nil || !reflect.DeepEqual(configuredBefore, configuredAfter) {
 		return ErrSecurityBaseline
 	}
+	traceBaselineBoundary(ctx, baselineBoundaryRetiredCoreClosing)
+	if engine.verifyRetiredAdmissionCore(ctx, snapshot) != nil || ctx.Err() != nil {
+		return ErrSecurityBaseline
+	}
+	traceBaselineBoundary(ctx, baselineBoundaryRetiredPinClosing)
 	if engine.closeRetirementEvidence(opening) != nil || ctx.Err() != nil {
 		return ErrSecurityBaseline
 	}

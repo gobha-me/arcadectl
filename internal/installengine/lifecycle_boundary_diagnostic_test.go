@@ -38,6 +38,13 @@ func TestLifecycleBoundaryDiagnosticClosedFreshAndConcurrent(t *testing.T) {
 	}
 	baselines := map[baselineBoundary]string{baselineBoundaryScope: "scope", baselineBoundarySource: "source", baselineBoundaryActors: "actors", baselineBoundaryExecutables: "executables", baselineBoundaryMetadata: "metadata", baselineBoundaryParents: "parents", baselineBoundaryFamily: "family", baselineBoundaryActorClose: "actor-close", baselineBoundaryDeniedOpening: "denied-opening", baselineBoundaryProducerBefore: "producer-before", baselineBoundaryProducerWire: "producer-wire", baselineBoundaryProducerResult: "producer-result", baselineBoundaryProducerAfter: "producer-after", baselineBoundaryProducerNegative: "producer-negative", baselineBoundaryIdentity: "identity-probe", baselineBoundaryParentProbe: "parent-probe", baselineBoundaryPodProbe: "pod-probe", baselineBoundaryClosing: "closing", baselineBoundarySourceClose: "source-close", baselineBoundaryRetired: "retired", baselineBoundaryComplete: "complete"}
 	for boundary, label := range map[baselineBoundary]string{
+		baselineBoundaryRetiredScope: "retired-scope", baselineBoundaryRetiredPin: "retired-pin",
+		baselineBoundaryRetiredCoreOpening: "retired-core-opening", baselineBoundaryRetiredPoliciesOpening: "retired-policies-opening",
+		baselineBoundaryRetiredExecutablesOpening: "retired-executables-opening", baselineBoundaryRetiredColdSetup: "retired-cold-setup",
+		baselineBoundaryRetiredColdFirst: "retired-cold-first", baselineBoundaryRetiredStoppedFirst: "retired-stopped-first",
+		baselineBoundaryRetiredColdSecond: "retired-cold-second", baselineBoundaryRetiredStoppedSecond: "retired-stopped-second",
+		baselineBoundaryRetiredExecutablesClosing: "retired-executables-closing", baselineBoundaryRetiredPoliciesClosing: "retired-policies-closing",
+		baselineBoundaryRetiredCoreClosing: "retired-core-closing", baselineBoundaryRetiredPinClosing: "retired-pin-closing",
 		baselineBoundaryDeniedActorsOpening: "denied-actors-opening", baselineBoundaryDeniedCatalog: "denied-catalog", baselineBoundaryDeniedRulesOpening: "denied-rules-opening", baselineBoundaryDeniedClients: "denied-clients", baselineBoundaryDeniedReviews: "denied-reviews", baselineBoundaryDeniedExecutablesClosing: "denied-executables-closing", baselineBoundaryDeniedExecutablesStable: "denied-executables-stable", baselineBoundaryDeniedOriginalsClosing: "denied-originals-closing", baselineBoundaryDeniedActorsClosing: "denied-actors-closing", baselineBoundaryDeniedRulesClosing: "denied-rules-closing", baselineBoundaryDeniedActorsFinal: "denied-actors-final", baselineBoundaryClosingMetadata: "closing-metadata", baselineBoundaryClosingParents: "closing-parents", baselineBoundaryClosingFamily: "closing-family", baselineBoundaryRuntimeDeadline: "runtime-deadline",
 	} {
 		baselines[boundary] = label
@@ -59,6 +66,12 @@ func TestLifecycleBoundaryDiagnosticClosedFreshAndConcurrent(t *testing.T) {
 		traceBaselineBoundary(ctx, baselineBoundary(value))
 		if d.BoundarySnapshot() != "operation="+operation+" baseline="+baseline || len(d.BoundarySnapshot()) > 96 {
 			t.Fatal("diagnostic accepted unbounded or unknown numeric state")
+		}
+		if validBaseline && baselineBoundary(value) != baselineBoundaryRuntimeDeadline {
+			traceBaselineBoundary(ctx, baselineBoundaryRuntimeDeadline)
+			if d.DeadlineSnapshot() != "baseline-before-deadline="+baseline {
+				t.Fatal("proof deadline erased its last fixed check")
+			}
 		}
 	}
 	ctx, d := WithLifecycleDiagnostic(t.Context())
@@ -106,6 +119,7 @@ func TestLifecycleBoundaryDiagnosticClosedFreshAndConcurrent(t *testing.T) {
 }
 
 func testBaselineProbeDiagnostic(t *testing.T) {
+	t.Run("authority-stage", testBaselineProbeAuthorityDiagnostic)
 	var absent *LifecycleDiagnostic
 	if absent.BaselineProbeSnapshot() != "" {
 		t.Fatal("absent probe manufactured progress")
@@ -287,6 +301,81 @@ func testBaselineProbeDiagnostic(t *testing.T) {
 			t.Fatal("transport refusal lost bounded delegation timing")
 		}
 	})
+}
+
+func testBaselineProbeAuthorityDiagnostic(t *testing.T) {
+	labels := map[baselineProbeAuthorityStage]string{
+		probeAuthorityScope: "scope", probeAuthorityVersion: "version",
+		probeAuthorityAccessOpening: "access-opening", probeAuthorityPoliciesOpening: "policies-opening",
+		probeAuthorityOperation: "exact-operation", probeAuthorityContainment: "containment",
+		probeAuthorityAccessClosing: "access-closing", probeAuthorityPoliciesClosing: "policies-closing",
+		probeAuthorityAccessFinal: "access-final", probeAuthorityComplete: "complete",
+	}
+	ctx, diagnostic := WithLifecycleDiagnostic(t.Context())
+	probe := beginBaselineProbeDiagnostic(ctx, probeDeleteIdentityOperation)
+	opening, finishOpening := baselineProbePhaseContext(probe, baselineProbeOpening)
+	for value := range 256 {
+		stage := baselineProbeAuthorityStage(value)
+		label := labels[stage]
+		if label == "" {
+			label = "unknown"
+		}
+		traceBaselineProbeAuthority(opening, stage)
+		if stage.label() != label || !strings.Contains(diagnostic.BaselineProbeSnapshot(), " authority="+label+" ") {
+			t.Fatal("authority stage escaped independent fixed labels")
+		}
+	}
+	traceBaselineProbeAuthority(opening, probeAuthorityComplete)
+	for _, corrupt := range []baselineProbeAuthorityStage{65537, ^baselineProbeAuthorityStage(0)} {
+		traceBaselineProbeAuthority(opening, corrupt)
+		if !strings.Contains(diagnostic.BaselineProbeSnapshot(), " authority=unknown ") {
+			t.Fatal("wide corrupt authority stage wrapped into a valid label")
+		}
+	}
+	finishOpening()
+	closing, finishClosing := baselineProbePhaseContext(probe, baselineProbeClosing)
+	defer finishClosing()
+	if !strings.Contains(diagnostic.BaselineProbeSnapshot(), " authority=unknown ") {
+		t.Fatal("closing authority inherited opening completion")
+	}
+	var invalidActors *baselineActors
+	if invalidActors.verifyWithProbe(closing, nil) != ErrSecurityBaseline || !strings.Contains(diagnostic.BaselineProbeSnapshot(), " authority=scope ") {
+		t.Fatal("closing initial guard lost its own refusal boundary")
+	}
+	traceBaselineProbeAuthority(closing, probeAuthorityAccessFinal)
+	// A late opening callback owns its original phase, not mutable latest progress.
+	traceBaselineProbeAuthority(opening, probeAuthorityVersion)
+	if !strings.Contains(diagnostic.BaselineProbeSnapshot(), " authority=access-final ") {
+		t.Fatal("late opening callback overwrote closing refusal boundary")
+	}
+	var group sync.WaitGroup
+	for range 8 {
+		group.Go(func() {
+			traceBaselineProbeAuthority(opening, probeAuthorityContainment)
+			if !strings.Contains(diagnostic.BaselineProbeSnapshot(), " authority=access-final ") {
+				t.Error("joined lane overwrote another phase's authority boundary")
+			}
+		})
+	}
+	group.Wait()
+	current := beginBaselineProbeDiagnostic(ctx, probeCreateOperation)
+	dryRun, finishDryRun := baselineProbePhaseContext(current, baselineProbeDryRun)
+	defer finishDryRun()
+	for _, parent := range []context.Context{nil, ctx, current, dryRun, context.WithValue(ctx, baselineProbePhaseScope{}, "PRIVATE-CANARY")} {
+		traceBaselineProbeAuthority(parent, probeAuthorityAccessFinal)
+	}
+	traceBaselineProbeAuthority(closing, probeAuthorityAccessFinal)
+	if !strings.Contains(diagnostic.BaselineProbeSnapshot(), " authority=unknown ") {
+		t.Fatal("non-authority or retired scope contaminated current probe")
+	}
+	phase, finishPhase := baselineProbePhaseContext(current, baselineProbeOpening)
+	traceBaselineProbeAuthority(phase, probeAuthorityComplete)
+	finishPhase()
+	_, finishPhase = baselineProbePhaseContext(current, baselineProbeOpening)
+	finishPhase()
+	if !strings.Contains(diagnostic.BaselineProbeSnapshot(), " authority=unknown ") {
+		t.Fatal("phase entry retained old authority completion")
+	}
 }
 
 func TestLifecycleBoundaryDiagnosticActualRefusalsPreserveEffects(t *testing.T) {

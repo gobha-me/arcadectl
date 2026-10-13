@@ -67,6 +67,48 @@ type baselineProbeMetrics struct {
 	wallNS      atomic.Uint64
 	attempts    atomic.Uint64
 	roundTripNS atomic.Uint64
+	authority   atomic.Uint32
+}
+
+type baselineProbeAuthorityStage uint32
+
+const (
+	probeAuthorityScope baselineProbeAuthorityStage = iota + 1
+	probeAuthorityVersion
+	probeAuthorityAccessOpening
+	probeAuthorityPoliciesOpening
+	probeAuthorityOperation
+	probeAuthorityContainment
+	probeAuthorityAccessClosing
+	probeAuthorityPoliciesClosing
+	probeAuthorityAccessFinal
+	probeAuthorityComplete
+)
+
+func (s baselineProbeAuthorityStage) label() string {
+	switch s {
+	case probeAuthorityScope:
+		return "scope"
+	case probeAuthorityVersion:
+		return "version"
+	case probeAuthorityAccessOpening:
+		return "access-opening"
+	case probeAuthorityPoliciesOpening:
+		return "policies-opening"
+	case probeAuthorityOperation:
+		return "exact-operation"
+	case probeAuthorityContainment:
+		return "containment"
+	case probeAuthorityAccessClosing:
+		return "access-closing"
+	case probeAuthorityPoliciesClosing:
+		return "policies-closing"
+	case probeAuthorityAccessFinal:
+		return "access-final"
+	case probeAuthorityComplete:
+		return "complete"
+	}
+	return "unknown"
 }
 
 // A phase belongs to one probe, even across its joined actor lanes. Never use
@@ -74,6 +116,20 @@ type baselineProbeMetrics struct {
 type baselineProbePhaseScope struct {
 	probe *baselineProbeDiagnostic
 	phase baselineProbePhase
+}
+
+// Fixed pre-check progress only, never a failed operand, identity or result.
+// Each phase owns its scalar; a late opening callback cannot overwrite closing
+// progress, and an old probe cannot update the currently reported probe.
+func traceBaselineProbeAuthority(ctx context.Context, stage baselineProbeAuthorityStage) {
+	if ctx == nil {
+		return
+	}
+	scope, ok := ctx.Value(baselineProbePhaseScope{}).(*baselineProbePhaseScope)
+	if !ok || scope == nil || scope.probe == nil || scope.phase != baselineProbeOpening && scope.phase != baselineProbeClosing {
+		return
+	}
+	scope.probe.metrics[scope.phase-1].authority.Store(uint32(stage))
 }
 
 func beginBaselineProbeDiagnostic(ctx context.Context, operation admissionProbeOperation) context.Context {
@@ -99,6 +155,7 @@ func baselineProbePhaseContext(ctx context.Context, phase baselineProbePhase) (c
 		return ctx, func() {}
 	}
 	probe.position.Store(probe.position.Load()&0xffffff00 | uint32(phase))
+	probe.metrics[phase-1].authority.Store(0)
 	started := time.Now()
 	scope := &baselineProbePhaseScope{probe: probe, phase: phase}
 	return context.WithValue(ctx, baselineProbePhaseScope{}, scope), func() {
@@ -151,8 +208,12 @@ func (d *LifecycleDiagnostic) BaselineProbeSnapshot() string {
 		operation = baselineProbeOperationLabel(admissionProbeOperation((position >> 8) - 1))
 	}
 	phase = baselineProbePhase(position & 255).label()
+	authority := "unknown"
+	if p := baselineProbePhase(position & 255); p == baselineProbeOpening || p == baselineProbeClosing {
+		authority = baselineProbeAuthorityStage(probe.metrics[p-1].authority.Load()).label()
+	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "phase=%s operation=%s", phase, operation)
+	fmt.Fprintf(&b, "phase=%s operation=%s authority=%s", phase, operation, authority)
 	for i := range probe.metrics {
 		metrics := &probe.metrics[i]
 		fmt.Fprintf(&b, " %s-wall-ns=%d %s-direct-attempts=%d %s-direct-roundtrip-sum-ns=%d", baselineProbePhase(i+1).label(), metrics.wallNS.Load(), baselineProbePhase(i+1).label(), metrics.attempts.Load(), baselineProbePhase(i+1).label(), metrics.roundTripNS.Load())
