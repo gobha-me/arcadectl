@@ -128,7 +128,15 @@ func (a *HTTPAccess) checkVersion(ctx context.Context, profile installpackage.Pr
 		}
 	}
 	parts := strings.Split(expected, ".")
-	if info.Major != parts[0] || info.Minor != parts[1] || info.GitVersion != "v"+expected {
+	matchedBuild := info.GitVersion == "v"+expected
+	// A closed compatibility declaration for the observed Captain RKE2 build,
+	// not a generic vendor-suffix allowance or distribution authentication.
+	// Exact effective-version and all native baseline/admission proofs remain
+	// mandatory; this does not certify RKE2 behavior from its version labels.
+	if profile.ID == installrender.Profile135 && info.GitVersion == "v1.35.8+rke2r1" && info.GitCommit == "1c2e10a409eb1b03f2f28f401ce935312e20d9fb" && info.Platform == "linux/amd64" {
+		matchedBuild = true
+	}
+	if info.Major != parts[0] || info.Minor != parts[1] || !matchedBuild {
 		return ErrRead
 	}
 	for _, pair := range [][2]string{{"emulationMajor", "emulationMinor"}, {"minCompatibilityMajor", "minCompatibilityMinor"}} {

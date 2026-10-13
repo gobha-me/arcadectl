@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/gobha-me/arcadectl/internal/installrender"
 	authv1 "k8s.io/api/authorization/v1"
 )
 
@@ -30,6 +31,13 @@ func proofServer(t *testing.T, handler http.HandlerFunc) *HTTPAccess {
 
 func TestProofVersionExactEffectiveProfileAndStrictScalarPresence(t *testing.T) {
 	profile := fixturePlan(t).Profile()
+	rke2 := func(m map[string]any) {
+		m["gitVersion"] = "v1.35.8+rke2r1"
+		m["gitCommit"] = "1c2e10a409eb1b03f2f28f401ce935312e20d9fb"
+		m["platform"] = "linux/amd64"
+		m["emulationMajor"], m["emulationMinor"] = "1", "35"
+		m["minCompatibilityMajor"], m["minCompatibilityMinor"] = "1", "34"
+	}
 	for _, test := range []struct {
 		name   string
 		change func(map[string]any)
@@ -47,6 +55,26 @@ func TestProofVersionExactEffectiveProfileAndStrictScalarPresence(t *testing.T) 
 		{"noncanonical-compatibility", func(m map[string]any) { m["minCompatibilityMajor"], m["minCompatibilityMinor"] = "1", "034" }, false},
 		{"higher-minimum", func(m map[string]any) { m["minCompatibilityMajor"], m["minCompatibilityMinor"] = "1", "36" }, false},
 		{"unknown", func(m map[string]any) { m["unreviewed"] = "PRIVATE-CANARY" }, false},
+		{"rke2-reviewed-build", rke2, true},
+		{"rke2-other-revision", func(m map[string]any) { rke2(m); m["gitVersion"] = "v1.35.8+rke2r2" }, false},
+		{"rke2-other-patch", func(m map[string]any) { rke2(m); m["gitVersion"] = "v1.35.9+rke2r1" }, false},
+		{"rke2-other-vendor", func(m map[string]any) { rke2(m); m["gitVersion"] = "v1.35.8+foreign" }, false},
+		{"rke2-other-commit", func(m map[string]any) { rke2(m); m["gitCommit"] = strings.Repeat("a", 40) }, false},
+		{"rke2-missing-commit", func(m map[string]any) { rke2(m); delete(m, "gitCommit") }, false},
+		{"rke2-null-commit", func(m map[string]any) { rke2(m); m["gitCommit"] = nil }, false},
+		{"rke2-numeric-commit", func(m map[string]any) { rke2(m); m["gitCommit"] = 1 }, false},
+		{"rke2-oversized-commit", func(m map[string]any) { rke2(m); m["gitCommit"] = strings.Repeat("a", 1025) }, false},
+		{"rke2-other-platform", func(m map[string]any) { rke2(m); m["platform"] = "linux/arm64" }, false},
+		{"rke2-missing-platform", func(m map[string]any) { rke2(m); delete(m, "platform") }, false},
+		{"rke2-null-platform", func(m map[string]any) { rke2(m); m["platform"] = nil }, false},
+		{"rke2-wrong-major", func(m map[string]any) { rke2(m); m["major"] = "2" }, false},
+		{"rke2-wrong-minor", func(m map[string]any) { rke2(m); m["minor"] = "36" }, false},
+		{"rke2-foreign-emulation", func(m map[string]any) { rke2(m); m["emulationMinor"] = "34" }, false},
+		{"rke2-one-sided-emulation", func(m map[string]any) { rke2(m); delete(m, "emulationMinor") }, false},
+		{"rke2-higher-minimum", func(m map[string]any) { rke2(m); m["minCompatibilityMinor"] = "36" }, false},
+		{"rke2-noncanonical-minimum", func(m map[string]any) { rke2(m); m["minCompatibilityMinor"] = "034" }, false},
+		{"rke2-null-field", func(m map[string]any) { rke2(m); m["buildDate"] = nil }, false},
+		{"rke2-unknown-field", func(m map[string]any) { rke2(m); m["unreviewed"] = "PRIVATE-CANARY" }, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			body := map[string]any{"major": "1", "minor": "35", "gitVersion": "v1.35.8"}
@@ -64,6 +92,39 @@ func TestProofVersionExactEffectiveProfileAndStrictScalarPresence(t *testing.T) 
 			}
 		})
 	}
+	t.Run("profile137-builds", func(t *testing.T) {
+		other := fixturePlanProfile(t, "isolated-install", installrender.Profile137).Profile()
+		for _, test := range []struct {
+			name    string
+			version string
+			valid   bool
+		}{{"upstream", "v1.37.0", true}, {"rke2-135", "v1.35.8+rke2r1", false}, {"rke2-137", "v1.37.0+rke2r1", false}} {
+			t.Run(test.name, func(t *testing.T) {
+				a := proofServer(t, func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path != "/version" || r.Method != http.MethodGet || r.URL.RawQuery != "" {
+						t.Error("unexpected version route")
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(map[string]any{"major": "1", "minor": "37", "gitVersion": test.version, "gitCommit": "1c2e10a409eb1b03f2f28f401ce935312e20d9fb", "platform": "linux/amd64"})
+				})
+				if (a.checkVersion(t.Context(), other) == nil) != test.valid {
+					t.Fatal("reviewed RKE2 build escaped its exact profile")
+				}
+			})
+		}
+	})
+	t.Run("rke2-duplicate-fields", func(t *testing.T) {
+		a := proofServer(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/version" || r.Method != http.MethodGet || r.URL.RawQuery != "" {
+				t.Error("unexpected version route")
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"major":"1","minor":"35","gitVersion":"v1.35.8+rke2r1","gitCommit":"1c2e10a409eb1b03f2f28f401ce935312e20d9fb","platform":"linux/amd64","platform":"linux/amd64"}`)
+		})
+		if a.checkVersion(t.Context(), profile) == nil {
+			t.Fatal("reviewed RKE2 build bypassed duplicate field refusal")
+		}
+	})
 }
 
 func TestProofAuthorizationStrictEchoAllowedDeniedAndMetadata(t *testing.T) {

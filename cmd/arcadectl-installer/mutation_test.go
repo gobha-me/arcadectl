@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -91,11 +93,22 @@ func TestMutationBootstrapResumeUsesRegisteredPlanAndRejectsFreshClientBeforeHTT
 	baselinePath := filepath.Join(base, "baseline")
 	writeMutationBaseline(t, baselinePath, key, 1)
 	var reads, writes atomic.Int32
+	var versionReply atomic.Value
+	var routeMu sync.Mutex
+	var routes []string
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		routeMu.Lock()
+		routes = append(routes, r.Method+" "+r.URL.Path)
+		routeMu.Unlock()
 		if r.Method == http.MethodGet || strings.HasSuffix(r.URL.Path, "/selfsubjectaccessreviews") {
 			reads.Add(1)
 		} else {
 			writes.Add(1)
+		}
+		if reply, _ := versionReply.Load().(string); reply != "" && r.Method == http.MethodGet && r.URL.Path == "/version" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, reply)
+			return
 		}
 		w.WriteHeader(http.StatusForbidden)
 	}))
@@ -211,6 +224,35 @@ func TestMutationBootstrapResumeUsesRegisteredPlanAndRejectsFreshClientBeforeHTT
 	var emptyCosts *installengine.LifecycleCosts
 	if code := runMutation(t.Context(), o, &output, &diagnostics); code != 4 || output.Len() != 0 || writes.Load() != 0 || strings.Count(diagnostics.String(), "installation diagnostic command-cost ") != 1 || !strings.Contains(diagnostics.String(), "installation diagnostic command-cost "+emptyCosts.Snapshot()+"\n") || strings.Contains(diagnostics.String(), "PRIVATE-CANARY") {
 		t.Fatal("actual CLI start refusal lost bounded command aggregate or altered effect boundary")
+	}
+	for _, test := range []struct {
+		name    string
+		version string
+		routes  []string
+	}{
+		{"rke2-unreviewed-build-refuses-before-discovery", "v1.35.8+rke2r2", []string{"GET /version"}},
+		{"rke2-reviewed-build-still-requires-discovery", "v1.35.8+rke2r1", []string{"GET /version", "GET /api/v1"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			before, err := os.ReadDir(base)
+			if err != nil {
+				t.Fatal("original protected state census unavailable")
+			}
+			routeMu.Lock()
+			routes = nil
+			routeMu.Unlock()
+			versionReply.Store(`{"major":"1","minor":"35","gitVersion":"` + test.version + `","gitCommit":"1c2e10a409eb1b03f2f28f401ce935312e20d9fb","platform":"linux/amd64","emulationMajor":"1","emulationMinor":"35","minCompatibilityMajor":"1","minCompatibilityMinor":"34"}`)
+			var stdout, stderr bytes.Buffer
+			code := runMutation(t.Context(), o, &stdout, &stderr)
+			routeMu.Lock()
+			observed := append([]string{}, routes...)
+			routeMu.Unlock()
+			after, censusErr := os.ReadDir(base)
+			receipt, receiptErr := os.ReadFile(filepath.Join(base, o.receipt))
+			if code != 4 || stdout.Len() != 0 || writes.Load() != 0 || !reflect.DeepEqual(observed, test.routes) || censusErr != nil || !reflect.DeepEqual(before, after) || receiptErr != nil || !bytes.Equal(receipt, originalReceipt) || strings.Contains(stderr.String(), "PRIVATE-CANARY") {
+				t.Fatal("RKE2 compatibility bypassed remaining preflight or changed protected original state")
+			}
+		})
 	}
 }
 

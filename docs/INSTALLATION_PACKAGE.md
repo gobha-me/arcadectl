@@ -19,6 +19,19 @@ not proof that a cluster satisfies them or that a release has been published.
 | 1.35.8 | Current fresh install and retaining uninstall | Cold and warm |
 | 1.37.0 | Current fresh install and retaining uninstall; pinned predecessor install, upgrade, rollback and retaining uninstall | Cold and warm |
 
+The 1.35.8 version guard also recognizes the exact observed Captain RKE2 build:
+`gitVersion=v1.35.8+rke2r1`,
+`gitCommit=1c2e10a409eb1b03f2f28f401ce935312e20d9fb`, and
+`platform=linux/amd64`. This RKE2 allowance refuses other vendor suffixes,
+RKE2 revisions, commits, platforms and patches; suffixes are not stripped. The
+signed profile's base Kubernetes version and Pod Security version remain
+`1.35.8` and `v1.35`.
+This is a closed compatibility declaration, not distribution/source
+authentication or an RKE2 certification. Major/minor, effective-version, strict
+field, baseline, authorization and full native admission checks still apply.
+Passing the Kind jobs does not prove Captain: its approved isolated lifecycle
+must be separately exercised and reviewed before declaring that target ready.
+
 The supported predecessor is the exact source identified below, only on 1.37.0.
 The supported transition changes no CRD schema/storage version and uses `None`
 conversion. Neither a profile declaration nor a passing component test certifies
