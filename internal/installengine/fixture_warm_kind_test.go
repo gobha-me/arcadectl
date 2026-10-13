@@ -156,10 +156,24 @@ func proveKindWarmFixtureRecipe(t *testing.T, recipe string) {
 			if err != nil {
 				t.Fatal("owned warm observation client unavailable")
 			}
+			checkFailure := ""
 			check := func(ctx context.Context) error {
+				checkFailure = ""
 				observation, err := p.observe(ctx, request)
 				current, mapErr := warmNativeObjects(observation)
-				if err != nil || mapErr != nil || warmNativeBaseline(ledger, baseline, current) != nil || warmNativeIsolation(ctx, wire, admin) != nil || wire.current(ctx) != nil {
+				switch {
+				case err != nil:
+					checkFailure = "observation"
+				case mapErr != nil:
+					checkFailure = "object-conversion"
+				case warmNativeBaseline(ledger, baseline, current, &checkFailure) != nil:
+					checkFailure = "baseline-" + checkFailure
+				case warmNativeIsolation(ctx, wire, admin) != nil:
+					checkFailure = "isolation"
+				case wire.current(ctx) != nil:
+					checkFailure = "wire-current"
+				}
+				if checkFailure != "" {
 					return ErrFixtures
 				}
 				return nil
@@ -415,18 +429,37 @@ func proveKindWarmFixtureRecipe(t *testing.T, recipe string) {
 			// Bracket EACH reply, including refusals/errors, with fresh strict
 			// original GET/full baseline/GC and unchanged protected WAL/journal.
 			seedBody, seedIdentity, seedRevision := bytes.Clone(ledger.body), ledger.identity, ledger.document.Revision
-			unchanged := func() {
+			unchanged := func(boundary string) {
 				t.Helper()
 				live, absent, getErr := wire.get(ctx, fixtureCancelledDestroy)
 				fresh, journalErr := store.Load(ctx, snapshot.Anchor())
-				if getErr != nil || absent || live == nil || !reflect.DeepEqual(live.Object, seeded.Object) || ledger.validateWarmDestroySeedResult(live, time.Now().UTC()) != nil || check(ctx) != nil || journalErr != nil || !bytes.Equal(fresh.Bytes(), snapshot.Bytes()) || fresh.ResourceVersion() != snapshot.ResourceVersion() || !bytes.Equal(ledger.body, seedBody) || ledger.identity != seedIdentity || ledger.document.Revision != seedRevision || ledger.seedAck || ledger.seedEffect || engine.fixtureFence(snapshot) != ErrFixtures {
+				failure := ""
+				switch {
+				case getErr != nil || absent || live == nil:
+					failure = "seed-get"
+				case !reflect.DeepEqual(live.Object, seeded.Object):
+					failure = "seed-body-" + warmNativeObjectDifference(seeded, live)
+				case ledger.validateWarmDestroySeedResult(live, time.Now().UTC()) != nil:
+					failure = "seed-shape"
+				case check(ctx) != nil:
+					failure = "surrounding-" + checkFailure
+				case journalErr != nil || !bytes.Equal(fresh.Bytes(), snapshot.Bytes()) || fresh.ResourceVersion() != snapshot.ResourceVersion():
+					failure = "journal"
+				case !bytes.Equal(ledger.body, seedBody) || ledger.identity != seedIdentity || ledger.document.Revision != seedRevision:
+					failure = "ledger"
+				case ledger.seedAck || ledger.seedEffect:
+					failure = "seed-authority"
+				case engine.fixtureFence(snapshot) != ErrFixtures:
+					failure = "fence"
+				}
+				if failure != "" {
 					warmSeedAccepted = false // Unknown/drifted proof permits owned cluster teardown only.
-					t.Fatal("warm dry-run changed original whole body/baseline/WAL or witnesses")
+					t.Fatal("warm dry-run changed original whole body/baseline/WAL or witnesses; boundary", boundary, "stage", failure, "context-stage", warmCleanupContextStage(ctx))
 				}
 			}
-			unchanged()
+			unchanged("before-controller-control")
 			control, probeErr := wire.actors.probe(ctx, destroyControllerActor, probeUpdateOperation, seeded.DeepCopy(), "", "", "")
-			unchanged()
+			unchanged("after-controller-control")
 			if probeErr != nil || ledger.validateWarmDestroySeedResult(control, time.Now().UTC()) != nil {
 				warmSeedAccepted = false
 				t.Fatal("warm unchanged-controller dry-run whole control refused")
@@ -446,9 +479,9 @@ func proveKindWarmFixtureRecipe(t *testing.T, recipe string) {
 			}) != nil {
 				t.Fatal("warm later-second confirmation control unavailable")
 			}
-			unchanged()
+			unchanged("before-admin-confirmation")
 			accepted, probeErr := wire.actors.probe(ctx, destroyAdministratorActor, probeUpdateOperation, changed.DeepCopy(), "", "", "")
-			unchanged()
+			unchanged("after-admin-confirmation")
 			if probeErr != nil || ledger.validateWarmDestroyConfirmationResult(accepted, time.Now().UTC()) != nil || captureNativeFixtureShape(ledger, fixtureCancelledDestroy, "warm-confirmation", accepted) != nil {
 				warmSeedAccepted = false
 				t.Fatal("warm distinct-admin confirmation dry-run whole shape refused")
@@ -484,9 +517,9 @@ func proveKindWarmFixtureRecipe(t *testing.T, recipe string) {
 					bindingName = name
 				}
 			}
-			unchanged()
+			unchanged("before-controller-denial")
 			denied, probeErr := wire.actors.probe(ctx, destroyControllerActor, probeUpdateOperation, changed.DeepCopy(), policyName, bindingName, policy.Spec.Validations[0].Message)
-			unchanged()
+			unchanged("after-controller-denial")
 			if probeErr != nil || denied != nil {
 				warmSeedAccepted = false
 				t.Fatal("warm confirmation did not yield exact original controller policy denial")
@@ -746,6 +779,49 @@ func TestWarmNativeBaselineSeedReceiptDisallowsBareOriginal(t *testing.T) {
 	if warmNativeBaseline(ledger, baseline, current) != nil {
 		t.Fatal("pre-seed acknowledged CREATE convergence refused")
 	}
+	// Diagnose the same existing whole-baseline refusal; the labels do not
+	// change acceptance, normalize a body or acquire cleanup/send authority.
+	podKey := installstate.Key{APIVersion: "v1", Kind: "Pod", Namespace: ns, Name: "arcadectl-controller-test"}
+	for _, field := range []string{"resourceVersion", "spec", "status", "PRIVATE-CANARY", "missing", "extra", "fixture", "leader"} {
+		t.Run("guard-diagnostic-"+field, func(t *testing.T) {
+			rows := make(map[installstate.Key]*unstructured.Unstructured, len(current))
+			for key, row := range current {
+				rows[key] = row.DeepCopy()
+			}
+			want := "changed-Pod-" + field
+			switch field {
+			case "resourceVersion":
+				rows[podKey].SetResourceVersion("PRIVATE-CANARY")
+				want = "changed-Pod-metadata-resourceVersion"
+			case "spec":
+				_ = unstructured.SetNestedField(rows[podKey].Object, "PRIVATE-CANARY", "spec", "unknown")
+			case "status":
+				rows[podKey].Object["status"] = nil // presence versus absence
+			case "PRIVATE-CANARY":
+				rows[podKey].Object[field] = "PRIVATE-CANARY"
+				want = "changed-Pod-other-or-unclassified"
+			case "missing":
+				delete(rows, podKey)
+				want = "missing-Pod"
+			case "extra":
+				rows[installstate.Key{Kind: "PRIVATE-CANARY"}] = &unstructured.Unstructured{}
+				want = "unaccounted-unknown"
+			case "fixture":
+				delete(rows, ledger.document.Entries[fixtureCancelledDestroy].Key)
+				want = "fixture-GameDestroy"
+			case "leader":
+				delete(rows, installstate.Key{APIVersion: "coordination.k8s.io/v1", Kind: "Lease", Namespace: ns, Name: "controller.arcade.gobha.me"})
+				want = "leaders"
+			}
+			stage := "PRIVATE-CANARY"
+			if warmNativeBaseline(ledger, baseline, rows) != ErrFixtures || warmNativeBaseline(ledger, baseline, rows, &stage) != ErrFixtures || stage != want || strings.Contains(stage, "CANARY") {
+				t.Fatal("diagnostic changed refusal or escaped closed label", stage)
+			}
+			if warmNativeBaseline(ledger, baseline, current, &stage) != nil || stage != "" {
+				t.Fatal("successful fresh guard retained an older diagnostic")
+			}
+		})
+	}
 	intent := fixtureSeedIntent(t, ledger)
 	intent.DestroySeed.Mode = fixtureDestroySeedWarmCancelled
 	if ledger.advance(intent) != nil {
@@ -785,29 +861,43 @@ func warmNativeAccounted(f *fixtureLedger, slot int, live *unstructured.Unstruct
 	return f.validateResult(slot, fixtureAcknowledgedResult, live, time.Now().UTC()) == nil
 }
 
-func warmNativeBaseline(f *fixtureLedger, baseline, current map[installstate.Key]*unstructured.Unstructured) error {
-	if warmNativeLeaders(baseline, current, time.Now().UTC()) != nil {
+func warmNativeBaseline(f *fixtureLedger, baseline, current map[installstate.Key]*unstructured.Unstructured, diagnostic ...*string) error {
+	// Optional test-only label at the actual first refusal. No repeated reads,
+	// validation, time samples or changed acceptance semantics for diagnostics.
+	if len(diagnostic) == 1 && diagnostic[0] != nil {
+		*diagnostic[0] = ""
+	}
+	refuse := func(stage string) error {
+		if len(diagnostic) == 1 && diagnostic[0] != nil {
+			*diagnostic[0] = stage
+		}
 		return ErrFixtures
+	}
+	if warmNativeLeaders(baseline, current, time.Now().UTC()) != nil {
+		return refuse("leaders")
 	}
 	for slot, entry := range f.document.Entries {
 		fresh := current[entry.Key]
 		switch entry.State {
 		case fixtureOriginal:
 			if fresh == nil || fresh.GetUID() != entry.OriginalUID || !warmNativeAccounted(f, slot, fresh) {
-				return ErrFixtures
+				return refuse("fixture-" + warmNativeDiagnosticKind(entry.Key.Kind))
 			}
 		case fixturePlanned, fixtureAbsent:
 			if fresh != nil {
-				return ErrFixtures
+				return refuse("fixture-presence")
 			}
 		default:
-			return ErrFixtures // no-effect observation cannot resolve an uncertain send
+			return refuse("fixture-state") // no-effect observation cannot resolve an uncertain send
 		}
 	}
 	for key, original := range baseline {
 		fresh := current[key]
-		if fresh == nil || key.Kind != "Lease" && !reflect.DeepEqual(original.Object, fresh.Object) {
-			return ErrFixtures
+		if fresh == nil {
+			return refuse("missing-" + warmNativeDiagnosticKind(key.Kind))
+		}
+		if key.Kind != "Lease" && !reflect.DeepEqual(original.Object, fresh.Object) {
+			return refuse("changed-" + warmNativeDiagnosticKind(key.Kind) + "-" + warmNativeObjectDifference(original, fresh))
 		}
 	}
 	for key, fresh := range current {
@@ -823,7 +913,7 @@ func warmNativeBaseline(f *fixtureLedger, baseline, current map[installstate.Key
 			break
 		}
 		if !known {
-			return ErrFixtures
+			return refuse("unaccounted-" + warmNativeDiagnosticKind(key.Kind))
 		}
 	}
 	return nil
