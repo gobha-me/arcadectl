@@ -173,7 +173,7 @@ func TestHTTPAccessRefusesRedirectsAndMalformedEvidence(t *testing.T) {
 	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { redirects.Add(1) }))
 	defer target.Close()
 	key, o := accessObject()
-	for _, scenario := range []string{"redirect", "duplicate", "deep", "huge", "empty", "whitespace", "multiple-values", "wrong-gvk", "wrong-address", "bad-type", "not-found", "conflict"} {
+	for _, scenario := range []string{"redirect", "duplicate", "deep", "huge", "empty", "whitespace", "multiple-values", "trailing-comma", "bad-escape", "mismatched-delimiter", "numeric-overflow", "too-many-tokens", "wrong-gvk", "wrong-address", "bad-type", "not-found", "conflict"} {
 		t.Run(scenario, func(t *testing.T) {
 			var requests atomic.Int32
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -195,6 +195,16 @@ func TestHTTPAccessRefusesRedirectsAndMalformedEvidence(t *testing.T) {
 				case "multiple-values":
 					_ = json.NewEncoder(w).Encode(o)
 					_, _ = io.WriteString(w, `{}`)
+				case "trailing-comma":
+					_, _ = io.WriteString(w, `{"apiVersion":"v1","kind":"ServiceAccount","metadata":{"name":"reviewed","namespace":"isolated-install"},}`)
+				case "bad-escape":
+					_, _ = io.WriteString(w, `{"key":"\x"}`)
+				case "mismatched-delimiter":
+					_, _ = io.WriteString(w, `[}`)
+				case "numeric-overflow":
+					_, _ = io.WriteString(w, `{"apiVersion":"v1","kind":"ServiceAccount","metadata":{"name":"reviewed","namespace":"isolated-install"},"value":1e999999999}`)
+				case "too-many-tokens":
+					_, _ = w.Write([]byte(`{"apiVersion":"v1","kind":"ServiceAccount","metadata":{"name":"reviewed","namespace":"isolated-install"},"extra":` + string(boundedJSONArray(199996)) + `}`))
 				case "wrong-gvk":
 					changed := o.DeepCopy()
 					changed.SetKind("Secret")

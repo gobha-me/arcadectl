@@ -20,6 +20,7 @@ const baselineRuntimeTimeout = 15 * time.Minute
 // exception selected by stage or a missing actor. Closed production composition
 // installs this full provider; incomplete access never becomes runtime authority.
 func (c *ClusterSecurityBaseline) Verify(ctx context.Context, snapshot *installstate.Snapshot) error {
+	defer beginLifecycleCost(ctx, costBaseline)()
 	traceBaselineBoundary(ctx, baselineBoundaryScope)
 	if c == nil || c.engine == nil || c.engine.baseline == nil || !c.engine.baselinePlan().IsTrusted() || c.engine.journal == nil || c.engine.journal.BaselineDigest() != c.engine.baselinePlan().Digest() ||
 		c.access == nil || c.access.native == nil || c.engine.access != c.access || !c.access.actorCompatible() ||

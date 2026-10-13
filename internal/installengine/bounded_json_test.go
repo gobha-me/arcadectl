@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -48,6 +49,26 @@ func boundedJSONArray(elements int) []byte {
 	return []byte("[" + strings.Repeat("0,", elements-1) + "0]")
 }
 
+// Independent original token scanner plus the same strict response decoder;
+// compare effective acceptance AND integer-preserving decoded values, not the
+// limits-only scanner's deliberately incomplete grammar contract.
+func checkBoundedStrictResponseOracle(t *testing.T, raw []byte) {
+	t.Helper()
+	var before, after map[string]any
+	want, got := false, false
+	if originalBoundedJSON(raw) {
+		strictErrors, err := strictjson.UnmarshalStrict(raw, &before)
+		want = err == nil && len(strictErrors) == 0
+	}
+	if boundedJSONLimits(raw) {
+		strictErrors, err := strictjson.UnmarshalStrict(raw, &after)
+		got = err == nil && len(strictErrors) == 0
+	}
+	if got != want || got && !reflect.DeepEqual(before, after) {
+		t.Fatal("limits plus mandatory strict response decode differs from original wire acceptance")
+	}
+}
+
 func TestBoundedJSONSingleValueTokenOracleAndWireBounds(t *testing.T) {
 	cases := [][]byte{
 		[]byte(`{}`), []byte(`[]`), []byte(`null`), []byte(`true`), []byte(`false`),
@@ -63,6 +84,7 @@ func TestBoundedJSONSingleValueTokenOracleAndWireBounds(t *testing.T) {
 		[]byte(`[}`), []byte(`][`), []byte(`[0,]`), []byte(`NaN`),
 	}
 	for _, raw := range cases {
+		checkBoundedStrictResponseOracle(t, raw)
 		want := json.Valid(raw) && originalBoundedJSON(raw)
 		if boundedJSON(raw) != want {
 			t.Fatal("token/depth prevalidation differs from the original single-value oracle")
@@ -70,6 +92,7 @@ func TestBoundedJSONSingleValueTokenOracleAndWireBounds(t *testing.T) {
 	}
 	for _, depth := range []int{63, 64, 65} {
 		raw := []byte(strings.Repeat("[", depth) + "0" + strings.Repeat("]", depth))
+		checkBoundedStrictResponseOracle(t, []byte(`{"nested":`+string(raw)+`}`))
 		if boundedJSON(raw) != (depth <= 64) || boundedJSON(raw) != originalBoundedJSON(raw) {
 			t.Fatal("inclusive depth boundary changed")
 		}
@@ -122,6 +145,14 @@ func TestBoundedJSONSingleValueTokenOracleAndWireBounds(t *testing.T) {
 			t.Fatal("empty or multiple JSON values accepted")
 		}
 	}
+	for _, raw := range [][]byte{
+		[]byte(`{"integer":9223372036854775807,"fraction":1.25}`),
+		[]byte(`{"huge":1e999999999}`),
+		[]byte(`{"key":` + string(boundedJSONArray(199995)) + `}`),
+		[]byte(`{"key":` + string(boundedJSONArray(199996)) + `}`),
+	} {
+		checkBoundedStrictResponseOracle(t, raw)
+	}
 	// Grammar validation is not duplicate validation; the SAME strict decode
 	// remains mandatory and independently rejects duplicate keys afterward.
 	raw = []byte(`{"duplicate":0,"duplicate":1}`)
@@ -143,6 +174,7 @@ func FuzzBoundedJSONSingleValueTokenOracle(f *testing.F) {
 		if boundedJSON(raw) != (json.Valid(raw) && originalBoundedJSON(raw)) {
 			t.Fatal("bounded scan differs from standard grammar/original token oracle")
 		}
+		checkBoundedStrictResponseOracle(t, raw)
 	})
 }
 

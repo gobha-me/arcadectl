@@ -97,6 +97,7 @@ func traceAdmission(ctx context.Context, step admissionStep, index int) {
 	if ctx == nil || !validAdmissionPosition(step, index) {
 		return
 	}
+	traceAdmissionCost(ctx, step)
 	if trace, ok := ctx.Value(admissionTraceKey{}).(*admissionTrace); ok && trace != nil {
 		// One atomic snapshot avoids pairing a stage with another stage's index.
 		trace.phase.Store(0)

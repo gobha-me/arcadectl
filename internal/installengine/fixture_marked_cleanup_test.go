@@ -100,19 +100,23 @@ func TestFixtureMarkedCleanupCompleteReverseDrainAndRetirement(t *testing.T) {
 		t.Run(recipe, func(t *testing.T) {
 			h := markedCleanupPhaseFactory(t, recipe, false)(t)
 			f, ledger := h.f, h.f.wire.ledger
+			ctx, costs := WithLifecycleCosts(t.Context())
 			started := time.Now()
 			for slot := len(ledger.document.Entries) - 1; slot >= 0; slot-- {
 				t.Logf("checking marked original cleanup slot=%d elapsedSeconds=%d", slot, int(time.Since(started)/time.Second))
 				if _, _, err := f.wire.prepare(t.Context(), slot, "delete"); err != ErrFixtures {
 					t.Fatal("ACK marker reopened old effect preflight")
 				}
-				if f.wire.removeAcknowledgedMarkerOriginal(t.Context(), slot) != nil || ledger.document.Entries[slot].State != fixtureAbsent || ledger.effectSlot != -1 || ledger.document.Behavior != nil || !ledger.markerUnresolved() {
+				if f.wire.removeAcknowledgedMarkerOriginal(ctx, slot) != nil || ledger.document.Entries[slot].State != fixtureAbsent || ledger.effectSlot != -1 || ledger.document.Behavior != nil || !ledger.markerUnresolved() {
 					t.Fatal("strict original marked cleanup failed or invented behavior")
 				}
 				t.Logf("marked original actually absent slot=%d elapsedSeconds=%d", slot, int(time.Since(started)/time.Second))
 			}
-			if f.deletes != len(ledger.document.Entries) || f.wire.retireDrained(t.Context()) != nil || ledger.engine.fixtureFence(f.actor.request.Snapshot) != nil {
+			if f.deletes != len(ledger.document.Entries) || f.wire.retireDrained(ctx) != nil || ledger.engine.fixtureFence(f.actor.request.Snapshot) != nil {
 				t.Fatal("complete actual absence did not retire original marked run")
+			}
+			if costs.metrics[costPhase].calls.Load() == 0 || costs.metrics[costPhase].calls.Load() != costs.metrics[costPhase].returned.Load() || costs.metrics[costPhase].wallNS.Load() == 0 || costs.metrics[costAdmission].calls.Load() != 0 {
+				t.Fatal("composed phase metrics were lost or invented full admission")
 			}
 		})
 	}

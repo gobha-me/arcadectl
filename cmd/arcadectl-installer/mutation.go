@@ -243,13 +243,19 @@ func (x *mutationInstallation) start(ctx context.Context, o options) (*installst
 	return x.lifecycle.Begin(ctx, s, mode, target, mutationLifecycleOptions(o, s))
 }
 
-func runMutation(ctx context.Context, o options, stdout, stderr io.Writer) int {
+func runMutation(ctx context.Context, o options, stdout, stderr io.Writer) (code int) {
 	x, err := loadMutationInstallation(o)
 	if err != nil {
 		_, _ = io.WriteString(stderr, errInputs.Error()+"\n")
 		return 3
 	}
 	defer x.files.Close()
+	ctx, costs := installengine.WithLifecycleCosts(ctx)
+	defer func() {
+		if code == 4 && costs != nil {
+			_, _ = fmt.Fprintf(stderr, "installation diagnostic command-cost %s\n", costs.Snapshot())
+		}
+	}()
 	s, err := x.start(ctx, o)
 	if err != nil {
 		_, _ = io.WriteString(stderr, "installation start refused; inspect protected original evidence before resume\n")

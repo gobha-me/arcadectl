@@ -70,6 +70,9 @@ type Template struct {
 	// Private normalized signed-side bytes only. Every live comparison still
 	// normalizes its freshly observed spec; no live match or identity is cached.
 	crdSpec []byte
+	// Pure strict conversion only, keyed by complete bounded JSON bytes. Every
+	// match still checks fresh identity, journal, whole shape and raw CRD fields.
+	decoded observedDecodeMemo
 }
 
 func New(plan *installrender.Plan) (*Contract, error) {
@@ -103,9 +106,9 @@ func (c *Contract) Template(key installstate.Key, paused bool) (*Template, error
 	if t == nil {
 		return nil, ErrInvalid
 	}
-	// Only immutable signed compilation is shared. Public object accessors
-	// return defensive copies; actual live objects and observations are NEVER
-	// cached. All maps are completed before publication and read-only thereafter.
+	// Signed compilation is immutable and public object accessors are defensive.
+	// Only pure conversion of identical complete bytes may be memoized; no live
+	// identity, observation, shape-match verdict or effect authority is reused.
 	return t, nil
 }
 
@@ -192,6 +195,9 @@ func (t *Template) Candidate(nonce string) (*unstructured.Unstructured, error) {
 // fields are refused before typed conversion can discard them.
 func (t *Template) MatchLive(object *unstructured.Unstructured, originalUID types.UID) error {
 	if object == nil || originalUID == "" || object.GetUID() != originalUID || !identity(object.GetResourceVersion()) {
+		if t != nil {
+			t.decoded.clear()
+		}
 		return ErrIdentity
 	}
 	return t.match(object, nil)
@@ -207,19 +213,33 @@ func (t *Template) MatchAdmitted(object *unstructured.Unstructured) error {
 // original Namespace observation; arbitrary annotation exemptions are forbidden.
 func (t *Template) MatchNamespace(object *unstructured.Unstructured, journal *installstate.Snapshot) error {
 	if object == nil || journal == nil || t == nil || t.key.Kind != "Namespace" || journal.Anchor().Namespace != t.key.Name || journal.Anchor().UID != object.GetUID() || journal.ResourceVersion() != object.GetResourceVersion() {
+		if t != nil {
+			t.decoded.clear()
+		}
 		return ErrIdentity
 	}
 	return t.match(object, journal)
 }
 
-func (t *Template) match(object *unstructured.Unstructured, journal *installstate.Snapshot) error {
+func (t *Template) match(object *unstructured.Unstructured, journal *installstate.Snapshot) (resultErr error) {
 	if t == nil || t.expected == nil || object == nil || object.GetAPIVersion() != t.key.APIVersion || object.GetKind() != t.key.Kind || object.GetName() != t.key.Name || object.GetNamespace() != t.key.Namespace {
+		if t != nil {
+			t.decoded.clear()
+		}
 		return ErrInvalid
 	}
+	// A refused whole shape must not retain even its pure successful conversion.
+	// Clearing a concurrent newer conversion is harmless: this memo is never
+	// evidence or authority, only bounded optional local work reuse.
+	defer func() {
+		if resultErr != nil {
+			t.decoded.clear()
+		}
+	}()
 	if object.GetDeletionTimestamp() != nil || len(object.GetOwnerReferences()) != 0 || len(object.GetFinalizers()) != 0 {
 		return ErrDrift
 	}
-	actual, err := decode(object)
+	actual, err := t.decodeObserved(object)
 	if err != nil {
 		return err
 	}
@@ -351,8 +371,16 @@ func identity(value string) bool {
 }
 
 func decode(object *unstructured.Unstructured) (runtime.Object, error) {
+	body, err := json.Marshal(object.Object)
+	if err != nil || len(body) > maxObjectBytes {
+		return nil, ErrInvalid
+	}
+	return decodeBody(object.GetAPIVersion()+"/"+object.GetKind(), body)
+}
+
+func decodeBody(kind string, body []byte) (runtime.Object, error) {
 	var result runtime.Object
-	switch object.GetAPIVersion() + "/" + object.GetKind() {
+	switch kind {
 	case "v1/Namespace":
 		result = &corev1.Namespace{}
 	case "v1/ServiceAccount":
@@ -378,8 +406,7 @@ func decode(object *unstructured.Unstructured) (runtime.Object, error) {
 	default:
 		return nil, ErrInvalid
 	}
-	body, err := json.Marshal(object.Object)
-	if err != nil || len(body) > maxObjectBytes {
+	if len(body) > maxObjectBytes {
 		return nil, ErrInvalid
 	}
 	d := json.NewDecoder(bytes.NewReader(body))

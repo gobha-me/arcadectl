@@ -126,6 +126,7 @@ func (w *fixtureWire) observePhase(ctx context.Context) (*fixturePhaseObservatio
 
 // Caller serializes the entire closed provider operation on wireMu.
 func (w *fixtureWire) observePhaseLocked(ctx context.Context) (*fixturePhaseObservation, error) {
+	defer beginLifecycleCost(ctx, costPhase)()
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	f := w.ledger

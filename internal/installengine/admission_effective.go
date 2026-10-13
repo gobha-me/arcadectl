@@ -15,6 +15,8 @@ import (
 // matrix, drain every original by exact UID/RV, prove actual complete absence,
 // and retire the protected run before ordinary lifecycle effects may resume.
 func (a *ClusterAdmission) VerifyEffective(ctx context.Context, request LifecycleCheck) error {
+	ctx, finishCost := beginAdmissionCost(ctx)
+	defer finishCost()
 	if a == nil || a.prerequisites == nil || ctx == nil || request.Checkpoint != AdmissionEffective || request.Snapshot == nil {
 		return ErrInvalid
 	}

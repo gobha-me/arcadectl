@@ -63,6 +63,9 @@ type Store struct {
 	mu       sync.Mutex
 	syncFile func(*os.File) error
 	syncDir  func(int) error
+	// Lazy, bounded scratch for identity-only reads under mu. Every use wipes
+	// its bytes; this is never a saved digest, file witness or content cache.
+	confirmScratch []byte
 }
 type Lock struct {
 	fd   int
@@ -275,7 +278,10 @@ func (s *Store) confirmDurableBounded(name string, expected FileIdentity, limit 
 	if !s.valid() || !safeName(name) || !validFileLimit(limit) {
 		return ErrUnsafe
 	}
-	_, id, err := readAtBounded(s.fd, name, limit, Private, limit)
+	if s.confirmScratch == nil {
+		s.confirmScratch = make([]byte, 32*1024)
+	}
+	id, err := readIdentityAtBounded(s.fd, name, limit, s.confirmScratch)
 	if err != nil {
 		return err
 	}
@@ -295,13 +301,13 @@ func (s *Store) confirmDurableBounded(name string, expected FileIdentity, limit 
 	if stat.Size < 0 || stat.Size > limit {
 		return ErrChanged
 	}
-	body, err := io.ReadAll(io.LimitReader(file, limit+1))
+	digest, err := digestBounded(file, limit, s.confirmScratch)
 	var after unix.Stat_t
-	if err != nil || int64(len(body)) > limit || unix.Fstat(fd, &after) != nil {
+	if err != nil || unix.Fstat(fd, &after) != nil {
 		return ErrUnsafe
 	}
 	stat.Atim = after.Atim
-	if stat != after || sha256.Sum256(body) != expected.digest {
+	if stat != after || digest != expected.digest {
 		return ErrChanged
 	}
 	if s.syncFile(file) != nil || s.syncDir(s.fd) != nil {
@@ -310,7 +316,7 @@ func (s *Store) confirmDurableBounded(name string, expected FileIdentity, limit 
 	if !s.valid() {
 		return ErrUnsafe
 	}
-	_, id, err = readAtBounded(s.fd, name, limit, Private, limit)
+	id, err = readIdentityAtBounded(s.fd, name, limit, s.confirmScratch)
 	if err != nil {
 		return err
 	}

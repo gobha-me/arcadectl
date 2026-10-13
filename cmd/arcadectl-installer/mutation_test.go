@@ -207,6 +207,11 @@ func TestMutationBootstrapResumeUsesRegisteredPlanAndRejectsFreshClientBeforeHTT
 	if s, err := x.start(context.Background(), o); err == nil || s != nil || reads.Load() == 0 || writes.Load() != 0 {
 		t.Fatal("unpinned original resume skipped registered-plan preflight or created namespace")
 	}
+	var output, diagnostics bytes.Buffer
+	var emptyCosts *installengine.LifecycleCosts
+	if code := runMutation(t.Context(), o, &output, &diagnostics); code != 4 || output.Len() != 0 || writes.Load() != 0 || strings.Count(diagnostics.String(), "installation diagnostic command-cost ") != 1 || !strings.Contains(diagnostics.String(), "installation diagnostic command-cost "+emptyCosts.Snapshot()+"\n") || strings.Contains(diagnostics.String(), "PRIVATE-CANARY") {
+		t.Fatal("actual CLI start refusal lost bounded command aggregate or altered effect boundary")
+	}
 }
 
 func TestMutationArgumentsClosedCommandsAndNoRetargeting(t *testing.T) {

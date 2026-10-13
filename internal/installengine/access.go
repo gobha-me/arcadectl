@@ -475,10 +475,12 @@ func (a *HTTPAccess) requestAt(ctx context.Context, method string, key installst
 		return nil, ErrRead
 	}
 	raw, err := io.ReadAll(io.LimitReader(response.Body, 1024*1024+1))
-	if err != nil || len(raw) == 0 || len(raw) > 1024*1024 || !boundedJSON(raw) {
+	if err != nil || len(raw) == 0 || len(raw) > 1024*1024 || !boundedJSONLimits(raw) {
 		return nil, ErrRead
 	}
 	result := &unstructured.Unstructured{}
+	// Unconditional strict single-value grammar/duplicate validation follows
+	// the limits scan. Do not run a redundant complete json.Valid pass here.
 	strictErrors, err := strictjson.UnmarshalStrict(raw, &result.Object)
 	if err != nil || len(strictErrors) != 0 {
 		return nil, ErrRead
@@ -490,6 +492,13 @@ func (a *HTTPAccess) requestAt(ctx context.Context, method string, key installst
 }
 
 func boundedJSON(raw []byte) bool {
+	return boundedJSONLimits(raw) && json.Valid(raw)
+}
+
+// Limits only, NOT JSON acceptance. Use only immediately before unconditional
+// strict single-value decoding. Other callers retain boundedJSON's grammar
+// contract; invalid inputs can never become objects based on this scan alone.
+func boundedJSONLimits(raw []byte) bool {
 	depth, nodes := 0, 0
 	// Count the same tokens as Decoder.Token without materializing strings or
 	// numbers. Reject limits BEFORE standard grammar validation, so an invalid
@@ -526,7 +535,7 @@ func boundedJSON(raw []byte) bool {
 			return false
 		}
 	}
-	return depth == 0 && json.Valid(raw)
+	return depth == 0
 }
 
 func jsonTokenBoundary(b byte) bool {

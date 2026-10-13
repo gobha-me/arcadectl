@@ -62,6 +62,9 @@ func TestCRDCurrentStorageAndConditionsBeforeAnyUpgradeEffects(t *testing.T) {
 		func(o *crdv1.CustomResourceDefinition) { o.Spec.Conversion.Strategy = crdv1.WebhookConverter },
 	} {
 		live := liveObject(t, template)
+		if template.CheckCRD(live, "original-uid", template) != nil || template.CheckCRD(live, "original-uid", template) != nil {
+			t.Fatal("healthy warm original CRD refused before drift")
+		}
 		var object crdv1.CustomResourceDefinition
 		if runtime.DefaultUnstructuredConverter.FromUnstructured(live.Object, &object) != nil {
 			t.Fatal("decode")
