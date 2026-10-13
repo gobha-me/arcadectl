@@ -303,7 +303,7 @@ func TestBaselinePrerequisiteMutationBoundarySingleSendAndRecovery(t *testing.T)
 }
 
 func TestBaselinePrerequisiteReceiptLifetimeAndRecovery(t *testing.T) {
-	for _, scenario := range []string{"pending-receipt-first-collection", "pending-receipt-second-collection", "pending-receipt-policy", "pending-receipt-current-final", "pending-receipt-recovery-get", "pending-receipt-recovery-final", "pending-recovery", "pending-empty-absent", "pending-missing-absent"} {
+	for _, scenario := range []string{"pending-receipt-first-collection", "pending-receipt-second-collection", "pending-receipt-policy", "pending-receipt-current-final", "pending-receipt-recovery-get", "pending-receipt-recovery-final", "pending-recovery", "pending-recovery-cluster-status-drift", "pending-empty-absent", "pending-missing-absent"} {
 		t.Run(scenario, func(t *testing.T) { testBaselinePrerequisiteCompleteDiscovery(t, scenario) })
 	}
 }
@@ -746,9 +746,16 @@ func testBaselinePrerequisiteCompleteDiscovery(t *testing.T, scenario string) {
 			}
 			if targetPath, _ := resourcePath(key, false); r.URL.Path == targetPath && lists >= 2*len(sources) {
 				switch scenario {
-				case "pending-cluster-drift":
+				case "pending-cluster-drift", "pending-recovery-cluster-status-drift":
 					object = object.DeepCopy()
 					object.SetResourceVersion("999")
+					if scenario == "pending-recovery-cluster-status-drift" {
+						object.Object["status"] = map[string]any{"conditions": []any{map[string]any{"type": "Established", "status": "True"}}}
+						template, templateErr := f.engine.contracts[f.plan.Digest()].Template(key, false)
+						if templateErr != nil || template.MatchLive(object, "full-pending-original") != nil || !effectMatches(template, f.snapshot.Document().Pending, object) {
+							t.Error("status-only original CRD drift changed signed shape or ACK identity")
+						}
+					}
 				case "pending-cluster-replaced":
 					object = object.DeepCopy()
 					object.SetUID("replacement")
@@ -992,7 +999,7 @@ func testBaselinePrerequisiteCompleteDiscovery(t *testing.T, scenario string) {
 		}
 		return
 	}
-	if strings.HasPrefix(scenario, "pending-receipt-recovery-") || scenario == "pending-recovery" || scenario == "pending-receipt-current-final" {
+	if strings.HasPrefix(scenario, "pending-receipt-recovery-") || scenario == "pending-recovery" || scenario == "pending-recovery-cluster-status-drift" || scenario == "pending-receipt-current-final" {
 		if _, err := NewClusterLifecycle(engine, access); err != nil {
 			t.Fatal("closed prerequisite recovery composition refused")
 		}
@@ -1003,7 +1010,11 @@ func testBaselinePrerequisiteCompleteDiscovery(t *testing.T, scenario string) {
 				t.Fatal("final currentEffect receipt replacement supplied proof authority")
 			}
 		} else {
-			result, err = engine.Recover(t.Context(), snapshot)
+			ctx, diagnostic := WithLifecycleDiagnostic(t.Context())
+			result, err = engine.Recover(ctx, snapshot)
+			if scenario == "pending-recovery-cluster-status-drift" && (diagnostic.BoundarySnapshot() != "operation=recovery-opening baseline=prerequisite-originals-closing" || diagnostic.FailureSnapshot() != "check=prerequisite-originals-change family=CustomResourceDefinition changes=resource-version") {
+				t.Fatal("actual original CRD bookkeeping refusal lost bounded attribution", diagnostic.BoundarySnapshot(), diagnostic.FailureSnapshot())
+			}
 			if scenario == "pending-recovery" {
 				if err != nil || result == nil || result.Document().Pending != nil || result.Document().Revision != snapshot.Document().Revision+1 || journalWrites != 1 {
 					t.Fatal("genuine protected pending ACK could not settle without replay")
@@ -1016,7 +1027,7 @@ func testBaselinePrerequisiteCompleteDiscovery(t *testing.T, scenario string) {
 				t.Fatal("late receipt replacement settled or changed an unproved pending intent")
 			}
 		}
-		if scenario != "pending-recovery" && !receiptReplaced || previews != 0 || creates != 0 || testBaselineReceiptDescriptors(t, "create-"+snapshot.Document().Pending.CreateNonce+".json") != 0 {
+		if scenario != "pending-recovery" && scenario != "pending-recovery-cluster-status-drift" && !receiptReplaced || previews != 0 || creates != 0 || testBaselineReceiptDescriptors(t, "create-"+snapshot.Document().Pending.CreateNonce+".json") != 0 {
 			t.Fatal("recovery missed its intended receipt fault, replayed an effect or leaked its owner")
 		}
 		return

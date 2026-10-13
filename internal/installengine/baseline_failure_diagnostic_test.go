@@ -12,6 +12,7 @@ import (
 )
 
 func TestBaselineFailureDiagnosticClosedDifferencesAndReset(t *testing.T) {
+	t.Run("prerequisite-witness", testPrerequisiteWitnessDiagnostic)
 	original := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "apps/v1", "kind": "Deployment",
 		"metadata": map[string]any{"namespace": "PRIVATE-CANARY", "name": "PRIVATE-CANARY", "uid": "PRIVATE-CANARY", "resourceVersion": "1"},
@@ -93,5 +94,50 @@ func TestBaselineFailureDiagnosticClosedDifferencesAndReset(t *testing.T) {
 	diagnostic.baselineFailure.Store(^uint32(0))
 	if got := diagnostic.FailureSnapshot(); !strings.HasPrefix(got, "check=unknown family=unknown changes=") || strings.Contains(got, "PRIVATE") {
 		t.Fatal("invalid packed value escaped the closed label set")
+	}
+}
+
+func testPrerequisiteWitnessDiagnostic(t *testing.T) {
+	key := installstate.Key{APIVersion: "apiextensions.k8s.io/v1", Kind: "CustomResourceDefinition", Name: "PRIVATE-CANARY"}
+	original := admissionIdentity{UID: "PRIVATE-CANARY", ResourceVersion: "1", TemplateSHA256: "PRIVATE-CANARY"}
+	for _, row := range []struct {
+		name string
+		edit func(map[installstate.Key]admissionIdentity)
+		want string
+	}{
+		{"rv", func(m map[installstate.Key]admissionIdentity) {
+			v := m[key]
+			v.ResourceVersion = "PRIVATE-OTHER"
+			m[key] = v
+		}, "resource-version"},
+		{"uid", func(m map[installstate.Key]admissionIdentity) { v := m[key]; v.UID = "PRIVATE-OTHER"; m[key] = v }, "identity"},
+		{"hash", func(m map[installstate.Key]admissionIdentity) {
+			v := m[key]
+			v.TemplateSHA256 = "PRIVATE-OTHER"
+			m[key] = v
+		}, "other"},
+		{"missing", func(m map[installstate.Key]admissionIdentity) { delete(m, key) }, "membership"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			before := map[installstate.Key]admissionIdentity{key: original}
+			after := map[installstate.Key]admissionIdentity{key: original}
+			row.edit(after)
+			ctx, diagnostic := WithLifecycleDiagnostic(t.Context())
+			tracePrerequisiteWitnessDifference(ctx, baselineFailurePrerequisiteOriginals, before, after)
+			if got := diagnostic.FailureSnapshot(); got != "check=prerequisite-originals-change family=CustomResourceDefinition changes="+row.want || strings.Contains(got, "PRIVATE") || before[key] != original {
+				t.Fatal("prerequisite witness diagnostic mutated or exposed original values", got)
+			}
+			traceOperationBoundary(ctx, boundaryRecoveryOpening)
+			if diagnostic.FailureSnapshot() != "" {
+				t.Fatal("next recovery retained prior prerequisite refusal")
+			}
+		})
+	}
+	ctx, diagnostic := WithLifecycleDiagnostic(t.Context())
+	unknown := key
+	unknown.Kind = "PRIVATE-CANARY"
+	tracePrerequisiteWitnessDifference(ctx, baselineFailurePrerequisiteOriginals, nil, map[installstate.Key]admissionIdentity{unknown: original})
+	if diagnostic.FailureSnapshot() != "check=prerequisite-originals-change family=unknown changes=unknown" {
+		t.Fatal("unknown prerequisite kind escaped its closed catalog")
 	}
 }

@@ -20,6 +20,9 @@ const (
 	baselineFailureDenialBefore
 	baselineFailureDenialProbe
 	baselineFailureDenialAfter
+	baselineFailurePrerequisiteOriginals
+	baselineFailurePrerequisiteCatalog
+	baselineFailurePrerequisitePolicies
 )
 
 func (c baselineFailureCheck) label() string {
@@ -32,6 +35,12 @@ func (c baselineFailureCheck) label() string {
 		return "denial-probe"
 	case baselineFailureDenialAfter:
 		return "denial-read-after"
+	case baselineFailurePrerequisiteOriginals:
+		return "prerequisite-originals-change"
+	case baselineFailurePrerequisiteCatalog:
+		return "prerequisite-catalog-change"
+	case baselineFailurePrerequisitePolicies:
+		return "prerequisite-policies-change"
 	}
 	return "unknown"
 }
@@ -90,7 +99,46 @@ func baselineObjectDifference(before, after *unstructured.Unstructured) baseline
 }
 
 // Native families are closed labels. Unknown kinds cannot become output text.
-var baselineDiagnosticFamilies = [...]string{"Pod", "Job", "Deployment", "ReplicaSet", "StatefulSet", "DaemonSet", "ReplicationController", "CronJob", "ServiceAccount", "Secret", "Service"}
+var baselineDiagnosticFamilies = [...]string{"Pod", "Job", "Deployment", "ReplicaSet", "StatefulSet", "DaemonSet", "ReplicationController", "CronJob", "ServiceAccount", "Secret", "Service", "CustomResourceDefinition", "ClusterRole", "ClusterRoleBinding", "Role", "RoleBinding", "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding", "ConfigMap"}
+
+// Called only AFTER an existing complete witness equality refuses. Aggregate
+// changed fields in the first fixed family, never an arbitrary map key. These
+// maps contain identities/template hashes, not whole status/spec objects: an RV
+// difference does not identify its cause. No identity or hash is retained.
+func tracePrerequisiteWitnessDifference(ctx context.Context, check baselineFailureCheck, before, after map[installstate.Key]admissionIdentity) {
+	for _, family := range baselineDiagnosticFamilies {
+		var fields baselineDifference
+		for key, original := range before {
+			if key.Kind != family {
+				continue
+			}
+			observed, present := after[key]
+			if !present {
+				fields |= baselineDifferenceMembership
+				continue
+			}
+			if original.UID != observed.UID {
+				fields |= baselineDifferenceIdentity
+			}
+			if original.ResourceVersion != observed.ResourceVersion {
+				fields |= baselineDifferenceRV
+			}
+			if original.TemplateSHA256 != observed.TemplateSHA256 {
+				fields |= baselineDifferenceOther
+			}
+		}
+		for key := range after {
+			if _, present := before[key]; key.Kind == family && !present {
+				fields |= baselineDifferenceMembership
+			}
+		}
+		if fields != 0 {
+			traceBaselineFailure(ctx, check, family, fields)
+			return
+		}
+	}
+	traceBaselineFailure(ctx, check, "", 0)
+}
 
 func traceBaselineFailure(ctx context.Context, check baselineFailureCheck, kind string, fields baselineDifference) {
 	storeBaselineFailure(ctx, check, kind, fields, 0)

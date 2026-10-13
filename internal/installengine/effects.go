@@ -463,6 +463,7 @@ func (e *Engine) recoverPreparedWithOperation(ctx context.Context, s *installsta
 		if ctx == nil || ctx.Err() != nil {
 			return s, ErrOutcomeUnknown
 		}
+		traceBaselineBoundary(ctx, baselineBoundaryPrerequisiteReceiptOpening)
 		receipt, err = e.openPrerequisiteReceipt(s, operation)
 		if err != nil {
 			return s, ErrOutcomeUnknown

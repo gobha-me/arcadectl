@@ -164,6 +164,7 @@ func (e *Engine) currentEffect(ctx context.Context, s *installstate.Snapshot, op
 // Recovery supplies its outer owner so the same receipt remains held through
 // proof, target observation, the final journal fence and settlement CAS.
 func (e *Engine) currentPrerequisiteEffect(ctx context.Context, s *installstate.Snapshot, operation *baselinePrerequisite, receipt *prerequisiteReceiptWitness) (*installstate.Snapshot, error) {
+	traceBaselineBoundary(ctx, baselineBoundaryPrerequisiteContext)
 	if e == nil || e.baseline == nil || e.baseline.prerequisites == nil {
 		return nil, ErrSecurityBaseline
 	}
@@ -180,6 +181,7 @@ func (e *Engine) currentPrerequisiteEffect(ctx context.Context, s *installstate.
 		return nil, ErrSecurityBaseline
 	}
 	lifecycle := &Lifecycle{engine: e}
+	traceBaselineBoundary(ctx, baselineBoundaryPrerequisiteJournalOpening)
 	fresh, err := lifecycle.original(ctx, s)
 	if err != nil {
 		return nil, err
@@ -190,10 +192,16 @@ func (e *Engine) currentPrerequisiteEffect(ctx context.Context, s *installstate.
 	if operation.secrets != nil && operation.secrets.verify(ctx, fresh) != nil {
 		return nil, ErrSecurityBaseline
 	}
+	traceBaselineBoundary(ctx, baselineBoundaryPrerequisiteJournalClosing)
 	closed, err := lifecycle.original(ctx, fresh)
-	if err != nil || e.confirmPrerequisiteReceipt(closed, operation, receipt) != nil || ctx.Err() != nil {
+	if err != nil {
 		return nil, ErrSecurityBaseline
 	}
+	traceBaselineBoundary(ctx, baselineBoundaryPrerequisiteReceiptClosing)
+	if e.confirmPrerequisiteReceipt(closed, operation, receipt) != nil || ctx.Err() != nil {
+		return nil, ErrSecurityBaseline
+	}
+	traceBaselineBoundary(ctx, baselineBoundaryPrerequisiteComplete)
 	return closed, nil
 }
 
@@ -235,22 +243,43 @@ func (c *ClusterSecurityBaseline) verifyPrerequisiteReceipt(ctx context.Context,
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
+	traceBaselineBoundary(ctx, baselineBoundaryPrerequisitePoliciesOpening)
 	before, err := c.configured(ctx, s)
 	if err != nil {
 		return ErrSecurityBaseline
 	}
 	var previous map[installstate.Key]admissionIdentity
 	for pass := 0; pass < 2; pass++ {
+		if pass == 0 {
+			traceBaselineBoundary(ctx, baselineBoundaryPrerequisiteNamespaceFirst)
+		} else {
+			traceBaselineBoundary(ctx, baselineBoundaryPrerequisiteNamespaceSecond)
+		}
 		observed, err := c.prerequisiteEmptyNamespaceReceipt(ctx, s, operation, receipt)
-		if err != nil || pass != 0 && !reflect.DeepEqual(previous, observed) {
+		if err != nil {
+			return ErrSecurityBaseline
+		}
+		traceBaselineBoundary(ctx, baselineBoundaryPrerequisiteCatalogStable)
+		if pass != 0 && !reflect.DeepEqual(previous, observed) {
+			tracePrerequisiteWitnessDifference(ctx, baselineFailurePrerequisiteCatalog, previous, observed)
 			return ErrSecurityBaseline
 		}
 		previous = observed
 	}
+	traceBaselineBoundary(ctx, baselineBoundaryPrerequisitePoliciesClosing)
 	after, err := c.configured(ctx, s)
-	if err != nil || !reflect.DeepEqual(before, after) || c.engine.confirmPrerequisiteReceipt(s, operation, receipt) != nil || ctx.Err() != nil {
+	if err != nil {
 		return ErrSecurityBaseline
 	}
+	if !reflect.DeepEqual(before, after) {
+		tracePrerequisiteWitnessDifference(ctx, baselineFailurePrerequisitePolicies, before, after)
+		return ErrSecurityBaseline
+	}
+	traceBaselineBoundary(ctx, baselineBoundaryPrerequisiteReceiptClosing)
+	if c.engine.confirmPrerequisiteReceipt(s, operation, receipt) != nil || ctx.Err() != nil {
+		return ErrSecurityBaseline
+	}
+	traceBaselineBoundary(ctx, baselineBoundaryPrerequisiteComplete)
 	return nil
 }
 
@@ -274,15 +303,18 @@ func (c *ClusterSecurityBaseline) prerequisiteEmptyNamespaceReceipt(ctx context.
 		return c.prerequisiteRetainedNamespaceReceipt(ctx, s, operation, receipt)
 	}
 	lifecycle := &Lifecycle{engine: c.engine}
+	traceBaselineBoundary(ctx, baselineBoundaryPrerequisiteJournalOpening)
 	if _, err := lifecycle.original(ctx, s); err != nil {
 		return nil, ErrSecurityBaseline
 	}
 	d := s.Document()
+	traceBaselineBoundary(ctx, baselineBoundaryPrerequisiteOriginalsOpening)
 	originals, err := c.prerequisiteOriginalsReceipt(ctx, s, operation, receipt)
 	if err != nil {
 		return nil, ErrSecurityBaseline
 	}
 	witness := maps.Clone(originals)
+	traceBaselineBoundary(ctx, baselineBoundaryPrerequisiteDiscovery)
 	reader, err := installobserve.NewGCReader(c.access.readConfig(), c.engine.journal, c.engine.plans[d.TargetPackage])
 	if err != nil {
 		return nil, ErrSecurityBaseline
@@ -291,18 +323,22 @@ func (c *ClusterSecurityBaseline) prerequisiteEmptyNamespaceReceipt(ctx context.
 	if err != nil || !discovery.CoversNamespaceLists() || !baselinePrerequisiteSources(discovery.Resources()) {
 		return nil, ErrSecurityBaseline
 	}
+	traceBaselineBoundary(ctx, baselineBoundaryPrerequisiteReviews)
 	for _, source := range discovery.Resources() {
 		if c.access.authorize(ctx, gcMetadataPermission(source, d.Namespace).spec) != nil {
 			return nil, ErrSecurityBaseline
 		}
 	}
+	traceBaselineBoundary(ctx, baselineBoundaryPrerequisiteJournalOpening)
 	if _, err := lifecycle.original(ctx, s); err != nil {
 		return nil, ErrSecurityBaseline
 	}
+	traceBaselineBoundary(ctx, baselineBoundaryPrerequisiteCollection)
 	observation, err := reader.Collect(ctx, discovery)
 	if err != nil || observation == nil || observation.Journal() == nil {
 		return nil, ErrSecurityBaseline
 	}
+	traceBaselineBoundary(ctx, baselineBoundaryPrerequisiteCorrelation)
 	journal := observation.Journal()
 	if journal.Anchor() != s.Anchor() || journal.ResourceVersion() != s.ResourceVersion() || !bytes.Equal(journal.Bytes(), s.Bytes()) {
 		return nil, ErrSecurityBaseline
@@ -335,10 +371,16 @@ func (c *ClusterSecurityBaseline) prerequisiteEmptyNamespaceReceipt(ctx context.
 			return nil, ErrSecurityBaseline
 		}
 	}
+	traceBaselineBoundary(ctx, baselineBoundaryPrerequisiteOriginalsClosing)
 	closing, err := c.prerequisiteOriginalsReceipt(ctx, s, operation, receipt)
-	if err != nil || !reflect.DeepEqual(originals, closing) {
+	if err != nil {
 		return nil, ErrSecurityBaseline
 	}
+	if !reflect.DeepEqual(originals, closing) {
+		tracePrerequisiteWitnessDifference(ctx, baselineFailurePrerequisiteOriginals, originals, closing)
+		return nil, ErrSecurityBaseline
+	}
+	traceBaselineBoundary(ctx, baselineBoundaryPrerequisiteJournalClosing)
 	if _, err := lifecycle.original(ctx, s); err != nil || c.engine.confirmPrerequisiteReceipt(s, operation, receipt) != nil || ctx.Err() != nil {
 		return nil, ErrSecurityBaseline
 	}

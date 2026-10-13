@@ -150,6 +150,23 @@ const (
 	baselineBoundaryRetiredPoliciesClosing
 	baselineBoundaryRetiredCoreClosing
 	baselineBoundaryRetiredPinClosing
+	baselineBoundaryPrerequisiteReceiptOpening
+	baselineBoundaryPrerequisiteContext
+	baselineBoundaryPrerequisiteJournalOpening
+	baselineBoundaryPrerequisitePoliciesOpening
+	baselineBoundaryPrerequisiteNamespaceFirst
+	baselineBoundaryPrerequisiteNamespaceSecond
+	baselineBoundaryPrerequisiteOriginalsOpening
+	baselineBoundaryPrerequisiteDiscovery
+	baselineBoundaryPrerequisiteReviews
+	baselineBoundaryPrerequisiteCollection
+	baselineBoundaryPrerequisiteCorrelation
+	baselineBoundaryPrerequisiteOriginalsClosing
+	baselineBoundaryPrerequisiteCatalogStable
+	baselineBoundaryPrerequisitePoliciesClosing
+	baselineBoundaryPrerequisiteJournalClosing
+	baselineBoundaryPrerequisiteReceiptClosing
+	baselineBoundaryPrerequisiteComplete
 )
 
 func (b baselineBoundary) label() string {
@@ -254,6 +271,40 @@ func (b baselineBoundary) label() string {
 		return "retired-core-closing"
 	case baselineBoundaryRetiredPinClosing:
 		return "retired-pin-closing"
+	case baselineBoundaryPrerequisiteReceiptOpening:
+		return "prerequisite-receipt-opening"
+	case baselineBoundaryPrerequisiteContext:
+		return "prerequisite-context"
+	case baselineBoundaryPrerequisiteJournalOpening:
+		return "prerequisite-journal-opening"
+	case baselineBoundaryPrerequisitePoliciesOpening:
+		return "prerequisite-policies-opening"
+	case baselineBoundaryPrerequisiteNamespaceFirst:
+		return "prerequisite-namespace-first"
+	case baselineBoundaryPrerequisiteNamespaceSecond:
+		return "prerequisite-namespace-second"
+	case baselineBoundaryPrerequisiteOriginalsOpening:
+		return "prerequisite-originals-opening"
+	case baselineBoundaryPrerequisiteDiscovery:
+		return "prerequisite-discovery"
+	case baselineBoundaryPrerequisiteReviews:
+		return "prerequisite-reviews"
+	case baselineBoundaryPrerequisiteCollection:
+		return "prerequisite-collection"
+	case baselineBoundaryPrerequisiteCorrelation:
+		return "prerequisite-correlation"
+	case baselineBoundaryPrerequisiteOriginalsClosing:
+		return "prerequisite-originals-closing"
+	case baselineBoundaryPrerequisiteCatalogStable:
+		return "prerequisite-catalog-stable"
+	case baselineBoundaryPrerequisitePoliciesClosing:
+		return "prerequisite-policies-closing"
+	case baselineBoundaryPrerequisiteJournalClosing:
+		return "prerequisite-journal-closing"
+	case baselineBoundaryPrerequisiteReceiptClosing:
+		return "prerequisite-receipt-closing"
+	case baselineBoundaryPrerequisiteComplete:
+		return "prerequisite-complete"
 	}
 	return "unknown"
 }
