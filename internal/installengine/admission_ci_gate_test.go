@@ -137,8 +137,28 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 		t.Fatal("genuine pre-controller profile or required dependency omitted")
 	}
 	binary := workflow.Jobs["kind-install-binary"]
-	if binary.If != "" || !slices.Equal(binary.Needs, []string{"kind-install-gc", "kind-install-admission", "kind-install-admission-v3"}) {
+	if binary.If != "" || !slices.Equal(binary.Needs, []string{"kind-install-gc", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-install-baseline", "kind-install-precontroller"}) {
 		t.Fatal("long signed lifecycle proofs bypass native foundations or override fail-closed scheduling")
+	}
+	for _, required := range []struct {
+		name    string
+		command string
+		minutes int
+	}{
+		{"kind-install-auth", "make test-kind-install-auth", 50},
+		{"kind-api", "make test-kind-api", 40},
+		{"kind-recovery", "make test-kind-recovery", 100},
+	} {
+		job := workflow.Jobs[required.name]
+		runs := 0
+		for _, step := range job.Steps {
+			if step.Run == required.command {
+				runs++
+			}
+		}
+		if job.If != "" || job.TimeoutMinutes != required.minutes || runs != 1 || !slices.Contains(gate.Needs, required.name) {
+			t.Fatalf("native proof %s or its fail-closed required dependency omitted", required.name)
+		}
 	}
 	// Every prerequisite must exist and the full workflow must remain a DAG.
 	// In particular, binary may never depend on its own required aggregate.
@@ -189,7 +209,7 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	}
 	var command string
 	for _, step := range gate.Steps {
-		if step.Env["ENGINE_RACE_RESULT"] == "${{ needs.install-engine-race.result }}" && step.Env["INSTALL_ADMISSION_RESULT"] == "${{ needs.kind-install-admission.result }}" && step.Env["INSTALL_BINARY_RESULT"] == "${{ needs.kind-install-binary.result }}" && step.Env["INSTALL_BASELINE_RESULT"] == "${{ needs.kind-install-baseline.result }}" && step.Env["INSTALL_ADMISSION_V3_RESULT"] == "${{ needs.kind-install-admission-v3.result }}" && step.Env["INSTALL_PRECONTROLLER_RESULT"] == "${{ needs.kind-install-precontroller.result }}" && step.Env["INSTALL_GC_RESULT"] == "${{ needs.kind-install-gc.result }}" {
+		if step.Env["ENGINE_RACE_RESULT"] == "${{ needs.install-engine-race.result }}" && step.Env["INSTALL_ADMISSION_RESULT"] == "${{ needs.kind-install-admission.result }}" && step.Env["INSTALL_BINARY_RESULT"] == "${{ needs.kind-install-binary.result }}" && step.Env["INSTALL_BASELINE_RESULT"] == "${{ needs.kind-install-baseline.result }}" && step.Env["INSTALL_ADMISSION_V3_RESULT"] == "${{ needs.kind-install-admission-v3.result }}" && step.Env["INSTALL_PRECONTROLLER_RESULT"] == "${{ needs.kind-install-precontroller.result }}" && step.Env["INSTALL_GC_RESULT"] == "${{ needs.kind-install-gc.result }}" && step.Env["INSTALL_AUTH_RESULT"] == "${{ needs.kind-install-auth.result }}" && step.Env["API_RESULT"] == "${{ needs.kind-api.result }}" && step.Env["RECOVERY_RESULT"] == "${{ needs.kind-recovery.result }}" {
 			if command != "" {
 				t.Fatal("ambiguous required dependency gate")
 			}
@@ -206,7 +226,7 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 					for _, v3 := range []string{"success", "failure", "cancelled", "skipped", ""} {
 						for _, precontroller := range []string{"success", "failure", "cancelled", "skipped", ""} {
 							c := exec.Command("sh", "-e", "-c", command)
-							c.Env = append(os.Environ(), "ENGINE_RACE_RESULT="+races, "INSTALL_ADMISSION_RESULT="+native, "INSTALL_BINARY_RESULT="+binary, "INSTALL_BASELINE_RESULT="+baseline, "INSTALL_ADMISSION_V3_RESULT="+v3, "INSTALL_PRECONTROLLER_RESULT="+precontroller, "INSTALL_GC_RESULT=success")
+							c.Env = append(os.Environ(), "ENGINE_RACE_RESULT="+races, "INSTALL_ADMISSION_RESULT="+native, "INSTALL_BINARY_RESULT="+binary, "INSTALL_BASELINE_RESULT="+baseline, "INSTALL_ADMISSION_V3_RESULT="+v3, "INSTALL_PRECONTROLLER_RESULT="+precontroller, "INSTALL_GC_RESULT=success", "INSTALL_AUTH_RESULT=success", "API_RESULT=success", "RECOVERY_RESULT=success")
 							passed := c.Run() == nil
 							if passed != (races == "success" && native == "success" && binary == "success" && baseline == "success" && v3 == "success" && precontroller == "success") {
 								t.Fatal("failed/cancelled/skipped/absent dependency became a green required gate")
@@ -221,9 +241,28 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	// Separately exercise every GC outcome while all earlier proofs succeeded.
 	for _, result := range []string{"success", "failure", "cancelled", "skipped", ""} {
 		c := exec.Command("sh", "-e", "-c", command)
-		c.Env = append(os.Environ(), "ENGINE_RACE_RESULT=success", "INSTALL_ADMISSION_RESULT=success", "INSTALL_BINARY_RESULT=success", "INSTALL_BASELINE_RESULT=success", "INSTALL_ADMISSION_V3_RESULT=success", "INSTALL_PRECONTROLLER_RESULT=success", "INSTALL_GC_RESULT="+result)
+		c.Env = append(os.Environ(), "ENGINE_RACE_RESULT=success", "INSTALL_ADMISSION_RESULT=success", "INSTALL_BINARY_RESULT=success", "INSTALL_BASELINE_RESULT=success", "INSTALL_ADMISSION_V3_RESULT=success", "INSTALL_PRECONTROLLER_RESULT=success", "INSTALL_GC_RESULT="+result, "INSTALL_AUTH_RESULT=success", "API_RESULT=success", "RECOVERY_RESULT=success")
 		if passed := c.Run() == nil; passed != (result == "success") {
 			t.Fatal("failed/cancelled/skipped/absent GC proof became a green required gate")
+		}
+	}
+	// Independently exercise every added prerequisite outcome while the others
+	// succeed, preserving all original combinations without multiplying them.
+	added := []string{"INSTALL_AUTH_RESULT", "API_RESULT", "RECOVERY_RESULT"}
+	for _, variable := range added {
+		for _, result := range []string{"success", "failure", "cancelled", "skipped", ""} {
+			c := exec.Command("sh", "-e", "-c", command)
+			c.Env = append(os.Environ(), "ENGINE_RACE_RESULT=success", "INSTALL_ADMISSION_RESULT=success", "INSTALL_BINARY_RESULT=success", "INSTALL_BASELINE_RESULT=success", "INSTALL_ADMISSION_V3_RESULT=success", "INSTALL_PRECONTROLLER_RESULT=success", "INSTALL_GC_RESULT=success")
+			for _, other := range added {
+				value := "success"
+				if other == variable {
+					value = result
+				}
+				c.Env = append(c.Env, other+"="+value)
+			}
+			if passed := c.Run() == nil; passed != (result == "success") {
+				t.Fatalf("failed/cancelled/skipped/absent %s proof became a green required gate", variable)
+			}
 		}
 	}
 }
