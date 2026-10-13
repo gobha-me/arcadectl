@@ -165,6 +165,19 @@ Namespace/journal close. No access witness is cached or removed, including the
 final access observation after closing configuration. These bounded read-only
 schedules do not relax historical caller eligibility or runtime deadlines.
 
+Named public GET replies may reuse only the strict JSON conversion of identical
+complete response bytes. Every request still reaches the cluster, and status,
+content type, complete body read, size/depth/node limits and original envelope
+checks precede acceptance. Changed response bytes, including object status,
+ownership or unknown members, cause a miss even if UID/RV match; all later
+typed-schema, identity, authorization and
+health checks still run. Each access constructor owns a separate memo with at
+most 64 entries and 1 MiB retained raw bytes; otherwise-valid replies larger
+than 64 KiB remain uncached. Private Secrets, actor/probe routes, LISTs, queries and
+mutations are excluded. Raw bytes and graphs are privately copied, and readers
+receive defensive copies. These are raw-byte/entry limits, not total heap/RSS
+guarantees, and local allocation improvements do not certify lifecycle timing.
+
 The separate reserved-metadata witness reads all sixteen fixed addresses: the
 four reserved names across ServiceAccounts, Roles, RoleBindings and Services.
 Only the API Service has a sealed signed template; the other three Service

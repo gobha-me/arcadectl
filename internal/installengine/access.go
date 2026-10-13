@@ -25,7 +25,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/flowcontrol"
-	strictjson "sigs.k8s.io/json"
 )
 
 // Access is a trusted test/instrumentation seam, not caller-supplied evidence.
@@ -68,6 +67,9 @@ type HTTPAccess struct {
 	// actor is set only by the closed admission factory. Its wire guard rejects
 	// ordinary Access methods; only bound dry-run probes and actor SSARs pass.
 	actor *actorWireIdentity
+	// Pure decoding of complete fresh named public GET replies only. Never a
+	// cached observation, permission, identity, health or mutation result.
+	publicReplies *publicReplyMemo
 }
 
 type attemptKey struct{}
@@ -235,7 +237,7 @@ func newHTTPAccessWithPool(config *rest.Config, direct bool, inherited http.Roun
 		return nil, ErrInvalid
 	}
 	h.CheckRedirect = func(*http.Request, []*http.Request) error { return ErrRead }
-	a := &HTTPAccess{client: h, base: u, native: native, frozen: frozen, direct: direct, pool: pool}
+	a := &HTTPAccess{client: h, base: u, native: native, frozen: frozen, direct: direct, pool: pool, publicReplies: &publicReplyMemo{}}
 	if frozen.RateLimiter == nil && frozen.QPS == 0 && frozen.Burst == 0 {
 		a.readLimiter = flowcontrol.NewTokenBucketRateLimiter(installerReadQPS, installerReadBurst)
 	}
@@ -400,6 +402,17 @@ func (a *HTTPAccess) requestAt(ctx context.Context, method string, key installst
 	if a == nil || a.client == nil || a.base == nil || ctx == nil {
 		return nil, ErrInvalid
 	}
+	publicPath, publicErr := resourcePath(key, false)
+	memo := a.publicReplies
+	if method != http.MethodGet || body != nil || dry || len(extra) != 0 || a.actor != nil || key.Kind == "Secret" || publicErr != nil || publicPath != path {
+		memo = nil
+	}
+	accepted := false
+	defer func() {
+		if !accepted && memo != nil {
+			memo.clear(key)
+		}
+	}()
 	var err error
 	var encoded []byte
 	if body != nil {
@@ -478,16 +491,17 @@ func (a *HTTPAccess) requestAt(ctx context.Context, method string, key installst
 	if err != nil || len(raw) == 0 || len(raw) > 1024*1024 || !boundedJSONLimits(raw) {
 		return nil, ErrRead
 	}
-	result := &unstructured.Unstructured{}
-	// Unconditional strict single-value grammar/duplicate validation follows
-	// the limits scan. Do not run a redundant complete json.Valid pass here.
-	strictErrors, err := strictjson.UnmarshalStrict(raw, &result.Object)
-	if err != nil || len(strictErrors) != 0 {
+	// A memo can reuse ONLY the strict conversion of identical complete fresh
+	// bytes. All transport/size/limits checks above still run, and original
+	// envelope and every downstream typed/identity/health check remain fresh.
+	result, err := memo.decode(key, raw)
+	if err != nil {
 		return nil, ErrRead
 	}
 	if method != http.MethodDelete && (result.GetAPIVersion() != key.APIVersion || result.GetKind() != key.Kind || result.GetName() != key.Name || result.GetNamespace() != key.Namespace) {
 		return nil, ErrRead
 	}
+	accepted = true
 	return result, nil
 }
 
@@ -495,16 +509,18 @@ func boundedJSON(raw []byte) bool {
 	return boundedJSONLimits(raw) && json.Valid(raw)
 }
 
-// Limits only, NOT JSON acceptance. Use only immediately before unconditional
-// strict single-value decoding. Other callers retain boundedJSON's grammar
-// contract; invalid inputs can never become objects based on this scan alone.
+// Limits only, NOT JSON acceptance. Follow with strict single-value decoding,
+// or a closed memo's identical complete bytes previously strictly decoded.
+// Other callers retain boundedJSON's grammar contract; invalid inputs can never
+// become objects based on this scan alone.
 func boundedJSONLimits(raw []byte) bool {
 	depth, nodes := 0, 0
 	// Count the same tokens as Decoder.Token without materializing strings or
 	// numbers. Reject limits BEFORE standard grammar validation, so an invalid
 	// deeply nested response cannot grow the standard scanner's depth stack.
-	// This is only prevalidation: each caller still strictly decodes ONE value,
-	// rejects duplicate fields and checks its original envelope/identity.
+	// This is only prevalidation: acceptance still requires ONE strictly decoded
+	// value (or its identical complete-byte conversion), duplicate rejection and
+	// the original envelope/identity checks.
 	for i := 0; i < len(raw); i++ {
 		switch raw[i] {
 		case ' ', '\t', '\r', '\n', ',', ':':
