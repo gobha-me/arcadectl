@@ -239,7 +239,7 @@ func newHTTPAccessWithPool(config *rest.Config, direct bool, inherited http.Roun
 	h.CheckRedirect = func(*http.Request, []*http.Request) error { return ErrRead }
 	a := &HTTPAccess{client: h, base: u, native: native, frozen: frozen, direct: direct, pool: pool, publicReplies: &publicReplyMemo{}}
 	if frozen.RateLimiter == nil && frozen.QPS == 0 && frozen.Burst == 0 {
-		a.readLimiter = flowcontrol.NewTokenBucketRateLimiter(installerReadQPS, installerReadBurst)
+		a.readLimiter = &sdkWaitDiagnosticLimiter{RateLimiter: flowcontrol.NewTokenBucketRateLimiter(installerReadQPS, installerReadBurst)}
 	}
 	return a, nil
 }

@@ -477,6 +477,18 @@ errors, objects, names, paths, identities or credentials and performs no extra
 cluster reads or retries. Errors, exit codes and protected recovery remain
 unchanged. Diagnostics are progress, not proof or established root cause.
 
+Failed commands' numeric `command-cost` record includes `sdk-wait` calls,
+returns and inclusive Wait-call wall time for the internally created shared
+SDK read limiter. The existing 100 QPS/20-token burst and one shared bucket
+remain unchanged. Each Wait delegates exactly once with its original context
+and result, including cancellation/refusal; no recorder or request data is
+retained by the limiter. Explicit caller rate settings/limiter pointers,
+non-Wait methods, and contexts without a command recorder remain unmeasured.
+Zero counters therefore do not prove zero SDK work. Inclusive elapsed time is
+not sleeping time, CPU time or proof success; overlapping costs cannot be summed.
+Response-body processing remains outside this measurement. No rate tuning,
+deadline change, extra request or performance improvement is implied.
+
 An acknowledged baseline Deployment deletion additionally records its last
 closed preparation step (original fences, target read/original envelope,
 executable collection, absence/quietness, full guard, or post-guard target read)

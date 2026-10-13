@@ -26,12 +26,14 @@ const (
 	costAdmissionDrain
 	costAdmissionRetirement
 	costAdmissionFinal
+	costSDKWait
 	costKinds
 )
 
 var lifecycleCostLabels = [costKinds]string{
 	"admission", "phase", "baseline", "admission-construction", "admission-setup",
 	"admission-matrix", "admission-drain", "admission-retirement", "admission-final",
+	"sdk-wait",
 }
 
 type lifecycleCostMetric struct {

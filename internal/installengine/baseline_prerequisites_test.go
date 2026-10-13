@@ -1082,6 +1082,10 @@ func testBaselinePrerequisiteCompleteDiscovery(t *testing.T, scenario string) {
 		return
 	}
 	ctx := t.Context()
+	var sdkCosts *LifecycleCosts
+	if scenario == "sdk-wait-census" {
+		ctx, sdkCosts = WithLifecycleCosts(ctx)
+	}
 	if scenario == "cancelled" {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithCancel(ctx)
@@ -1089,12 +1093,18 @@ func testBaselinePrerequisiteCompleteDiscovery(t *testing.T, scenario string) {
 	}
 	beforeWrites, beforeUpdates := f.access.writes, f.nsUpdates
 	err = configuration.verifyPrerequisite(ctx, snapshot, operation)
-	if scenario == "empty" || scenario == "benign-defaults" || scenario == "signed-original" || scenario == "signed-SA" || scenario == "pending-absent" || scenario == "pending-empty-absent" || scenario == "pending-cluster" || scenario == "pending-SA" {
+	if scenario == "empty" || scenario == "sdk-wait-census" || scenario == "benign-defaults" || scenario == "signed-original" || scenario == "signed-SA" || scenario == "pending-absent" || scenario == "pending-empty-absent" || scenario == "pending-cluster" || scenario == "pending-SA" {
 		if err != nil || reviews != 2*len(sources) || lists != 2*len(sources) || policyReads == 0 {
 			t.Fatal("complete bootstrap-only proof failed", err)
 		}
 	} else if err != ErrSecurityBaseline {
 		t.Fatal("unsafe/incomplete bootstrap supplied a proof", err)
+	}
+	if sdkCosts != nil && (sdkCosts.metrics[costSDKWait].calls.Load() != uint64(lists) || sdkCosts.metrics[costSDKWait].returned.Load() != uint64(lists) || sdkCosts.metrics[costSDKWait].wallNS.Load() == 0 || previews != 0 || creates != 0 || journalWrites != 0) {
+		t.Fatal("guarded SDK LIST waits changed request census, proof result or no-write boundary", lists, sdkCosts.metrics[costSDKWait].calls.Load())
+	}
+	if sdkCosts != nil {
+		t.Logf("guarded SDK Wait census: lists=%d calls=%d returned=%d", lists, sdkCosts.metrics[costSDKWait].calls.Load(), sdkCosts.metrics[costSDKWait].returned.Load())
 	}
 	if strings.HasPrefix(scenario, "pending-receipt-") && !receiptReplaced {
 		t.Fatal("prerequisite receipt lifetime fault was never reached")
