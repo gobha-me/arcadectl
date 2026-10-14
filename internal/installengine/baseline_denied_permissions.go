@@ -144,7 +144,7 @@ func (e *Engine) baselineDeniedCatalog(d installstate.Document, access map[insta
 		if plan == nil {
 			continue
 		}
-		for _, r := range plan.Resources() {
+		for _, r := range plan.ResourcesByKind("Service") {
 			if r.Object.GetKind() != "Service" || !baselineReservedAccount(r.Object.GetName()) {
 				continue
 			}

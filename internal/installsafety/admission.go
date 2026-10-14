@@ -31,7 +31,7 @@ func validateAdmission(plan *installrender.Plan, s *Snapshot, owned map[installs
 		bindings[o.Name] = o
 	}
 	countPolicies, countBindings := 0, 0
-	for _, r := range plan.Resources() {
+	for _, r := range plan.ResourcesByKind("ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding") {
 		o := r.Object
 		key := installstate.Key{APIVersion: o.GetAPIVersion(), Kind: o.GetKind(), Name: o.GetName()}
 		switch o.GetKind() {
