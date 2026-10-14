@@ -111,13 +111,12 @@ func inventoryContract(plan *installrender.Plan, inventory []installstate.Resour
 	if len(inventory) == 0 || len(inventory) > installstate.MaxResources {
 		return nil, nil, ErrOwnership
 	}
-	contracts := map[installstate.Key]installrender.Resource{}
-	for _, r := range plan.Resources() {
-		o := r.Object
-		contracts[installstate.Key{APIVersion: o.GetAPIVersion(), Kind: o.GetKind(), Namespace: o.GetNamespace(), Name: o.GetName()}] = r
+	contracts := map[installstate.Key]installrender.ResourceMetadata{}
+	for _, r := range plan.ResourceMetadata() {
+		contracts[installstate.Key{APIVersion: r.APIVersion, Kind: r.Kind, Namespace: r.Namespace, Name: r.Name}] = r
 	}
 	for _, name := range []string{adminauth.CredentialSecretName, "arcadectl-api-tls"} {
-		contracts[installstate.Key{APIVersion: "v1", Kind: "Secret", Namespace: plan.Namespace(), Name: name}] = installrender.Resource{Retained: true, Phase: installrender.API}
+		contracts[installstate.Key{APIVersion: "v1", Kind: "Secret", Namespace: plan.Namespace(), Name: name}] = installrender.ResourceMetadata{Retained: true, Phase: installrender.API}
 	}
 	owned := map[installstate.Key]types.UID{}
 	removable := map[types.UID]bool{}

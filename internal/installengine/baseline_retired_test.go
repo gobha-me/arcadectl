@@ -21,6 +21,11 @@ func emptyBaselineExecutableCollections() *installobserve.ExecutableCollections 
 // VAP behavior or whole retired proof certification. Every fresh producer
 // collection must participate, including terminal/suspended/renamed objects.
 func TestBaselineRetiredExecutableAbsenceDistinguishesReservedAndSoftwareSignals(t *testing.T) {
+	for _, observation := range []*installobserve.Observation{nil, {}} {
+		if baselineReservedExecutablesAbsent(observation) != ErrSecurityBaseline {
+			t.Fatal("missing sealed observation accepted")
+		}
+	}
 	f := newFixture(t, false)
 	for _, collection := range baselineExecutableCollections {
 		for _, signal := range []string{"ordinary", "reserved-name", "reserved-account", "reserved-alias", "controller-image", "api-image", "family-label", "family-generate-name", "secret-volume", "secret-env", "template-label"} {

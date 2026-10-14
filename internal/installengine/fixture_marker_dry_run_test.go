@@ -20,7 +20,7 @@ import (
 func TestFixtureMarkerDryRunWholeDeclaredDeltaAndPurity(t *testing.T) {
 	created := time.Date(2026, 10, 7, 15, 0, 0, 0, time.UTC)
 	for _, profile := range []string{installrender.Profile135, installrender.Profile137} {
-		for _, recipe := range []string{fixtureRecipeV1, fixtureRecipeV2} {
+		for _, recipe := range []string{fixtureRecipeV1, fixtureRecipeV2, fixtureRecipeV3} {
 			for _, add := range []bool{true, false} {
 				name := "remove"
 				if add {
@@ -35,6 +35,8 @@ func TestFixtureMarkerDryRunWholeDeclaredDeltaAndPurity(t *testing.T) {
 					defer ledger.close()
 					if recipe == fixtureRecipeV2 {
 						instrumentFreshFixtureRecipeV2(t, ledger)
+					} else if recipe == fixtureRecipeV3 {
+						instrumentFreshFixtureRecipeV3(t, ledger)
 					}
 					acknowledgeAllRecipeFixtures(t, ledger)
 					phase := &fixturePhaseBaseline{}
@@ -80,6 +82,45 @@ func TestFixtureMarkerDryRunWholeDeclaredDeltaAndPurity(t *testing.T) {
 						}
 						t.Fatal("fixed managed-field role missing")
 						return nil
+					}
+					if add {
+						t.Run("creation-boundary", func(t *testing.T) {
+							original := before.DeepCopy()
+							// Field management can precede REST creation stamping by
+							// a second. First prove this is already a whole-valid
+							// original; the marker check must not contradict it.
+							old := created.Add(-time.Second)
+							role(original, false)["time"] = old.Format(time.RFC3339)
+							observed := created.Add(time.Minute)
+							if ledger.validateResult(fixtureRetainedPVC, fixtureStableResult, original, observed) != nil || ledger.validatePhaseFixture(fixtureRetainedPVC, original, phase, observed) != nil || ledger.validateFixtureUnchangedUpdate(fixtureRetainedPVC, original, original.DeepCopy(), phase, observed) != nil {
+								t.Fatal("creation-boundary original failed its independent whole checks")
+							}
+							savedOriginal := original.DeepCopy()
+							for _, stamp := range []time.Time{old, created, created.Add(20 * time.Second)} {
+								candidate := after.DeepCopy()
+								main, status := role(candidate, false), role(candidate, true)
+								main["time"] = stamp.Format(time.RFC3339)
+								fields := []any{main, status}
+								if stamp.After(created.Add(10 * time.Second)) {
+									fields = []any{status, main}
+								}
+								candidate.Object["metadata"].(map[string]any)["managedFields"] = fields
+								savedCandidate := candidate.DeepCopy()
+								if validate(original, candidate, phase, observed) != nil {
+									t.Error("whole-valid creation-boundary original refused fixed marker addition")
+								}
+								if !reflect.DeepEqual(savedOriginal, original) || !reflect.DeepEqual(savedCandidate, candidate) {
+									t.Fatal("creation-boundary marker check mutated inputs")
+								}
+							}
+							regressed := after.DeepCopy()
+							main, status := role(regressed, false), role(regressed, true)
+							main["time"] = old.Add(-time.Second).Format(time.RFC3339)
+							regressed.Object["metadata"].(map[string]any)["managedFields"] = []any{main, status}
+							if validate(original, regressed, phase, observed) != ErrFixtures {
+								t.Fatal("creation-boundary marker check accepted main-time regression")
+							}
+						})
 					}
 					oldMainTime, err := time.Parse(time.RFC3339, role(before, false)["time"].(string))
 					if err != nil {

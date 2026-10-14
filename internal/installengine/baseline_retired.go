@@ -186,10 +186,17 @@ func (e *Engine) baselineSoftwareFamiliesAbsent(objects *installobserve.Executab
 // observer. Set only the fixed catalog TypeMeta on disposable typed copies;
 // no dynamic ownership graph, adoption or namespace-wide zero-workload rule.
 func baselineReservedExecutablesAbsent(observation *installobserve.Observation) error {
-	if observation == nil || observation.Snapshot() == nil || observation.Runtime() == nil {
+	if observation == nil {
 		return ErrSecurityBaseline
 	}
-	s, r := observation.Snapshot(), observation.Runtime()
+	s := observation.Snapshot()
+	if s == nil {
+		return ErrSecurityBaseline
+	}
+	r := observation.Runtime()
+	if r == nil {
+		return ErrSecurityBaseline
+	}
 	return baselineReservedCollectionsAbsent(&installobserve.ExecutableCollections{Pods: s.Pods, Jobs: s.Jobs, Deployments: r.Deployments, ReplicaSets: r.ReplicaSets, StatefulSets: r.StatefulSets, DaemonSets: r.DaemonSets, ReplicationControllers: r.ReplicationControllers, CronJobs: r.CronJobs})
 }
 
