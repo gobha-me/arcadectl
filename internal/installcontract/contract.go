@@ -203,6 +203,29 @@ func (t *Template) MatchLive(object *unstructured.Unstructured, originalUID type
 	return t.match(object, nil)
 }
 
+// MatchLiveAdmissionObject returns a defensive, unnormalized typed policy or
+// binding ONLY after the same complete original-identity and signed-shape match.
+// The exact fresh bytes use case-sensitive strict admission decoding even when
+// the ordinary decoder memo is warm. Status, health and relationships are still
+// fresh caller checks, never a cached match verdict or authorization capability.
+func (t *Template) MatchLiveAdmissionObject(object *unstructured.Unstructured, originalUID types.UID) (runtime.Object, error) {
+	if t == nil || t.key.APIVersion != "admissionregistration.k8s.io/v1" || (t.key.Kind != "ValidatingAdmissionPolicy" && t.key.Kind != "ValidatingAdmissionPolicyBinding") {
+		if t != nil {
+			t.decoded.clear()
+		}
+		return nil, ErrInvalid
+	}
+	if object == nil || originalUID == "" || object.GetUID() != originalUID || !identity(object.GetResourceVersion()) {
+		t.decoded.clear()
+		return nil, ErrIdentity
+	}
+	var observed runtime.Object
+	if err := t.matchWithAdmissionResult(object, nil, &observed); err != nil {
+		return nil, err
+	}
+	return observed, nil
+}
+
 // MatchAdmitted checks shape only. It grants no ownership and does not prove
 // that the actual write took effect. The engine checks actual readback again.
 func (t *Template) MatchAdmitted(object *unstructured.Unstructured) error {
@@ -221,7 +244,11 @@ func (t *Template) MatchNamespace(object *unstructured.Unstructured, journal *in
 	return t.match(object, journal)
 }
 
-func (t *Template) match(object *unstructured.Unstructured, journal *installstate.Snapshot) (resultErr error) {
+func (t *Template) match(object *unstructured.Unstructured, journal *installstate.Snapshot) error {
+	return t.matchWithAdmissionResult(object, journal, nil)
+}
+
+func (t *Template) matchWithAdmissionResult(object *unstructured.Unstructured, journal *installstate.Snapshot, admissionResult *runtime.Object) (resultErr error) {
 	if t == nil || t.expected == nil || object == nil || object.GetAPIVersion() != t.key.APIVersion || object.GetKind() != t.key.Kind || object.GetName() != t.key.Name || object.GetNamespace() != t.key.Namespace {
 		if t != nil {
 			t.decoded.clear()
@@ -239,9 +266,13 @@ func (t *Template) match(object *unstructured.Unstructured, journal *installstat
 	if object.GetDeletionTimestamp() != nil || len(object.GetOwnerReferences()) != 0 || len(object.GetFinalizers()) != 0 {
 		return ErrDrift
 	}
-	actual, err := t.decodeObserved(object)
+	actual, err := t.decodeObservedMode(object, admissionResult != nil)
 	if err != nil {
 		return err
+	}
+	var unnormalized runtime.Object
+	if admissionResult != nil {
+		unnormalized = actual.DeepCopyObject()
 	}
 	m, err := meta.Accessor(actual)
 	if err != nil {
@@ -325,6 +356,9 @@ func (t *Template) match(object *unstructured.Unstructured, journal *installstat
 	// numeric value, including different formats (64Mi == 67108864 bytes).
 	if !apiequality.Semantic.DeepEqual(expected, actual) {
 		return ErrDrift
+	}
+	if admissionResult != nil {
+		*admissionResult = unnormalized
 	}
 	return nil
 }

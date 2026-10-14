@@ -114,21 +114,27 @@ func (c *ClusterSecurityBaseline) configuredPass(ctx context.Context, snapshot *
 			for _, index := range indices {
 				entry := frozen[index]
 				live, err := c.access.Get(readCtx, entry.resource.Key)
-				if err != nil || entry.template.MatchLive(live, entry.resource.UID) != nil {
+				if err != nil {
+					failures[lane] = ErrSecurityBaseline
+					cancel()
+					return
+				}
+				matched, err := entry.template.MatchLiveAdmissionObject(live, entry.resource.UID)
+				if err != nil {
 					failures[lane] = ErrSecurityBaseline
 					cancel()
 					return
 				}
 				if lane == 0 {
-					var policy admissionv1.ValidatingAdmissionPolicy
-					if decodeServing(live, &policy) != nil || !healthyAdmissionPolicy(&policy) {
+					policy, ok := matched.(*admissionv1.ValidatingAdmissionPolicy)
+					if !ok || !healthyAdmissionPolicy(policy) {
 						failures[lane] = ErrSecurityBaseline
 						cancel()
 						return
 					}
 				} else {
-					var binding admissionv1.ValidatingAdmissionPolicyBinding
-					if decodeServing(live, &binding) != nil {
+					binding, ok := matched.(*admissionv1.ValidatingAdmissionPolicyBinding)
+					if !ok {
 						failures[lane] = ErrSecurityBaseline
 						cancel()
 						return

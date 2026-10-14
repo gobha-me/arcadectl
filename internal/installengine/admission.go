@@ -184,21 +184,25 @@ func (a *ClusterAdmission) configured(ctx context.Context, request LifecycleChec
 			return nil, ErrAdmission
 		}
 		live, err := p.access.Get(ctx, key)
-		if err != nil || template.MatchLive(live, entry.UID) != nil {
+		if err != nil {
+			return nil, ErrAdmission
+		}
+		observed, err := template.MatchLiveAdmissionObject(live, entry.UID)
+		if err != nil {
 			return nil, ErrAdmission
 		}
 		// Inventory may legitimately be mixed active/target during upgrade.
 		// Only that recorded signed template is authority, never target-only
 		// shape comparison or labels/name-based adoption of a replacement.
 		if key.Kind == "ValidatingAdmissionPolicy" {
-			var policy admissionv1.ValidatingAdmissionPolicy
-			if decodeServing(live, &policy) != nil || !healthyAdmissionPolicy(&policy) || witness.policies[key.Name] != nil {
+			policy, ok := observed.(*admissionv1.ValidatingAdmissionPolicy)
+			if !ok || !healthyAdmissionPolicy(policy) || witness.policies[key.Name] != nil {
 				return nil, ErrAdmission
 			}
 			witness.policies[key.Name] = policy.DeepCopy()
 		} else {
-			var binding admissionv1.ValidatingAdmissionPolicyBinding
-			if decodeServing(live, &binding) != nil || witness.bindings[key.Name] != nil {
+			binding, ok := observed.(*admissionv1.ValidatingAdmissionPolicyBinding)
+			if !ok || witness.bindings[key.Name] != nil {
 				return nil, ErrAdmission
 			}
 			witness.bindings[key.Name] = binding.DeepCopy()

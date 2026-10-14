@@ -22,7 +22,7 @@ import (
 // effective-enforcement evidence. Native envtest separately refuses absent
 // real typechecker status instead of filling it in.
 func TestBaselineConfigurationOriginalShapesHealthAndRepeatedIdentity(t *testing.T) {
-	for _, mode := range []string{"healthy", "runtime-pending", "unobserved-generation", "missing-typecheck", "typecheck-warning", "weak-policy", "wrong-namespace", "replacement", "deleting", "between-pass-rv", "journal-drift", "late-fixture"} {
+	for _, mode := range []string{"healthy", "runtime-pending", "unobserved-generation", "missing-typecheck", "typecheck-warning", "weak-policy", "wrong-namespace", "replacement", "deleting", "between-pass-rv", "journal-drift", "late-fixture", "between-pass-status", "case-aliased-status"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newBaselineFixture(t)
 			completeBaselineFixture(t, f)
@@ -77,6 +77,8 @@ func TestBaselineConfigurationOriginalShapesHealthAndRepeatedIdentity(t *testing
 			case "deleting":
 				now := metav1.Now()
 				policy.SetDeletionTimestamp(&now)
+			case "case-aliased-status":
+				policy.Object["status"] = map[string]any{"ObservedGeneration": int64(1), "typeChecking": map[string]any{}}
 			}
 			reads := make(map[string]int)
 			var mu sync.Mutex
@@ -112,6 +114,10 @@ func TestBaselineConfigurationOriginalShapesHealthAndRepeatedIdentity(t *testing
 				if request.URL.Path == policyPath && reads[policyPath] == 2 && mode == "between-pass-rv" {
 					object = object.DeepCopy()
 					object.SetResourceVersion("999")
+				}
+				if request.URL.Path == policyPath && reads[policyPath] == 2 && mode == "between-pass-status" {
+					object = object.DeepCopy()
+					_ = unstructured.SetNestedField(object.Object, int64(0), "status", "observedGeneration")
 				}
 				if request.URL.Path == policyPath && mode == "late-fixture" && reads[policyPath] == 1 {
 					if _, err := f.engine.files.CreateExclusive(fixtureLedgerName(f.snapshot), []byte("uncertain active fixture")); err != nil {

@@ -21,7 +21,7 @@ import (
 )
 
 func TestAdmissionConfigurationRequiresEveryOriginalSignedHealthyPolicy(t *testing.T) {
-	for _, scenario := range []string{"healthy", "stale-generation", "no-typechecking", "warnings", "uid", "spec", "missing-binding", "binding-target", "false-condition", "duplicate-condition", "namespace-race"} {
+	for _, scenario := range []string{"healthy", "stale-generation", "no-typechecking", "warnings", "uid", "spec", "missing-binding", "binding-target", "false-condition", "duplicate-condition", "namespace-race", "warm-status-change", "case-aliased-status"} {
 		t.Run(scenario, func(t *testing.T) {
 			v := newLifecycleFixture(t)
 			v.fail = AdmissionEffective
@@ -77,6 +77,8 @@ func TestAdmissionConfigurationRequiresEveryOriginalSignedHealthyPolicy(t *testi
 				_ = unstructured.SetNestedSlice(policy.Object, []any{condition}, "status", "conditions")
 			case "duplicate-condition":
 				_ = unstructured.SetNestedSlice(policy.Object, []any{condition, condition}, "status", "conditions")
+			case "case-aliased-status":
+				policy.Object["status"] = map[string]any{"ObservedGeneration": policy.GetGeneration(), "typeChecking": map[string]any{}}
 			}
 			namespaceReads := 0
 			probeRequests := 0
@@ -190,6 +192,13 @@ func TestAdmissionConfigurationRequiresEveryOriginalSignedHealthyPolicy(t *testi
 			a := &ClusterAdmission{prerequisites: &ClusterPrerequisites{engine: v.f.engine, access: access}}
 			request := LifecycleCheck{Checkpoint: AdmissionConfigured, Snapshot: s, Mode: installstate.Install, Target: v.f.plan, Options: v.opts}
 			before := v.f.access.writes
+			if scenario == "warm-status-change" {
+				if _, err := a.configured(context.Background(), request); err != nil {
+					t.Fatal("healthy warm configuration refused")
+				}
+				// Same original UID/RV; only fresh health status changes.
+				_ = unstructured.SetNestedField(policy.Object, int64(0), "status", "observedGeneration")
+			}
 			witness, err := a.configured(context.Background(), request)
 			if (err == nil) != (scenario == "healthy") || v.f.access.writes != before {
 				t.Fatal("foreign/stale/incomplete configuration accepted or mutated")
