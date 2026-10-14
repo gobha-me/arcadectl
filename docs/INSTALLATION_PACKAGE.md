@@ -489,6 +489,59 @@ not sleeping time, CPU time or proof success; overlapping costs cannot be summed
 Response-body processing remains outside this measurement. No rate tuning,
 deadline change, extra request or performance improvement is implied.
 
+The signed-binary Kind harness can additionally capture the **current child**
+CPU profile through a private Linux-only two-descriptor protocol. Ordinary
+installer invocations have no profiling flags, environment toggle, output path
+or HTTP listener. Recognition requires a purpose-named, sealed read-only memfd
+bound to the exact owner/mode/device/inode of a nonblocking output pipe;
+unrecognized descriptors remain untouched. The successfully started session
+owns its profile, marks those descriptors close-on-exec, and closes them after
+joined Stop. Exec'd descendants do not inherit them. Start failure never stops
+another active profiler. Normal returns,
+including caller deadlines and graceful signals, explicitly join the owned
+profile before preserving the original exit code. A forced kill/crash cannot
+promise finalization. The authentic historical executable and its launch
+remain unchanged and receive no diagnostic descriptors.
+
+Compressed capture has an independent 8 MiB cap with sticky overflow refusal.
+The joined memory sink is flushed using finite nonblocking writes, a 500 ms
+attempt window and an attempt ceiling; this does **not** bound Go pprof's
+internal aggregation memory, symbolization CPU, Stop duration or total RSS.
+The parent drains before launch, discards overflow, closes its inherited copies
+after Start, and joins every completion/failure path. Only that private drain
+has a one-second post-exit deadline. No operation/fixture/test/job deadline,
+request, proof predicate, authority or rate limit is changed.
+
+Raw CPU profiles, labels, symbols, source/executable paths, addresses and build
+IDs remain in memory and are never retained, printed or uploaded—even on a
+decoder failure. Bounded single-member checksum-valid gzip and a closed pinned
+Go CPU protobuf parser must pass before any summary is reported: labels,
+comments, unknown fields, malformed/duplicate references, arithmetic faults,
+unexpected mappings and exceeded collection/expanded-attribution bounds refuse.
+The decompressed limit is independently 32 MiB. Input strings are bounded and
+referenced, not certified free of private material; only a new numeric summary
+with literal reviewed category names can cross the output boundary. Serialization
+also refuses caller-constructed unknown categories. Mapping checks are custody
+guards, not cryptographic executable certification.
+
+The fixed `installer-child-cpu-summary-v1` record binds candidate source/dirty
+state, current executable SHA256, literal profile/mode/command and actual
+command outcome. A failed command can still have usable CPU samples; a too-short
+or killed command may have none. Unavailable diagnostics never replace the
+installer's result: if private capture setup fails before launch, the same
+unmodified command runs exactly once without profiling. No raw fallback is
+emitted. `flushTimeliness` is always
+`not-certified`: a valid final frame alone cannot establish that the child's
+Stop returned true or its final write finished within the attempt window.
+Flat CPU categories partition sampled CPU; cumulative categories overlap and
+must not be summed. Profiling itself adds overhead, and CPU attribution neither
+measures limiter/network/filesystem sleep nor proves a timeout fix. These are
+diagnostic foundations; actual lifecycle and exact-candidate CI remain required.
+The existing fixture wall counter is snapped before parent decompression,
+attribution, serialization or logging; it still includes private setup/drain
+overhead around Start/Wait. ProcessState user/system CPU belongs to the child,
+including its profiler work—not the parent's decoder CPU.
+
 An acknowledged baseline Deployment deletion additionally records its last
 closed preparation step (original fences, target read/original envelope,
 executable collection, absence/quietness, full guard, or post-guard target read)

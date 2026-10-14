@@ -25,6 +25,7 @@ import (
 	"github.com/gobha-me/arcadectl/internal/adminauth"
 	"github.com/gobha-me/arcadectl/internal/installbaseline"
 	"github.com/gobha-me/arcadectl/internal/installcontract"
+	"github.com/gobha-me/arcadectl/internal/installerprofile"
 	"github.com/gobha-me/arcadectl/internal/installfiles"
 	"github.com/gobha-me/arcadectl/internal/installpackage"
 	"github.com/gobha-me/arcadectl/internal/installrender"
@@ -85,6 +86,12 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 							t.Fatal("tracked fixture source identity unavailable")
 						}
 						return strings.TrimSpace(string(out))
+					}
+					cpuSource := git("rev-parse", "HEAD")
+					cpuDirty := git("status", "--porcelain") != ""
+					cpuBinaryDigest, err := installerBinaryCPUDigest(binary)
+					if err != nil {
+						t.Fatal("owned current installer CPU custody hash unavailable")
 					}
 					keyPublic, keyPrivate, err := ed25519.GenerateKey(rand.Reader)
 					if err != nil {
@@ -231,12 +238,46 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 						// Share one writer for both streams, preserving CombinedOutput
 						// capture while exposing only closed stage/revision lines live.
 						c.Stdout, c.Stderr = capture, capture
-						err := c.Run()
+						var err error
+						var wallElapsed time.Duration
+						if historical {
+							err = c.Run() // Authentic predecessor receives no hook/descriptors.
+							wallElapsed = time.Since(started)
+						} else {
+							body, diagnosticErr, commandErr := installerBinaryCPUAttempt(c, installerprofile.NewCapture)
+							wallElapsed = time.Since(started) // Exclude parent decoding/logging.
+							err = commandErr                  // Never replace the actual installation result.
+							outcome := "launch-failure"
+							if c.ProcessState != nil {
+								outcome = "terminated"
+								if c.ProcessState.Exited() {
+									outcome = "exit-failure"
+									if err == nil {
+										outcome = "success"
+									}
+								}
+							}
+							status := "capture-incomplete"
+							var summary *installerprofile.CPUSummary
+							if diagnosticErr == nil && c.ProcessState != nil && c.ProcessState.Exited() {
+								parsed, parseErr := installerprofile.SummarizeCPU(body, binary)
+								status = "cpu-format-unavailable"
+								if parseErr == nil {
+									summary, status = &parsed, "available"
+								}
+							}
+							body = nil // No raw profile retention, artifact upload or fallback.
+							record, recordErr := installerBinaryCPURecordBytes(cpuSource, cpuBinaryDigest, profile.id, mode, command, outcome, status, cpuDirty, summary)
+							if recordErr != nil {
+								t.Fatal("closed current CPU summary custody unavailable")
+							}
+							t.Logf("actual installer CPU summary: %s", record)
+						}
 						// Process accounting is diagnostic only: no argv, paths,
 						// credentials or provider error escape. CPU totals neither
 						// attribute native wait time nor certify a runtime cure.
 						if c.ProcessState != nil {
-							t.Logf("actual installer %s process timing wall=%s user-cpu=%s system-cpu=%s", command, time.Since(started).Round(time.Millisecond), c.ProcessState.UserTime(), c.ProcessState.SystemTime())
+							t.Logf("actual installer %s process timing wall=%s user-cpu=%s system-cpu=%s", command, wallElapsed.Round(time.Millisecond), c.ProcessState.UserTime(), c.ProcessState.SystemTime())
 						}
 						output := capture.output()
 						if err != nil {

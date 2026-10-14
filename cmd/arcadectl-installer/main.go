@@ -21,6 +21,7 @@ import (
 
 	"github.com/gobha-me/arcadectl/internal/installbaseline"
 	"github.com/gobha-me/arcadectl/internal/installengine"
+	"github.com/gobha-me/arcadectl/internal/installerprofile"
 	"github.com/gobha-me/arcadectl/internal/installfiles"
 	"github.com/gobha-me/arcadectl/internal/installrender"
 	"github.com/gobha-me/arcadectl/internal/installstate"
@@ -57,9 +58,11 @@ type options struct {
 }
 
 func main() {
+	profile := installerprofile.StartInherited() // Before signals or input files.
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	code := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
 	cancel()
+	_ = profile.Stop() // Explicit: os.Exit does not run deferred cleanup.
 	os.Exit(code)
 }
 
