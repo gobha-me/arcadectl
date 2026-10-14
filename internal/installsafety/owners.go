@@ -65,8 +65,8 @@ func validateOwnerClosure(plan *installrender.Plan, s *Snapshot, inventory []ins
 	// Scope is fixed for reviewed and typed kinds. Recursive observations cannot
 	// disguise a known cluster kind as a namespaced object (or the reverse).
 	scopes := map[string]bool{"v1/ConfigMap": true, "apps/v1/ReplicaSet": true}
-	for _, r := range plan.Resources() {
-		scopes[r.Object.GetAPIVersion()+"/"+r.Object.GetKind()] = r.Object.GetNamespace() != ""
+	for _, r := range plan.ResourceMetadata() {
+		scopes[r.APIVersion+"/"+r.Kind] = r.Namespace != ""
 	}
 	for _, kind := range []string{"GameServer", "GameBackup", "GameRestore", "GameDestroy", "ArcadeOperation"} {
 		scopes[arcade.GroupVersion.String()+"/"+kind] = true

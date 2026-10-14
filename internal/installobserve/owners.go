@@ -45,8 +45,8 @@ func newOwnerGraph(o *Observer, inventory []installstate.Resource, cs []collecti
 	for _, c := range cs {
 		g.scopes[c.gv+"/"+c.kind], g.names[c.gv+"/"+c.kind] = c.namespaced, c.resource
 	}
-	for _, r := range o.plan.Resources() {
-		g.scopes[r.Object.GetAPIVersion()+"/"+r.Object.GetKind()] = r.Object.GetNamespace() != ""
+	for _, r := range o.plan.ResourceMetadata() {
+		g.scopes[r.APIVersion+"/"+r.Kind] = r.Namespace != ""
 	}
 	for _, known := range []struct{ gv, kind, name string }{
 		{"v1", "Namespace", "namespaces"}, {"v1", "ConfigMap", "configmaps"},
