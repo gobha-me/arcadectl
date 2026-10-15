@@ -62,6 +62,7 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 			for _, mode := range modes {
 				t.Run(mode, func(t *testing.T) {
 					testHistoricalInstallerFailureObservation(t)
+					testHistoricalInstallerPhaseFailureObservation(t)
 					ctx, config, currentImages, previousImages := targetKindInstallerFixture(t, profile.node, mode == "transition")
 					root, err := filepath.Abs(filepath.Join("..", ".."))
 					if err != nil {
@@ -284,7 +285,10 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 						output := capture.output()
 						if err != nil {
 							if historical {
-								t.Logf("historical installer after-exit observation: %s", observeHistoricalInstallerFailure(ctx, config, state, original))
+								observationCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+								t.Logf("historical installer after-exit observation: %s", observeHistoricalInstallerFailure(observationCtx, config, state, original))
+								t.Logf("historical installer after-exit phase observation: %s", observeHistoricalInstallerPhaseFailure(observationCtx, config, state, original))
+								cancel()
 							}
 							// This executable deliberately emits only fixed diagnostics and
 							// journal stages/revisions, not cluster bodies/credential paths.
