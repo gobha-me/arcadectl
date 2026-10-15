@@ -50,16 +50,33 @@ registry. Its packages are not release artifacts and its trust key is not a
 release trust identity. Release supply-chain work (#39) and the release go/no-go
 gate (#41) must establish actual artifact publication and production support.
 
+### Current development evidence
+
+The earlier candidate `7ab6d0c3a86471f6281bf5cac3697f6ae913eac3`
+completed [CI run 38611717440](https://github.com/gobha-me/arcadectl/actions/runs/38611717440)
+with 51 successful jobs and two failures. Its signed current-package fresh
+install and retaining uninstall passed on both declared profiles. The pinned
+historical profile-137 transition refused when the current upgrade command
+reached its unchanged two-hour deadline; rollback and uninstall were not invoked
+in that failed journey. The aggregate required gate also failed. This is not an
+additional Go test failure or evidence identifying the failed upgrade operand.
+
+Later local allocation reductions and numeric CPU-parser refusal diagnostics
+do not inherit those native results or establish a timeout cure. Every new
+candidate still requires the complete exact-source CI run, followed by exact-main
+CI after merge. Issue #27 and production certification remain incomplete.
+
 ### Installation-identity protection under development
 
 PR #62 is not merge-ready. Native review reproduced an ordinary controller
 launching a workload under a privileged installation identity. The separately
-signed, non-rollback security baseline and its lifecycle enforcement are being
-integrated; offline artifact verification or an individual passing test does
+signed, non-rollback security baseline and its lifecycle enforcement are
+implemented; offline artifact verification or an individual passing test does
 not certify the production runtime boundary. The closed production lifecycle
 now wires the complete live/retired verifier to runtime effects and the distinct
-nonexecuting prerequisite protocol. Full exact-commit native certification and
-explicit enrollment of already-installed historical records remain required.
+nonexecuting prerequisite protocol. Full exact-commit native certification
+remains required. Historical records require the separate explicit enrollment
+path described below; readability alone never authorizes their mutation.
 
 The private baseline proof checks the CEL maintenance permission with explicit
 API version `*`, matching both declared Kubernetes profiles. It also checks a
@@ -310,7 +327,8 @@ error and never leads to a mutation or retry. This command is not an API-client
 fallback; the ordinary CLI remains API-only and the package command offline.
 The development binary also exposes `install`, `upgrade`, `rollback`, retaining
 `uninstall`, and explicit `resume`. These are **not production certified**;
-the full signed-binary lifecycle acceptance evidence remains pending. Use only
+the complete signed-binary lifecycle acceptance evidence remains pending even
+though an earlier candidate passed both fresh-install cases. Use only
 in an owned isolated test cluster until issue #27's acceptance evidence exists.
 
 Mutation commands use the same strict static kubeconfig/trust boundary and the
@@ -600,7 +618,9 @@ on uninstall. Independent checkpoints require an initially absent baseline,
 unchanged original runtime and bootstrap/client/CA bytes, a nonempty original
 claim floor, preserved predecessor manifest/signature/payload bytes and durable
 source provenance. This expanded native journey still needs successful
-execution; fixture source and component passes are not migration certification.
+execution: the earlier candidate's transition reached its upgrade deadline.
+Fixture source, component passes and fresh-install passes are not migration
+certification.
 Its predecessor runtime images are built from the pinned original
 Git tree, not current code carrying predecessor labels; that CI job fetches the
 original tracked history. The binary harness creates no Arcade resource before
