@@ -298,7 +298,7 @@ func (p *ClusterPrerequisites) original(ctx context.Context, s *installstate.Sna
 		return ErrInvalid
 	}
 	fresh, err := p.engine.journal.Load(ctx, s.Anchor())
-	if err != nil || fresh.ResourceVersion() != s.ResourceVersion() || !bytes.Equal(fresh.Bytes(), s.Bytes()) {
+	if err != nil || fresh.ResourceVersion() != s.ResourceVersion() || !fresh.SameJournalBytes(s) {
 		return ErrConcurrent
 	}
 	t, err := p.engine.contracts[s.Document().TargetPackage].Template(namespaceKey(s.Anchor().Namespace), false)

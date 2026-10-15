@@ -211,7 +211,7 @@ func openReadAtBounded(dir int, name string, max int64, p Protection, limit int6
 	if !safe || before.Size < 0 || before.Size > max {
 		return nil, nil, FileIdentity{}, ErrUnsafe
 	}
-	b, e := io.ReadAll(io.LimitReader(f, max+1))
+	b, e := readObservedSize(f, before.Size, max)
 	if e != nil || int64(len(b)) > max || unix.Fstat(fd, &after) != nil {
 		return nil, nil, FileIdentity{}, ErrUnsafe
 	}
@@ -222,6 +222,35 @@ func openReadAtBounded(dir int, name string, max int64, p Protection, limit int6
 	transferred = true
 	return f, b, fileIdentity(before, b), nil
 }
+
+// Read the complete fresh file into one owned buffer, using the already bounded
+// opening size only to avoid ReadAll's repeated buffer growth. One extra byte
+// must reach EOF: growth, truncation and partial-data errors all refuse. This
+// does not replace the caller's descriptor/stat checks or cache any file data.
+func readObservedSize(reader io.Reader, size, max int64) ([]byte, error) {
+	if size < 0 || max < 1 || max > MaxEvidenceFileBytes || size > max {
+		return nil, ErrUnsafe
+	}
+	body := make([]byte, int(size)+1)
+	for n := 0; n < len(body); {
+		count, err := reader.Read(body[n:])
+		if count < 0 || count > len(body)-n {
+			return nil, ErrUnsafe
+		}
+		n += count
+		if int64(n) > size || err != nil && err != io.EOF {
+			return nil, ErrUnsafe
+		}
+		if err == io.EOF {
+			if int64(n) != size {
+				return nil, ErrUnsafe
+			}
+			return body[:n:n], nil
+		}
+	}
+	return nil, ErrUnsafe
+}
+
 func (s *Store) Read(name string, max int64) ([]byte, FileIdentity, error) {
 	return s.readBounded(name, max, MaxFileBytes)
 }

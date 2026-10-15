@@ -345,7 +345,7 @@ func (f *fixtureLedger) accountPhaseTraced(ctx context.Context, o *installobserv
 func (f *fixtureLedger) accountPhaseWithAccounts(ctx context.Context, o *installobserve.Observation, floor fixturePhaseBaseline, now time.Time, accounts *phaseServiceAccounts) (fixturePhaseBaseline, [fixtureMaxSlots]runtime.Object, error) {
 	var fixtures [fixtureMaxSlots]runtime.Object
 	zero := fixturePhaseBaseline{}
-	if f == nil || o == nil || o.Journal() == nil || !bytes.Equal(o.Journal().Bytes(), f.document.Journal) || o.Journal().ResourceVersion() != f.document.JournalResourceVersion {
+	if f == nil || o == nil || o.Journal() == nil || !o.Journal().MatchesJournalBytes(f.document.Journal) || o.Journal().ResourceVersion() != f.document.JournalResourceVersion {
 		traceAdmissionPhase(ctx, admissionPhaseRowInput, -1)
 		return zero, fixtures, ErrFixtures
 	}
@@ -367,7 +367,7 @@ func (f *fixtureLedger) accountPhaseWithAccounts(ctx context.Context, o *install
 	}
 	phase := fixturePhaseBaseline{Version: floor.Version, Rows: []fixtureWorldRow{}, Leaders: []fixturePhaseLeader{}, Public: floor.Public}
 	if accounts != nil {
-		if accounts.observation == nil || accounts.observation.Journal() == nil || accounts.observation.Journal().ResourceVersion() != f.document.JournalResourceVersion || !bytes.Equal(accounts.observation.Journal().Bytes(), f.document.Journal) {
+		if accounts.observation == nil || accounts.observation.Journal() == nil || accounts.observation.Journal().ResourceVersion() != f.document.JournalResourceVersion || !accounts.observation.Journal().MatchesJournalBytes(f.document.Journal) {
 			return zero, fixtures, ErrFixtures
 		}
 		var err error
@@ -560,10 +560,10 @@ func (f *fixtureLedger) phaseGCRowsWithAccounts(o *installobserve.Observation, o
 func (f *fixtureLedger) phaseGCRowsWithAccountsTrace(ctx context.Context, o *installobserve.Observation, objects [fixtureMaxSlots]*unstructured.Unstructured, gc fixtureGCRows, refreshed map[installstate.Key]*coordinationv1.Lease, accounts *phaseServiceAccounts) error {
 	recordMismatch := beginTypedMetadataDiagnostic(ctx)
 	traceAdmissionPhase(ctx, admissionPhaseOwnerBinding, -1)
-	if f == nil || !validFixtureRecipe(f.document) || gc == nil || gc.Journal() == nil || !bytes.Equal(gc.Journal().Bytes(), f.document.Journal) || gc.Journal().ResourceVersion() != f.document.JournalResourceVersion {
+	if f == nil || !validFixtureRecipe(f.document) || gc == nil || gc.Journal() == nil || !gc.Journal().MatchesJournalBytes(f.document.Journal) || gc.Journal().ResourceVersion() != f.document.JournalResourceVersion {
 		return ErrFixtures
 	}
-	if (f.document.Recipe == fixtureRecipeV3) != (accounts != nil) || accounts != nil && (accounts.observation == nil || accounts.observation.Journal() == nil || accounts.observation.Journal().ResourceVersion() != f.document.JournalResourceVersion || !bytes.Equal(accounts.observation.Journal().Bytes(), f.document.Journal)) {
+	if (f.document.Recipe == fixtureRecipeV3) != (accounts != nil) || accounts != nil && (accounts.observation == nil || accounts.observation.Journal() == nil || accounts.observation.Journal().ResourceVersion() != f.document.JournalResourceVersion || !accounts.observation.Journal().MatchesJournalBytes(f.document.Journal)) {
 		return ErrFixtures
 	}
 	for slot := len(f.document.Entries); slot < len(objects); slot++ {

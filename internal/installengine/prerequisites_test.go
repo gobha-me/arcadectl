@@ -5,6 +5,8 @@ package installengine
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -161,6 +163,7 @@ func TestPrerequisitesOperationPermissionsAreExactAndDropSettledEffects(t *testi
 }
 
 func TestPrerequisitesRejectForeignPlansAndInvalidRequests(t *testing.T) {
+	t.Run("original-byte-and-rv-fences", testPrerequisitesOriginalByteAndRVFences)
 	f := newFixture(t, false)
 	proof := &ClusterPrerequisites{engine: f.engine}
 	d := f.snapshot.Document()
@@ -179,6 +182,68 @@ func TestPrerequisitesRejectForeignPlansAndInvalidRequests(t *testing.T) {
 	}
 	if _, err := NewClusterPrerequisites(f.engine, &HTTPAccess{}); err == nil {
 		t.Fatal("different access/journal identity accepted")
+	}
+}
+
+func testPrerequisitesOriginalByteAndRVFences(t *testing.T) {
+	newPhase := fixturePhaseFactory(t)
+	for _, fault := range []string{"original", "nil", "load-error", "changed-rv", "changed-bytes", "final-body", "final-uid", "final-rv", "final-missing"} {
+		t.Run(fault, func(t *testing.T) {
+			h := newPhase(t)
+			a := h.f.actor
+			p, s := a.admission.prerequisites, a.request.Snapshot
+			original, err := p.access.Get(t.Context(), namespaceKey(s.Anchor().Namespace))
+			if err != nil {
+				t.Fatal("original Namespace fixture unavailable")
+			}
+			d := s.Document()
+			d.Revision++
+			changed, err := installstate.Encode(d, a.request.Target)
+			if err != nil {
+				t.Fatal("different valid journal encoding unavailable")
+			}
+			getCount := 0
+			previous := a.fixtureHandler
+			a.fixtureHandler = func(w http.ResponseWriter, r *http.Request) bool {
+				if r.Method != http.MethodGet || r.URL.Path != "/api/v1/namespaces/"+s.Anchor().Namespace {
+					return previous != nil && previous(w, r)
+				}
+				getCount++
+				if fault == "load-error" || fault == "final-missing" && getCount == 2 {
+					w.WriteHeader(http.StatusNotFound)
+					return true
+				}
+				live := original.DeepCopy()
+				if fault == "changed-rv" || fault == "final-rv" && getCount == 2 {
+					live.SetResourceVersion("999999")
+				}
+				if fault == "changed-bytes" || fault == "final-body" && getCount == 2 {
+					annotations := live.GetAnnotations()
+					annotations[installstate.Annotation] = string(changed)
+					live.SetAnnotations(annotations)
+				}
+				if fault == "final-uid" && getCount == 2 {
+					live.SetUID("replaced-original-namespace")
+				}
+				if err := json.NewEncoder(w).Encode(live.Object); err != nil {
+					t.Error("public fixture response unavailable")
+				}
+				return true
+			}
+			want, wantGets := error(nil), 2
+			input := s
+			switch fault {
+			case "nil":
+				input, want, wantGets = nil, ErrInvalid, 0
+			case "load-error", "changed-rv", "changed-bytes":
+				want, wantGets = ErrConcurrent, 1
+			case "final-body", "final-uid", "final-rv", "final-missing":
+				want = ErrOwnership
+			}
+			if err := p.original(t.Context(), input); err != want || getCount != wantGets {
+				t.Fatalf("original byte/identity/RV boundary changed: error=%v GETs=%d", err, getCount)
+			}
+		})
 	}
 }
 
