@@ -83,13 +83,16 @@ type wireCursor struct {
 
 func (c *wireCursor) next() (wireField, error) {
 	var field wireField
-	if len(c.data) == 0 || *c.fields >= maxFields {
-		return field, errIncomplete
+	if len(c.data) == 0 {
+		return field, refuseCPU(CPURefusalProtobuf)
+	}
+	if *c.fields >= maxFields {
+		return field, refuseCPUWork(CPUBoundFields)
 	}
 	*c.fields++
 	tag, n := protowire.ConsumeVarint(c.data)
 	if n < 1 || n != protowire.SizeVarint(tag) || tag>>3 == 0 || tag>>3 > 536870911 {
-		return field, errIncomplete
+		return field, refuseCPU(CPURefusalProtobuf)
 	}
 	c.data = c.data[n:]
 	field.number, field.kind = int(tag>>3), protowire.Type(tag&7)
@@ -97,17 +100,17 @@ func (c *wireCursor) next() (wireField, error) {
 	case protowire.VarintType:
 		value, n := protowire.ConsumeVarint(c.data)
 		if n < 1 || n != protowire.SizeVarint(value) {
-			return field, errIncomplete
+			return field, refuseCPU(CPURefusalProtobuf)
 		}
 		field.scalar, c.data = value, c.data[n:]
 	case protowire.BytesType:
 		length, n := protowire.ConsumeVarint(c.data)
 		if n < 1 || n != protowire.SizeVarint(length) || length > uint64(len(c.data)-n) {
-			return field, errIncomplete
+			return field, refuseCPU(CPURefusalProtobuf)
 		}
 		field.data, c.data = c.data[n:n+int(length)], c.data[n+int(length):]
 	default:
-		return field, errIncomplete
+		return field, refuseCPU(CPURefusalProtobuf)
 	}
 	return field, nil
 }
@@ -138,8 +141,11 @@ func parseRecord(data []byte, allowed uint16, fields *int) (record, error) {
 	c := wireCursor{data, fields}
 	for len(c.data) != 0 {
 		field, err := c.next()
-		if err != nil || field.number >= len(values) || allowed&(1<<field.number) == 0 || seen&(1<<field.number) != 0 || field.kind != protowire.VarintType {
-			return record{}, errIncomplete
+		if err != nil {
+			return record{}, err
+		}
+		if field.number >= len(values) || allowed&(1<<field.number) == 0 || seen&(1<<field.number) != 0 || field.kind != protowire.VarintType {
+			return record{}, refuseCPU(CPURefusalProtobuf)
 		}
 		seen |= 1 << field.number
 		values[field.number] = field.scalar
@@ -150,17 +156,26 @@ func parseRecord(data []byte, allowed uint16, fields *int) (record, error) {
 func repeatedInts(field wireField, values []uint64, limit int) ([]uint64, error) {
 	if field.kind == protowire.VarintType {
 		if len(values) == limit {
-			return nil, errIncomplete
+			if limit == maxStackDepth {
+				return nil, refuseCPUWork(CPUBoundStackDepth)
+			}
+			return nil, refuseCPU(CPURefusalSchema)
 		}
 		return append(values, field.scalar), nil
 	}
 	if field.kind != protowire.BytesType || len(field.data) == 0 {
-		return nil, errIncomplete
+		return nil, refuseCPU(CPURefusalProtobuf)
 	}
 	for len(field.data) != 0 {
 		value, n := protowire.ConsumeVarint(field.data)
-		if n < 1 || n != protowire.SizeVarint(value) || len(values) == limit {
-			return nil, errIncomplete
+		if n < 1 || n != protowire.SizeVarint(value) {
+			return nil, refuseCPU(CPURefusalProtobuf)
+		}
+		if len(values) == limit {
+			if limit == maxStackDepth {
+				return nil, refuseCPUWork(CPUBoundStackDepth)
+			}
+			return nil, refuseCPU(CPURefusalSchema)
 		}
 		values, field.data = append(values, value), field.data[n:]
 	}
@@ -173,7 +188,7 @@ func (p *cpuProfile) sample(data []byte) error {
 	for len(c.data) != 0 {
 		field, err := c.next()
 		if err != nil {
-			return errIncomplete
+			return err
 		}
 		switch field.number {
 		case 1:
@@ -181,15 +196,21 @@ func (p *cpuProfile) sample(data []byte) error {
 		case 2:
 			sample.values, err = repeatedInts(field, sample.values, 2)
 		default:
-			return errIncomplete // Labels, even empty, are always refused.
+			return refuseCPU(CPURefusalSchema) // Labels, even empty, are always refused.
 		}
 		if err != nil {
-			return errIncomplete
+			return err
 		}
 	}
 	p.refs += len(sample.locations)
-	if len(sample.values) != 2 || p.refs > maxStackRefs || len(p.samples) >= maxRecords {
-		return errIncomplete
+	if len(sample.values) != 2 {
+		return refuseCPU(CPURefusalSchema)
+	}
+	if p.refs > maxStackRefs {
+		return refuseCPUWork(CPUBoundStackReferences)
+	}
+	if len(p.samples) >= maxRecords {
+		return refuseCPUWork(CPUBoundRecords)
 	}
 	p.samples = append(p.samples, sample)
 	return nil
@@ -202,31 +223,40 @@ func (p *cpuProfile) location(data []byte) error {
 	for len(c.data) != 0 {
 		field, err := c.next()
 		if err != nil {
-			return errIncomplete
+			return err
 		}
 		if field.number == 4 {
-			if field.kind != protowire.BytesType || len(location.lines) >= 128 {
-				return errIncomplete
+			if field.kind != protowire.BytesType {
+				return refuseCPU(CPURefusalProtobuf)
+			}
+			if len(location.lines) >= 128 {
+				return refuseCPUWork(CPUBoundInlineLines)
 			}
 			line, err := parseRecord(field.data, 0x6, &p.fields)
-			if err != nil || line[1] == 0 || line[2] > math.MaxInt64 {
-				return errIncomplete
+			if err != nil {
+				return err
+			}
+			if line[1] == 0 || line[2] > math.MaxInt64 {
+				return refuseCPU(CPURefusalSchema)
 			}
 			location.lines = append(location.lines, line)
 		} else {
 			if field.number < 1 || field.number > 3 || field.kind != protowire.VarintType || seen&(1<<field.number) != 0 {
-				return errIncomplete
+				return refuseCPU(CPURefusalProtobuf)
 			}
 			seen |= 1 << field.number
 			location.values[field.number] = field.scalar
 		}
 	}
 	id := location.values[1]
-	if id == 0 || len(p.locations) >= maxRecords {
-		return errIncomplete
+	if id == 0 {
+		return refuseCPU(CPURefusalSchema)
+	}
+	if len(p.locations) >= maxRecords {
+		return refuseCPUWork(CPUBoundRecords)
 	}
 	if _, exists := p.locations[id]; exists {
-		return errIncomplete
+		return refuseCPU(CPURefusalProtobuf)
 	}
 	p.locations[id] = location
 	return nil
@@ -239,11 +269,11 @@ func decodeCPU(data []byte) (*cpuProfile, error) {
 	for len(c.data) != 0 {
 		field, err := c.next()
 		if err != nil {
-			return nil, errIncomplete
+			return nil, err
 		}
 		if field.number == 9 || field.number == 10 || field.number == 12 {
 			if field.kind != protowire.VarintType || seen&(1<<field.number) != 0 || field.scalar == 0 || field.scalar > math.MaxInt64 {
-				return nil, errIncomplete
+				return nil, refuseCPU(CPURefusalSchema)
 			}
 			seen |= 1 << field.number
 			if field.number == 10 {
@@ -255,18 +285,21 @@ func decodeCPU(data []byte) (*cpuProfile, error) {
 			continue
 		}
 		if field.kind != protowire.BytesType {
-			return nil, errIncomplete
+			return nil, refuseCPU(CPURefusalProtobuf)
 		}
 		switch field.number {
 		case 1:
 			value, err := parseRecord(field.data, 0x6, &p.fields)
-			if err != nil || len(p.types) >= 2 {
-				return nil, errIncomplete
+			if err != nil {
+				return nil, err
+			}
+			if len(p.types) >= 2 {
+				return nil, refuseCPU(CPURefusalSchema)
 			}
 			p.types = append(p.types, value)
 		case 2:
-			if p.sample(field.data) != nil {
-				return nil, errIncomplete
+			if err := p.sample(field.data); err != nil {
+				return nil, err
 			}
 		case 3, 5:
 			mask := uint16(0xfe)
@@ -274,47 +307,59 @@ func decodeCPU(data []byte) (*cpuProfile, error) {
 				mask = 0x3e
 			}
 			value, err := parseRecord(field.data, mask, &p.fields)
-			if err != nil || value[1] == 0 {
-				return nil, errIncomplete
+			if err != nil {
+				return nil, err
+			}
+			if value[1] == 0 {
+				return nil, refuseCPU(CPURefusalSchema)
 			}
 			target := p.mappings
 			if field.number == 5 {
 				target = p.functions
 			}
-			if _, exists := target[value[1]]; exists || len(target) >= maxRecords {
-				return nil, errIncomplete
+			if _, exists := target[value[1]]; exists {
+				return nil, refuseCPU(CPURefusalProtobuf)
+			}
+			if len(target) >= maxRecords {
+				return nil, refuseCPUWork(CPUBoundRecords)
 			}
 			target[value[1]] = value
 		case 4:
-			if p.location(field.data) != nil {
-				return nil, errIncomplete
+			if err := p.location(field.data); err != nil {
+				return nil, err
 			}
 		case 6:
-			if len(field.data) > 4096 || len(p.strings) >= maxRecords || !utf8.Valid(field.data) {
-				return nil, errIncomplete
+			if len(field.data) > 4096 {
+				return nil, refuseCPUWork(CPUBoundStringBytes)
+			}
+			if len(p.strings) >= maxRecords {
+				return nil, refuseCPUWork(CPUBoundRecords)
+			}
+			if !utf8.Valid(field.data) {
+				return nil, refuseCPU(CPURefusalSchema)
 			}
 			value := string(field.data)
 			for _, r := range value {
 				if unicode.IsControl(r) {
-					return nil, errIncomplete
+					return nil, refuseCPU(CPURefusalSchema)
 				}
 			}
 			p.strings = append(p.strings, value)
 		case 11:
 			if seen&(1<<11) != 0 {
-				return nil, errIncomplete
+				return nil, refuseCPU(CPURefusalProtobuf)
 			}
 			seen |= 1 << 11
 			p.periodType, err = parseRecord(field.data, 0x6, &p.fields)
 			if err != nil {
-				return nil, errIncomplete
+				return nil, err
 			}
 		default:
-			return nil, errIncomplete // Comments/drop/keep/default/future fields.
+			return nil, refuseCPU(CPURefusalSchema) // Comments/drop/keep/default/future fields.
 		}
 	}
 	if seen != (1<<9|1<<10|1<<11|1<<12) || p.period != cpuPeriod || len(p.types) != 2 || len(p.strings) == 0 || p.strings[0] != "" {
-		return nil, errIncomplete
+		return nil, refuseCPU(CPURefusalSchema)
 	}
 	return p, nil
 }
@@ -326,27 +371,32 @@ func decodeCPU(data []byte) (*cpuProfile, error) {
 // Success proves bounded CPU-format custody, NOT a timely flush/command success,
 // cryptographic binary identity, or completeness under a forced process kill.
 func SummarizeCPU(compressed []byte, executable string) (CPUSummary, error) {
+	summary, _, err := SummarizeCPUWithDiagnostic(compressed, executable)
+	return summary, err
+}
+
+func summarizeCPU(compressed []byte, executable string) (CPUSummary, error) {
 	if len(compressed) == 0 || len(compressed) > MaxProfileBytes || executable == "" {
-		return CPUSummary{}, errIncomplete
+		return CPUSummary{}, refuseCPU(CPURefusalEnvelope)
 	}
 	reader := bytes.NewReader(compressed)
 	gz, err := gzip.NewReader(reader)
 	if err != nil {
-		return CPUSummary{}, errIncomplete
+		return CPUSummary{}, refuseCPU(CPURefusalEnvelope)
 	}
 	gz.Multistream(false)
 	if gz.Name != "" || gz.Comment != "" || len(gz.Extra) != 0 || !gz.ModTime.IsZero() {
 		_ = gz.Close()
-		return CPUSummary{}, errIncomplete
+		return CPUSummary{}, refuseCPU(CPURefusalEnvelope)
 	}
 	decoded, err := io.ReadAll(io.LimitReader(gz, maxDecodedBytes+1))
 	closeErr := gz.Close()
 	if err != nil || closeErr != nil || len(decoded) == 0 || len(decoded) > maxDecodedBytes || reader.Len() != 0 {
-		return CPUSummary{}, errIncomplete
+		return CPUSummary{}, refuseCPU(CPURefusalExpansion)
 	}
 	p, err := decodeCPU(decoded)
 	if err != nil {
-		return CPUSummary{}, errIncomplete
+		return CPUSummary{}, err
 	}
 	return p.summarize(executable)
 }
@@ -391,8 +441,10 @@ func cpuCategory(symbol string) string {
 func (p *cpuProfile) summarize(executable string) (CPUSummary, error) {
 	used := make([]bool, len(p.strings))
 	used[0] = true
+	invalidStringReference := false
 	text := func(index uint64) (string, bool) {
 		if index >= uint64(len(p.strings)) {
+			invalidStringReference = true
 			return "", false
 		}
 		used[index] = true
@@ -404,44 +456,53 @@ func (p *cpuProfile) summarize(executable string) (CPUSummary, error) {
 		return ok && good && a == typ && b == unit
 	}
 	if !valueType(p.types[0], "samples", "count") || !valueType(p.types[1], "cpu", "nanoseconds") || !valueType(p.periodType, "cpu", "nanoseconds") {
-		return CPUSummary{}, errIncomplete
+		if invalidStringReference {
+			return CPUSummary{}, refuseCPU(CPURefusalReference)
+		}
+		return CPUSummary{}, refuseCPU(CPURefusalSchema)
 	}
 	haveExecutable := false
 	for _, mapping := range p.mappings {
 		path, ok := text(mapping[5])
 		_, good := text(mapping[6])
-		if !ok || !good || !reviewedMapping(path, executable) || mapping[2] >= mapping[3] || mapping[7] > 1 {
-			return CPUSummary{}, errIncomplete
+		if !ok || !good {
+			return CPUSummary{}, refuseCPU(CPURefusalReference)
+		}
+		if !reviewedMapping(path, executable) || mapping[2] >= mapping[3] || mapping[7] > 1 {
+			return CPUSummary{}, refuseCPU(CPURefusalSchema)
 		}
 		haveExecutable = haveExecutable || path == executable
 	}
 	if !haveExecutable {
-		return CPUSummary{}, errIncomplete
+		return CPUSummary{}, refuseCPU(CPURefusalSchema)
 	}
 	for _, function := range p.functions {
 		name, a := text(function[2])
 		system, b := text(function[3])
 		_, c := text(function[4])
-		if !a || !b || !c || name != system || function[5] > math.MaxInt64 {
-			return CPUSummary{}, errIncomplete
+		if !a || !b || !c {
+			return CPUSummary{}, refuseCPU(CPURefusalReference)
+		}
+		if name != system || function[5] > math.MaxInt64 {
+			return CPUSummary{}, refuseCPU(CPURefusalSchema)
 		}
 	}
 	for _, location := range p.locations {
 		if location.values[2] != 0 {
 			mapping, ok := p.mappings[location.values[2]]
 			if !ok || location.values[3] < mapping[2] || location.values[3] >= mapping[3] {
-				return CPUSummary{}, errIncomplete
+				return CPUSummary{}, refuseCPU(CPURefusalReference)
 			}
 		}
 		for _, line := range location.lines {
 			if _, ok := p.functions[line[1]]; !ok {
-				return CPUSummary{}, errIncomplete
+				return CPUSummary{}, refuseCPU(CPURefusalReference)
 			}
 		}
 	}
 	for _, present := range used {
 		if !present {
-			return CPUSummary{}, errIncomplete
+			return CPUSummary{}, refuseCPU(CPURefusalSchema)
 		}
 	}
 	summary := CPUSummary{DurationNanoseconds: p.duration}
@@ -450,7 +511,7 @@ func (p *cpuProfile) summarize(executable string) (CPUSummary, error) {
 	for _, sample := range p.samples {
 		count, cpu := sample.values[0], sample.values[1]
 		if count > math.MaxInt64/cpuPeriod || cpu != count*cpuPeriod || summary.CPUNanoseconds > math.MaxInt64-cpu || summary.Samples > math.MaxInt64-count {
-			return CPUSummary{}, errIncomplete
+			return CPUSummary{}, refuseCPU(CPURefusalAccounting)
 		}
 		summary.Samples += count
 		summary.CPUNanoseconds += cpu
@@ -460,11 +521,11 @@ func (p *cpuProfile) summarize(executable string) (CPUSummary, error) {
 		for _, id := range sample.locations {
 			location, ok := p.locations[id]
 			if !ok {
-				return CPUSummary{}, errIncomplete
+				return CPUSummary{}, refuseCPU(CPURefusalReference)
 			}
 			work += 1 + len(location.lines)
 			if work > maxStackRefs {
-				return CPUSummary{}, errIncomplete
+				return CPUSummary{}, refuseCPUWork(CPUBoundExpandedWork)
 			}
 			if len(location.lines) == 0 {
 				categories["unresolved"] = true
@@ -497,7 +558,7 @@ func (p *cpuProfile) summarize(executable string) (CPUSummary, error) {
 		}
 	}
 	if summary.Samples == 0 {
-		return CPUSummary{}, errIncomplete
+		return CPUSummary{}, refuseCPU(CPURefusalAccounting)
 	} // Too short is unavailable, not installer failure.
 	for _, bucket := range buckets {
 		summary.Buckets = append(summary.Buckets, *bucket)

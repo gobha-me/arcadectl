@@ -259,15 +259,17 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 							}
 							status := "capture-incomplete"
 							var summary *installerprofile.CPUSummary
+							var refusal installerprofile.CPURefusal
 							if diagnosticErr == nil && c.ProcessState != nil && c.ProcessState.Exited() {
-								parsed, parseErr := installerprofile.SummarizeCPU(body, binary)
+								parsed, reason, parseErr := installerprofile.SummarizeCPUWithDiagnostic(body, binary)
+								refusal = reason
 								status = "cpu-format-unavailable"
 								if parseErr == nil {
 									summary, status = &parsed, "available"
 								}
 							}
 							body = nil // No raw profile retention, artifact upload or fallback.
-							record, recordErr := installerBinaryCPURecordBytes(cpuSource, cpuBinaryDigest, profile.id, mode, command, outcome, status, cpuDirty, summary)
+							record, recordErr := installerBinaryCPURecordBytes(cpuSource, cpuBinaryDigest, profile.id, mode, command, outcome, status, cpuDirty, summary, refusal)
 							if recordErr != nil {
 								t.Fatal("closed current CPU summary custody unavailable")
 							}

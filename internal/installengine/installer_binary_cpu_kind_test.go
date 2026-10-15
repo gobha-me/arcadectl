@@ -70,15 +70,19 @@ type installerBinaryCPURecord struct {
 	CommandOutcome  string                       `json:"commandOutcome"`
 	Diagnostic      string                       `json:"diagnostic"`
 	FlushTimeliness string                       `json:"flushTimeliness"`
+	Refusal         installerprofile.CPURefusal  `json:"refusal"`
 	CPU             *installerprofile.CPUSummary `json:"cpu,omitempty"`
 }
 
-func installerBinaryCPURecordBytes(source, digest, profile, mode, command, outcome, diagnostic string, dirty bool, summary *installerprofile.CPUSummary) ([]byte, error) {
+func installerBinaryCPURecordBytes(source, digest, profile, mode, command, outcome, diagnostic string, dirty bool, summary *installerprofile.CPUSummary, refusal installerprofile.CPURefusal) ([]byte, error) {
 	hexadecimal := func(value string, size int) bool {
 		decoded, err := hex.DecodeString(value)
 		return err == nil && len(decoded) == size && value == strings.ToLower(value)
 	}
 	if !hexadecimal(source, 20) || !hexadecimal(digest, 32) || profile != installrender.Profile135 && profile != installrender.Profile137 || mode != "fresh" && mode != "transition" {
+		return nil, ErrFixtures
+	}
+	if !refusal.Valid() {
 		return nil, ErrFixtures
 	}
 	switch command {
@@ -93,21 +97,25 @@ func installerBinaryCPURecordBytes(source, digest, profile, mode, command, outco
 	}
 	switch diagnostic {
 	case "available":
-		if summary == nil || outcome == "terminated" || outcome == "launch-failure" {
+		if summary == nil || outcome == "terminated" || outcome == "launch-failure" || refusal != (installerprofile.CPURefusal{}) {
 			return nil, ErrFixtures
 		}
-	case "capture-incomplete", "cpu-format-unavailable":
-		if summary != nil {
+	case "capture-incomplete":
+		if summary != nil || refusal != (installerprofile.CPURefusal{}) {
+			return nil, ErrFixtures
+		}
+	case "cpu-format-unavailable":
+		if summary != nil || refusal.Stage == installerprofile.CPURefusalNone || outcome == "terminated" || outcome == "launch-failure" {
 			return nil, ErrFixtures
 		}
 	default:
 		return nil, ErrFixtures
 	}
 	return json.Marshal(installerBinaryCPURecord{
-		Format: "installer-child-cpu-summary-v1", Scope: "same-attempt-current-child-cpu-only",
+		Format: "installer-child-cpu-summary-v2", Scope: "same-attempt-current-child-cpu-only",
 		SourceSHA: source, SourceDirty: dirty, BinarySHA256: digest, Profile: profile, Mode: mode,
 		Command: command, CommandOutcome: outcome, Diagnostic: diagnostic,
-		FlushTimeliness: "not-certified", CPU: summary,
+		FlushTimeliness: "not-certified", Refusal: refusal, CPU: summary,
 	})
 }
 
@@ -115,7 +123,7 @@ func TestInstallerBinaryCPURecordClosedCustody(t *testing.T) {
 	source, digest := strings.Repeat("a", 40), strings.Repeat("b", 64)
 	for _, mode := range []string{"fresh", "transition"} {
 		for _, outcome := range []string{"success", "exit-failure", "terminated", "launch-failure"} {
-			body, err := installerBinaryCPURecordBytes(source, digest, installrender.Profile137, mode, "upgrade", outcome, "capture-incomplete", false, nil)
+			body, err := installerBinaryCPURecordBytes(source, digest, installrender.Profile137, mode, "upgrade", outcome, "capture-incomplete", false, nil, installerprofile.CPURefusal{})
 			if err != nil || !json.Valid(body) || !strings.Contains(string(body), `"flushTimeliness":"not-certified"`) {
 				t.Fatal("closed diagnostic custody unavailable or inferred timely flush")
 			}
@@ -128,12 +136,52 @@ func TestInstallerBinaryCPURecordClosedCustody(t *testing.T) {
 				values[i] = "PRIVATE-CANARY"
 			}
 		}
-		if _, err := installerBinaryCPURecordBytes(values[0], values[1], values[2], values[3], values[4], values[5], values[6], false, nil); err == nil {
+		if _, err := installerBinaryCPURecordBytes(values[0], values[1], values[2], values[3], values[4], values[5], values[6], false, nil, installerprofile.CPURefusal{}); err == nil {
 			t.Fatal("unreviewed diagnostic custody escaped fixed fields")
 		}
 	}
-	if _, err := installerBinaryCPURecordBytes(source, digest, installrender.Profile137, "transition", "upgrade", "exit-failure", "available", false, nil); err == nil {
+	if _, err := installerBinaryCPURecordBytes(source, digest, installrender.Profile137, "transition", "upgrade", "exit-failure", "available", false, nil, installerprofile.CPURefusal{}); err == nil {
 		t.Fatal("nil CPU record claimed available")
+	}
+}
+
+func TestInstallerBinaryCPURefusalRecordVersionAndClosedDomain(t *testing.T) {
+	source, digest := strings.Repeat("a", 40), strings.Repeat("b", 64)
+	summary := &installerprofile.CPUSummary{Samples: 1, CPUNanoseconds: 10000000, DurationNanoseconds: 1,
+		Buckets: []installerprofile.CPUBucket{{Category: "other", FlatNanoseconds: 10000000, CumulativeNanoseconds: 10000000}}}
+	body, err := installerBinaryCPURecordBytes(source, digest, installrender.Profile137, "fresh", "install", "success", "available", false, summary, installerprofile.CPURefusal{})
+	if err != nil || !strings.Contains(string(body), `"refusal":{"stage":0,"bound":0},"cpu":`) {
+		t.Fatal("available v2 zero-refusal summary unavailable")
+	}
+	classified := installerprofile.CPURefusal{Stage: installerprofile.CPURefusalSchema}
+	if _, err := installerBinaryCPURecordBytes(source, digest, installrender.Profile137, "fresh", "install", "success", "available", false, summary, classified); err == nil {
+		t.Fatal("available summary acquired a parser refusal")
+	}
+	for _, outcome := range []string{"terminated", "launch-failure"} {
+		if _, err := installerBinaryCPURecordBytes(source, digest, installrender.Profile137, "transition", "upgrade", outcome, "cpu-format-unavailable", false, nil, classified); err == nil {
+			t.Fatal("non-exited attempt claimed parser result")
+		}
+	}
+	for _, reason := range []installerprofile.CPURefusal{
+		{}, {Stage: 8}, {Bound: 1}, {Stage: installerprofile.CPURefusalWork},
+		{Stage: installerprofile.CPURefusalWork, Bound: 8}, {Stage: installerprofile.CPURefusalSchema, Bound: 1},
+	} {
+		if _, err := installerBinaryCPURecordBytes(source, digest, installrender.Profile137, "transition", "upgrade", "exit-failure", "cpu-format-unavailable", false, nil, reason); err == nil {
+			t.Fatal("unclassified or unreviewed numeric refusal accepted")
+		}
+	}
+	for stage := installerprofile.CPURefusalEnvelope; stage <= installerprofile.CPURefusalAccounting; stage++ {
+		reason := installerprofile.CPURefusal{Stage: stage}
+		if stage == installerprofile.CPURefusalWork {
+			reason.Bound = installerprofile.CPUBoundExpandedWork
+		}
+		body, err := installerBinaryCPURecordBytes(source, digest, installrender.Profile137, "transition", "upgrade", "exit-failure", "cpu-format-unavailable", false, nil, reason)
+		if err != nil || !strings.Contains(string(body), `"format":"installer-child-cpu-summary-v2"`) || strings.Contains(string(body), `"cpu":`) || !strings.Contains(string(body), `"refusal":{`) {
+			t.Fatal("versioned fixed refusal record unavailable or exposed CPU fallback")
+		}
+		if _, err := installerBinaryCPURecordBytes(source, digest, installrender.Profile137, "fresh", "install", "success", "capture-incomplete", false, nil, reason); err == nil {
+			t.Fatal("capture failure invented a parser refusal")
+		}
 	}
 }
 

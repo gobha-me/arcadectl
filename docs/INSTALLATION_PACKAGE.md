@@ -524,9 +524,19 @@ with literal reviewed category names can cross the output boundary. Serializatio
 also refuses caller-constructed unknown categories. Mapping checks are custody
 guards, not cryptographic executable certification.
 
-The fixed `installer-child-cpu-summary-v1` record binds candidate source/dirty
+The fixed `installer-child-cpu-summary-v2` record binds candidate source/dirty
 state, current executable SHA256, literal profile/mode/command and actual
-command outcome. A failed command can still have usable CPU samples; a too-short
+command outcome. Its `refusal` object contains only numeric `stage` and `bound`.
+Stage 0 means no parser refusal; 1 envelope, 2 expansion/trailing input,
+3 protobuf grammar, 4 references, 5 schema/privacy, 6 work bounds, and
+7 sample accounting. Only stage 6 has a nonzero bound: 1 fields, 2 records,
+3 stack depth, 4 stack references, 5 inline lines, 6 expanded attribution work,
+7 string bytes. Available and capture-incomplete records require both numbers
+zero; CPU-format-unavailable requires a reviewed nonzero stage and no CPU
+summary. These report the first check actually encountered, not a unique cause
+for multifault input or evidence of the installer's timeout cause. Historic v1
+records remain v1; strict consumers must select the matching record version.
+A failed command can still have usable CPU samples; a too-short
 or killed command may have none. Unavailable diagnostics never replace the
 installer's result: if private capture setup fails before launch, the same
 unmodified command runs exactly once without profiling. No raw fallback is
