@@ -11,7 +11,6 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"reflect"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -103,7 +102,7 @@ func (w *fixtureWire) localCurrent() error {
 		return ErrFixtures
 	}
 	f, s := w.ledger, w.actors.request.Snapshot
-	if s == nil || !bytes.Equal(f.document.Journal, s.Bytes()) || f.document.JournalResourceVersion != s.ResourceVersion() {
+	if s == nil || !s.MatchesJournalBytes(f.document.Journal) || f.document.JournalResourceVersion != s.ResourceVersion() {
 		return ErrFixtures
 	}
 	if f.document.OriginalWorldsSHA256 != "" && f.originalWorldsCurrent() != nil {
@@ -113,8 +112,7 @@ func (w *fixtureWire) localCurrent() error {
 	if err != nil || identity != f.identity || !bytes.Equal(body, f.body) || f.engine.files.ConfirmDurable(f.name, identity) != nil {
 		return ErrFixtures
 	}
-	d, err := f.decodeCurrentWAL(body)
-	if err != nil || !reflect.DeepEqual(d, f.document) {
+	if f.checkCurrentWAL(body) != nil {
 		return ErrFixtures
 	}
 	return nil

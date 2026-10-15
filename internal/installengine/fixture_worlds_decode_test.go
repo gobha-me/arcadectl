@@ -40,7 +40,7 @@ func testFixtureWorldsShapeCache(t *testing.T) {
 			}
 			for repeat := 0; repeat < 2; repeat++ {
 				got, err := f.decodeWorlds(body)
-				if err != nil || !reflect.DeepEqual(got, want) {
+				if err != nil || !reflect.DeepEqual(got, want) || f.checkWorlds(body) != nil {
 					t.Fatal("legacy miss/hit differs from strict decoder")
 				}
 			}
@@ -62,7 +62,7 @@ func testFixtureWorldsShapeCache(t *testing.T) {
 		t.Fatal("v3 strict companion unavailable")
 	}
 	got, err := f.decodeWorlds(body)
-	if err != nil || !reflect.DeepEqual(want, got) || !bytes.Equal(f.decodeCache.worldsBody, body) {
+	if err != nil || !reflect.DeepEqual(want, got) || !bytes.Equal(f.decodeCache.worldsBody, body) || f.checkWorlds(body) != nil {
 		t.Fatal("bound companion differs from strict parse")
 	}
 	pin := &f.decodeCache.worldsBody[0]
@@ -92,7 +92,7 @@ func testFixtureWorldsShapeCache(t *testing.T) {
 	for repeat := 0; repeat < 3; repeat++ {
 		poison(&got)
 		got, err = f.decodeWorlds(body)
-		if err != nil || !reflect.DeepEqual(want, got) || &f.decodeCache.worldsBody[0] != pin {
+		if err != nil || !reflect.DeepEqual(want, got) || &f.decodeCache.worldsBody[0] != pin || f.checkWorlds(body) != nil {
 			t.Fatal("miss/hit result poisoned owned shape or exact hit not reused")
 		}
 	}
@@ -100,13 +100,13 @@ func testFixtureWorldsShapeCache(t *testing.T) {
 	if bytes.Equal(body, f.decodeCache.worldsBody) {
 		t.Fatal("input aliases cache key")
 	}
-	if _, err := f.decodeWorlds(body); err != ErrFixtures {
+	if _, err := f.decodeWorlds(body); err != ErrFixtures || f.checkWorlds(body) != ErrFixtures {
 		t.Fatal("changed malformed input reused a prior hit")
 	}
 	body[0] = '{'
 	for _, malformed := range [][]byte{nil, []byte("null"), append(bytes.Clone(body), ' '), append([]byte(`{"unknown":true,`), body[1:]...), append([]byte(`{"version":"original-worlds-v1",`), body[1:]...)} {
 		for repeat := 0; repeat < 2; repeat++ {
-			if _, err := f.decodeWorlds(malformed); err != ErrFixtures || !bytes.Equal(f.decodeCache.worldsBody, body) {
+			if _, err := f.decodeWorlds(malformed); err != ErrFixtures || f.checkWorlds(malformed) != ErrFixtures || !bytes.Equal(f.decodeCache.worldsBody, body) {
 				t.Fatal("malformed/noncanonical parse remembered or accepted")
 			}
 		}
@@ -135,7 +135,7 @@ func testFixtureWorldsShapeCache(t *testing.T) {
 			t.Fatal("foreign binding shape control unavailable", field)
 		}
 		for repeat := 0; repeat < 2; repeat++ {
-			if _, err := f.decodeWorlds(foreign); err != ErrFixtures {
+			if _, err := f.decodeWorlds(foreign); err != ErrFixtures || f.checkWorlds(foreign) != ErrFixtures {
 				t.Fatal("warm pure shape bypassed current binding", field)
 			}
 		}
@@ -163,7 +163,7 @@ func testFixtureWorldsShapeCache(t *testing.T) {
 		if _, err := f.worldsJournal(); err != nil {
 			t.Fatal("fresh changed WAL/journal control did not reach binding", field)
 		}
-		if _, err := f.decodeWorlds(body); err != ErrFixtures {
+		if _, err := f.decodeWorlds(body); err != ErrFixtures || f.checkWorlds(body) != ErrFixtures {
 			t.Fatal("changed current WAL reused original companion binding", field)
 		}
 		f.body, f.document = originalBody, originalDocument
@@ -222,13 +222,13 @@ func testFixtureWorldsShapeCache(t *testing.T) {
 			if got, err := f.decodeCurrentWorldsShape(large, ns); err != nil || !reflect.DeepEqual(got, d) || (f.decodeCache.worldsBody != nil) != (size <= fixtureWorldsDecodeRetentionBytes) {
 				t.Fatal("retention ceiling changed pure decoding or accumulated entries")
 			}
-			if _, err := f.decodeWorlds(large); err != ErrFixtures {
+			if _, err := f.decodeWorlds(large); err != ErrFixtures || f.checkWorlds(large) != ErrFixtures {
 				t.Fatal("large shape acquired journal binding")
 			}
 		}
 	}
 	oversize := make([]byte, privatefs.MaxEvidenceFileBytes+1)
-	if _, err := f.decodeWorlds(oversize); err != ErrFixtures {
+	if _, err := f.decodeWorlds(oversize); err != ErrFixtures || f.checkWorlds(oversize) != ErrFixtures {
 		t.Fatal("evidence validity ceiling expanded")
 	}
 	if _, err := f.decodeWorlds(body); err != nil || !bytes.Equal(f.decodeCache.worldsBody, body) {
@@ -259,7 +259,7 @@ func testFixtureWorldsShapeCache(t *testing.T) {
 	ack, effect := f.ackSlot, f.effectSlot
 	publication, completion, floor := f.worldPublication, f.behaviorCompletion, f.phaseFloor
 	for repeat := 0; repeat < 3; repeat++ {
-		if _, err := f.decodeWorlds(body); err != nil {
+		if _, err := f.decodeWorlds(body); err != nil || f.checkWorlds(body) != nil {
 			t.Fatal("pure bound hit unavailable")
 		}
 	}
@@ -269,7 +269,7 @@ func testFixtureWorldsShapeCache(t *testing.T) {
 	if f.close() != nil || f.decodeCache.worldsBody != nil || f.decodeCache.worldsNS != "" || !reflect.DeepEqual(f.decodeCache.worlds, fixtureWorldsDocument{}) {
 		t.Fatal("close retained companion materialization")
 	}
-	if _, err := f.decodeWorlds(body); err != ErrFixtures {
+	if _, err := f.decodeWorlds(body); err != ErrFixtures || f.checkWorlds(body) != ErrFixtures {
 		t.Fatal("closed ledger acquired cached evidence")
 	}
 }

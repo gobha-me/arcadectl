@@ -65,19 +65,19 @@ func (f *fixtureLedger) worldsJournal() (*installstate.Document, error) {
 }
 
 func (f *fixtureLedger) originalWorldsName() (string, error) {
-	d, err := f.worldsJournal()
+	_, installationID, err := f.worldsJournalIdentity()
 	if err != nil {
 		return "", ErrFixtures
 	}
-	return "admission-worlds-" + d.InstallationID + "-" + f.document.RunID + ".json", nil
+	return "admission-worlds-" + installationID + "-" + f.document.RunID + ".json", nil
 }
 
 func (f *fixtureLedger) worldsBody(d fixtureWorldsDocument) ([]byte, error) {
-	journal, err := f.worldsJournal()
+	namespace, _, err := f.worldsJournalIdentity()
 	if err != nil || !f.worldsBindingMatches(d) {
 		return nil, ErrFixtures
 	}
-	return fixtureWorldsShapeBody(d, journal.Namespace)
+	return fixtureWorldsShapeBody(d, namespace)
 }
 
 // Current WAL/journal binding is never memoized with the immutable shape.
@@ -177,13 +177,13 @@ func (f *fixtureLedger) decodeWorlds(body []byte) (fixtureWorldsDocument, error)
 	if len(body) == 0 || int64(len(body)) > privatefs.MaxEvidenceFileBytes {
 		return fixtureWorldsDocument{}, ErrFixtures
 	}
-	// worldsJournal uses the decode-cache mutex itself. Revalidate the current
+	// worldsJournalIdentity uses the decode-cache mutex itself. Revalidate the current
 	// WAL and sealed journal BEFORE entering the pure shape-cache critical section.
-	journal, err := f.worldsJournal()
+	namespace, _, err := f.worldsJournalIdentity()
 	if err != nil {
 		return fixtureWorldsDocument{}, ErrFixtures
 	}
-	d, err := f.decodeCurrentWorldsShape(body, journal.Namespace)
+	d, err := f.decodeCurrentWorldsShape(body, namespace)
 	if err != nil || !f.worldsBindingMatches(d) {
 		return fixtureWorldsDocument{}, ErrFixtures
 	}
@@ -271,6 +271,12 @@ func (f *fixtureLedger) loadOriginalWorlds() (fixtureWorldsDocument, error) {
 }
 
 func (f *fixtureLedger) readOriginalWorlds(pin bool) (fixtureWorldsDocument, error) {
+	return f.readOriginalWorldsMode(pin, true)
+}
+
+// Both modes retain every original protected-file check in the same order.
+// Only materialization differs: check-only never exposes cached document data.
+func (f *fixtureLedger) readOriginalWorldsMode(pin, materialize bool) (fixtureWorldsDocument, error) {
 	if f == nil || f.lock == nil || f.worldPublication || f.document.OriginalWorldsSHA256 == "" || !pin && f.worldIdentity == nil || f.originalWorldsWALCurrent() != nil {
 		return fixtureWorldsDocument{}, ErrFixtures
 	}
@@ -282,8 +288,17 @@ func (f *fixtureLedger) readOriginalWorlds(pin bool) (fixtureWorldsDocument, err
 	if err != nil || fixtureWorldDigest(body) != f.document.OriginalWorldsSHA256 || f.worldIdentity != nil && identity != *f.worldIdentity || f.engine.files.ConfirmEvidenceDurable(name, identity) != nil {
 		return fixtureWorldsDocument{}, ErrFixtures
 	}
-	d, err := f.decodeWorlds(body)
-	if err != nil || d.Phase != nil && !fixtureAccountsRecipeMatches(f.document, d.Phase) || d.Phase == nil && f.document.Recipe == fixtureRecipeV3 || f.originalWorldsWALCurrent() != nil {
+	var d fixtureWorldsDocument
+	if materialize {
+		d, err = f.decodeWorlds(body)
+		if err == nil && (d.Phase != nil && !fixtureAccountsRecipeMatches(f.document, d.Phase) || d.Phase == nil && f.document.Recipe == fixtureRecipeV3) {
+			err = ErrFixtures
+		}
+	} else {
+		// worldsBindingMatches includes the same phase/recipe/account checks.
+		err = f.checkWorlds(body)
+	}
+	if err != nil || f.originalWorldsWALCurrent() != nil {
 		return fixtureWorldsDocument{}, ErrFixtures
 	}
 	if pin {
@@ -299,8 +314,7 @@ func (f *fixtureLedger) originalWorldsWALCurrent() error {
 	if f == nil || f.engine == nil || f.engine.files == nil || f.lock == nil {
 		return ErrFixtures
 	}
-	d, err := f.decodeCurrentWAL(f.body)
-	if err != nil || !reflect.DeepEqual(d, f.document) {
+	if f.checkCurrentWAL(f.body) != nil {
 		return ErrFixtures
 	}
 	body, identity, err := f.engine.files.Read(f.name, fixtureLedgerMaxBytes)
@@ -311,7 +325,7 @@ func (f *fixtureLedger) originalWorldsWALCurrent() error {
 }
 
 func (f *fixtureLedger) originalWorldsCurrent() error {
-	_, err := f.readOriginalWorlds(false)
+	_, err := f.readOriginalWorldsMode(false, false)
 	return err
 }
 

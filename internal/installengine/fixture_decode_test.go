@@ -15,6 +15,9 @@ import (
 
 func TestFixtureDecodeCacheExactBytesCopiesAndBoundedLifetime(t *testing.T) {
 	t.Run("worlds-shape", testFixtureWorldsShapeCache)
+	t.Run("worlds-guard-copy-oracle", testFixtureWorldsGuardCopyOracle)
+	t.Run("worlds-guard-fences", testFixtureWorldsGuardFences)
+	t.Run("worlds-guard-phase-cost", testFixtureWorldsGuardPhaseCost)
 	h := newFixture(t, false)
 	f, err := h.engine.prepareFixtureLedger(t.Context(), h.snapshot)
 	if err != nil {

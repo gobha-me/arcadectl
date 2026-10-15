@@ -13,6 +13,30 @@ import (
 
 // Synthetic encodings exercise byte comparison, not journal acceptance.
 func TestSnapshotSameJournalBytesIsOnlyExactByteComparison(t *testing.T) {
+	t.Run("caller-owned-bytes", func(t *testing.T) {
+		var absent *Snapshot
+		if absent.MatchesJournalBytes(nil) {
+			t.Fatal("nil observation matched bytes")
+		}
+		for _, original := range [][]byte{nil, {}, []byte("sealed"), []byte(`{"revision":1}`)} {
+			s := &Snapshot{body: bytes.Clone(original)}
+			for _, input := range [][]byte{nil, {}, bytes.Clone(original), []byte("foreign"), append(bytes.Clone(original), ' ')} {
+				if s.MatchesJournalBytes(input) != bytes.Equal(s.Bytes(), input) {
+					t.Fatal("caller-owned comparison changed exact byte semantics")
+				}
+			}
+			input := s.Bytes()
+			if !s.MatchesJournalBytes(input) {
+				t.Fatal("sealed bytes do not match defensive encoding")
+			}
+			if len(input) > 0 {
+				input[0] ^= 1
+				if s.MatchesJournalBytes(input) || !bytes.Equal(s.Bytes(), original) {
+					t.Fatal("comparison retained mutable input or exposed sealed bytes")
+				}
+			}
+		}
+	})
 	body := []byte(`{"revision":1,"stage":"applying"}`)
 	s := &Snapshot{body: bytes.Clone(body), namespace: &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{ResourceVersion: "1"}}}
 	var absent *Snapshot
@@ -50,7 +74,7 @@ func TestSnapshotSameJournalBytesKeepsDefensiveCopiesAndConcurrency(t *testing.T
 			for range 100 {
 				copy := s.Bytes()
 				copy[0] ^= 1
-				if !s.SameJournalBytes(other) || !other.SameJournalBytes(s) || string(s.Bytes()) != "sealed-journal" {
+				if !s.SameJournalBytes(other) || !other.SameJournalBytes(s) || !s.MatchesJournalBytes(other.Bytes()) || s.MatchesJournalBytes(copy) || string(s.Bytes()) != "sealed-journal" {
 					t.Fatal("comparison exposed or changed immutable backing bytes")
 				}
 			}
@@ -67,5 +91,11 @@ func TestSnapshotSameJournalBytesDoesNotAllocate(t *testing.T) {
 	old := testing.AllocsPerRun(100, func() { snapshotBytesComparisonResult = bytes.Equal(s.Bytes(), other.Bytes()) })
 	if got != 0 || old <= got || !snapshotBytesComparisonResult {
 		t.Fatalf("byte comparison allocations new=%g defensive-copy control=%g", got, old)
+	}
+	input := bytes.Clone(s.body)
+	got = testing.AllocsPerRun(100, func() { snapshotBytesComparisonResult = s.MatchesJournalBytes(input) })
+	old = testing.AllocsPerRun(100, func() { snapshotBytesComparisonResult = bytes.Equal(s.Bytes(), input) })
+	if got != 0 || old <= got || !snapshotBytesComparisonResult {
+		t.Fatalf("owned-byte comparison allocations new=%g defensive-copy control=%g", got, old)
 	}
 }

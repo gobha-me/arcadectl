@@ -351,7 +351,7 @@ func TestFixtureOriginalWorldsPerKindBoundsAndLargeEvidence(t *testing.T) {
 		t.Fatal("large companion did not exercise distinct evidence limit")
 	}
 	d, err := ledger.loadOriginalWorlds()
-	if err != nil || len(d.Rows) != installsafety.MaxObjectsPerList || ledger.decodeCache.worldsBody != nil {
+	if err != nil || len(d.Rows) != installsafety.MaxObjectsPerList || ledger.decodeCache.worldsBody != nil || ledger.originalWorldsCurrent() != nil || ledger.decodeCache.worldsBody != nil {
 		t.Fatal("large original inventory lost members")
 	}
 	extra := rows[len(rows)-1]

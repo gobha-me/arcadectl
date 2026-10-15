@@ -120,6 +120,13 @@ func (s *Snapshot) SameJournalBytes(other *Snapshot) bool {
 	return s != nil && other != nil && bytes.Equal(s.body, other.body)
 }
 
+// MatchesJournalBytes compares only the sealed encoding with caller-owned
+// bytes. It neither retains nor exposes backing storage and grants no identity,
+// resourceVersion, freshness or authority. Nil observations never match.
+func (s *Snapshot) MatchesJournalBytes(body []byte) bool {
+	return s != nil && bytes.Equal(s.body, body)
+}
+
 func New(namespaces NamespaceAccess, plans ...*installrender.Plan) (*Store, error) {
 	if namespaces == nil || reflect.ValueOf(namespaces).Kind() == reflect.Pointer && reflect.ValueOf(namespaces).IsNil() || len(plans) < 1 || !plans[0].IsTrusted() {
 		return nil, ErrInvalid

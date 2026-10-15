@@ -5,12 +5,14 @@ package installengine
 
 import (
 	"bytes"
+	"reflect"
 	"slices"
 	"sync"
 
 	"github.com/gobha-me/arcadectl/internal/installbaseline"
 	"github.com/gobha-me/arcadectl/internal/installrender"
 	"github.com/gobha-me/arcadectl/internal/installstate"
+	"github.com/gobha-me/arcadectl/internal/privatefs"
 )
 
 // One WAL, embedded journal and bounded companion shape, local to this ledger
@@ -97,15 +99,29 @@ func (f *fixtureLedger) decodeCurrentWorldsShape(body []byte, namespace string) 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.bind(f.engine)
+	d, err := c.worldsLocked(body, namespace)
+	if err != nil {
+		return fixtureWorldsDocument{}, err
+	}
+	if len(body) > fixtureWorldsDecodeRetentionBytes {
+		return d, nil // strict uncached parse; no cache-owned graph to expose
+	}
+	return cloneFixtureWorldsDocument(d), nil
+}
+
+// These locked decoders return borrowed pure values ONLY while the cache mutex
+// is held. Document-returning callers must clone before unlocking; check-only
+// callers may compare them there but cannot expose a slice/pointer or a permit.
+func (c *fixtureDecodeCache) worldsLocked(body []byte, namespace string) (fixtureWorldsDocument, error) {
 	if c.worldsBody != nil && c.worldsNS == namespace && bytes.Equal(body, c.worldsBody) {
-		return cloneFixtureWorldsDocument(c.worlds), nil
+		return c.worlds, nil
 	}
 	d, err := decodeFixtureWorldsShape(body, namespace)
 	if err != nil {
 		return fixtureWorldsDocument{}, ErrFixtures
 	}
 	if len(body) <= fixtureWorldsDecodeRetentionBytes {
-		c.worldsBody, c.worldsNS, c.worlds = bytes.Clone(body), namespace, cloneFixtureWorldsDocument(d)
+		c.worldsBody, c.worldsNS, c.worlds = bytes.Clone(body), namespace, d
 	} else {
 		c.worldsBody, c.worldsNS, c.worlds = nil, "", fixtureWorldsDocument{}
 	}
@@ -164,15 +180,23 @@ func (f *fixtureLedger) decodeCurrentWAL(body []byte) (fixtureLedgerDocument, er
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.bind(f.engine)
+	d, err := c.walLocked(f, body)
+	if err != nil {
+		return fixtureLedgerDocument{}, err
+	}
+	return cloneFixtureLedgerDocument(d), nil
+}
+
+func (c *fixtureDecodeCache) walLocked(f *fixtureLedger, body []byte) (fixtureLedgerDocument, error) {
 	if bytes.Equal(body, c.walBody) {
-		return cloneFixtureLedgerDocument(c.wal), nil
+		return c.wal, nil
 	}
 	d, err := f.engine.decodeFixtureLedger(body) // unchanged strict decoder on EVERY miss
 	if err != nil {
 		return fixtureLedgerDocument{}, ErrFixtures // never remember a refused decode
 	}
-	c.walBody, c.wal = bytes.Clone(body), cloneFixtureLedgerDocument(d)
-	return d, nil // the retained copy cannot be changed through this result
+	c.walBody, c.wal = bytes.Clone(body), d
+	return d, nil
 }
 
 func (f *fixtureLedger) decodeCurrentJournal(body []byte) (installstate.Document, error) {
@@ -183,8 +207,16 @@ func (f *fixtureLedger) decodeCurrentJournal(body []byte) (installstate.Document
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.bind(f.engine)
+	d, err := c.journalLocked(f, body)
+	if err != nil {
+		return installstate.Document{}, err
+	}
+	return cloneFixtureJournalDocument(d), nil
+}
+
+func (c *fixtureDecodeCache) journalLocked(f *fixtureLedger, body []byte) (installstate.Document, error) {
 	if bytes.Equal(body, c.journalBody) {
-		return cloneFixtureJournalDocument(c.journal), nil
+		return c.journal, nil
 	}
 	plans := make([]*installrender.Plan, 0, len(f.engine.plans))
 	for _, plan := range f.engine.plans {
@@ -194,8 +226,66 @@ func (f *fixtureLedger) decodeCurrentJournal(body []byte) (installstate.Document
 	if err != nil {
 		return installstate.Document{}, ErrFixtures
 	}
-	c.journalBody, c.journal = bytes.Clone(body), cloneFixtureJournalDocument(d)
+	c.journalBody, c.journal = bytes.Clone(body), d
 	return d, nil
+}
+
+// This is only the strict current in-memory WAL comparison. File identity,
+// exact bytes and durability remain the caller's fresh checks at each boundary.
+func (f *fixtureLedger) checkCurrentWAL(body []byte) error {
+	if f == nil || f.engine == nil || f.lock == nil || len(body) == 0 || len(body) > fixtureLedgerMaxBytes {
+		return ErrFixtures
+	}
+	c := &f.decodeCache
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.bind(f.engine)
+	d, err := c.walLocked(f, body)
+	if err != nil || !reflect.DeepEqual(d, f.document) {
+		return ErrFixtures
+	}
+	return nil
+}
+
+// Only immutable scalar identifiers escape. This has the same strict current
+// WAL/journal binding as worldsJournal, without copying a graph just to name or
+// validate the companion. No filesystem, HTTP or authorization result is cached.
+func (f *fixtureLedger) worldsJournalIdentity() (namespace, installationID string, err error) {
+	if f == nil || f.engine == nil || f.lock == nil || len(f.body) == 0 || len(f.body) > fixtureLedgerMaxBytes {
+		return "", "", ErrFixtures
+	}
+	c := &f.decodeCache
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.bind(f.engine)
+	wal, err := c.walLocked(f, f.body)
+	if err != nil || !reflect.DeepEqual(wal, f.document) || len(wal.Journal) == 0 || len(wal.Journal) > installstate.MaxBytes {
+		return "", "", ErrFixtures
+	}
+	d, err := c.journalLocked(f, wal.Journal)
+	if err != nil {
+		return "", "", ErrFixtures
+	}
+	return d.Namespace, d.InstallationID, nil
+}
+
+func (f *fixtureLedger) checkWorlds(body []byte) error {
+	if len(body) == 0 || int64(len(body)) > privatefs.MaxEvidenceFileBytes {
+		return ErrFixtures
+	}
+	namespace, _, err := f.worldsJournalIdentity()
+	if err != nil {
+		return ErrFixtures
+	}
+	c := &f.decodeCache
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.bind(f.engine)
+	d, err := c.worldsLocked(body, namespace)
+	if err != nil || !f.worldsBindingMatches(d) {
+		return ErrFixtures
+	}
+	return nil
 }
 
 func (c *fixtureDecodeCache) clearWAL() {

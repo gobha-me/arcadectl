@@ -88,7 +88,7 @@ func (d *fixtureAdmissionDriver) unchangedLocked(ctx context.Context, seal fixtu
 	}
 	s := w.actors.request.Snapshot
 	fresh, err := f.engine.journal.Load(ctx, s.Anchor())
-	if err != nil || !bytes.Equal(fresh.Bytes(), s.Bytes()) || fresh.ResourceVersion() != s.ResourceVersion() {
+	if err != nil || !fresh.SameJournalBytes(s) || fresh.ResourceVersion() != s.ResourceVersion() {
 		return ErrFixtures
 	}
 	// Close local-file checks AFTER the remote actor/policy/journal reads.
@@ -96,8 +96,7 @@ func (d *fixtureAdmissionDriver) unchangedLocked(ctx context.Context, seal fixtu
 	if err != nil || identity != seal.identity || !bytes.Equal(body, seal.body) || f.engine.files.ConfirmDurable(f.name, identity) != nil || f.originalWorldsCurrent() != nil || f.worldIdentity == nil || *f.worldIdentity != seal.worldID {
 		return ErrFixtures
 	}
-	decoded, err := f.decodeCurrentWAL(body)
-	if err != nil || !reflect.DeepEqual(decoded, f.document) || f.identity != seal.identity || !bytes.Equal(f.body, seal.body) || f.document.Revision != seal.revision {
+	if f.checkCurrentWAL(body) != nil || f.identity != seal.identity || !bytes.Equal(f.body, seal.body) || f.document.Revision != seal.revision {
 		return ErrFixtures
 	}
 	return nil
