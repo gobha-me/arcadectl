@@ -108,8 +108,8 @@ func (w *fixtureWire) localCurrent() error {
 	if f.document.OriginalWorldsSHA256 != "" && f.originalWorldsCurrent() != nil {
 		return ErrFixtures
 	}
-	body, identity, err := f.engine.files.Read(f.name, fixtureLedgerMaxBytes)
-	if err != nil || identity != f.identity || !bytes.Equal(body, f.body) || f.engine.files.ConfirmDurable(f.name, identity) != nil {
+	body, identity := f.body, f.identity
+	if f.engine.files.MatchOriginal(f.name, fixtureLedgerMaxBytes, body, identity) != nil || f.engine.files.ConfirmDurable(f.name, identity) != nil {
 		return ErrFixtures
 	}
 	if f.checkCurrentWAL(body) != nil {

@@ -317,8 +317,8 @@ func (f *fixtureLedger) originalWorldsWALCurrent() error {
 	if f.checkCurrentWAL(f.body) != nil {
 		return ErrFixtures
 	}
-	body, identity, err := f.engine.files.Read(f.name, fixtureLedgerMaxBytes)
-	if err != nil || identity != f.identity || !bytes.Equal(body, f.body) || f.engine.files.ConfirmDurable(f.name, identity) != nil {
+	body, identity := f.body, f.identity
+	if f.engine.files.MatchOriginal(f.name, fixtureLedgerMaxBytes, body, identity) != nil || f.engine.files.ConfirmDurable(f.name, identity) != nil {
 		return ErrFixtures
 	}
 	return nil
