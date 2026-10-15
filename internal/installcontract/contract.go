@@ -350,11 +350,14 @@ func (t *Template) matchWithAdmissionResult(object *unstructured.Unstructured, j
 	case *admissionv1.ValidatingAdmissionPolicy:
 		o.Status = admissionv1.ValidatingAdmissionPolicyStatus{}
 	}
-	expected := t.expected.DeepCopyObject()
 	// Strict decoding and the raw CRD comparison have already rejected unknown
 	// fields. Kubernetes semantic equality additionally compares quantities by
 	// numeric value, including different formats (64Mi == 67108864 bytes).
-	if !apiequality.Semantic.DeepEqual(expected, actual) {
+	// The privately compiled expected graph is immutable, and the pinned
+	// semantic comparison reads both operands without mutating them. Only the
+	// independently decoded actual graph above is normalized; do not allocate
+	// another whole signed object merely to read it during this comparison.
+	if !apiequality.Semantic.DeepEqual(t.expected, actual) {
 		return ErrDrift
 	}
 	if admissionResult != nil {
