@@ -6,12 +6,75 @@ package installobserve
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
+
+func TestWholeLeasePagesDiagnosticPreservesReadsBudgetGraphAndTarget(t *testing.T) {
+	for _, fault := range []string{"", "late-denial", "page-rv", "unknown-field", "row-identity", "row-owner", "cancelled", "expired"} {
+		t.Run(fault, func(t *testing.T) {
+			h := newGCHTTPFixture(t, "lease-last")
+			h.wholeFault = fault
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if fault == "cancelled" {
+				cancel()
+			} else if fault == "expired" {
+				var expire context.CancelFunc
+				ctx, expire = context.WithTimeout(t.Context(), 0)
+				defer expire()
+			}
+			plain, recorded := &coordinationv1.LeaseList{}, &coordinationv1.LeaseList{}
+			first := collection{"coordination.k8s.io/v1", "Lease", "leases", true, plain}
+			second := collection{"coordination.k8s.io/v1", "Lease", "leases", true, recorded}
+			firstGraph := newOwnerGraph(h.g.observer, nil, []collection{first})
+			secondGraph := newOwnerGraph(h.g.observer, nil, []collection{second})
+			firstBudget, secondBudget := maxCollectionBytes, maxCollectionBytes
+			firstErr := h.g.observer.collectList(ctx, first, firstGraph, &firstBudget)
+			firstReads, firstLists := h.wholeReads, h.lists
+			calls, reason := 0, pagesRefusalUnknown
+			secondErr := h.g.observer.collectListWithPagesDiagnostic(ctx, second, secondGraph, &secondBudget, func(value pagesRefusalReason) {
+				calls++
+				reason = value
+				h.g.recordPagesRefusal(value, ctx, t.Context())
+			})
+			if firstErr != secondErr || firstBudget != secondBudget || !reflect.DeepEqual(plain, recorded) || !reflect.DeepEqual(firstGraph, secondGraph) || h.wholeReads-firstReads != firstReads || h.lists-firstLists != firstLists {
+				t.Fatal("diagnostic altered requests, error, budget, graph or typed target")
+			}
+			wantCalls, wantReason, wantReads := 0, pagesRefusalUnknown, 2
+			wantSnapshot := "reason=unknown inner=unknown caller=unknown"
+			switch fault {
+			case "late-denial":
+				wantCalls, wantReason = 1, pagesRefusalFetch
+				wantSnapshot = "reason=fetch-unclassified inner=active caller=active"
+			case "page-rv":
+				wantCalls, wantReason = 1, pagesRefusalIdentity
+				wantSnapshot = "reason=identity inner=active caller=active"
+			case "cancelled", "expired":
+				wantCalls, wantReason, wantReads = 1, pagesRefusalContext, 0
+				wantSnapshot = "reason=context inner=cancelled caller=active"
+				if fault == "expired" {
+					wantSnapshot = "reason=context inner=deadline caller=active"
+				}
+			}
+			if calls != wantCalls || reason != wantReason || firstReads != wantReads || (firstErr == nil) != (fault == "") {
+				t.Fatal("callback or original refusal/read semantics changed", calls, firstReads)
+			}
+			if fault == "" && (firstBudget >= maxCollectionBytes || len(recorded.Items) != 129 || len(secondGraph.nodes) != 129) {
+				t.Fatal("successful full original collection was not preserved")
+			}
+			cancel() // a later cancellation must not rewrite refusal-time states
+			if h.g.DiagnosticPagesRefusal() != wantSnapshot {
+				t.Fatal("refusal snapshot changed after cancellation", h.g.DiagnosticPagesRefusal())
+			}
+		})
+	}
+}
 
 func TestGCPagesDiagnosticClosedStatesAndRefusalTimeSnapshot(t *testing.T) {
 	g := &GCReader{}

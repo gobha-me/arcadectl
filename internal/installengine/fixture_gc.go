@@ -108,6 +108,7 @@ func (w *fixtureWire) gcMetadataAttempt(ctx context.Context, pairLeases bool, re
 			step = admissionPhaseGCGraphBound
 		case "lease-pages":
 			step = admissionPhaseGCLeasePages
+			recordPages(reader.DiagnosticPagesRefusal())
 		case "lease-membership":
 			step = admissionPhaseGCLeaseMembership
 		case "lease-correlation":

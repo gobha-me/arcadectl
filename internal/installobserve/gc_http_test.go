@@ -192,6 +192,10 @@ func newGCHTTPFixture(t *testing.T, fault string) *gcHTTPFixture {
 						m.Name = "foreign-name"
 					case "owner":
 						m.OwnerReferences = []metav1.OwnerReference{{APIVersion: "v1", Kind: "Pod", Name: "foreign", UID: "foreign"}}
+					case "row-identity":
+						m.UID = ""
+					case "row-owner":
+						m.OwnerReferences = []metav1.OwnerReference{{APIVersion: "../v1", Kind: "Pod", Name: "foreign", UID: "foreign"}}
 					}
 				}
 				page.Items = append(page.Items, coordinationv1.Lease{TypeMeta: metav1.TypeMeta{APIVersion: "coordination.k8s.io/v1", Kind: "Lease"}, ObjectMeta: m})
@@ -481,6 +485,15 @@ func TestGCReaderPairedLeasesCompleteStrictAndSealed(t *testing.T) {
 			}
 			if h.g.DiagnosticStage() != stages[fault] {
 				t.Fatal("fixed diagnostic did not identify the actual collection boundary", h.g.DiagnosticStage())
+			}
+			wantPages := "reason=unknown inner=unknown caller=unknown"
+			if fault == "late-denial" {
+				wantPages = "reason=fetch-unclassified inner=active caller=active"
+			} else if fault == "page-rv" {
+				wantPages = "reason=identity inner=active caller=active"
+			}
+			if h.g.DiagnosticPagesRefusal() != wantPages || h.wholeReads != 2 {
+				t.Fatal("whole Lease pages diagnostic changed or invented a later refusal", h.g.DiagnosticPagesRefusal(), h.wholeReads)
 			}
 			if err != nil {
 				return

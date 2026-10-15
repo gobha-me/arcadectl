@@ -439,7 +439,9 @@ func (g *GCReader) collect(ctx context.Context, discovery *GCDiscovery, pairLeas
 			leases = &coordinationv1.LeaseList{}
 			c := collection{"coordination.k8s.io/v1", "Lease", "leases", true, leases}
 			g.diagnostic.Store(gcStageLeasePages)
-			if g.observer.collectList(ctx, c, newOwnerGraph(g.observer, nil, []collection{c}), sharedBudget) != nil {
+			if g.observer.collectListWithPagesDiagnostic(ctx, c, newOwnerGraph(g.observer, nil, []collection{c}), sharedBudget, func(reason pagesRefusalReason) {
+				g.recordPagesRefusal(reason, ctx, callerCtx)
+			}) != nil {
 				return nil, ErrRead
 			}
 			leasesReadAt = time.Now().UTC()

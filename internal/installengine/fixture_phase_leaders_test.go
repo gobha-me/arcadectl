@@ -5,6 +5,7 @@ package installengine
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -33,7 +34,7 @@ import (
 func TestFixturePhaseLeaderRefreshWholeGCAndMonotonicTypedFloor(t *testing.T) {
 	t.Run("private-index-guards", testPhaseLeaderIndexGuards)
 	newPhase := fixturePhaseFactory(t)
-	for _, scenario := range []string{"renewal", "gc-superseded", "gc-missing", "gc-wrong-rv", "uid", "holder", "acquire", "transition", "fieldset", "data-label", "rv-regression", "renew-regression", "managed-regression", "list-denied", "unknown-list-field", "original-chain-missing"} {
+	for _, scenario := range []string{"renewal", "gc-superseded", "gc-missing", "gc-wrong-rv", "uid", "holder", "acquire", "transition", "fieldset", "data-label", "rv-regression", "renew-regression", "managed-regression", "list-denied", "whole-list-denied", "unknown-list-field", "original-chain-missing"} {
 		t.Run(scenario, func(t *testing.T) {
 			h := newPhase(t)
 			v, ns, lists := readyControllerFixture(t, h.f.actor.v.f.plan)
@@ -167,6 +168,10 @@ func TestFixturePhaseLeaderRefreshWholeGCAndMonotonicTypedFloor(t *testing.T) {
 						t.Error("whole leader LIST escaped original unfiltered route")
 					}
 					wholeReads++
+					if scenario == "whole-list-denied" {
+						w.WriteHeader(http.StatusForbidden)
+						return true
+					}
 					items := []any{}
 					for _, object := range whole {
 						copy := object.DeepCopy()
@@ -184,9 +189,24 @@ func TestFixturePhaseLeaderRefreshWholeGCAndMonotonicTypedFloor(t *testing.T) {
 				}
 				return base(w, r)
 			}
-			gc, err := h.f.wire.gcMetadataModeLocked(t.Context(), true)
+			ctx, diagnostic := WithLifecycleDiagnostic(t.Context())
+			trace := &admissionTrace{}
+			ctx = context.WithValue(ctx, admissionTraceKey{}, trace)
+			unchangedRead := fixturePreviewUnchanged(t, h.f)
+			gc, err := h.f.wire.gcMetadataModeLocked(ctx, true)
+			unchangedRead()
+			if scenario == "whole-list-denied" || scenario == "unknown-list-field" {
+				wantPages := "reason=unknown inner=unknown caller=unknown"
+				if scenario == "whole-list-denied" {
+					wantPages = "reason=fetch-unclassified inner=active caller=active"
+				}
+				stage, slot := trace.phaseSnapshot()
+				if err != ErrFixtures || gc != nil || wholeReads != 1 || stage != "gc-lease-pages" || slot != -1 || diagnostic.GCPagesSnapshot() != wantPages || h.f.wire.ledger.phaseFloor != nil {
+					t.Fatal("actual whole Lease refusal lost or misclassified its private diagnostic", stage, diagnostic.GCPagesSnapshot(), err)
+				}
+			}
 			if err != nil {
-				if scenario == "gc-superseded" || scenario == "gc-missing" || scenario == "gc-wrong-rv" || scenario == "list-denied" || scenario == "unknown-list-field" {
+				if scenario == "gc-superseded" || scenario == "gc-missing" || scenario == "gc-wrong-rv" || scenario == "list-denied" || scenario == "whole-list-denied" || scenario == "unknown-list-field" {
 					if h.f.creates != 0 || h.f.deletes != 0 || h.f.seeds != 0 || scenario == "list-denied" && wholeReads != 0 {
 						t.Fatal("paired read refusal issued an effect or unauthorized LIST")
 					}

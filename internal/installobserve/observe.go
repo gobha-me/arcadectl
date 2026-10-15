@@ -296,9 +296,16 @@ func (o *Observer) Collect(ctx context.Context, anchor installstate.Anchor) (*Ob
 }
 
 func (o *Observer) collectList(ctx context.Context, c collection, graph *ownerGraph, budget *int) error {
+	return o.collectListWithPagesDiagnostic(ctx, c, graph, budget, nil)
+}
+
+// The optional recorder observes only a failed pages attempt, before any
+// caller's deferred cancellation. It grants no read, retry or acceptance.
+// Later row/conversion failures deliberately remain unclassified here.
+func (o *Observer) collectListWithPagesDiagnostic(ctx context.Context, c collection, graph *ownerGraph, budget *int, record func(pagesRefusalReason)) error {
 	gv, _ := schema.ParseGroupVersion(c.gv)
 	gvr := gv.WithResource(c.resource)
-	items, rv, err := boundedPages(ctx, func(ctx context.Context, opts metav1.ListOptions) (runtime.Object, error) {
+	items, rv, err, reason := boundedPagesDiagnostic(ctx, func(ctx context.Context, opts metav1.ListOptions) (runtime.Object, error) {
 		if c.kind == "Secret" {
 			return o.clients.Metadata.Resource(gvr).Namespace(o.plan.Namespace()).List(ctx, opts)
 		}
@@ -313,6 +320,9 @@ func (o *Observer) collectList(ctx context.Context, c collection, graph *ownerGr
 		return page, nil
 	}, budget)
 	if err != nil {
+		if record != nil {
+			record(reason)
+		}
 		return err
 	}
 	converted := make([]runtime.Object, 0, len(items))
