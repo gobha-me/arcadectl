@@ -105,7 +105,10 @@ func (accounts *phaseServiceAccounts) baseline(public []fixtureWorldRow, f *fixt
 }
 
 func phaseCollectionsWithAccounts(o *installobserve.Observation, accounts *phaseServiceAccounts) []phaseCollection {
-	collections := phaseCollections(o)
+	return phaseCollectionsAppendAccounts(phaseCollections(o), accounts)
+}
+
+func phaseCollectionsAppendAccounts(collections []phaseCollection, accounts *phaseServiceAccounts) []phaseCollection {
 	if accounts != nil && accounts.observation != nil {
 		collections = append(collections, phaseCollection{"v1", "ServiceAccount", accounts.observation.Accounts()})
 	}

@@ -349,7 +349,8 @@ func (f *fixtureLedger) accountPhaseWithAccounts(ctx context.Context, o *install
 		traceAdmissionPhase(ctx, admissionPhaseRowInput, -1)
 		return zero, fixtures, ErrFixtures
 	}
-	if !completeStoppedLists(o.Snapshot(), o.Runtime()) {
+	s, r := o.Snapshot(), o.Runtime()
+	if !completeStoppedLists(s, r) {
 		traceAdmissionPhase(ctx, admissionPhaseRowLists, -1)
 		return zero, fixtures, ErrFixtures
 	}
@@ -379,7 +380,7 @@ func (f *fixtureLedger) accountPhaseWithAccounts(ctx context.Context, o *install
 	observed := map[types.UID]runtime.Object{}
 	seen := map[installstate.Key]bool{}
 	leases := map[installstate.Key]*coordinationv1.Lease{}
-	for _, collection := range phaseCollectionsWithAccounts(o, accounts) {
+	for _, collection := range phaseCollectionsAppendAccounts(phaseCollectionsFromSnapshots(s, r), accounts) {
 		items, err := meta.ExtractList(collection.list)
 		if err != nil || len(items) > installsafety.MaxObjectsPerList {
 			traceAdmissionPhase(ctx, admissionPhaseRowCollection, -1)

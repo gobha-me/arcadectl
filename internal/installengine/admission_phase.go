@@ -257,7 +257,13 @@ func phaseCollections(o *installobserve.Observation) []phaseCollection {
 	if o == nil {
 		return nil
 	}
-	s, r := o.Snapshot(), o.Runtime()
+	return phaseCollectionsFromSnapshots(o.Snapshot(), o.Runtime())
+}
+
+// phaseCollectionsFromSnapshots projects caller-owned accessor copies. The
+// returned collections share those copies, never an Observation's sealed state;
+// callers must materialize a new pair for each independent accounting pass.
+func phaseCollectionsFromSnapshots(s *installsafety.Snapshot, r *installsafety.RuntimeSnapshot) []phaseCollection {
 	if s == nil || r == nil {
 		return nil
 	}
@@ -283,7 +289,11 @@ func phaseRow(key installstate.Key, uid types.UID, rv string, object any) (fixtu
 
 func capturePhaseBaseline(o *installobserve.Observation, families [2]admissionControllerState, now time.Time) (fixturePhaseBaseline, error) {
 	baseline := fixturePhaseBaseline{Version: "admission-phase-v1", Rows: []fixtureWorldRow{}, Leaders: []fixturePhaseLeader{}}
-	if o == nil || o.Journal() == nil || now.IsZero() || !completeStoppedLists(o.Snapshot(), o.Runtime()) {
+	if o == nil || o.Journal() == nil || now.IsZero() {
+		return fixturePhaseBaseline{}, ErrAdmission
+	}
+	s, r := o.Snapshot(), o.Runtime()
+	if !completeStoppedLists(s, r) {
 		return fixturePhaseBaseline{}, ErrAdmission
 	}
 	namespace := o.Journal().Anchor().Namespace
@@ -302,7 +312,7 @@ func capturePhaseBaseline(o *installobserve.Observation, families [2]admissionCo
 	}
 	seen := map[installstate.Key]bool{}
 	uids := map[types.UID]bool{}
-	for _, collection := range phaseCollections(o) {
+	for _, collection := range phaseCollectionsFromSnapshots(s, r) {
 		items, err := meta.ExtractList(collection.list)
 		if err != nil || len(items) > installsafety.MaxObjectsPerList {
 			return fixturePhaseBaseline{}, ErrAdmission
