@@ -15,7 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-func fixtureBaselineContract(t *testing.T) (*Contract, *installbaseline.Plan) {
+func fixtureBaselineContract(t testing.TB) (*Contract, *installbaseline.Plan) {
 	t.Helper()
 	manifest, payload, err := installbaseline.Build(strings.Repeat("a", 40), 1)
 	if err != nil {

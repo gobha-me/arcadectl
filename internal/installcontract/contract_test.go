@@ -31,7 +31,7 @@ import (
 	"k8s.io/utils/ptr"
 )
 
-func testContract(t *testing.T, legacy bool) *Contract {
+func testContract(t testing.TB, legacy bool) *Contract {
 	t.Helper()
 	namespace, profile := "isolated-install", installrender.Profile135
 	if legacy {
@@ -40,7 +40,7 @@ func testContract(t *testing.T, legacy bool) *Contract {
 	return testContractVariant(t, legacy, namespace, profile, "a", "b")
 }
 
-func testContractVariant(t *testing.T, legacy bool, namespace, profile, controllerDigest, apiDigest string) *Contract {
+func testContractVariant(t testing.TB, legacy bool, namespace, profile, controllerDigest, apiDigest string) *Contract {
 	t.Helper()
 	images := installpackage.Images{Controller: "registry.example/controller@sha256:" + strings.Repeat(controllerDigest, 64), API: "registry.example/api@sha256:" + strings.Repeat(apiDigest, 64)}
 	payloads, crds, err := installrender.RenderPayloads(images, legacy)
@@ -75,7 +75,7 @@ func testContractVariant(t *testing.T, legacy bool, namespace, profile, controll
 	return c
 }
 
-func mustTemplate(t *testing.T, c *Contract, kind, name string, paused bool) *Template {
+func mustTemplate(t testing.TB, c *Contract, kind, name string, paused bool) *Template {
 	t.Helper()
 	for key := range c.resources {
 		if key.Kind != kind || name != "" && key.Name != name {
@@ -153,7 +153,7 @@ func TestTemplateImmutableCompilationSharedWithDefensiveObjects(t *testing.T) {
 	}
 }
 
-func liveObject(t *testing.T, template *Template) *unstructured.Unstructured {
+func liveObject(t testing.TB, template *Template) *unstructured.Unstructured {
 	t.Helper()
 	o := template.expected.DeepCopyObject()
 	m, _ := meta.Accessor(o)

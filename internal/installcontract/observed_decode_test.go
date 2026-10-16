@@ -47,7 +47,7 @@ func TestObservedDecodeMemoWholeBytesAndDefensiveResults(t *testing.T) {
 			live := liveObject(t, template)
 			before, _ := json.Marshal(live.Object)
 			want, wantErr := originalObservedDecode(template, live)
-			for i := 0; i < 3; i++ {
+			for i := 0; i < 5; i++ {
 				got, gotErr := template.decodeObserved(live)
 				if gotErr != wantErr || !reflect.DeepEqual(got, want) {
 					t.Fatalf("complete strict conversion changed for %s", key.String())
@@ -104,8 +104,13 @@ func TestObservedDecodeMemoDoesNotReuseShapeOrOriginalAuthority(t *testing.T) {
 			_ = unstructured.SetNestedField(o.Object, int64(5), "spec", "replicas")
 		},
 	} {
-		if template.MatchLive(live, "original-uid") != nil || template.MatchLive(live, "original-uid") != nil {
-			t.Fatal("original warm whole match refused")
+		for i := 0; i < 4; i++ {
+			if template.MatchLive(live, "original-uid") != nil {
+				t.Fatal("original warm whole match refused")
+			}
+		}
+		if template.decoded.raw == nil {
+			t.Fatal("original-authority control did not exercise promoted operand")
 		}
 		changed := live.DeepCopy()
 		mutate(changed)
@@ -171,8 +176,14 @@ func TestObservedDecodeMemoIncludesIgnoredFreshFieldsAndRawCRDSchema(t *testing.
 			t.Fatal(err)
 		}
 		original := liveObject(t, crd)
-		if crd.MatchLive(original, "original-uid") != nil || crd.MatchLive(original, "original-uid") != nil {
-			t.Fatal("opening warm CRD match refused")
+		for i := 0; i < 4; i++ {
+			if crd.MatchLive(original, "original-uid") != nil {
+				t.Fatal("opening warm CRD match refused")
+			}
+		}
+		_, eligible := cloneObservedJSON(original.Object)
+		if eligible && crd.decoded.raw == nil {
+			t.Fatal("eligible CRD control did not exercise promoted operand")
 		}
 		changed := original.DeepCopy()
 		versions := changed.Object["spec"].(map[string]any)["versions"].([]any)

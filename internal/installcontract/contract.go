@@ -70,8 +70,9 @@ type Template struct {
 	// Private normalized signed-side bytes only. Every live comparison still
 	// normalizes its freshly observed spec; no live match or identity is cached.
 	crdSpec []byte
-	// Pure strict conversion only, keyed by complete bounded JSON bytes. Every
-	// match still checks fresh identity, journal, whole shape and raw CRD fields.
+	// Pure strict conversion only, keyed by complete bounded JSON bytes or an
+	// exactly bound owned whole JSON operand. Every match still checks fresh
+	// identity, journal, whole shape and raw CRD fields.
 	decoded observedDecodeMemo
 }
 
