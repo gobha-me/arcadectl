@@ -311,6 +311,9 @@ func runMutation(ctx context.Context, o options, stdout, stderr io.Writer) (code
 			if deployment := diagnostic.DeploymentSnapshot(); deployment != "" {
 				_, _ = fmt.Fprintf(stderr, "installation diagnostic deployment %s\n", deployment)
 			}
+			if pod := diagnostic.PodSnapshot(); pod != "" {
+				_, _ = fmt.Fprintf(stderr, "installation diagnostic pod %s\n", pod)
+			}
 			if deadline := diagnostic.DeadlineSnapshot(); deadline != "" {
 				_, _ = fmt.Fprintf(stderr, "installation diagnostic deadline %s\n", deadline)
 			}

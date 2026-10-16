@@ -17,6 +17,10 @@
 # Calibration changes only relative placement: all compiled names still run
 # exactly once in32 workers with unchanged20m process budgets. Unknown future
 # names keep the script's initial default60; stale/duplicate entries refuse CI.
+# New late-Pod-refusal wrappers initially reserve120 scheduling seconds. The
+# 2026-10-16 local whole-tree race PASS for PodDenialBefore was319.00 seconds;
+# the same15%+5-second rule rounds its placement estimate to375. Other new
+# wrappers keep120 pending CI calibration. No test or native deadline changes.
 FuzzForwardFrameGuard 10
 TestAcknowledgedDeleteCancellationKeepsOriginalIntent 565
 TestAcknowledgedDeleteDiagnosticActualEarlyRefusals 10
@@ -142,6 +146,14 @@ TestBaselineBehaviorWholeProviderHealthy 120
 TestBaselineBehaviorWholeProviderMissingDenial 20
 TestBaselineBehaviorWholeProviderPendingParent 125
 TestBaselineBehaviorWholeProviderPendingService 125
+TestBaselineBehaviorWholeProviderPodDenialAfter 120
+TestBaselineBehaviorWholeProviderPodDenialBefore 375
+TestBaselineBehaviorWholeProviderPodDenialBeforeAnnotations 120
+TestBaselineBehaviorWholeProviderPodDenialBeforeMalformed 120
+TestBaselineBehaviorWholeProviderPodDenialBeforeManaged 120
+TestBaselineBehaviorWholeProviderPodDenialBeforeRVOnly 120
+TestBaselineBehaviorWholeProviderPodDenialBeforeUnknown 120
+TestBaselineBehaviorWholeProviderPodDenialSecondActor 120
 TestBaselineBehaviorWholeProviderProducerDenialAfter 40
 TestBaselineBehaviorWholeProviderProducerDenialBefore 40
 TestBaselineBehaviorWholeProviderRuntimeClosingNewPod 120
@@ -218,6 +230,7 @@ TestBaselineMetadataFixedAddressDomain 10
 TestBaselineMetadataOriginalPendingStates 85
 TestBaselineMetadataSignedRoleUpgradeRollback 10
 TestBaselineMetadataWholeProvider 110
+TestBaselineObjectDiagnosticConcurrentIsolation 10
 TestBaselineObservationContextCompleteRefusesInvalidEvidence 25
 TestBaselineObservationContextGenuineLifecycleCompletion 65
 TestBaselineObservationContextPreservesEveryNoncompleteModeStage 10
@@ -230,6 +243,7 @@ TestBaselineOriginalReceiptRepeatedReplacementAndFailureRelease 10
 TestBaselineOwnershipSeparateInventoryAndRuntimeFence 10
 TestBaselineParentIndependentReceiptOwnersPreserveWholeEvidence 10
 TestBaselinePatchAndJSONMIMEPinsBothCaptureLayers 10
+TestBaselinePodDiagnosticClosedRawDetail 10
 TestBaselinePrecontrollerWholeProviderHealthy 140
 TestBaselinePrecontrollerWholeProviderRuntimeHealthy 140
 TestBaselinePrerequisiteCompleteDiscoveryOriginalAndAbsence 110

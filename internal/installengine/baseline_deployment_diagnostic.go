@@ -14,6 +14,7 @@ import (
 
 var baselineMetadataLabels = [...]string{"none", "annotations", "labels", "generation", "lifecycle", "managed-fields", "other", "resource-version-only"}
 var baselineStatusLabels = [...]string{"none", "observed-generation", "replicas", "updated", "ready", "available", "unavailable", "terminating", "conditions", "collision", "other"}
+var baselinePodStatusLabels = [...]string{"none", "observed-generation", "phase", "conditions", "container-statuses", "init-container-statuses", "ephemeral-container-statuses", "pod-addresses", "host-addresses", "start-time", "qos-class", "resize", "resource-claims", "extended-resource-claim", "other"}
 
 // Only called after whole-object equality refused. The extra nine bits share
 // the SAME atomic record as the refusal; no object values or keys are retained.
@@ -40,6 +41,18 @@ func traceBaselineObjectFailure(ctx context.Context, check baselineFailureCheck,
 			{"unavailableReplicas"}, {"terminatingReplicas"}, {"conditions"}, {"collisionCount"},
 		}, 10, "", 0)
 		detail = role<<23 | metadata<<25 | status<<28
+	} else if key.APIVersion == "v1" && key.Kind == "Pod" && before != nil && after != nil {
+		metadata := baselineFirstRawDifference(before.Object, after.Object, "metadata", [][]string{
+			{"annotations"}, {"labels"}, {"generation"},
+			{"ownerReferences", "finalizers", "deletionTimestamp", "deletionGracePeriodSeconds", "creationTimestamp"}, {"managedFields"},
+		}, 6, "resourceVersion", 7)
+		status := baselineFirstRawDifference(before.Object, after.Object, "status", [][]string{
+			{"observedGeneration"}, {"phase"}, {"conditions"}, {"containerStatuses"}, {"initContainerStatuses"}, {"ephemeralContainerStatuses"},
+			{"podIP", "podIPs"}, {"hostIP", "hostIPs"}, {"startTime"}, {"qosClass"}, {"resize"}, {"resourceClaimStatuses"}, {"extendedResourceClaimStatus"},
+		}, 14, "", 0)
+		// Family-specific marker, not a Pod role. Names/owners are never guessed.
+		// The low refusal bits and the Deployment encoding remain unchanged.
+		detail = 1<<23 | metadata<<25 | status<<28
 	}
 	storeBaselineFailure(ctx, check, key.Kind, baselineObjectDifference(before, after), detail)
 }
@@ -102,4 +115,21 @@ func (d *LifecycleDiagnostic) DeploymentSnapshot() string {
 	}
 	role := [...]string{"unknown", "controller", "api", "destroy-controller"}[(packed>>23)&3]
 	return fmt.Sprintf("role=%s metadata-first=%s status-first=%s", role, baselineMetadataLabels[metadata], baselineStatusLabels[status])
+}
+
+// PodSnapshot describes only the already-refused whole-object pair. Fixed
+// categories are not a benign-drift exception, writer attribution, accepted
+// observation or permission to retry. No extra read or object retention occurs.
+func (d *LifecycleDiagnostic) PodSnapshot() string {
+	if d == nil {
+		return ""
+	}
+	packed := d.baselineFailure.Load()
+	check := baselineFailureCheck(packed & 255)
+	family := (packed >> 8) & 255
+	metadata, status := (packed>>25)&7, (packed>>28)&15
+	if (packed>>23)&3 != 1 || family != 1 || check != baselineFailureDenialBefore && check != baselineFailureDenialAfter || status >= uint32(len(baselinePodStatusLabels)) {
+		return ""
+	}
+	return fmt.Sprintf("metadata-first=%s status-first=%s", baselineMetadataLabels[metadata], baselinePodStatusLabels[status])
 }

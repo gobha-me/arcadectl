@@ -81,6 +81,38 @@ func TestBaselineBehaviorWholeProviderProducerDenialAfter(t *testing.T) {
 	testBaselineBehaviorWholeProvider(t, "producer-denial-after")
 }
 
+func TestBaselineBehaviorWholeProviderPodDenialBefore(t *testing.T) {
+	testBaselineBehaviorWholeProvider(t, "pod-denial-before")
+}
+
+func TestBaselineBehaviorWholeProviderPodDenialSecondActor(t *testing.T) {
+	testBaselineBehaviorWholeProvider(t, "pod-denial-second")
+}
+
+func TestBaselineBehaviorWholeProviderPodDenialAfter(t *testing.T) {
+	testBaselineBehaviorWholeProvider(t, "pod-denial-after")
+}
+
+func TestBaselineBehaviorWholeProviderPodDenialBeforeManaged(t *testing.T) {
+	testBaselineBehaviorWholeProvider(t, "pod-denial-before-managed")
+}
+
+func TestBaselineBehaviorWholeProviderPodDenialBeforeAnnotations(t *testing.T) {
+	testBaselineBehaviorWholeProvider(t, "pod-denial-before-annotations")
+}
+
+func TestBaselineBehaviorWholeProviderPodDenialBeforeUnknown(t *testing.T) {
+	testBaselineBehaviorWholeProvider(t, "pod-denial-before-unknown")
+}
+
+func TestBaselineBehaviorWholeProviderPodDenialBeforeMalformed(t *testing.T) {
+	testBaselineBehaviorWholeProvider(t, "pod-denial-before-malformed")
+}
+
+func TestBaselineBehaviorWholeProviderPodDenialBeforeRVOnly(t *testing.T) {
+	testBaselineBehaviorWholeProvider(t, "pod-denial-before-rv-only")
+}
+
 func TestBaselineBehaviorWholeProviderBadPositive(t *testing.T) {
 	testBaselineBehaviorWholeProvider(t, "bad-positive")
 }
@@ -433,6 +465,8 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 	requests := 0
 	var probes, positives, podProbes, persistent int
 	var injected, proxyGrant bool
+	var podDriftKey installstate.Key
+	var podDriftReads int
 	rules := map[string]int{}
 	rows := map[string]int{}
 	detailedRows := map[string]int{}
@@ -591,6 +625,37 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 				if objects[key] == nil {
 					w.WriteHeader(http.StatusNotFound)
 					return
+				}
+				if strings.HasPrefix(mode, "pod-denial-") && key.Kind == "Pod" && probes >= 91 {
+					if podDriftKey == (installstate.Key{}) {
+						podDriftKey = key
+					}
+					if key == podDriftKey {
+						podDriftReads++
+						wantRead := 1
+						if mode == "pod-denial-after" {
+							wantRead = 2
+						} else if mode == "pod-denial-second" {
+							wantRead = 3
+						}
+						if !injected && podDriftReads == wantRead {
+							objects[key].SetResourceVersion("18")
+							if mode != "pod-denial-before-rv-only" {
+								objects[key].Object["status"] = map[string]any{"conditions": []any{map[string]any{"message": "PRIVATE-CANARY"}}}
+							}
+							switch mode {
+							case "pod-denial-before-managed":
+								objects[key].Object["metadata"].(map[string]any)["managedFields"] = []any{map[string]any{"manager": "PRIVATE-CANARY"}}
+							case "pod-denial-before-annotations":
+								objects[key].SetAnnotations(map[string]string{"PRIVATE-CANARY": "PRIVATE-CANARY"})
+							case "pod-denial-before-unknown":
+								objects[key].Object["status"] = map[string]any{"PRIVATE-CANARY": "PRIVATE-CANARY"}
+							case "pod-denial-before-malformed":
+								objects[key].Object["status"] = nil
+							}
+							injected = true
+						}
+					}
 				}
 				if mode == "producer-denial-before" && probes == 20 && key == deploymentKey(d.Namespace, "arcadectl-controller") && !injected {
 					objects[key].SetResourceVersion("18")
@@ -861,6 +926,25 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 		if (mode == "producer-denial-before" || mode == "producer-denial-after") && diagnostic.DeploymentSnapshot() != "role=controller metadata-first=resource-version-only status-first=other" {
 			t.Fatal("actual negative proof lost fixed per-object detail")
 		}
+		if strings.HasPrefix(mode, "pod-denial-") {
+			check, metadata, status, changes := "denial-read-before", "resource-version-only", "conditions", "resource-version,metadata,status"
+			if mode == "pod-denial-after" {
+				check = "denial-read-after"
+			}
+			switch mode {
+			case "pod-denial-before-managed":
+				metadata = "managed-fields"
+			case "pod-denial-before-annotations":
+				metadata = "annotations"
+			case "pod-denial-before-unknown", "pod-denial-before-malformed":
+				status = "other"
+			case "pod-denial-before-rv-only":
+				status, changes = "none", "resource-version,metadata"
+			}
+			if diagnostic.FailureSnapshot() != "check="+check+" family=Pod changes="+changes || diagnostic.PodSnapshot() != "metadata-first="+metadata+" status-first="+status || diagnostic.DeploymentSnapshot() != "" || diagnostic.BoundarySnapshot() != "operation=unknown baseline=pod-probe" {
+				t.Fatal("Pod drift escaped exact fresh before/after refusal", diagnostic.FailureSnapshot(), diagnostic.PodSnapshot(), diagnostic.BoundarySnapshot())
+			}
+		}
 	}
 	if (err == nil) != positive {
 		t.Fatal("whole behavior driver confused healthy composition and injected refusal")
@@ -880,6 +964,17 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 	}
 	if !positive && !injected {
 		t.Fatal("intended whole-driver fault was never reached")
+	}
+	if strings.HasPrefix(mode, "pod-denial-") {
+		wantReads, wantPodProbes := 1, 0
+		if mode == "pod-denial-after" {
+			wantReads, wantPodProbes = 2, 1
+		} else if mode == "pod-denial-second" {
+			wantReads, wantPodProbes = 3, 1
+		}
+		if podDriftKey.Kind != "Pod" || podDriftReads != wantReads || podProbes != wantPodProbes || probes != 91+wantPodProbes || positives != 3 || rows["arcadectl-controller/PUT/Pod"] != wantPodProbes || rows["arcadectl-destroy-controller/PUT/Pod"] != 0 {
+			t.Fatal("Pod drift changed literal actor ordering or replayed a failing tuple")
+		}
 	}
 	wantProbes, wantPodProbes := 97, 6
 	wantPositives, wantRules := 3, 6

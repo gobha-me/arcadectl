@@ -4,11 +4,163 @@
 package installengine
 
 import (
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/gobha-me/arcadectl/internal/installstate"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
+
+func TestBaselineObjectDiagnosticConcurrentIsolation(t *testing.T) {
+	pod := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "Pod", "metadata": map[string]any{}, "status": map[string]any{}}}
+	podAfter := pod.DeepCopy()
+	podAfter.Object["metadata"].(map[string]any)["annotations"] = "PRIVATE-CANARY"
+	podAfter.Object["status"].(map[string]any)["phase"] = "PRIVATE-CANARY"
+	deployment := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": map[string]any{"namespace": "PRIVATE-CANARY", "name": "arcadectl-controller"}, "status": map[string]any{}}}
+	deploymentAfter := deployment.DeepCopy()
+	deploymentAfter.Object["metadata"].(map[string]any)["labels"] = "PRIVATE-CANARY"
+	deploymentAfter.Object["status"].(map[string]any)["readyReplicas"] = int64(1)
+	ctx, diagnostic := WithLifecycleDiagnostic(t.Context())
+	var workers sync.WaitGroup
+	for worker := range 12 {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for range 100 {
+				switch worker % 3 {
+				case 0:
+					traceBaselineObjectFailure(ctx, baselineFailureDenialBefore, baselineObjectKey(pod), pod, podAfter)
+				case 1:
+					traceBaselineObjectFailure(ctx, baselineFailureDenialAfter, baselineObjectKey(deployment), deployment, deploymentAfter)
+				case 2:
+					traceBaselineFailure(ctx, baselineFailureDenialBefore, "Pod", 0)
+				}
+				if got := diagnostic.PodSnapshot(); got != "" && got != "metadata-first=annotations status-first=phase" {
+					t.Error("mixed or unreviewed Pod atomic snapshot")
+				}
+				if got := diagnostic.DeploymentSnapshot(); got != "" && got != "role=controller metadata-first=labels status-first=ready" {
+					t.Error("mixed or unreviewed Deployment atomic snapshot")
+				}
+			}
+		}()
+	}
+	workers.Wait()
+	traceBaselineBoundary(ctx, baselineBoundaryScope)
+	if diagnostic.PodSnapshot() != "" || diagnostic.DeploymentSnapshot() != "" {
+		t.Fatal("generic boundary retained object detail")
+	}
+}
+
+func TestBaselinePodDiagnosticClosedRawDetail(t *testing.T) {
+	key := installstate.Key{APIVersion: "v1", Kind: "Pod", Namespace: "PRIVATE-CANARY", Name: "PRIVATE-CANARY"}
+	original := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1", "kind": "Pod",
+		"metadata": map[string]any{"namespace": key.Namespace, "name": key.Name, "uid": "PRIVATE-CANARY", "resourceVersion": "1"},
+		"status":   map[string]any{},
+	}}
+	rows := []struct{ field, key, want string }{
+		{"metadata", "annotations", "annotations"}, {"metadata", "labels", "labels"}, {"metadata", "generation", "generation"},
+		{"metadata", "ownerReferences", "lifecycle"}, {"metadata", "finalizers", "lifecycle"}, {"metadata", "deletionTimestamp", "lifecycle"},
+		{"metadata", "deletionGracePeriodSeconds", "lifecycle"}, {"metadata", "creationTimestamp", "lifecycle"},
+		{"metadata", "managedFields", "managed-fields"}, {"metadata", "PRIVATE-CANARY", "other"}, {"metadata", "resourceVersion", "resource-version-only"},
+		{"status", "observedGeneration", "observed-generation"}, {"status", "phase", "phase"}, {"status", "conditions", "conditions"},
+		{"status", "containerStatuses", "container-statuses"}, {"status", "initContainerStatuses", "init-container-statuses"}, {"status", "ephemeralContainerStatuses", "ephemeral-container-statuses"},
+		{"status", "podIP", "pod-addresses"}, {"status", "podIPs", "pod-addresses"}, {"status", "hostIP", "host-addresses"}, {"status", "hostIPs", "host-addresses"},
+		{"status", "startTime", "start-time"}, {"status", "qosClass", "qos-class"}, {"status", "resize", "resize"},
+		{"status", "resourceClaimStatuses", "resource-claims"}, {"status", "extendedResourceClaimStatus", "extended-resource-claim"}, {"status", "PRIVATE-CANARY", "other"},
+	}
+	for _, row := range rows {
+		t.Run(row.field+"/"+row.key, func(t *testing.T) {
+			for _, value := range []any{nil, int64(0), "PRIVATE-CANARY"} {
+				changed := original.DeepCopy()
+				changed.Object[row.field].(map[string]any)[row.key] = value
+				beforeCopy, afterCopy := original.DeepCopy(), changed.DeepCopy()
+				ctx, diagnostic := WithLifecycleDiagnostic(t.Context())
+				traceBaselineObjectFailure(ctx, baselineFailureDenialBefore, key, original, changed)
+				metadata, status := "none", "none"
+				if row.field == "metadata" {
+					metadata = row.want
+				} else {
+					status = row.want
+				}
+				if got := diagnostic.PodSnapshot(); got != "metadata-first="+metadata+" status-first="+status || strings.Contains(got, "PRIVATE") || diagnostic.DeploymentSnapshot() != "" {
+					t.Fatal("Pod detail lost fixed category or crossed family", got)
+				}
+				if !reflect.DeepEqual(original.Object, beforeCopy.Object) || !reflect.DeepEqual(changed.Object, afterCopy.Object) {
+					t.Fatal("diagnostics mutated operands")
+				}
+				low := diagnostic.FailureSnapshot()
+				traceBaselineFailure(ctx, baselineFailureDenialBefore, "Pod", baselineObjectDifference(original, changed))
+				if diagnostic.FailureSnapshot() != low || diagnostic.PodSnapshot() != "" {
+					t.Fatal("detail changed refusal or survived generic replacement")
+				}
+			}
+		})
+	}
+	ctx, diagnostic := WithLifecycleDiagnostic(t.Context())
+	for _, field := range []string{"metadata", "status"} {
+		for _, value := range []any{nil, "PRIVATE-CANARY", []any{"PRIVATE-CANARY"}} {
+			changed := original.DeepCopy()
+			changed.Object[field] = value
+			traceBaselineObjectFailure(ctx, baselineFailureDenialAfter, key, original, changed)
+			if got := diagnostic.PodSnapshot(); !strings.Contains(got, field+"-first=other") || strings.Contains(got, "PRIVATE") {
+				t.Fatal("malformed map leaked or lost category", got)
+			}
+		}
+		before, after := original.DeepCopy(), original.DeepCopy()
+		before.Object[field].(map[string]any)["PRIVATE-CANARY"] = nil
+		after.Object[field].(map[string]any)["PRIVATE-CANARY"] = int64(0)
+		for _, remove := range []bool{false, true} {
+			if remove {
+				delete(after.Object[field].(map[string]any), "PRIVATE-CANARY")
+			}
+			traceBaselineObjectFailure(ctx, baselineFailureDenialAfter, key, before, after)
+			if !strings.Contains(diagnostic.PodSnapshot(), field+"-first=other") {
+				t.Fatal("null, zero and removal conflated")
+			}
+		}
+	}
+	changed := original.DeepCopy()
+	changed.SetResourceVersion("2")
+	changed.Object["metadata"].(map[string]any)["managedFields"] = []any{"PRIVATE-CANARY"}
+	changed.Object["status"].(map[string]any)["conditions"] = []any{"PRIVATE-CANARY"}
+	changed.Object["status"].(map[string]any)["containerStatuses"] = []any{"PRIVATE-CANARY"}
+	for range 20 {
+		traceBaselineObjectFailure(ctx, baselineFailureDenialBefore, key, original, changed)
+		if diagnostic.PodSnapshot() != "metadata-first=managed-fields status-first=conditions" {
+			t.Fatal("priority followed map order or hid non-RV metadata")
+		}
+	}
+	for _, reset := range []func(){func() { traceBaselineBoundary(ctx, baselineBoundaryScope) }, func() { traceOperationBoundary(ctx, boundaryRecoveryOpening) }, func() { traceLifecycleCheckpoint(ctx, AdmissionEffective, lifecycleDiagnosticEntered) }} {
+		traceBaselineObjectFailure(ctx, baselineFailureDenialBefore, key, original, changed)
+		reset()
+		if diagnostic.PodSnapshot() != "" {
+			t.Fatal("later boundary retained Pod detail")
+		}
+	}
+	for _, check := range []baselineFailureCheck{baselineFailureExecutables, baselineFailureDenialProbe} {
+		traceBaselineObjectFailure(ctx, check, key, original, changed)
+		if diagnostic.PodSnapshot() != "" {
+			t.Fatal("non-object refusal acquired Pod detail")
+		}
+	}
+	for _, packed := range []uint32{uint32(baselineFailureDenialBefore) | 1<<8 | 1<<23 | 15<<28, 255 | 1<<8 | 1<<23, uint32(baselineFailureDenialBefore) | 3<<8 | 1<<23, uint32(baselineFailureDenialBefore) | 1<<8 | 2<<23} {
+		diagnostic.baselineFailure.Store(packed)
+		if diagnostic.PodSnapshot() != "" {
+			t.Fatal("invalid packed Pod record emitted detail")
+		}
+	}
+	traceBaselineObjectFailure(ctx, baselineFailureDenialBefore, key, nil, changed)
+	if diagnostic.PodSnapshot() != "" {
+		t.Fatal("missing operand acquired Pod detail")
+	}
+	var absent *LifecycleDiagnostic
+	if absent.PodSnapshot() != "" {
+		t.Fatal("nil diagnostic fabricated Pod detail")
+	}
+}
 
 func TestBaselineDeploymentDiagnosticClosedRawDetail(t *testing.T) {
 	key := deploymentKey("PRIVATE-CANARY", "arcadectl-controller")
