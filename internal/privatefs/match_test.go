@@ -18,6 +18,7 @@ import (
 )
 
 func TestMatchObservedSizeIndependentBodyReadOracle(t *testing.T) {
+	t.Run("evidence", testMatchEvidenceObservedSizeOracle)
 	for _, tc := range []struct {
 		size int64
 		body string
@@ -60,6 +61,48 @@ func TestMatchObservedSizeIndependentBodyReadOracle(t *testing.T) {
 			if err != originalErr || err == nil && (!equal || digest != sha256.Sum256(original)) || err != nil && (equal || digest != ([32]byte{})) || !bytes.Equal(scratch, make([]byte, 4)) {
 				t.Fatal("fragmented, final or late read error changed literal-EOF semantics")
 			}
+		}
+	}
+}
+
+func testMatchEvidenceObservedSizeOracle(t *testing.T) {
+	for _, size := range []int{0, int(MaxFileBytes) + 1, int(MaxEvidenceFileBytes)} {
+		body := bytes.Repeat([]byte{'x'}, size)
+		for _, delta := range []int{-1, 0, 1} {
+			observedSize := int64(max(0, size+delta))
+			original, originalErr := readObservedSize(bytes.NewReader(body), observedSize, MaxEvidenceFileBytes)
+			for _, expected := range [][]byte{body, nil} {
+				scratch := bytes.Repeat([]byte{42}, 32*1024)
+				digest, equal, err := matchObservedSizeBounded(bytes.NewReader(body), observedSize, MaxEvidenceFileBytes, MaxEvidenceFileBytes, expected, scratch)
+				if err != originalErr || err == nil && (equal != bytes.Equal(original, expected) || digest != sha256.Sum256(original)) || err != nil && (equal || digest != ([32]byte{})) || !bytes.Equal(scratch, make([]byte, len(scratch))) {
+					t.Fatal("evidence stream differs from bounded owned-reader oracle")
+				}
+			}
+		}
+	}
+	for _, limit := range []int64{MaxFileBytes + 1, MaxEvidenceFileBytes + 1} {
+		if _, _, err := matchObservedSizeBounded(observedSizeReader(func([]byte) (int, error) {
+			t.Fatal("invalid evidence limit reached reader")
+			return 0, nil
+		}), 0, 1, limit, nil, make([]byte, 1)); err != ErrUnsafe {
+			t.Fatal("open-ended evidence limit accepted")
+		}
+	}
+	for _, final := range []error{io.EOF, io.ErrUnexpectedEOF, errors.Join(io.EOF), errors.New("late evidence refusal")} {
+		remaining := []byte("abc")
+		consumed, reads := 0, 0
+		scratch := bytes.Repeat([]byte{42}, 2)
+		_, equal, err := matchObservedSizeBounded(observedSizeReader(func(p []byte) (int, error) {
+			reads++
+			if len(remaining) == 0 {
+				return 0, final
+			}
+			n := copy(p, remaining)
+			remaining, consumed = remaining[n:], consumed+n
+			return n, nil
+		}), 3, MaxEvidenceFileBytes, MaxEvidenceFileBytes, []byte("xbc"), scratch)
+		if equal || consumed != 3 || reads != 3 || final == io.EOF && err != nil || final != io.EOF && err != ErrUnsafe || !bytes.Equal(scratch, []byte{0, 0}) {
+			t.Fatal("evidence mismatch hid a late error, skipped EOF or retained scratch")
 		}
 	}
 }
@@ -128,6 +171,47 @@ func TestMatchObservedSizeBoundsBeforeReadsAndMismatchConsumesFreshBytes(t *test
 }
 
 func TestMatchOriginalPreservesPrivateReadIdentityAndBodyOracle(t *testing.T) {
+	t.Run("ordinary", func(t *testing.T) { testMatchOriginalReadOracle(t, false) })
+	t.Run("evidence", func(t *testing.T) { testMatchOriginalReadOracle(t, true) })
+	t.Run("distinct-public-bounds", testMatchEvidencePublicBounds)
+}
+
+func testMatchEvidencePublicBounds(t *testing.T) {
+	var absent *Store
+	if absent.MatchOriginal("record", MaxFileBytes, nil, FileIdentity{}) != ErrUnsafe || absent.MatchEvidenceOriginal("record", MaxEvidenceFileBytes, nil, FileIdentity{}) != ErrUnsafe {
+		t.Fatal("nil matcher accepted")
+	}
+	base := privateTemp(t)
+	store, err := Open(base, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for _, size := range []int{int(MaxFileBytes) + 1, int(MaxEvidenceFileBytes)} {
+		body := bytes.Repeat([]byte{42}, size)
+		identity, err := store.CreateEvidenceExclusive("record", body)
+		if err != nil {
+			t.Fatal("bounded evidence control unavailable")
+		}
+		if store.MatchOriginal("record", MaxFileBytes, body, identity) != ErrUnsafe || store.MatchOriginal("record", MaxFileBytes+1, body, identity) != ErrUnsafe || store.MatchEvidenceOriginal("record", MaxEvidenceFileBytes, body, identity) != nil {
+			t.Fatal("ordinary and evidence public caps not independently enforced")
+		}
+		for _, max := range []int64{-1, 0, MaxEvidenceFileBytes + 1} {
+			if store.MatchEvidenceOriginal("record", max, body, identity) != ErrUnsafe {
+				t.Fatal("evidence maximum outside closed bound accepted")
+			}
+		}
+		if size == int(MaxEvidenceFileBytes) {
+			if os.Truncate(filepath.Join(base, "record"), MaxEvidenceFileBytes+1) != nil || store.MatchEvidenceOriginal("record", MaxEvidenceFileBytes, body, identity) != ErrUnsafe {
+				t.Fatal("oversized physical evidence file accepted")
+			}
+		} else if store.RemoveEvidence("record", identity) != nil {
+			t.Fatal("bounded evidence control cleanup failed")
+		}
+	}
+}
+
+func testMatchOriginalReadOracle(t *testing.T, evidence bool) {
 	for _, fault := range []string{"healthy", "empty", "wal-limit", "file-limit", "different-expected", "wrong-identity", "growth", "shrink", "same-size-change", "replacement", "mode", "symlink", "hardlink", "fifo", "directory", "missing", "name", "bound", "closed"} {
 		t.Run(fault, func(t *testing.T) {
 			base := privateTemp(t)
@@ -136,6 +220,10 @@ func TestMatchOriginalPreservesPrivateReadIdentityAndBodyOracle(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer store.Close()
+			create, read, match := store.CreateExclusive, store.Read, store.MatchOriginal
+			if evidence {
+				create, read, match = store.CreateEvidenceExclusive, store.ReadEvidence, store.MatchEvidenceOriginal
+			}
 			body := []byte("original")
 			if fault == "empty" {
 				body = nil
@@ -144,7 +232,7 @@ func TestMatchOriginalPreservesPrivateReadIdentityAndBodyOracle(t *testing.T) {
 			} else if fault == "file-limit" {
 				body = bytes.Repeat([]byte{42}, int(MaxFileBytes))
 			}
-			identity, err := store.CreateExclusive("record", body)
+			identity, err := create("record", body)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -205,11 +293,11 @@ func TestMatchOriginalPreservesPrivateReadIdentityAndBodyOracle(t *testing.T) {
 					t.Fatal("injected close")
 				}
 			}
-			fresh, observed, oracle := store.Read(name, max)
+			fresh, observed, oracle := read(name, max)
 			if oracle == nil && (observed != identity || !bytes.Equal(fresh, expected)) {
 				oracle = ErrChanged
 			}
-			if got := store.MatchOriginal(name, max, expected, identity); got != oracle {
+			if got := match(name, max, expected, identity); got != oracle {
 				t.Fatal("check-only result differs from independent protected body read")
 			}
 			if !bytes.Equal(pinned, body) || len(store.confirmScratch) > 32*1024 || !bytes.Equal(store.confirmScratch, make([]byte, len(store.confirmScratch))) {
@@ -220,19 +308,31 @@ func TestMatchOriginalPreservesPrivateReadIdentityAndBodyOracle(t *testing.T) {
 }
 
 func TestMatchOriginalDoesNotReplaceDurabilityAndSerializesScratch(t *testing.T) {
+	t.Run("ordinary", func(t *testing.T) { testMatchOriginalDurability(t, false) })
+	t.Run("evidence", func(t *testing.T) { testMatchOriginalDurability(t, true) })
+}
+
+func testMatchOriginalDurability(t *testing.T, evidence bool) {
 	store, err := Open(privateTemp(t), false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	body := bytes.Repeat([]byte{42}, 81920)
-	identity, err := store.CreateExclusive("record", body)
+	create, match, confirm := store.CreateExclusive, store.MatchOriginal, store.ConfirmDurable
+	limit := MaxFileBytes
+	size := 81920
+	if evidence {
+		create, match, confirm = store.CreateEvidenceExclusive, store.MatchEvidenceOriginal, store.ConfirmEvidenceDurable
+		limit, size = MaxEvidenceFileBytes, int(MaxFileBytes)+1
+	}
+	body := bytes.Repeat([]byte{42}, size)
+	identity, err := create("record", body)
 	if err != nil {
 		t.Fatal(err)
 	}
 	originalSync, syncs := store.syncFile, 0
 	store.syncFile = func(*os.File) error { syncs++; return errors.New("injected durability refusal") }
-	if store.MatchOriginal("record", MaxFileBytes, body, identity) != nil || syncs != 0 || store.ConfirmDurable("record", identity) != ErrDurability || syncs != 1 {
+	if match("record", limit, body, identity) != nil || syncs != 0 || confirm("record", identity) != ErrDurability || syncs != 1 {
 		t.Fatal("matching bytes substituted for required durability confirmation")
 	}
 	store.syncFile = originalSync
@@ -242,7 +342,7 @@ func TestMatchOriginalDoesNotReplaceDurabilityAndSerializesScratch(t *testing.T)
 		go func() {
 			defer joined.Done()
 			for range 8 {
-				if store.MatchOriginal("record", MaxFileBytes, body, identity) != nil || store.ConfirmDurable("record", identity) != nil {
+				if match("record", limit, body, identity) != nil || confirm("record", identity) != nil {
 					t.Error("serialized scratch reused stale bytes or lost original evidence")
 				}
 			}

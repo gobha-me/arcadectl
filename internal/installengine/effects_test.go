@@ -154,14 +154,15 @@ func (a *fixtureAccess) Delete(ctx context.Context, k installstate.Key, opts met
 }
 
 type fixture struct {
-	plan      *installrender.Plan
-	engine    *Engine
-	access    *fixtureAccess
-	store     *installstate.Store
-	snapshot  *installstate.Snapshot
-	key       installstate.Key
-	nsUpdates int
-	nsUpdate  func(*corev1.Namespace) error
+	privateDir string
+	plan       *installrender.Plan
+	engine     *Engine
+	access     *fixtureAccess
+	store      *installstate.Store
+	snapshot   *installstate.Snapshot
+	key        installstate.Key
+	nsUpdates  int
+	nsUpdate   func(*corev1.Namespace) error
 }
 
 func newFixture(t *testing.T, installed bool) *fixture {
@@ -248,6 +249,7 @@ func newFixtureWithPlans(t *testing.T, installed bool, plans ...*installrender.P
 		t.Fatal(err)
 	}
 	base := t.TempDir()
+	f.privateDir = base
 	if err := os.Chmod(base, 0700); err != nil {
 		t.Fatal(err)
 	}

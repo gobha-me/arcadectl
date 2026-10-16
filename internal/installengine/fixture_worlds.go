@@ -284,6 +284,15 @@ func (f *fixtureLedger) readOriginalWorldsMode(pin, materialize bool) (fixtureWo
 	if err != nil {
 		return fixtureWorldsDocument{}, ErrFixtures
 	}
+	if !pin && !materialize {
+		if handled, err := f.matchCurrentWorlds(name); handled {
+			// The borrow has ended before this unchanged closing WAL check.
+			if err != nil || f.originalWorldsWALCurrent() != nil {
+				return fixtureWorldsDocument{}, ErrFixtures
+			}
+			return fixtureWorldsDocument{}, nil
+		}
+	}
 	body, identity, err := f.engine.files.ReadEvidence(name, privatefs.MaxEvidenceFileBytes)
 	if err != nil || fixtureWorldDigest(body) != f.document.OriginalWorldsSHA256 || f.worldIdentity != nil && identity != *f.worldIdentity || f.engine.files.ConfirmEvidenceDurable(name, identity) != nil {
 		return fixtureWorldsDocument{}, ErrFixtures

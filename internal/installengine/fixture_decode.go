@@ -257,6 +257,16 @@ func (f *fixtureLedger) worldsJournalIdentity() (namespace, installationID strin
 	c := &f.decodeCache
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return f.worldsJournalIdentityLocked()
+}
+
+// Caller holds decodeCache.mu. Used at the same fresh WAL/journal boundary
+// while a check-only companion comparison borrows the private shape body.
+func (f *fixtureLedger) worldsJournalIdentityLocked() (namespace, installationID string, err error) {
+	if f == nil || f.engine == nil || f.lock == nil || len(f.body) == 0 || len(f.body) > fixtureLedgerMaxBytes {
+		return "", "", ErrFixtures
+	}
+	c := &f.decodeCache
 	c.bind(f.engine)
 	wal, err := c.walLocked(f, f.body)
 	if err != nil || !reflect.DeepEqual(wal, f.document) || len(wal.Journal) == 0 || len(wal.Journal) > installstate.MaxBytes {
@@ -267,6 +277,42 @@ func (f *fixtureLedger) worldsJournalIdentity() (namespace, installationID strin
 		return "", "", ErrFixtures
 	}
 	return d.Namespace, d.InstallationID, nil
+}
+
+// Only the allocation of the discarded ReadEvidence body is avoided. The
+// retained body is a private immutable comparison operand, never an accepted
+// observation: fresh complete bytes, original identity, seal, durability,
+// strict current WAL/journal and recipe binding are all still required.
+// The mutex remains held for the entire borrow; no body or graph escapes.
+// Only ineligibility permits the caller's unchanged owned-read fallback.
+func (f *fixtureLedger) matchCurrentWorlds(name string) (handled bool, err error) {
+	if f == nil || f.engine == nil || f.engine.files == nil || f.lock == nil || f.worldIdentity == nil {
+		return true, ErrFixtures
+	}
+	c := &f.decodeCache
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.bind(f.engine)
+	body := c.worldsBody
+	if len(body) == 0 || len(body) > fixtureWorldsDecodeRetentionBytes {
+		return false, nil
+	}
+	seal := fixtureWorldDigest(body)
+	if seal != f.document.OriginalWorldsSHA256 {
+		return false, nil
+	}
+	if f.engine.files.MatchEvidenceOriginal(name, privatefs.MaxEvidenceFileBytes, body, *f.worldIdentity) != nil || seal != f.document.OriginalWorldsSHA256 || f.engine.files.ConfirmEvidenceDurable(name, *f.worldIdentity) != nil {
+		return true, ErrFixtures
+	}
+	namespace, _, err := f.worldsJournalIdentityLocked()
+	if err != nil {
+		return true, ErrFixtures
+	}
+	d, err := c.worldsLocked(body, namespace)
+	if err != nil || !f.worldsBindingMatches(d) {
+		return true, ErrFixtures
+	}
+	return true, nil
 }
 
 func (f *fixtureLedger) checkWorlds(body []byte) error {

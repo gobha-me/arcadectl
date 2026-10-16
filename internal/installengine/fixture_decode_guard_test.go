@@ -5,6 +5,9 @@ package installengine
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
+	"reflect"
 	"runtime"
 	"sync"
 	"testing"
@@ -12,6 +15,97 @@ import (
 
 	"github.com/gobha-me/arcadectl/internal/privatefs"
 )
+
+func testFixtureWorldsStreamPaths(t *testing.T) {
+	for _, f := range []*fixtureLedger{nil, {}, {engine: &Engine{}}} {
+		if handled, err := f.matchCurrentWorlds("record"); !handled || err != ErrFixtures {
+			t.Fatal("invalid comparison prerequisites did not explicitly refuse")
+		}
+	}
+	newPhase := fixtureV3PhaseFactory(t)
+	for _, fault := range []string{"cold", "stale", "large-cache", "namespace", "registry", "missing", "replacement", "changed", "truncated", "run-binding", "rv-binding", "accounts-binding", "wal-binding", "closed-store"} {
+		t.Run(fault, func(t *testing.T) {
+			h := newPhase(t)
+			f := h.f.wire.ledger
+			name, err := f.originalWorldsName()
+			if err != nil || f.originalWorldsCurrent() != nil {
+				t.Fatal("original warm companion unavailable")
+			}
+			body, identity, err := f.engine.files.ReadEvidence(name, privatefs.MaxEvidenceFileBytes)
+			if err != nil {
+				t.Fatal("protected reader oracle unavailable")
+			}
+			if handled, err := f.matchCurrentWorlds(name); !handled || err != nil {
+				t.Fatal("warm pure shape did not select complete streaming comparison")
+			}
+			expectMiss := false
+			switch fault {
+			case "cold":
+				f.decodeCache.clearWAL()
+				expectMiss = true
+			case "stale":
+				f.decodeCache.worldsBody = []byte("stale shape")
+				expectMiss = true
+			case "large-cache":
+				f.decodeCache.worldsBody = make([]byte, fixtureWorldsDecodeRetentionBytes+1)
+				expectMiss = true
+			case "namespace":
+				// A namespace miss must strictly re-decode, not accept an old graph.
+				f.decodeCache.worldsNS = "foreign"
+				f.decodeCache.worlds.RunID = "foreign"
+			case "registry":
+				f.decodeCache.plans = nil
+				expectMiss = true
+			case "missing":
+				if f.engine.files.RemoveEvidence(name, identity) != nil {
+					t.Fatal("companion removal injection failed")
+				}
+			case "replacement":
+				if _, err := f.engine.files.AtomicWrite(name, body, &identity); err != nil {
+					t.Fatal("same-byte replacement injection failed")
+				}
+			case "changed", "truncated":
+				altered := bytes.Clone(body)
+				if fault == "changed" {
+					altered[0] = '!'
+				} else {
+					altered = altered[:len(altered)-1]
+				}
+				// The active store still checks its anchored directory descriptor.
+				if os.WriteFile(filepath.Join(h.f.actor.v.f.privateDir, name), altered, 0600) != nil {
+					t.Fatal("same-inode change injection failed")
+				}
+			case "run-binding":
+				f.decodeCache.worlds.RunID = "foreign"
+			case "rv-binding":
+				f.decodeCache.worlds.JournalResourceVersion = "999"
+			case "accounts-binding":
+				f.decodeCache.worlds.Phase.Accounts = nil
+			case "wal-binding":
+				f.document.Revision++
+			case "closed-store":
+				if f.engine.files.Close() != nil {
+					t.Fatal("store close injection failed")
+				}
+			}
+			handled, err := f.matchCurrentWorlds(name)
+			if expectMiss {
+				if handled || err != nil || f.originalWorldsCurrent() != nil {
+					t.Fatal("ineligible pure shape did not use unchanged protected reader")
+				}
+			} else if fault == "namespace" {
+				if !handled || err != nil || f.originalWorldsCurrent() != nil {
+					t.Fatal("current namespace did not reestablish strict shape")
+				}
+			} else if !handled || err != ErrFixtures || f.originalWorldsCurrent() != ErrFixtures {
+				t.Fatal("eligible failure fell back or accepted original-world evidence")
+			}
+			if *f.worldIdentity != identity || h.f.creates != 0 || h.f.deletes != 0 || h.f.seeds != 0 || h.f.previews != 0 {
+				t.Fatal("comparison adopted identity or granted effects")
+			}
+		})
+	}
+}
 
 // Compare the complete document-returning read with the check-only guard.
 // Both must retain the same protected-file witnesses; neither may contact the
@@ -41,6 +135,27 @@ func testFixtureWorldsGuardCopyOracle(t *testing.T) {
 				if f.originalWorldsCurrent() != nil {
 					t.Fatal("check-only guard differs from document oracle")
 				}
+			}
+			name, err := f.originalWorldsName()
+			if err != nil {
+				t.Fatal("original companion address unavailable")
+			}
+			f.decodeCache.clearWAL()
+			if handled, err := f.matchCurrentWorlds(name); handled || err != nil {
+				t.Fatal("cold shape did not select owned-reader fallback")
+			}
+			check()
+			if handled, err := f.matchCurrentWorlds(name); !handled || err != nil {
+				t.Fatal("warm shape did not select fresh streaming match")
+			}
+			fresh, _, err := f.engine.files.ReadEvidence(name, privatefs.MaxEvidenceFileBytes)
+			if err != nil {
+				t.Fatal("fresh companion unavailable")
+			}
+			want, err := decodeFixtureWorldsShape(fresh, h.f.actor.request.Snapshot.Anchor().Namespace)
+			got, readErr := f.readOriginalWorlds(false)
+			if err != nil || readErr != nil || !reflect.DeepEqual(got, want) {
+				t.Fatal("warm streaming operand changed independently strict owned document")
 			}
 			materialize()
 			check()
@@ -110,6 +225,12 @@ func testFixtureWorldsGuardFences(t *testing.T) {
 			case "concurrent":
 				var workers sync.WaitGroup
 				errors := make(chan error, 8)
+				workers.Go(func() {
+					for range 16 {
+						f.decodeCache.clearWAL()
+						f.decodeCache.clear()
+					}
+				})
 				for range 8 {
 					workers.Go(func() {
 						for range 4 {

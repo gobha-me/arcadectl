@@ -19,13 +19,24 @@ import (
 // neither accepted bytes nor a successful comparison are cached.
 // expected remains caller-owned and must not be mutated during this call.
 func (s *Store) MatchOriginal(name string, max int64, expected []byte, identity FileIdentity) error {
+	return s.matchOriginalBounded(name, max, MaxFileBytes, expected, identity)
+}
+
+// MatchEvidenceOriginal is the evidence-file counterpart of MatchOriginal.
+// It still consumes fresh complete bytes and checks original identity; callers
+// must separately confirm durability. The ordinary-file bound is unchanged.
+func (s *Store) MatchEvidenceOriginal(name string, max int64, expected []byte, identity FileIdentity) error {
+	return s.matchOriginalBounded(name, max, MaxEvidenceFileBytes, expected, identity)
+}
+
+func (s *Store) matchOriginalBounded(name string, max, limit int64, expected []byte, identity FileIdentity) error {
 	if s == nil {
 		return ErrUnsafe
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	defer func() { clear(s.confirmScratch) }()
-	if !s.valid() || !safeName(name) || max < 1 || max > MaxFileBytes {
+	if !s.valid() || !safeName(name) || !validFileLimit(limit) || max < 1 || max > limit {
 		return ErrUnsafe
 	}
 	if s.confirmScratch == nil {
@@ -44,7 +55,7 @@ func (s *Store) MatchOriginal(name string, max int64, expected []byte, identity 
 	if unix.Fstat(fd, &before) != nil || !privateStat(&before) || before.Size < 0 || before.Size > max {
 		return ErrUnsafe
 	}
-	digest, equal, err := matchObservedSize(file, before.Size, max, expected, s.confirmScratch)
+	digest, equal, err := matchObservedSizeBounded(file, before.Size, max, limit, expected, s.confirmScratch)
 	if err != nil || unix.Fstat(fd, &after) != nil {
 		return ErrUnsafe
 	}
@@ -63,8 +74,12 @@ func (s *Store) MatchOriginal(name string, max int64, expected []byte, identity 
 // size succeeds. Read the same extra-byte growth probe, even on mismatches;
 // partial-data and late errors cannot supply accepted bytes or an identity.
 func matchObservedSize(reader io.Reader, size, max int64, expected, scratch []byte) ([32]byte, bool, error) {
+	return matchObservedSizeBounded(reader, size, max, MaxFileBytes, expected, scratch)
+}
+
+func matchObservedSizeBounded(reader io.Reader, size, max, limit int64, expected, scratch []byte) ([32]byte, bool, error) {
 	defer clear(scratch)
-	if reader == nil || size < 0 || max < 1 || max > MaxFileBytes || size > max || len(scratch) == 0 || len(scratch) > 32*1024 {
+	if reader == nil || size < 0 || !validFileLimit(limit) || max < 1 || max > limit || size > max || len(scratch) == 0 || len(scratch) > 32*1024 {
 		return [32]byte{}, false, ErrUnsafe
 	}
 	hash := sha256.New()

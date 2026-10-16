@@ -354,6 +354,15 @@ func TestFixtureOriginalWorldsPerKindBoundsAndLargeEvidence(t *testing.T) {
 	if err != nil || len(d.Rows) != installsafety.MaxObjectsPerList || ledger.decodeCache.worldsBody != nil || ledger.originalWorldsCurrent() != nil || ledger.decodeCache.worldsBody != nil {
 		t.Fatal("large original inventory lost members")
 	}
+	for range 2 {
+		if handled, err := ledger.matchCurrentWorlds(name); handled || err != nil {
+			t.Fatal("large uncached original companion selected streaming operand")
+		}
+		got, err := ledger.readOriginalWorlds(false)
+		if err != nil || !reflect.DeepEqual(got, d) || ledger.originalWorldsCurrent() != nil || ledger.decodeCache.worldsBody != nil {
+			t.Fatal("large companion fallback changed complete document or retained excess bytes")
+		}
+	}
 	extra := rows[len(rows)-1]
 	extra.Key.Name, extra.UID = "claim-extra", "claim-extra-uid"
 	d.Rows = append(d.Rows, extra)
