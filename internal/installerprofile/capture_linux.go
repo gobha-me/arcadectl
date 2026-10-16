@@ -26,9 +26,22 @@ type Capture struct {
 	done                    chan struct{}
 	frame                   []byte // Written only by drain, inspected only after its join.
 	readErr                 error
+	prefix                  bool
 }
 
 func NewCapture() (*Capture, error) {
+	return newCapture(false)
+}
+
+// NewPrefixCapture requests only the first sampling interval of the current
+// executable. It never claims whole-command coverage, hard timer precision or
+// representativeness of later admission work. Old full-profile framing remains
+// distinct and cannot be decoded as a prefix (or vice versa).
+func NewPrefixCapture() (*Capture, error) {
+	return newCapture(true)
+}
+
+func newCapture(prefix bool) (*Capture, error) {
 	var pair [2]int
 	if unix.Pipe2(pair[:], unix.O_CLOEXEC|unix.O_NONBLOCK) != nil {
 		return nil, errIncomplete
@@ -41,13 +54,13 @@ func NewCapture() (*Capture, error) {
 		_ = writer.Close()
 		return nil, errIncomplete
 	}
-	control, err := newControlForPipe(identity)
+	control, err := newControlForProtocol(identity, prefix)
 	if err != nil {
 		_ = reader.Close()
 		_ = writer.Close()
 		return nil, errIncomplete
 	}
-	c := &Capture{reader: reader, writer: writer, control: control, done: make(chan struct{})}
+	c := &Capture{reader: reader, writer: writer, control: control, done: make(chan struct{}), prefix: prefix}
 	go c.drain() // Before Start; pollable reads are interruptible by Close.
 	return c, nil
 }
@@ -102,7 +115,7 @@ func (c *Capture) Run(command *exec.Cmd) (body []byte, diagnosticErr, commandErr
 	if c.readErr != nil {
 		return nil, errIncomplete, commandErr
 	}
-	body, diagnosticErr = DecodeFrame(c.frame)
+	body, diagnosticErr = decodeFrameForProtocol(c.frame, c.prefix)
 	c.frame = nil
 	return body, diagnosticErr, commandErr
 }

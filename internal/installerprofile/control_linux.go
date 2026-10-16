@@ -16,16 +16,24 @@ import (
 // newControlForPipe constructs a purpose-specific immutable control for a
 // caller-owned pipe. It does not discover/open arbitrary paths or store keys.
 func newControlForPipe(pipe unix.Stat_t) (*os.File, error) {
+	return newControlForProtocol(pipe, false)
+}
+
+func newControlForProtocol(pipe unix.Stat_t, prefix bool) (*os.File, error) {
 	if pipe.Mode&unix.S_IFMT != unix.S_IFIFO || pipe.Mode&07777 != 0600 || pipe.Uid != uint32(os.Geteuid()) {
 		return nil, errIncomplete
 	}
-	fd, err := unix.MemfdCreate(controlName, unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)
+	purpose, magic := controlName, controlMagic
+	if prefix {
+		purpose, magic = prefixControlName, prefixControlMagic
+	}
+	fd, err := unix.MemfdCreate(purpose, unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)
 	if err != nil {
 		return nil, errIncomplete
 	}
 	defer unix.Close(fd)
 	var record [controlBytes]byte
-	copy(record[:16], controlMagic)
+	copy(record[:16], magic)
 	binary.LittleEndian.PutUint64(record[16:24], MaxProfileBytes)
 	binary.LittleEndian.PutUint64(record[24:32], pipe.Dev)
 	binary.LittleEndian.PutUint64(record[32:40], pipe.Ino)
@@ -43,5 +51,5 @@ func newControlForPipe(pipe unix.Stat_t) (*os.File, error) {
 	if err != nil {
 		return nil, errIncomplete
 	}
-	return os.NewFile(uintptr(readFD), controlName), nil
+	return os.NewFile(uintptr(readFD), purpose), nil
 }

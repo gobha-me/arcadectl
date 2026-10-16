@@ -93,6 +93,18 @@ func TestInheritedProfileHelper(t *testing.T) {
 			<-ctx.Done()
 			cancel()
 		}
+		if mode == "prefix-wait" {
+			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM)
+			payload := make([]byte, 8192)
+			until := time.Now().Add(300 * time.Millisecond)
+			for time.Now().Before(until) {
+				payload[0]++
+				_ = sha256.Sum256(payload)
+			}
+			_, _ = os.Stdout.WriteString("ready\n")
+			<-ctx.Done()
+			cancel()
+		}
 		if mode == "hang" {
 			_, _ = os.Stdout.WriteString("ready\n")
 			for {
@@ -115,9 +127,9 @@ func TestInheritedProfileHelper(t *testing.T) {
 	os.Exit(7) // Diagnostic success/failure must not replace command exit codes.
 }
 
-func rejectedTestControl(t *testing.T, identity unix.Stat_t, scenario string) *os.File {
+func rejectedTestControl(t *testing.T, identity unix.Stat_t, scenario string, prefix bool) *os.File {
 	t.Helper()
-	valid, err := newControlForPipe(identity)
+	valid, err := newControlForProtocol(identity, prefix)
 	if err != nil {
 		t.Fatal("owned control fixture unavailable")
 	}
@@ -127,6 +139,9 @@ func rejectedTestControl(t *testing.T, identity unix.Stat_t, scenario string) *o
 		t.Fatal("owned control record unavailable")
 	}
 	name, mode, seals := controlName, uint32(0400), controlSeals
+	if prefix {
+		name = prefixControlName
+	}
 	switch scenario {
 	case "wrong-purpose":
 		name = "foreign-private-purpose"
@@ -136,6 +151,17 @@ func rejectedTestControl(t *testing.T, identity unix.Stat_t, scenario string) *o
 		seals = 0
 	case "wrong-magic":
 		record[0] ^= 1
+	case "other-protocol-purpose":
+		name = prefixControlName
+		if prefix {
+			name = controlName
+		}
+	case "other-protocol-magic":
+		magic := prefixControlMagic
+		if prefix {
+			magic = controlMagic
+		}
+		copy(record[:16], magic)
 	case "wrong-cap":
 		binary.LittleEndian.PutUint64(record[16:24], MaxProfileBytes+1)
 	case "nonzero-reserved":
@@ -173,17 +199,19 @@ func rejectedTestControl(t *testing.T, identity unix.Stat_t, scenario string) *o
 }
 
 func TestInheritedRejectsEveryControlProtocolBoundaryWithoutChangingFDs(t *testing.T) {
-	for _, scenario := range []string{"wrong-purpose", "wrong-mode", "unsealed", "wrong-magic", "wrong-cap", "nonzero-reserved", "wrong-output-owner", "wrong-size", "writable-control"} {
-		t.Run(scenario, func(t *testing.T) {
-			reader, writer, identity := testPipe(t, true)
-			control := rejectedTestControl(t, identity, scenario)
-			defer control.Close()
-			runProfileHelper(t, control, writer, "disabled")
-			wire, err := io.ReadAll(io.LimitReader(reader, MaxFrameBytes+1))
-			if err != nil || len(wire) != 0 {
-				t.Fatal("rejected private descriptor emitted bytes")
-			}
-		})
+	for _, prefix := range []bool{false, true} {
+		for _, scenario := range []string{"wrong-purpose", "wrong-mode", "unsealed", "wrong-magic", "other-protocol-purpose", "other-protocol-magic", "wrong-cap", "nonzero-reserved", "wrong-output-owner", "wrong-size", "writable-control"} {
+			t.Run(map[bool]string{false: "full/", true: "prefix/"}[prefix]+scenario, func(t *testing.T) {
+				reader, writer, identity := testPipe(t, true)
+				control := rejectedTestControl(t, identity, scenario, prefix)
+				defer control.Close()
+				runProfileHelper(t, control, writer, "disabled")
+				wire, err := io.ReadAll(io.LimitReader(reader, MaxFrameBytes+1))
+				if err != nil || len(wire) != 0 {
+					t.Fatal("rejected private descriptor emitted bytes")
+				}
+			})
+		}
 	}
 }
 
@@ -230,10 +258,18 @@ func runProfileHelper(t *testing.T, control, writer *os.File, mode string) {
 }
 
 func TestInheritedRealProfileAndRejectedPairs(t *testing.T) {
+	testInheritedRealProfileAndRejectedPairs(t, false)
+}
+
+func TestInheritedPrefixRealProfileAndRejectedPairs(t *testing.T) {
+	testInheritedRealProfileAndRejectedPairs(t, true)
+}
+
+func testInheritedRealProfileAndRejectedPairs(t *testing.T, prefix bool) {
 	for _, scenario := range []string{"valid", "foreign-file", "blocking-output", "wrong-pipe", "swapped", "broken-reader", "existing-profiler"} {
 		t.Run(scenario, func(t *testing.T) {
 			reader, writer, identity := testPipe(t, scenario != "blocking-output")
-			control, err := newControlForPipe(identity)
+			control, err := newControlForProtocol(identity, prefix)
 			if err != nil {
 				t.Fatal("sealed read-only test control unavailable")
 			}
@@ -282,7 +318,7 @@ func TestInheritedRealProfileAndRejectedPairs(t *testing.T) {
 				t.Fatal("owned profile reader failed to join")
 			}
 			if scenario == "valid" {
-				body, err := DecodeFrame(received)
+				body, err := decodeFrameForProtocol(received, prefix)
 				if err != nil {
 					t.Fatal("finalized owned profile frame unavailable")
 				}

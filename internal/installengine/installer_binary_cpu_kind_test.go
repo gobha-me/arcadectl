@@ -59,19 +59,71 @@ func installerBinaryCPUDigest(path string) (string, error) {
 }
 
 type installerBinaryCPURecord struct {
-	Format          string                       `json:"format"`
-	Scope           string                       `json:"scope"`
-	SourceSHA       string                       `json:"sourceSHA"`
-	SourceDirty     bool                         `json:"sourceDirty"`
-	BinarySHA256    string                       `json:"binarySHA256"`
-	Profile         string                       `json:"profile"`
-	Mode            string                       `json:"mode"`
-	Command         string                       `json:"command"`
-	CommandOutcome  string                       `json:"commandOutcome"`
-	Diagnostic      string                       `json:"diagnostic"`
-	FlushTimeliness string                       `json:"flushTimeliness"`
-	Refusal         installerprofile.CPURefusal  `json:"refusal"`
-	CPU             *installerprofile.CPUSummary `json:"cpu,omitempty"`
+	Format                      string                       `json:"format"`
+	Scope                       string                       `json:"scope"`
+	SourceSHA                   string                       `json:"sourceSHA"`
+	SourceDirty                 bool                         `json:"sourceDirty"`
+	BinarySHA256                string                       `json:"binarySHA256"`
+	Profile                     string                       `json:"profile"`
+	Mode                        string                       `json:"mode"`
+	Command                     string                       `json:"command"`
+	CommandOutcome              string                       `json:"commandOutcome"`
+	Diagnostic                  string                       `json:"diagnostic"`
+	FlushTimeliness             string                       `json:"flushTimeliness"`
+	Refusal                     installerprofile.CPURefusal  `json:"refusal"`
+	CPU                         *installerprofile.CPUSummary `json:"cpu,omitempty"`
+	RequestedCaptureNanoseconds uint64                       `json:"requestedCaptureNanoseconds,omitempty"`
+}
+
+// Even a fully flushed prefix is not classified for a signal-terminated child.
+// Keep process completion independent of raw profile availability and parsing.
+func installerBinaryCPUParse(body []byte, diagnosticErr error, state *os.ProcessState, executable string) (string, *installerprofile.CPUSummary, installerprofile.CPURefusal) {
+	if diagnosticErr != nil || state == nil || !state.Exited() {
+		return "capture-incomplete", nil, installerprofile.CPURefusal{}
+	}
+	summary, reason, err := installerprofile.SummarizeCPUWithDiagnostic(body, executable)
+	if err != nil {
+		return "cpu-format-unavailable", nil, reason
+	}
+	return "available", &summary, reason
+}
+
+func TestInstallerBinaryPrefixTerminationDoesNotParseFinalizedBytes(t *testing.T) {
+	testInstallerBinaryPrefixTermination(t)
+}
+
+func testInstallerBinaryPrefixTermination(t *testing.T) {
+	command := exec.Command("/bin/sh", "-c", "kill -KILL $$")
+	if command.Run() == nil || command.ProcessState == nil || command.ProcessState.Exited() {
+		t.Fatal("owned signal-termination fixture unavailable")
+	}
+	// Intentionally invalid bytes would produce a nonzero parser refusal if the
+	// parent ever parsed them; the exact same gate applies to valid prefix bytes.
+	for _, body := range [][]byte{nil, []byte("private synthetic finalized prefix operand")} {
+		status, summary, reason := installerBinaryCPUParse(body, nil, command.ProcessState, "/owned/installer")
+		if status != "capture-incomplete" || summary != nil || reason != (installerprofile.CPURefusal{}) {
+			t.Fatal("terminated child acquired prefix CPU attribution")
+		}
+	}
+}
+
+// The source-owned prefix protocol and parent invocation custody are distinct
+// from full-command profiles. Actual sampling duration is only the validated
+// CPU duration, when available; neither the requested timer nor command wall
+// time substitutes for it. No whole-command CPU attribution follows.
+func installerBinaryPrefixCPURecordBytes(source, digest, profile, mode, command, outcome, diagnostic string, dirty bool, summary *installerprofile.CPUSummary, refusal installerprofile.CPURefusal) ([]byte, error) {
+	body, err := installerBinaryCPURecordBytes(source, digest, profile, mode, command, outcome, diagnostic, dirty, summary, refusal)
+	if err != nil {
+		return nil, err
+	}
+	var record installerBinaryCPURecord
+	if json.Unmarshal(body, &record) != nil {
+		return nil, ErrFixtures
+	}
+	record.Format = "installer-child-cpu-summary-v3"
+	record.Scope = "same-attempt-current-child-prefix-only"
+	record.RequestedCaptureNanoseconds = installerprofile.PrefixCaptureRequestedNanoseconds
+	return json.Marshal(record)
 }
 
 func installerBinaryCPURecordBytes(source, digest, profile, mode, command, outcome, diagnostic string, dirty bool, summary *installerprofile.CPUSummary, refusal installerprofile.CPURefusal) ([]byte, error) {
@@ -142,6 +194,40 @@ func TestInstallerBinaryCPURecordClosedCustody(t *testing.T) {
 	}
 	if _, err := installerBinaryCPURecordBytes(source, digest, installrender.Profile137, "transition", "upgrade", "exit-failure", "available", false, nil, installerprofile.CPURefusal{}); err == nil {
 		t.Fatal("nil CPU record claimed available")
+	}
+}
+
+func TestInstallerBinaryPrefixCPURecordDoesNotClaimWholeCommandCoverage(t *testing.T) {
+	testInstallerBinaryPrefixCPURecord(t)
+}
+
+func testInstallerBinaryPrefixCPURecord(t *testing.T) {
+	source, digest := strings.Repeat("a", 40), strings.Repeat("b", 64)
+	summary := &installerprofile.CPUSummary{Samples: 1, CPUNanoseconds: 10000000, DurationNanoseconds: 31000000000,
+		Buckets: []installerprofile.CPUBucket{{Category: "other", FlatNanoseconds: 10000000, CumulativeNanoseconds: 10000000}}}
+	for _, status := range []string{"available", "capture-incomplete", "cpu-format-unavailable"} {
+		var cpu *installerprofile.CPUSummary
+		var refusal installerprofile.CPURefusal
+		if status == "available" {
+			cpu = summary
+		}
+		if status == "cpu-format-unavailable" {
+			refusal = installerprofile.CPURefusal{Stage: installerprofile.CPURefusalWork, Bound: installerprofile.CPUBoundStackReferences}
+		}
+		body, err := installerBinaryPrefixCPURecordBytes(source, digest, installrender.Profile137, "transition", "upgrade", "exit-failure", status, false, cpu, refusal)
+		if err != nil {
+			t.Fatal("closed prefix diagnostic record refused")
+		}
+		var got installerBinaryCPURecord
+		if json.Unmarshal(body, &got) != nil || got.Format != "installer-child-cpu-summary-v3" || got.Scope != "same-attempt-current-child-prefix-only" || got.RequestedCaptureNanoseconds != 30000000000 || got.FlushTimeliness != "not-certified" {
+			t.Fatal("prefix record misstated coverage, duration or flush custody")
+		}
+		if cpu != nil && (got.CPU == nil || got.CPU.DurationNanoseconds != 31000000000) {
+			t.Fatal("requested timer replaced actual overshooting profile duration")
+		}
+	}
+	if _, err := installerBinaryPrefixCPURecordBytes(source, digest, installrender.Profile137, "fresh", "install", "terminated", "available", false, summary, installerprofile.CPURefusal{}); err == nil {
+		t.Fatal("terminated command became a certified whole selected result")
 	}
 }
 

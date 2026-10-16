@@ -1919,3 +1919,28 @@ explicit test-admin inputs. They do not certify a real scheduler, kubelet,
 controller-manager, leader acquisition or successful reconciliation. The
 complete provider, remaining admission branches, authenticated-target integration,
 installer/recovery command and actual binary lifecycle CI remain required.
+
+### Private installer CPU-prefix diagnostics
+
+The signed-binary test harness requests one fixed 30-second CPU-profile prefix
+from the current executable through a private, sealed descriptor protocol.
+This is separately identified from the legacy full-command capture; their
+control purposes, framing and summary versions are not interchangeable. No
+installer flag, environment setting, HTTP endpoint or installation authority
+is added. Historical executables receive no diagnostic descriptors.
+
+The timer and normal command exit share exactly one owned profiler finalization,
+bounded nonblocking flush and descriptor cleanup. Scheduling and profiler
+conversion may overshoot the requested window: the validated profile's actual
+duration is distinct from the requested 30 seconds, not capped or invented.
+Existing compressed/decoded byte, parser-work and privacy limits remain;
+unavailable profiles never fall back to raw output or partial attribution.
+Signal-terminated commands conservatively remain capture-incomplete, even if
+their prefix was already flushed. Profiling never replaces command exit status.
+
+Version-three summary rows explicitly mean current-child prefix only. They
+cannot describe whole-command CPU, later admission work, sleep/network wait,
+an underlying failure cause or a runtime performance cure. Early prefixes can
+mostly reflect startup/package work and may still exceed a parser limit.
+They do not relax any live ownership, authorization, admission, data-retention,
+recovery or deadline gate.

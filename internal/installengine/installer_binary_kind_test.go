@@ -63,6 +63,8 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 				t.Run(mode, func(t *testing.T) {
 					testHistoricalInstallerFailureObservation(t)
 					testHistoricalInstallerPhaseFailureObservation(t)
+					t.Run("cpu-prefix-termination", testInstallerBinaryPrefixTermination)
+					t.Run("cpu-prefix-record", testInstallerBinaryPrefixCPURecord)
 					ctx, config, currentImages, previousImages := targetKindInstallerFixture(t, profile.node, mode == "transition")
 					root, err := filepath.Abs(filepath.Join("..", ".."))
 					if err != nil {
@@ -245,7 +247,7 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 							err = c.Run() // Authentic predecessor receives no hook/descriptors.
 							wallElapsed = time.Since(started)
 						} else {
-							body, diagnosticErr, commandErr := installerBinaryCPUAttempt(c, installerprofile.NewCapture)
+							body, diagnosticErr, commandErr := installerBinaryCPUAttempt(c, installerprofile.NewPrefixCapture)
 							wallElapsed = time.Since(started) // Exclude parent decoding/logging.
 							err = commandErr                  // Never replace the actual installation result.
 							outcome := "launch-failure"
@@ -258,19 +260,9 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 									}
 								}
 							}
-							status := "capture-incomplete"
-							var summary *installerprofile.CPUSummary
-							var refusal installerprofile.CPURefusal
-							if diagnosticErr == nil && c.ProcessState != nil && c.ProcessState.Exited() {
-								parsed, reason, parseErr := installerprofile.SummarizeCPUWithDiagnostic(body, binary)
-								refusal = reason
-								status = "cpu-format-unavailable"
-								if parseErr == nil {
-									summary, status = &parsed, "available"
-								}
-							}
+							status, summary, refusal := installerBinaryCPUParse(body, diagnosticErr, c.ProcessState, binary)
 							body = nil // No raw profile retention, artifact upload or fallback.
-							record, recordErr := installerBinaryCPURecordBytes(cpuSource, cpuBinaryDigest, profile.id, mode, command, outcome, status, cpuDirty, summary, refusal)
+							record, recordErr := installerBinaryPrefixCPURecordBytes(cpuSource, cpuBinaryDigest, profile.id, mode, command, outcome, status, cpuDirty, summary, refusal)
 							if recordErr != nil {
 								t.Fatal("closed current CPU summary custody unavailable")
 							}

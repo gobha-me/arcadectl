@@ -22,7 +22,11 @@ const (
 // This flush follows the joined memory-only Stop; it never passes os.File.Write
 // to pprof or changes an operation, fixture, test, or job deadline.
 func flushProfile(fd int, body []byte) bool {
-	header, err := frameHeader(body)
+	return flushProfileForProtocol(fd, body, false)
+}
+
+func flushProfileForProtocol(fd int, body []byte, prefix bool) bool {
+	header, err := frameHeaderForProtocol(body, prefix)
 	if err != nil {
 		return false
 	}

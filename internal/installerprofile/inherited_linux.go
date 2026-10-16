@@ -11,6 +11,7 @@ import (
 	"os"
 	"runtime/pprof"
 	"sync/atomic"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -18,15 +19,18 @@ import (
 var inheritedAttempt atomic.Bool
 
 const (
-	controlName  = "arcadectl-installer-cpu-v1"
-	controlMagic = "ARCADECTLCPUv1!!"
-	controlBytes = 64
-	controlFD    = 3
-	outputFD     = 4
-	controlSeals = unix.F_SEAL_WRITE | unix.F_SEAL_GROW | unix.F_SEAL_SHRINK | unix.F_SEAL_SEAL
+	controlName        = "arcadectl-installer-cpu-v1"
+	controlMagic       = "ARCADECTLCPUv1!!"
+	prefixControlName  = "arcadectl-installer-cpu-prefix-v1"
+	prefixControlMagic = "ARCADECTLCPUv2!!"
+	controlBytes       = 64
+	controlFD          = 3
+	outputFD           = 4
+	controlSeals       = unix.F_SEAL_WRITE | unix.F_SEAL_GROW | unix.F_SEAL_SHRINK | unix.F_SEAL_SEAL
 )
 
-// StartInherited recognizes only the explicit two-descriptor protocol. It must
+// StartInherited recognizes only the two closed two-descriptor protocols: the
+// legacy full-command capture and the separately framed fixed-prefix capture. It must
 // be called before the installer opens files or initializes signal handling.
 // Unrecognized descriptors are neither read for content, wrapped in os.File,
 // written, closed, nor modified. This is local diagnostic intent, not
@@ -43,8 +47,12 @@ func startInheritedOnce(attempt *atomic.Bool, begin func() *Session) *Session {
 }
 
 func beginInherited() *Session {
-	if !recognizedInheritedPair() {
-		return nil
+	prefix := false
+	if !recognizedInheritedPair(false) {
+		if !recognizedInheritedPair(true) {
+			return nil
+		}
+		prefix = true
 	}
 	close := func() {
 		_ = unix.Close(controlFD)
@@ -61,12 +69,20 @@ func beginInherited() *Session {
 			return nil
 		}
 	}
-	return startSession(pprof.StartCPUProfile, pprof.StopCPUProfile, func(body []byte) bool {
-		return flushProfile(outputFD, body)
+	s := startSession(pprof.StartCPUProfile, pprof.StopCPUProfile, func(body []byte) bool {
+		return flushProfileForProtocol(outputFD, body, prefix)
 	}, close)
+	if s != nil && prefix {
+		s.armPrefixStop(func(d time.Duration, finish func()) func() bool { return time.AfterFunc(d, finish).Stop })
+	}
+	return s
 }
 
-func recognizedInheritedPair() bool {
+func recognizedInheritedPair(prefix bool) bool {
+	purpose, magic := controlName, controlMagic
+	if prefix {
+		purpose, magic = prefixControlName, prefixControlMagic
+	}
 	var control unix.Stat_t
 	if unix.Fstat(controlFD, &control) != nil || control.Mode&unix.S_IFMT != unix.S_IFREG || control.Mode&07777 != 0400 ||
 		control.Uid != uint32(os.Geteuid()) || control.Size != controlBytes || control.Nlink != 0 {
@@ -81,14 +97,14 @@ func recognizedInheritedPair() bool {
 		return false
 	}
 	name, err := os.Readlink("/proc/self/fd/3")
-	if err != nil || name != "/memfd:"+controlName+" (deleted)" {
+	if err != nil || name != "/memfd:"+purpose+" (deleted)" {
 		return false
 	}
 	// Content is read only after exact type/owner/mode/size/access/seals/purpose
 	// recognition. Pread does not move the inherited descriptor's offset.
 	var record [controlBytes]byte
 	n, err := unix.Pread(controlFD, record[:], 0)
-	if err != nil || n != len(record) || !bytes.Equal(record[:16], []byte(controlMagic)) ||
+	if err != nil || n != len(record) || !bytes.Equal(record[:16], []byte(magic)) ||
 		binary.LittleEndian.Uint64(record[16:24]) != MaxProfileBytes || !bytes.Equal(record[48:], make([]byte, 16)) {
 		return false
 	}

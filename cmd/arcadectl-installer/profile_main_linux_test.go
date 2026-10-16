@@ -34,7 +34,7 @@ func TestInstallerMainProfileDoesNotChangeHelpOrArgumentExit(t *testing.T) {
 		t.Fatal("owned installer test executable unavailable")
 	}
 	for _, mode := range []string{"help", "arguments"} {
-		for _, enabled := range []bool{false, true} {
+		for _, captureMode := range []string{"disabled", "full", "prefix"} {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			cmd := exec.CommandContext(ctx, executable, "-test.run=^TestInstallerProfileMainHelper$")
 			cmd.Env = append(os.Environ(), "ARCADECTL_INSTALLER_MAIN_TEST_HELPER="+mode)
@@ -42,8 +42,12 @@ func TestInstallerMainProfileDoesNotChangeHelpOrArgumentExit(t *testing.T) {
 			cmd.Stdout, cmd.Stderr = &stdout, &stderr
 			var body []byte
 			var diag error
-			if enabled {
-				capture, captureErr := installerprofile.NewCapture()
+			if captureMode != "disabled" {
+				create := installerprofile.NewCapture
+				if captureMode == "prefix" {
+					create = installerprofile.NewPrefixCapture
+				}
+				capture, captureErr := create()
 				if captureErr != nil {
 					cancel()
 					t.Fatal("owned installer capture unavailable")
