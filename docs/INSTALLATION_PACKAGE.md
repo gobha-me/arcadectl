@@ -616,9 +616,13 @@ The development native gates are separate and mandatory in the committed CI:
 four complete public admission runs (profiles 135/137, cold/warm) and three actual
 signed-installer executable runs. Both profiles exercise current-package fresh
 install and retaining uninstall. The profile-137 transition fixture builds the
-unmodified pre-baseline installer at
-`2e897ca3b76617ac63c4a294d7ba8c908dcc368b` to install the exact declared legacy
-package without a baseline flag. The current executable explicitly enrolls
+exact pre-baseline installer hotfix at
+`15c63004cd1ddab3f561acaf783348faf72b7ee7` to install the exact declared legacy
+package without a baseline flag. This newly identified installer is a direct
+descendant of original `2e897ca3b76617ac63c4a294d7ba8c908dcc368b`, not a relabeling
+or successful certification of that original executable. The signed runtime
+package, API/controller source `7dcbad6497782c198c7b142a6a8b902dead4b79e`, images
+and compatibility declaration remain unchanged. The current executable explicitly enrolls
 that genuine historical journal, then upgrades, rolls back and retains worlds
 on uninstall. Independent checkpoints require an initially absent baseline,
 unchanged original runtime and bootstrap/client/CA bytes, a nonempty original
@@ -634,7 +638,8 @@ invoking the installer and does not directly bind/fabricate a journal stage.
 The pre-baseline installer commit was a PR ancestor, not a linear-main ancestor.
 CI therefore fetches the preserved read-only `refs/pull/62/head` from the exact
 authoritative repository into a local fixture ref, then checks that the pinned
-commit is its ancestor and has tree `6ba09e173b112c60a7c38d78cebf62e6d2859ec9`.
+commit is its ancestor and has tree `f6ed281f6bfb2896e2dab14297cdf4e37e5f970c`.
+It additionally checks the exact original parent and its original tree.
 Only the exact pinned commit is archived/built, never the moving PR tip. This
 keeps the test available after squash merge and branch deletion without changing
 branch protection or creating a release tag. Clean local clones running the
@@ -645,10 +650,36 @@ git fetch --no-tags --no-recurse-submodules --no-write-fetch-head \
   https://github.com/gobha-me/arcadectl.git \
   '+refs/pull/62/head:refs/arcadectl-fixtures/pr62'
 git merge-base --is-ancestor \
-  2e897ca3b76617ac63c4a294d7ba8c908dcc368b refs/arcadectl-fixtures/pr62
+  15c63004cd1ddab3f561acaf783348faf72b7ee7 refs/arcadectl-fixtures/pr62
+test "$(git rev-parse '15c63004cd1ddab3f561acaf783348faf72b7ee7^{tree}')" \
+  = f6ed281f6bfb2896e2dab14297cdf4e37e5f970c
+test "$(git rev-parse '15c63004cd1ddab3f561acaf783348faf72b7ee7^')" \
+  = 2e897ca3b76617ac63c4a294d7ba8c908dcc368b
 test "$(git rev-parse '2e897ca3b76617ac63c4a294d7ba8c908dcc368b^{tree}')" \
   = 6ba09e173b112c60a7c38d78cebf62e6d2859ec9
 ```
+
+The installer-only hotfix removes two invalid timestamp-order assumptions;
+it does not add baseline support, change runtime payloads, adopt dry-run UIDs,
+relax original-identity/WAL/whole-object checks, add retries or change budgets.
+Kubernetes 1.37.0 [runs field management before REST creation](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/endpoints/handlers/create.go#L183-L192),
+[samples managed-field time independently](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apimachinery/pkg/util/managedfields/internal/managedfieldsupdater.go#L48-L56),
+then [stamps REST metadata](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/registry/generic/registry/store.go#L501-L507)
+with [a separate creation-time sample](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/registry/rest/meta.go#L34-L37).
+Thus an installer-main managed timestamp can precede creation across a second
+boundary. Both whole-original and marker dry-run checks preserve canonical,
+nonzero, finite, upper-bounded timestamps; marker status and persistent-marker
+creation floors, main-time nonregression and exact remaining bytes still apply.
+
+The original `2e897` refusal under candidate `c298ce6` remains a failed historical
+result with unknown cause. The separate bounded current-native discriminator
+observed 100 distinct valid responses without an earlier timestamp; that no-hit
+is inconclusive, not reproduction, refutation or attribution. Deterministic
+regressions plus upstream source establish the hotfix defect independently.
+The new installer descendant must complete the entire original install,
+explicit enrollment, upgrade, rollback and retaining-uninstall journey anew;
+no old failure or component success supplies certification credit.
+
 Each binary fixture has a finite 330-minute outer budget, below its 340-minute
 Go test and 350-minute CI job bounds. Every individual command and behavioral
 proof still has its own shorter deadline; no old result replaces current proof.

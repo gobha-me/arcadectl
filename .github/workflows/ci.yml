@@ -100,8 +100,10 @@ jobs:
           git fetch --no-tags --no-recurse-submodules --no-write-fetch-head \
             https://github.com/gobha-me/arcadectl.git \
             '+refs/pull/62/head:refs/arcadectl-fixtures/pr62'
-          test "$(git rev-parse '2e897ca3b76617ac63c4a294d7ba8c908dcc368b^{commit}')" = 2e897ca3b76617ac63c4a294d7ba8c908dcc368b
-          git merge-base --is-ancestor 2e897ca3b76617ac63c4a294d7ba8c908dcc368b refs/arcadectl-fixtures/pr62
+          test "$(git rev-parse '15c63004cd1ddab3f561acaf783348faf72b7ee7^{commit}')" = 15c63004cd1ddab3f561acaf783348faf72b7ee7
+          git merge-base --is-ancestor 15c63004cd1ddab3f561acaf783348faf72b7ee7 refs/arcadectl-fixtures/pr62
+          test "$(git rev-parse '15c63004cd1ddab3f561acaf783348faf72b7ee7^{tree}')" = f6ed281f6bfb2896e2dab14297cdf4e37e5f970c
+          test "$(git rev-parse '15c63004cd1ddab3f561acaf783348faf72b7ee7^')" = 2e897ca3b76617ac63c4a294d7ba8c908dcc368b
           test "$(git rev-parse '2e897ca3b76617ac63c4a294d7ba8c908dcc368b^{tree}')" = 6ba09e173b112c60a7c38d78cebf62e6d2859ec9
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0

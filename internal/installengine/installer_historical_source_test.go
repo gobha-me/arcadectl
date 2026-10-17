@@ -12,11 +12,14 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// Exact unmodified pre-baseline installer, distinct from the authentic
-// predecessor API/controller runtime. Squash-only main does not contain this
-// PR ancestor; fetch its preserved read-only PR ref, never build the moving tip.
-const binaryHistoricalInstallerSource = "2e897ca3b76617ac63c4a294d7ba8c908dcc368b"
-const binaryHistoricalInstallerTree = "6ba09e173b112c60a7c38d78cebf62e6d2859ec9"
+// Exact pre-baseline installer hotfix descendant, distinct from the unchanged
+// authentic predecessor API/controller runtime. The original installer remains
+// immutable evidence, not a successful certification. Preserve this lineage
+// through the read-only PR ref after squash; never build the moving tip.
+const binaryHistoricalInstallerSource = "15c63004cd1ddab3f561acaf783348faf72b7ee7"
+const binaryHistoricalInstallerTree = "f6ed281f6bfb2896e2dab14297cdf4e37e5f970c"
+const binaryHistoricalInstallerBase = "2e897ca3b76617ac63c4a294d7ba8c908dcc368b"
+const binaryHistoricalInstallerBaseTree = "6ba09e173b112c60a7c38d78cebf62e6d2859ec9"
 
 func TestInstallerHistoricalSourceAcquisitionSurvivesSquash(t *testing.T) {
 	body, err := os.ReadFile("../../.github/workflows/ci.yml")
@@ -40,7 +43,9 @@ func TestInstallerHistoricalSourceAcquisitionSurvivesSquash(t *testing.T) {
   '+refs/pull/62/head:refs/arcadectl-fixtures/pr62'
 test "$(git rev-parse '%s^{commit}')" = %s
 git merge-base --is-ancestor %s refs/arcadectl-fixtures/pr62
-test "$(git rev-parse '%s^{tree}')" = %s`, binaryHistoricalInstallerSource, binaryHistoricalInstallerSource, binaryHistoricalInstallerSource, binaryHistoricalInstallerSource, binaryHistoricalInstallerTree)
+test "$(git rev-parse '%s^{tree}')" = %s
+test "$(git rev-parse '%s^')" = %s
+test "$(git rev-parse '%s^{tree}')" = %s`, binaryHistoricalInstallerSource, binaryHistoricalInstallerSource, binaryHistoricalInstallerSource, binaryHistoricalInstallerSource, binaryHistoricalInstallerTree, binaryHistoricalInstallerSource, binaryHistoricalInstallerBase, binaryHistoricalInstallerBase, binaryHistoricalInstallerBaseTree)
 	count, binaryRuns, acquired := 0, 0, false
 	for _, step := range workflow.Jobs["kind-install-binary"].Steps {
 		if step.Name == "Acquire exact historical installer source" {
