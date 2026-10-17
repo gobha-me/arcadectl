@@ -191,7 +191,7 @@ func targetKindFixtureImagesWithOwnedNode(t *testing.T, nodeImage string, withCo
 			id, ok := inspect("{{.Id}}", registry)
 			label, labelOK := inspect("{{index .Config.Labels \"arcade.gobha.me/e2e-run\"}}", registry)
 			if ok && labelOK && id != "" && label == name && (registryID == "" || id == registryID) {
-				if command(cleanupCtx, "docker", "rm", "--force", id).Run() != nil {
+				if command(cleanupCtx, "docker", "rm", "--force", "--volumes", id).Run() != nil {
 					t.Error("owned registry cleanup failed")
 				}
 			} else if id != "" {
