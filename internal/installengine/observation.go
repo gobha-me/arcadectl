@@ -36,7 +36,11 @@ func (p *ClusterPrerequisites) collectOriginalObservation(ctx context.Context, r
 	if p == nil || p.engine == nil || p.access == nil || p.engine.access != p.access || p.access.frozen == nil || ctx == nil || request.Snapshot == nil || p.original(ctx, request.Snapshot) != nil {
 		return nil, ErrPrerequisites
 	}
-	observer, err := installobserve.New(p.access.readConfig(), p.engine.journal, request.Target)
+	newObserver := installobserve.New
+	if p.access.pairedCollectionReads() {
+		newObserver = installobserve.NewWithPairedCollectionReads
+	}
+	observer, err := newObserver(p.access.readConfig(), p.engine.journal, request.Target)
 	if err != nil {
 		return nil, ErrPrerequisites
 	}
@@ -49,6 +53,13 @@ func (p *ClusterPrerequisites) collectOriginalObservation(ctx context.Context, r
 		return nil, ErrPrerequisites
 	}
 	return observation, nil
+}
+
+// Only the callback-free frozen native administrator with our internally
+// created aggregate default limiter opts in. Explicit caller rates/limiters,
+// instrumentation, non-direct and actor-derived access keep serial ordering.
+func (a *HTTPAccess) pairedCollectionReads() bool {
+	return a.actorCompatible() && a.readLimiter != nil
 }
 
 // closeDescendantUIDs is order-independent and linear in the sealed, bounded

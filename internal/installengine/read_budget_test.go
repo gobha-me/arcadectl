@@ -4,11 +4,41 @@
 package installengine
 
 import (
+	"net/http"
 	"testing"
 
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/flowcontrol"
 )
+
+func TestPairedCollectionReadsRequireClosedNativeDefault(t *testing.T) {
+	if (*HTTPAccess)(nil).pairedCollectionReads() {
+		t.Fatal("nil access became eligible")
+	}
+	a, err := NewDirectHTTPAccess(&rest.Config{Host: "https://cluster.example", BearerToken: "TEST-ONLY-PAIRED-READS"})
+	if err != nil || !a.pairedCollectionReads() {
+		t.Fatal("native shared-default access unavailable", err)
+	}
+	for _, change := range []func(*HTTPAccess){
+		func(a *HTTPAccess) { a.direct = false },
+		func(a *HTTPAccess) { a.readLimiter = nil },
+		func(a *HTTPAccess) { a.actor = &actorWireIdentity{} },
+		func(a *HTTPAccess) {
+			a.frozen.WrapTransport = func(next http.RoundTripper) http.RoundTripper { return next }
+		},
+		func(a *HTTPAccess) { a.frozen.Proxy = http.ProxyFromEnvironment },
+		func(a *HTTPAccess) { a.frozen.Transport = http.DefaultTransport },
+		func(a *HTTPAccess) { a.frozen.Impersonate.UserName = "different" },
+		func(a *HTTPAccess) { a.frozen = nil },
+	} {
+		copyAccess := *a
+		copyAccess.frozen = rest.CopyConfig(a.frozen)
+		change(&copyAccess)
+		if copyAccess.pairedCollectionReads() {
+			t.Fatal("custom/actor-derived access changed serial scheduling")
+		}
+	}
+}
 
 func TestInstallerReadBudgetSharedOnlyForUnspecifiedSettings(t *testing.T) {
 	t.Run("direct-pool", testDirectReadPool)
@@ -34,6 +64,9 @@ func TestInstallerReadBudgetSharedOnlyForUnspecifiedSettings(t *testing.T) {
 					t.Fatal("frozen static access construction refused")
 				}
 				one, two := a.readConfig(), a.readConfig()
+				if a.pairedCollectionReads() != (direct && settings.name == "unspecified") {
+					t.Fatal("collection pairing changed explicit caller rate or routing semantics")
+				}
 				if original.QPS != settings.qps || original.Burst != settings.burst || original.RateLimiter != settings.limiter || a.frozen.QPS != settings.qps || a.frozen.Burst != settings.burst || a.frozen.RateLimiter != settings.limiter || one.Host != original.Host || one.BearerToken != original.BearerToken {
 					t.Fatal("read derivation changed original effect configuration or identity")
 				}
