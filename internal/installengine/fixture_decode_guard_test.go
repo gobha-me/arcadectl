@@ -266,7 +266,7 @@ func testFixtureWorldsGuardFences(t *testing.T) {
 }
 
 // A bounded whole-phase measurement, not a native timing gate. The fixture's
-// explicit100/200 SDK settings are distinct from the production shared100/20.
+// explicit100/200 SDK settings are distinct from the production shared200/20.
 // The same subtest can run against an immutable-source Go overlay for comparison.
 func testFixtureWorldsGuardPhaseCost(t *testing.T) {
 	h := fixtureV3PhaseFactory(t)(t)

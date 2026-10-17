@@ -40,7 +40,9 @@ type Access interface {
 // One aggregate SDK-only budget: full installation proofs perform complete
 // typed and metadata inventories repeatedly. Keep a small burst and preserve
 // every explicit caller limit; do not mint independent observer buckets.
-const installerReadQPS float32 = 100
+// This is a bounded sustained-read resource policy, not a cap on effect HTTP
+// or a proof/deadline shortcut. The burst stays fixed across reconstructions.
+const installerReadQPS float32 = 200
 const installerReadBurst = 20
 
 // HTTPAccess uses client-go's TLS/authentication configuration, but deliberately

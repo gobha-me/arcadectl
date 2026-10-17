@@ -38,14 +38,14 @@ func TestInstallerReadBudgetSharedOnlyForUnspecifiedSettings(t *testing.T) {
 					t.Fatal("read derivation changed original effect configuration or identity")
 				}
 				if settings.name == "unspecified" {
-					if a.readLimiter == nil || one.RateLimiter != a.readLimiter || two.RateLimiter != one.RateLimiter || one.RateLimiter.QPS() != 100 || one.QPS != 100 || one.Burst != 20 || two.QPS != 100 || two.Burst != 20 {
+					if a.readLimiter == nil || one.RateLimiter != a.readLimiter || two.RateLimiter != one.RateLimiter || one.RateLimiter.QPS() != 200 || one.QPS != 200 || one.Burst != 20 || two.QPS != 200 || two.Burst != 20 {
 						t.Fatal("observer reconstruction replenished an independent or unbounded budget")
 					}
 					// Changing a returned config cannot alter future derivations
 					// or affect the default shared bucket in the original access.
 					one.QPS, one.Burst, one.RateLimiter = -1, 999, nil
 					fresh := a.readConfig()
-					if fresh.QPS != 100 || fresh.Burst != 20 || fresh.RateLimiter != a.readLimiter {
+					if fresh.QPS != 200 || fresh.Burst != 20 || fresh.RateLimiter != a.readLimiter {
 						t.Fatal("read config mutation escaped defensive derivation")
 					}
 				} else if a.readLimiter != nil || one.QPS != settings.qps || one.Burst != settings.burst || one.RateLimiter != settings.limiter || two.RateLimiter != settings.limiter {

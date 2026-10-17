@@ -438,11 +438,17 @@ marker outcomes, and incomplete planned fixture runs remain fenced. Retirement
 never substitutes for a new admission proof. This integration still requires
 final tests and actual signed-binary lifecycle certification.
 
-Read-only SDK observers share a bounded 100-request/second, burst-20 budget when
+Read-only SDK observers share a bounded 200-request/second, burst-20 budget when
 the original administrator configuration supplies no limiter, QPS or burst.
 Explicit settings remain unchanged. This avoids resetting an independent burst
 for every reconstructed observer. It changes neither mutation transports nor
 authorization, scan completeness, response/page/memory limits or retry rules.
+The sustained default is a resource policy, not a global installer HTTP cap:
+effect transports do not use it. It permits more sustained API traffic than
+the previous 100-request/second default without increasing the burst or request
+concurrency. API-server capacity and contention must still be considered;
+callers' explicitly selected lower limits are never replaced. A local timing
+screen alone does not establish signed-lifecycle performance or certification.
 
 The complete admission phase brackets EACH of its two full read-only passes
 with fresh original actor/policy/journal witnesses. Within a pass, pinned
@@ -497,10 +503,10 @@ unchanged. Diagnostics are progress, not proof or established root cause.
 
 Failed commands' numeric `command-cost` record includes `sdk-wait` calls,
 returns and inclusive Wait-call wall time for the internally created shared
-SDK read limiter. The existing 100 QPS/20-token burst and one shared bucket
-remain unchanged. Each Wait delegates exactly once with its original context
-and result, including cancellation/refusal; no recorder or request data is
-retained by the limiter. Explicit caller rate settings/limiter pointers,
+SDK read limiter. Instrumentation does not select or replenish the shared
+default budget documented above. Each Wait delegates exactly once with its
+original context and result, including cancellation/refusal; no recorder or
+request data is retained by the limiter. Explicit caller rate settings/limiter pointers,
 non-Wait methods, and contexts without a command recorder remain unmeasured.
 Zero counters therefore do not prove zero SDK work. Inclusive elapsed time is
 not sleeping time, CPU time or proof success; overlapping costs cannot be summed.
