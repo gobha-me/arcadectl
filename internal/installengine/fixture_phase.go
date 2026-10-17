@@ -44,15 +44,10 @@ func (a *ClusterAdmission) phasePublicInventory(ctx context.Context, request Lif
 }
 
 func (a *ClusterAdmission) phasePublicInventoryAgainstGC(ctx context.Context, request LifecycleCheck, gcRows []installobserve.GCObject) ([]fixtureWorldRow, error) {
-	if a == nil || a.prerequisites == nil || ctx == nil || request.Snapshot == nil {
+	if a == nil || a.prerequisites == nil || request.Snapshot == nil {
 		return nil, ErrFixtures
 	}
 	e := a.prerequisites.engine
-	// Only the identical static native access may overlap independent reads.
-	// Generic/instrumented compositions retain the original serial trace.
-	if e.access == a.prerequisites.access && a.prerequisites.access.actorCompatible() {
-		return a.phasePublicInventoryTwoLanes(ctx, request, gcRows)
-	}
 	d := request.Snapshot.Document()
 	rows := []fixtureWorldRow{}
 	for _, original := range d.Resources {

@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -25,15 +24,7 @@ func TestSafetyObservationUsesFrozenMutationIdentityAndExactJournal(t *testing.T
 	testSafetyObservation(t, false)
 }
 
-func TestSafetyObservationPairedNativeUsesFrozenIdentityAndExactJournal(t *testing.T) {
-	testSafetyObservationWithPairing(t, true, true)
-}
-
 func testSafetyObservation(t *testing.T, direct bool) {
-	testSafetyObservationWithPairing(t, direct, false)
-}
-
-func testSafetyObservationWithPairing(t *testing.T, direct, paired bool) {
 	f := newFixture(t, false)
 	ns, err := f.access.client.CoreV1().Namespaces().Get(context.Background(), f.plan.Namespace(), metav1.GetOptions{})
 	if err != nil {
@@ -41,16 +32,9 @@ func testSafetyObservationWithPairing(t *testing.T, direct, paired bool) {
 	}
 	original := ns.DeepCopy()
 	scenario, requests := "", 0
-	var mu sync.Mutex
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		defer mu.Unlock()
 		requests++
-		identityOK := r.Header.Get("Impersonate-User") == "original-fake-user" && reflect.DeepEqual(r.Header.Values("Impersonate-Group"), []string{"original-fake-group"}) && r.Header.Get("Impersonate-Extra-Scope") == "original-fake-scope"
-		if paired {
-			identityOK = r.Header.Get("Impersonate-User") == "" && len(r.Header.Values("Impersonate-Group")) == 0 && r.Header.Get("Impersonate-Extra-Scope") == ""
-		}
-		if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer original-fake-token" || !identityOK {
+		if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer original-fake-token" || r.Header.Get("Impersonate-User") != "original-fake-user" || !reflect.DeepEqual(r.Header.Values("Impersonate-Group"), []string{"original-fake-group"}) || r.Header.Get("Impersonate-Extra-Scope") != "original-fake-scope" {
 			t.Error("read changed frozen identity or issued a mutation")
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -118,9 +102,6 @@ func testSafetyObservationWithPairing(t *testing.T, direct, paired bool) {
 	defer server.Close()
 	config := serverConfig(server)
 	config.Impersonate = rest.ImpersonationConfig{UserName: "original-fake-user", Groups: []string{"original-fake-group"}, Extra: map[string][]string{"scope": {"original-fake-scope"}}}
-	if paired {
-		config.Impersonate = rest.ImpersonationConfig{}
-	}
 	tokenDirectory := t.TempDir()
 	if err := os.Chmod(tokenDirectory, 0700); err != nil {
 		t.Fatal(err)
@@ -138,10 +119,7 @@ func testSafetyObservationWithPairing(t *testing.T, direct, paired bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if access.pairedCollectionReads() != paired {
-		t.Fatal("observation fixture did not select expected native/default scheduling")
-	}
-	if direct && !paired {
+	if direct {
 		calls := instrumentDirectObserver(t, access)
 		t.Cleanup(func() {
 			if calls.Load() == 0 {
@@ -152,9 +130,7 @@ func testSafetyObservationWithPairing(t *testing.T, direct, paired bool) {
 	// These source changes must affect neither mutation nor read identity.
 	config.Host, config.BearerToken = "https://foreign.invalid", "changed-fake-token"
 	config.CAData[0] = '!'
-	if !paired {
-		config.Impersonate.Groups[0], config.Impersonate.Extra["scope"][0] = "changed-group", "changed-scope"
-	}
+	config.Impersonate.Groups[0], config.Impersonate.Extra["scope"][0] = "changed-group", "changed-scope"
 	if err := os.Remove(tokenFile); err != nil { // exact task-owned fake source
 		t.Fatal(err)
 	}
@@ -177,13 +153,11 @@ func testSafetyObservationWithPairing(t *testing.T, direct, paired bool) {
 	request := LifecycleCheck{Checkpoint: ColdSafety, Snapshot: s, Mode: installstate.Install, Target: f.plan, Options: LifecycleOptions{Now: time.Now().UTC()}}
 	for _, test := range []string{"healthy", "stale-snapshot", "malformed-wire", "journal-race", "namespace-race"} {
 		t.Run(test, func(t *testing.T) {
-			mu.Lock()
 			scenario = test
 			ns = original.DeepCopy()
 			if test == "stale-snapshot" {
 				ns.ResourceVersion = "already-changed"
 			}
-			mu.Unlock()
 			observation, err := proof.observe(context.Background(), request)
 			if (err == nil) != (test == "healthy") || err != nil && (observation != nil || err != ErrPrerequisites) {
 				t.Fatal("read accepted stale/foreign/incomplete evidence")
@@ -193,14 +167,9 @@ func testSafetyObservationWithPairing(t *testing.T, direct, paired bool) {
 			}
 		})
 	}
-	mu.Lock()
 	before := requests
-	mu.Unlock()
 	engine.access = &HTTPAccess{}
-	observation, err := proof.observe(context.Background(), request)
-	mu.Lock()
-	defer mu.Unlock()
-	if observation != nil || err != ErrInvalid || requests != before {
+	if observation, err := proof.observe(context.Background(), request); observation != nil || err != ErrInvalid || requests != before {
 		t.Fatal("wrong mutation access identity accepted or queried")
 	}
 }

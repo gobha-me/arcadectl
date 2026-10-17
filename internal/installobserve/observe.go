@@ -71,8 +71,7 @@ type Observer struct {
 	plan    *installrender.Plan
 	// The opt-in executable reader preserves original page fields before
 	// the SDK's UnstructuredList decoder can synthesize item TypeMeta.
-	executablePage    func(context.Context, collection, string, metav1.ListOptions) (*unstructured.UnstructuredList, error)
-	pairedCollections bool
+	executablePage func(context.Context, collection, string, metav1.ListOptions) (*unstructured.UnstructuredList, error)
 }
 
 // Observation seals the complete reads and their original-identity journal.
@@ -279,15 +278,8 @@ func (o *Observer) Collect(ctx context.Context, anchor installstate.Anchor) (*Ob
 	cs := append(collections(snapshot), runtimeCollections(runtimeSnapshot)...)
 	graph := newOwnerGraph(o, doc.Resources, cs)
 	budget := 32 * 1024 * 1024
-	for i := 0; i < len(cs); i++ {
-		if o.pairedCollections && i+1 < len(cs) && cs[i].kind != "Secret" && cs[i+1].kind != "Secret" {
-			if err := o.collectPair(ctx, cs[i], cs[i+1], graph, &budget); err != nil {
-				return nil, err
-			}
-			i++
-			continue
-		}
-		if err := o.collectList(ctx, cs[i], graph, &budget); err != nil {
+	for _, c := range cs {
+		if err := o.collectList(ctx, c, graph, &budget); err != nil {
 			return nil, err
 		}
 	}
@@ -311,30 +303,22 @@ func (o *Observer) collectList(ctx context.Context, c collection, graph *ownerGr
 // caller's deferred cancellation. It grants no read, retry or acceptance.
 // Later row/conversion failures deliberately remain unclassified here.
 func (o *Observer) collectListWithPagesDiagnostic(ctx context.Context, c collection, graph *ownerGraph, budget *int, record func(pagesRefusalReason)) error {
-	return o.collectListWithFetch(ctx, c, graph, budget, record, func(ctx context.Context, opts metav1.ListOptions) (runtime.Object, error) {
-		return o.collectionPage(ctx, c, opts)
-	})
-}
-
-func (o *Observer) collectionPage(ctx context.Context, c collection, opts metav1.ListOptions) (runtime.Object, error) {
 	gv, _ := schema.ParseGroupVersion(c.gv)
 	gvr := gv.WithResource(c.resource)
-	if c.kind == "Secret" {
-		return o.clients.Metadata.Resource(gvr).Namespace(o.plan.Namespace()).List(ctx, opts)
-	}
-	var client dynamic.ResourceInterface = o.clients.Dynamic.Resource(gvr)
-	if c.namespaced {
-		client = o.clients.Dynamic.Resource(gvr).Namespace(o.plan.Namespace())
-	}
-	page, err := client.List(ctx, opts)
-	if err != nil || page == nil || page.GetAPIVersion() != c.gv || page.GetKind() != c.kind+"List" {
-		return nil, ErrRead
-	}
-	return page, nil
-}
-
-func (o *Observer) collectListWithFetch(ctx context.Context, c collection, graph *ownerGraph, budget *int, record func(pagesRefusalReason), fetch func(context.Context, metav1.ListOptions) (runtime.Object, error)) error {
-	items, rv, err, reason := boundedPagesDiagnostic(ctx, fetch, budget)
+	items, rv, err, reason := boundedPagesDiagnostic(ctx, func(ctx context.Context, opts metav1.ListOptions) (runtime.Object, error) {
+		if c.kind == "Secret" {
+			return o.clients.Metadata.Resource(gvr).Namespace(o.plan.Namespace()).List(ctx, opts)
+		}
+		var client dynamic.ResourceInterface = o.clients.Dynamic.Resource(gvr)
+		if c.namespaced {
+			client = o.clients.Dynamic.Resource(gvr).Namespace(o.plan.Namespace())
+		}
+		page, err := client.List(ctx, opts)
+		if err != nil || page == nil || page.GetAPIVersion() != c.gv || page.GetKind() != c.kind+"List" {
+			return nil, ErrRead
+		}
+		return page, nil
+	}, budget)
 	if err != nil {
 		if record != nil {
 			record(reason)
