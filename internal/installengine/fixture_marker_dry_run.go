@@ -95,7 +95,13 @@ func fixtureMarkerDryRunRoles(o, want *unstructured.Unstructured, observed time.
 	var main, status map[string]any
 	for index, field := range typed.ManagedFields {
 		raw, ok := fields[index].(map[string]any)
-		if !ok || field.Time == nil || !fixtureResultTime(raw["time"], typed.CreationTimestamp.Time, observed.UTC().Add(time.Second)) {
+		earliest := typed.CreationTimestamp.Time
+		if field.Manager == "arcadectl-installer" && field.Subresource == "" {
+			// Match the independently valid original main-record timestamp.
+			// Status keeps its creation floor; the delta still cannot regress.
+			earliest = time.Time{}
+		}
+		if !ok || field.Time == nil || !fixtureResultTime(raw["time"], earliest, observed.UTC().Add(time.Second)) {
 			return nil, nil, ErrFixtures
 		}
 		var tree map[string]any

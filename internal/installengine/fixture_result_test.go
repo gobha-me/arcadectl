@@ -182,8 +182,8 @@ func fixtureResultRefusals(t *testing.T, ledger *fixtureLedger, slot int, phase 
 			entry[field] = "PRIVATE-CANARY"
 		}
 	}
-	mutations["managed-time-before-creation"] = func(x *unstructured.Unstructured) {
-		x.Object["metadata"].(map[string]any)["managedFields"].([]any)[0].(map[string]any)["time"] = "2026-10-06T09:59:59Z"
+	mutations["managed-time-year-zero"] = func(x *unstructured.Unstructured) {
+		x.Object["metadata"].(map[string]any)["managedFields"].([]any)[0].(map[string]any)["time"] = "0000-01-01T00:00:00Z"
 	}
 	mutations["managed-time-future"] = func(x *unstructured.Unstructured) {
 		x.Object["metadata"].(map[string]any)["managedFields"].([]any)[0].(map[string]any)["time"] = observed.Add(2 * time.Second).Format(time.RFC3339)

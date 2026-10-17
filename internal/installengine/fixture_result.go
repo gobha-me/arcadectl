@@ -111,7 +111,9 @@ func (f *fixtureLedger) validateResult(slot int, phase fixtureResultPhase, resul
 	}
 	fields := make([]any, count)
 	for index, field := range meta.ManagedFields {
-		if field.Time == nil || field.Time.IsZero() || field.Time.Before(&meta.CreationTimestamp) || field.Time.Time.After(ceiling) {
+		// The apiserver samples field-management time before REST creation
+		// stamping. Their relative ordering is not an ownership/freshness proof.
+		if field.Time == nil || field.Time.IsZero() || field.Time.Year() < 1 || field.Time.Year() > 9999 || field.Time.Time.After(ceiling) {
 			return ErrFixtures
 		}
 		manager, subresource := "arcadectl-installer", ""
