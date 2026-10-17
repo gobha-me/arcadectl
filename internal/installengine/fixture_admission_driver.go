@@ -9,6 +9,8 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/gobha-me/arcadectl/internal/installerprofile"
+	"github.com/gobha-me/arcadectl/internal/installstate"
 	"github.com/gobha-me/arcadectl/internal/privatefs"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -126,6 +128,10 @@ func (d *fixtureAdmissionDriver) run(ctx context.Context) (err error) {
 	}
 	if err = d.createOriginalsLocked(ctx); err != nil {
 		return err
+	}
+	if d.wire.actors.request.Mode == installstate.Upgrade {
+		profile := installerprofile.BeginFirstUpgradeMatrix(ctx)
+		defer profile.RequestMatrixStop() // Async; command exit joins outside wireMu.
 	}
 	for d.next < fixtureAdmissionCaseCount {
 		if d.next == 39 {

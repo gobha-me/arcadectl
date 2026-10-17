@@ -20,12 +20,19 @@ func newControlForPipe(pipe unix.Stat_t) (*os.File, error) {
 }
 
 func newControlForProtocol(pipe unix.Stat_t, prefix bool) (*os.File, error) {
+	return newControlForPurpose(pipe, prefix, false)
+}
+
+func newControlForPurpose(pipe unix.Stat_t, prefix, matrix bool) (*os.File, error) {
 	if pipe.Mode&unix.S_IFMT != unix.S_IFIFO || pipe.Mode&07777 != 0600 || pipe.Uid != uint32(os.Geteuid()) {
 		return nil, errIncomplete
 	}
 	purpose, magic := controlName, controlMagic
 	if prefix {
 		purpose, magic = prefixControlName, prefixControlMagic
+	}
+	if matrix {
+		purpose, magic = matrixControlName, matrixControlMagic
 	}
 	fd, err := unix.MemfdCreate(purpose, unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)
 	if err != nil {

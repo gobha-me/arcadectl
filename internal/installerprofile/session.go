@@ -14,9 +14,12 @@ import (
 // finalization may overshoot it; the validated profile reports actual duration.
 const PrefixCaptureRequestedNanoseconds uint64 = uint64(30 * time.Second)
 
-// Session owns only a successfully started private profile. Its methods never
-// grant installation authority or write to normal command output.
+// Session owns a recognized private descriptor pair and, once successfully
+// started, its profile. A deferred matrix session can own pending descriptors
+// before Start. Its methods never grant installation authority or write to
+// normal command output.
 type Session struct {
+	matrix       *matrixSession
 	once         sync.Once
 	buffer       *profileBuffer
 	stop         func()
@@ -51,6 +54,11 @@ func startSession(start func(io.Writer) error, stop func(), flush func([]byte) b
 func (s *Session) Stop() bool {
 	if s == nil {
 		return false
+	}
+	if s.matrix != nil {
+		s.matrix.requestStop()
+		<-s.matrix.done
+		return s.matrix.complete
 	}
 	s.once.Do(func() {
 		s.timerMu.Lock()

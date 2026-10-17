@@ -23,14 +23,16 @@ const (
 	controlMagic       = "ARCADECTLCPUv1!!"
 	prefixControlName  = "arcadectl-installer-cpu-prefix-v1"
 	prefixControlMagic = "ARCADECTLCPUv2!!"
+	matrixControlName  = "arcadectl-installer-cpu-upgrade-matrix-v1"
+	matrixControlMagic = "ARCADECTLCPUv3!!"
 	controlBytes       = 64
 	controlFD          = 3
 	outputFD           = 4
 	controlSeals       = unix.F_SEAL_WRITE | unix.F_SEAL_GROW | unix.F_SEAL_SHRINK | unix.F_SEAL_SEAL
 )
 
-// StartInherited recognizes only the two closed two-descriptor protocols: the
-// legacy full-command capture and the separately framed fixed-prefix capture. It must
+// StartInherited recognizes only the three closed two-descriptor protocols: the
+// legacy full-command, fixed-prefix and deferred first-upgrade-matrix captures. It must
 // be called before the installer opens files or initializes signal handling.
 // Unrecognized descriptors are neither read for content, wrapped in os.File,
 // written, closed, nor modified. This is local diagnostic intent, not
@@ -47,12 +49,16 @@ func startInheritedOnce(attempt *atomic.Bool, begin func() *Session) *Session {
 }
 
 func beginInherited() *Session {
-	prefix := false
+	prefix, matrix := false, false
 	if !recognizedInheritedPair(false) {
 		if !recognizedInheritedPair(true) {
-			return nil
+			if !recognizedInheritedPurpose(false, true) {
+				return nil
+			}
+			matrix = true
+		} else {
+			prefix = true
 		}
-		prefix = true
 	}
 	close := func() {
 		_ = unix.Close(controlFD)
@@ -69,6 +75,11 @@ func beginInherited() *Session {
 			return nil
 		}
 	}
+	if matrix {
+		return newMatrixSession(pprof.StartCPUProfile, pprof.StopCPUProfile, func(body []byte, notStarted bool) bool {
+			return flushMatrixProfile(outputFD, body, notStarted)
+		}, close, func(d time.Duration, finish func()) func() bool { return time.AfterFunc(d, finish).Stop })
+	}
 	s := startSession(pprof.StartCPUProfile, pprof.StopCPUProfile, func(body []byte) bool {
 		return flushProfileForProtocol(outputFD, body, prefix)
 	}, close)
@@ -79,9 +90,16 @@ func beginInherited() *Session {
 }
 
 func recognizedInheritedPair(prefix bool) bool {
+	return recognizedInheritedPurpose(prefix, false)
+}
+
+func recognizedInheritedPurpose(prefix, matrix bool) bool {
 	purpose, magic := controlName, controlMagic
 	if prefix {
 		purpose, magic = prefixControlName, prefixControlMagic
+	}
+	if matrix {
+		purpose, magic = matrixControlName, matrixControlMagic
 	}
 	var control unix.Stat_t
 	if unix.Fstat(controlFD, &control) != nil || control.Mode&unix.S_IFMT != unix.S_IFREG || control.Mode&07777 != 0400 ||

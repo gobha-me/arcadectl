@@ -27,6 +27,7 @@ type Capture struct {
 	frame                   []byte // Written only by drain, inspected only after its join.
 	readErr                 error
 	prefix                  bool
+	matrix                  bool
 }
 
 func NewCapture() (*Capture, error) {
@@ -42,6 +43,17 @@ func NewPrefixCapture() (*Capture, error) {
 }
 
 func newCapture(prefix bool) (*Capture, error) {
+	return newCaptureForPurpose(prefix, false)
+}
+
+// NewFirstUpgradeMatrixCapture requests one deferred, fixed-purpose interval
+// after successful setup of the first current upgrade admission matrix. This
+// protocol is neither a startup prefix nor whole-command CPU coverage.
+func NewFirstUpgradeMatrixCapture() (*Capture, error) {
+	return newCaptureForPurpose(false, true)
+}
+
+func newCaptureForPurpose(prefix, matrix bool) (*Capture, error) {
 	var pair [2]int
 	if unix.Pipe2(pair[:], unix.O_CLOEXEC|unix.O_NONBLOCK) != nil {
 		return nil, errIncomplete
@@ -54,26 +66,30 @@ func newCapture(prefix bool) (*Capture, error) {
 		_ = writer.Close()
 		return nil, errIncomplete
 	}
-	control, err := newControlForProtocol(identity, prefix)
+	control, err := newControlForPurpose(identity, prefix, matrix)
 	if err != nil {
 		_ = reader.Close()
 		_ = writer.Close()
 		return nil, errIncomplete
 	}
-	c := &Capture{reader: reader, writer: writer, control: control, done: make(chan struct{}), prefix: prefix}
+	c := &Capture{reader: reader, writer: writer, control: control, done: make(chan struct{}), prefix: prefix, matrix: matrix}
 	go c.drain() // Before Start; pollable reads are interruptible by Close.
 	return c, nil
 }
 
 func (c *Capture) drain() {
 	defer close(c.done)
-	frame := make([]byte, 0, MaxFrameBytes)
+	maxFrame := MaxFrameBytes
+	if c.matrix {
+		maxFrame++ // One status byte, without increasing the raw profile cap.
+	}
+	frame := make([]byte, 0, maxFrame)
 	var scratch [32 * 1024]byte
 	overflow := false
 	for {
 		n, err := c.reader.Read(scratch[:])
 		if n > 0 && !overflow {
-			if n > MaxFrameBytes-len(frame) {
+			if n > maxFrame-len(frame) {
 				overflow, frame = true, nil
 			} else {
 				frame = append(frame, scratch[:n]...)
@@ -115,7 +131,11 @@ func (c *Capture) Run(command *exec.Cmd) (body []byte, diagnosticErr, commandErr
 	if c.readErr != nil {
 		return nil, errIncomplete, commandErr
 	}
-	body, diagnosticErr = decodeFrameForProtocol(c.frame, c.prefix)
+	if c.matrix {
+		body, diagnosticErr = decodeMatrixFrame(c.frame)
+	} else {
+		body, diagnosticErr = decodeFrameForProtocol(c.frame, c.prefix)
+	}
 	c.frame = nil
 	return body, diagnosticErr, commandErr
 }

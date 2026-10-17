@@ -60,13 +60,17 @@ type options struct {
 func main() {
 	profile := installerprofile.StartInherited() // Before signals or input files.
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	code := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	code := runWithProfile(ctx, os.Args[1:], os.Stdout, os.Stderr, profile)
 	cancel()
 	_ = profile.Stop() // Explicit: os.Exit does not run deferred cleanup.
 	os.Exit(code)
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	return runWithProfile(ctx, args, stdout, stderr, nil)
+}
+
+func runWithProfile(ctx context.Context, args []string, stdout, stderr io.Writer, profile *installerprofile.Session) int {
 	if ctx == nil || stdout == nil || stderr == nil {
 		return 1
 	}
@@ -82,6 +86,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		_, _ = io.WriteString(stderr, errArguments.Error()+"\n")
 		return 2
 	}
+	ctx = installerprofile.WithFirstUpgradeMatrix(ctx, o.command, profile)
 	ctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
 	if ctx.Err() != nil {

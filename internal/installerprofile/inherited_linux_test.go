@@ -128,8 +128,12 @@ func TestInheritedProfileHelper(t *testing.T) {
 }
 
 func rejectedTestControl(t *testing.T, identity unix.Stat_t, scenario string, prefix bool) *os.File {
+	return rejectedTestControlForPurpose(t, identity, scenario, prefix, false)
+}
+
+func rejectedTestControlForPurpose(t *testing.T, identity unix.Stat_t, scenario string, prefix, matrix bool) *os.File {
 	t.Helper()
-	valid, err := newControlForProtocol(identity, prefix)
+	valid, err := newControlForPurpose(identity, prefix, matrix)
 	if err != nil {
 		t.Fatal("owned control fixture unavailable")
 	}
@@ -141,6 +145,9 @@ func rejectedTestControl(t *testing.T, identity unix.Stat_t, scenario string, pr
 	name, mode, seals := controlName, uint32(0400), controlSeals
 	if prefix {
 		name = prefixControlName
+	}
+	if matrix {
+		name = matrixControlName
 	}
 	switch scenario {
 	case "wrong-purpose":
@@ -199,11 +206,12 @@ func rejectedTestControl(t *testing.T, identity unix.Stat_t, scenario string, pr
 }
 
 func TestInheritedRejectsEveryControlProtocolBoundaryWithoutChangingFDs(t *testing.T) {
-	for _, prefix := range []bool{false, true} {
+	for _, purpose := range []string{"full", "prefix", "matrix"} {
+		prefix, matrix := purpose == "prefix", purpose == "matrix"
 		for _, scenario := range []string{"wrong-purpose", "wrong-mode", "unsealed", "wrong-magic", "other-protocol-purpose", "other-protocol-magic", "wrong-cap", "nonzero-reserved", "wrong-output-owner", "wrong-size", "writable-control"} {
-			t.Run(map[bool]string{false: "full/", true: "prefix/"}[prefix]+scenario, func(t *testing.T) {
+			t.Run(purpose+"/"+scenario, func(t *testing.T) {
 				reader, writer, identity := testPipe(t, true)
-				control := rejectedTestControl(t, identity, scenario, prefix)
+				control := rejectedTestControlForPurpose(t, identity, scenario, prefix, matrix)
 				defer control.Close()
 				runProfileHelper(t, control, writer, "disabled")
 				wire, err := io.ReadAll(io.LimitReader(reader, MaxFrameBytes+1))

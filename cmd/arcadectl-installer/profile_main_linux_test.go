@@ -34,7 +34,7 @@ func TestInstallerMainProfileDoesNotChangeHelpOrArgumentExit(t *testing.T) {
 		t.Fatal("owned installer test executable unavailable")
 	}
 	for _, mode := range []string{"help", "arguments"} {
-		for _, captureMode := range []string{"disabled", "full", "prefix"} {
+		for _, captureMode := range []string{"disabled", "full", "prefix", "matrix"} {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			cmd := exec.CommandContext(ctx, executable, "-test.run=^TestInstallerProfileMainHelper$")
 			cmd.Env = append(os.Environ(), "ARCADECTL_INSTALLER_MAIN_TEST_HELPER="+mode)
@@ -47,6 +47,9 @@ func TestInstallerMainProfileDoesNotChangeHelpOrArgumentExit(t *testing.T) {
 				if captureMode == "prefix" {
 					create = installerprofile.NewPrefixCapture
 				}
+				if captureMode == "matrix" {
+					create = installerprofile.NewFirstUpgradeMatrixCapture
+				}
 				capture, captureErr := create()
 				if captureErr != nil {
 					cancel()
@@ -54,7 +57,7 @@ func TestInstallerMainProfileDoesNotChangeHelpOrArgumentExit(t *testing.T) {
 				}
 				body, diag, err = capture.Run(cmd)
 				capture.Close()
-				if diag != nil || len(body) == 0 {
+				if captureMode == "matrix" && (body != nil || !installerprofile.FirstUpgradeMatrixNotStarted(diag)) || captureMode != "matrix" && (diag != nil || len(body) == 0) {
 					cancel()
 					t.Fatal("actual main exited without explicit owned finalization")
 				}

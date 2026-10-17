@@ -33,6 +33,14 @@ func flushProfileForProtocol(fd int, body []byte, prefix bool) bool {
 	return flushParts(fd, [][]byte{header[:], body}, unix.Write, time.Now, time.Sleep)
 }
 
+func flushMatrixProfile(fd int, body []byte, notStarted bool) bool {
+	parts, err := matrixFrameParts(body, notStarted)
+	if err != nil {
+		return false
+	}
+	return flushParts(fd, parts, unix.Write, time.Now, time.Sleep)
+}
+
 func flushParts(fd int, parts [][]byte, write func(int, []byte) (int, error), now func() time.Time, sleep func(time.Duration)) bool {
 	deadline := now().Add(flushBudget)
 	attempts, interrupted := 0, 0

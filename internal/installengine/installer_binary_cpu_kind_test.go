@@ -73,6 +73,137 @@ type installerBinaryCPURecord struct {
 	Refusal                     installerprofile.CPURefusal  `json:"refusal"`
 	CPU                         *installerprofile.CPUSummary `json:"cpu,omitempty"`
 	RequestedCaptureNanoseconds uint64                       `json:"requestedCaptureNanoseconds,omitempty"`
+	Trigger                     string                       `json:"trigger,omitempty"`
+	Ordinal                     uint64                       `json:"ordinal,omitempty"`
+}
+
+func installerBinaryUsesMatrixCapture(mode, command string) bool {
+	return mode == "transition" && command == "upgrade"
+}
+
+func TestInstallerBinaryMatrixNotStartedHelper(t *testing.T) {
+	if os.Getenv("ARCADECTL_MATRIX_CUSTODY_HELPER") != "1" {
+		return
+	}
+	s := installerprofile.StartInherited()
+	if s == nil || !s.Stop() {
+		os.Exit(90)
+	}
+	os.Exit(7)
+}
+
+func TestInstallerBinaryMatrixCustody(t *testing.T) { testInstallerBinaryMatrixCustody(t) }
+
+func testInstallerBinaryMatrixCustody(t *testing.T) {
+	t.Helper()
+	for _, mode := range []string{"fresh", "transition", ""} {
+		for _, command := range []string{"install", "enroll-baseline", "upgrade", "rollback", "uninstall", "resume", ""} {
+			if installerBinaryUsesMatrixCapture(mode, command) != (mode == "transition" && command == "upgrade") {
+				t.Fatal("current constructor selection expanded beyond transition upgrade")
+			}
+		}
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal("owned executable unavailable")
+	}
+	child := exec.CommandContext(t.Context(), executable, "-test.run=^TestInstallerBinaryMatrixNotStartedHelper$")
+	child.Env = append(os.Environ(), "ARCADECTL_MATRIX_CUSTODY_HELPER=1")
+	body, diagnostic, commandErr := installerBinaryCPUAttempt(child, installerprofile.NewFirstUpgradeMatrixCapture)
+	if commandErr == nil || child.ProcessState == nil || child.ProcessState.ExitCode() != 7 || len(body) != 0 || !installerprofile.FirstUpgradeMatrixNotStarted(diagnostic) {
+		t.Fatal("actual not-started child changed output/result or fabricated CPU")
+	}
+	status, cpu, reason := installerBinaryMatrixCPUParse(body, diagnostic, child.ProcessState, executable)
+	if status != "not-started" || cpu != nil || reason != (installerprofile.CPURefusal{}) {
+		t.Fatal("not-started was parsed as CPU")
+	}
+	killed := exec.CommandContext(t.Context(), "/bin/sh", "-c", "kill -KILL $$")
+	if killed.Run() == nil || killed.ProcessState == nil || killed.ProcessState.Exited() {
+		t.Fatal("owned signal fixture unavailable")
+	}
+	for _, diag := range []error{nil, diagnostic, ErrFixtures} {
+		status, cpu, reason := installerBinaryMatrixCPUParse([]byte("PRIVATE-RAW-CANARY"), diag, killed.ProcessState, executable)
+		if status != "capture-incomplete" || cpu != nil || reason != (installerprofile.CPURefusal{}) {
+			t.Fatal("terminated child acquired matrix attribution")
+		}
+	}
+	source, digest := strings.Repeat("a", 40), strings.Repeat("b", 64)
+	summary := &installerprofile.CPUSummary{Samples: 1, CPUNanoseconds: 10000000, DurationNanoseconds: 31000000000,
+		Buckets: []installerprofile.CPUBucket{{Category: "other", FlatNanoseconds: 10000000, CumulativeNanoseconds: 10000000}}}
+	for _, diagnostic := range []string{"not-started", "capture-incomplete", "cpu-format-unavailable", "available"} {
+		var cpu *installerprofile.CPUSummary
+		var refusal installerprofile.CPURefusal
+		if diagnostic == "available" {
+			cpu = summary
+		}
+		if diagnostic == "cpu-format-unavailable" {
+			refusal = installerprofile.CPURefusal{Stage: installerprofile.CPURefusalSchema}
+		}
+		body, err := installerBinaryMatrixCPURecordBytes(source, digest, installrender.Profile137, "transition", "upgrade", "exit-failure", diagnostic, false, cpu, refusal)
+		var record installerBinaryCPURecord
+		if err != nil || json.Unmarshal(body, &record) != nil || record.Format != "installer-child-cpu-summary-v4" || record.Scope != "same-attempt-current-child-first-upgrade-matrix-window-only" || record.Trigger != "first-current-upgrade-matrix-entry" || record.Ordinal != 1 || record.RequestedCaptureNanoseconds != 30000000000 || record.Diagnostic != diagnostic || record.FlushTimeliness != "not-certified" || strings.Contains(string(body), "PRIVATE-RAW-CANARY") {
+			t.Fatal("matrix closed record lost separate scope/custody")
+		}
+		if cpu != nil && (record.CPU == nil || record.CPU.DurationNanoseconds != 31000000000) {
+			t.Fatal("requested window clamped actual overshoot")
+		}
+	}
+	for _, outcome := range []string{"terminated", "launch-failure"} {
+		if _, err := installerBinaryMatrixCPURecordBytes(source, digest, installrender.Profile137, "transition", "upgrade", outcome, "not-started", false, nil, installerprofile.CPURefusal{}); err == nil {
+			t.Fatal("unexited child acquired not-started attribution")
+		}
+	}
+	for _, modeCommand := range [][2]string{{"fresh", "upgrade"}, {"transition", "resume"}, {"transition", "install"}} {
+		if _, err := installerBinaryMatrixCPURecordBytes(source, digest, installrender.Profile137, modeCommand[0], modeCommand[1], "success", "not-started", false, nil, installerprofile.CPURefusal{}); err == nil {
+			t.Fatal("wrong invocation acquired matrix record")
+		}
+	}
+	if _, err := installerBinaryMatrixCPURecordBytes(source, digest, installrender.Profile137, "transition", "upgrade", "success", "not-started", false, summary, installerprofile.CPURefusal{}); err == nil {
+		t.Fatal("not-started fabricated CPU")
+	}
+	for _, build := range []func(string, string, string, string, string, string, string, bool, *installerprofile.CPUSummary, installerprofile.CPURefusal) ([]byte, error){installerBinaryCPURecordBytes, installerBinaryPrefixCPURecordBytes} {
+		if _, err := build(source, digest, installrender.Profile137, "transition", "upgrade", "success", "not-started", false, nil, installerprofile.CPURefusal{}); err == nil {
+			t.Fatal("legacy scope reinterpreted not-started")
+		}
+	}
+}
+
+func installerBinaryMatrixCPUParse(body []byte, diagnosticErr error, state *os.ProcessState, executable string) (string, *installerprofile.CPUSummary, installerprofile.CPURefusal) {
+	if state != nil && state.Exited() && len(body) == 0 && installerprofile.FirstUpgradeMatrixNotStarted(diagnosticErr) {
+		return "not-started", nil, installerprofile.CPURefusal{}
+	}
+	return installerBinaryCPUParse(body, diagnosticErr, state, executable)
+}
+
+// This separately versioned record describes only the requested first matrix
+// window. Actual duration may overshoot; process-wide samples neither identify
+// the later failed operand nor establish whole-upgrade or matrix-exclusive cost.
+func installerBinaryMatrixCPURecordBytes(source, digest, profile, mode, command, outcome, diagnostic string, dirty bool, summary *installerprofile.CPUSummary, refusal installerprofile.CPURefusal) ([]byte, error) {
+	if !installerBinaryUsesMatrixCapture(mode, command) {
+		return nil, ErrFixtures
+	}
+	baseDiagnostic := diagnostic
+	if diagnostic == "not-started" {
+		if summary != nil || refusal != (installerprofile.CPURefusal{}) || outcome != "success" && outcome != "exit-failure" {
+			return nil, ErrFixtures
+		}
+		baseDiagnostic = "capture-incomplete" // Reuse custody validation, not old wire semantics.
+	}
+	body, err := installerBinaryCPURecordBytes(source, digest, profile, mode, command, outcome, baseDiagnostic, dirty, summary, refusal)
+	if err != nil {
+		return nil, err
+	}
+	var record installerBinaryCPURecord
+	if json.Unmarshal(body, &record) != nil {
+		return nil, ErrFixtures
+	}
+	record.Format = "installer-child-cpu-summary-v4"
+	record.Scope = "same-attempt-current-child-first-upgrade-matrix-window-only"
+	record.Diagnostic = diagnostic
+	record.Trigger = "first-current-upgrade-matrix-entry"
+	record.Ordinal = 1
+	record.RequestedCaptureNanoseconds = installerprofile.FirstUpgradeMatrixRequestedNanoseconds
+	return json.Marshal(record)
 }
 
 // Even a fully flushed prefix is not classified for a signal-terminated child.

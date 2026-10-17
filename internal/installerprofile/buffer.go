@@ -14,7 +14,8 @@ const MaxProfileBytes = 8 * 1024 * 1024
 var errIncomplete = errors.New("private installer profile incomplete")
 
 // Only the pprof writer may mutate this buffer. Its caller must join the owned
-// profile writer before inspecting bytes or overflow; no asynchronous Stop.
+// profile writer before inspecting bytes or overflow. A separate finalizer may
+// perform that join, but never inspect the sink concurrently with its writer.
 type profileBuffer struct {
 	bytes    []byte
 	overflow bool

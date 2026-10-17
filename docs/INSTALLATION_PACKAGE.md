@@ -1922,8 +1922,9 @@ installer/recovery command and actual binary lifecycle CI remain required.
 
 ### Private installer CPU-prefix diagnostics
 
-The signed-binary test harness requests one fixed 30-second CPU-profile prefix
-from the current executable through a private, sealed descriptor protocol.
+Except for current transition upgrade, the signed-binary test harness requests
+one fixed 30-second CPU-profile prefix from the current executable through a
+private, sealed descriptor protocol.
 This is separately identified from the legacy full-command capture; their
 control purposes, framing and summary versions are not interchangeable. No
 installer flag, environment setting, HTTP endpoint or installation authority
@@ -1944,3 +1945,34 @@ an underlying failure cause or a runtime performance cure. Early prefixes can
 mostly reflect startup/package work and may still exceed a parser limit.
 They do not relax any live ownership, authorization, admission, data-retention,
 recovery or deadline gate.
+
+### Private first-upgrade-matrix CPU window
+
+Current transition upgrade instead requests a separately framed, once-only
+deferred capture. The child recognizes and owns its sealed descriptors before
+opening input files, but starts profiling only after successful original-fixture
+setup in the first admission matrix whose validated lifecycle mode is Upgrade.
+Only the actual parsed `upgrade` command carries that concrete diagnostic
+handle; `resume`, even of an Upgrade journal, does not. All subsequent drivers
+share the spent claim and cannot start or stop another driver's capture.
+
+Stop is requested at the earliest of the fixed requested 30 seconds, that
+matrix invocation returning (including its final checks), or command exit.
+Matrix return requests asynchronous finalization without joining conversion or
+flush under the matrix mutex. Command exit joins the same finalizer. Actual
+sampled duration may overshoot; conversion/flush may overlap later work. These
+are process-wide samples from one source-defined interval, not matrix-thread
+exclusive cost, every admission pass, the eventual slowest invocation, the
+failed operand, an underlying cause, or a performance cure.
+
+Version-four rows identify scope
+`same-attempt-current-child-first-upgrade-matrix-window-only`, fixed trigger
+`first-current-upgrade-matrix-entry`, requested ordinal `1` and requested
+capture `30000000000` nanoseconds. Reaching command exit without reaching the
+trigger emits a distinct, exact not-started envelope, with no CPU data or
+invented duration. Failed profiler start is capture-incomplete and never stops
+another profiler. A signal-terminated child remains capture-incomplete even
+if a complete frame arrived. The raw 8 MiB profile cap, bounded nonblocking
+flush/drain, privacy/parser limits and unchanged installer output/result remain
+mandatory. Full, prefix and matrix protocols cannot cross-decode. No command
+flag, environment selector, installation effect, case, rate or deadline changes.

@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/gobha-me/arcadectl/internal/installrender"
 	"github.com/gobha-me/arcadectl/internal/installstate"
 	authv1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -63,6 +64,17 @@ func newActorFixture(t *testing.T) *actorFixture {
 // HTTP clients, actors, witnesses and authorization are still constructed fresh.
 func newActorFixtureAtCheckpoint(t *testing.T, v *lifecycleFixture, s *installstate.Snapshot) *actorFixture {
 	t.Helper()
+	return newActorFixtureAtCheckpointPlans(t, v, s)
+}
+
+// Optional plans are only for genuine transition-checkpoint fixtures; existing
+// callers retain their original Install request and single-plan trust catalog.
+func newActorFixtureAtCheckpointPlans(t *testing.T, v *lifecycleFixture, s *installstate.Snapshot, plans ...*installrender.Plan) *actorFixture {
+	t.Helper()
+	transition := len(plans) != 0
+	if !transition {
+		plans = []*installrender.Plan{v.f.plan}
+	}
 	namespace, err := v.f.access.client.CoreV1().Namespaces().Get(context.Background(), s.Anchor().Namespace, metav1.GetOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -155,11 +167,11 @@ func newActorFixtureAtCheckpoint(t *testing.T, v *lifecycleFixture, s *installst
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := installstate.New(access.Namespaces(), v.f.plan)
+	store, err := installstate.New(access.Namespaces(), plans...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine, err := NewWithAccess(access, store, v.f.engine.files, v.f.plan)
+	engine, err := NewWithAccess(access, store, v.f.engine.files, plans...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,6 +184,10 @@ func newActorFixtureAtCheckpoint(t *testing.T, v *lifecycleFixture, s *installst
 		t.Fatal(err)
 	}
 	f.request = LifecycleCheck{Checkpoint: AdmissionEffective, Snapshot: input, Mode: installstate.Install, Target: v.f.plan, Options: v.opts}
+	if transition {
+		f.request.Mode = input.Document().Mode
+		f.request.Target = engine.plans[input.Document().TargetPackage]
+	}
 	return f
 }
 
