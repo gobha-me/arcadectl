@@ -73,7 +73,15 @@ is still binding or expanding. `Starting` means prerequisites are reconciled
 but the exact current singleton workload or player endpoint is not yet ready.
 `Ready` requires bound storage, exactly one current updated/ready/available
 replica, and a current LoadBalancer address. `Stopping` is based on disposable
-resources still observed during removal; `Stopped` means they are absent.
+resources still observed during removal. Deployment deletion is foreground and
+bound to the observed UID and resource version. `Stopped` additionally requires
+direct, complete namespace observations showing no original runtime Pods,
+surviving runtime ReplicaSets, or potential writers of the selected world
+claims, including terminating and terminal Pods. Read-only backup audit Pods
+do not block this boundary; unselected restore candidates are not the original
+world. A replacement Deployment cannot start until the same drain check clears.
+ReplicaSet observation is namespace-scoped and read-only; it does not authorize
+the operator to adopt or delete foreign workloads.
 `Failed` identifies a validation, collision, or bounded operation failure.
 
 Status endpoints exist only while the aggregate `Ready` condition is true for

@@ -1,0 +1,18 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: arcadectl-restore-worker-gate
+  labels:
+    app.kubernetes.io/name: arcadectl-controller
+    app.kubernetes.io/part-of: arcadectl
+spec:
+  policyName: arcadectl-restore-worker-gate
+  validationActions:
+    - Deny
+  matchResources:
+    matchPolicy: Equivalent
+    objectSelector: {}
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: arcadectl-system

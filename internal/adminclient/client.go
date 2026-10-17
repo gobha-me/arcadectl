@@ -110,6 +110,8 @@ type Client struct {
 	expectedIdentity *Identity
 	verified, closed bool
 	now              func() time.Time
+	dial             func(context.Context, string, string) (net.Conn, error)
+	peerSHA256       [32]byte
 }
 
 var labelPattern = regexp.MustCompile("^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$")
@@ -164,12 +166,16 @@ func NormalizeContext(config ContextConfig) (ContextConfig, error) {
 	return config, nil
 }
 func Load(config ContextConfig) (*Client, error) {
+	return load(config, nil, nil)
+}
+
+func load(config ContextConfig, expectedCredential, expectedCA *privatefs.FileIdentity) (*Client, error) {
 	config, e := NormalizeContext(config)
 	if e != nil {
 		return nil, e
 	}
-	raw, _, e := privatefs.ReadAbsolute(config.CredentialFile, adminauth.MaxClientCredentialBytes, privatefs.Private)
-	if e != nil || !utf8.Valid(raw) {
+	raw, credentialIdentity, e := privatefs.ReadAbsolute(config.CredentialFile, adminauth.MaxClientCredentialBytes, privatefs.Private)
+	if e != nil || !utf8.Valid(raw) || expectedCredential != nil && credentialIdentity != *expectedCredential {
 		return nil, problem("credential_unavailable")
 	}
 	credential, e := adminauth.ParseClientCredential(raw)
@@ -179,8 +185,8 @@ func Load(config ContextConfig) (*Client, error) {
 	if !time.Now().Before(credential.ExpiresAt) {
 		return nil, problem("credential_expired")
 	}
-	ca, _, e := privatefs.ReadAbsolute(config.CAFile, 1024*1024, privatefs.TrustedPublic)
-	if e != nil {
+	ca, caIdentity, e := privatefs.ReadAbsolute(config.CAFile, 1024*1024, privatefs.TrustedPublic)
+	if e != nil || expectedCA != nil && caIdentity != *expectedCA {
 		return nil, problem("context_unavailable")
 	}
 	roots := x509.NewCertPool()
@@ -189,6 +195,27 @@ func Load(config ContextConfig) (*Client, error) {
 	}
 	hash := sha256.Sum256(ca)
 	return &Client{config: config, credential: credential, roots: roots, identity: Identity{Origin: config.APIOrigin, CAHash: "sha256:" + hex.EncodeToString(hash[:])}, now: time.Now}, nil
+}
+
+// LoadBoundWithDialer is a trusted internal transport seam for installer-owned
+// routes and tests, never a context-file option. Verified TLS/SAN, origin,
+// bearer, response and redirect rules remain unchanged. Ordinary CLI contexts
+// use Load; the installer must prove original workload identity before dialing.
+// Snapshot reads themselves must match the caller's protected identities: an
+// outer before/after path check cannot bind bytes captured between those checks.
+// peerSHA256 pins the original retained TLS Secret's leaf in addition to normal
+// CA/SAN validation, before any HTTP authorization bytes can leave the client.
+func LoadBoundWithDialer(config ContextConfig, credentialIdentity, caIdentity privatefs.FileIdentity, peerSHA256 [32]byte, dial func(context.Context, string, string) (net.Conn, error)) (*Client, error) {
+	if dial == nil || peerSHA256 == ([32]byte{}) {
+		return nil, problem("context_unavailable")
+	}
+	c, err := load(config, &credentialIdentity, &caIdentity)
+	if err != nil {
+		return nil, err
+	}
+	c.dial = dial
+	c.peerSHA256 = peerSHA256
+	return c, nil
 }
 func (c *Client) Identity() Identity {
 	if c == nil {
@@ -205,6 +232,7 @@ func (c *Client) Close() {
 		c.closed = true
 		c.credential = adminauth.ClientCredential{}
 		c.roots = nil
+		c.dial = nil
 	}
 }
 func (c *Client) Verify(ctx context.Context) (Identity, error) {
@@ -376,11 +404,22 @@ func (c *Client) request(ctx context.Context, method, path string, body []byte, 
 		c.mu.Unlock()
 		return 0, nil, nil, problem("credential_expired")
 	}
-	token, config, roots := c.credential.Token, c.config, c.roots
+	token, config, roots, dial, peerSHA256 := c.credential.Token, c.config, c.roots, c.dial, c.peerSHA256
 	c.mu.Unlock()
 	// Fresh HTTP/1 connection and a non-replayable body prevent implicit Go
 	// transport retries of mutations carrying Idempotency-Key.
 	transport := &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 10 * time.Second}).DialContext, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots, ServerName: config.TLSServerName, NextProtos: []string{"http/1.1"}}, TLSNextProto: map[string]func(string, *tls.Conn) http.RoundTripper{}, ForceAttemptHTTP2: false, DisableKeepAlives: true, DisableCompression: true, TLSHandshakeTimeout: 10 * time.Second, ResponseHeaderTimeout: 15 * time.Second, MaxResponseHeaderBytes: 8192}
+	if dial != nil {
+		transport.DialContext = dial
+	}
+	if peerSHA256 != ([32]byte{}) {
+		transport.TLSClientConfig.VerifyConnection = func(state tls.ConnectionState) error {
+			if len(state.VerifiedChains) == 0 || len(state.PeerCertificates) == 0 || sha256.Sum256(state.PeerCertificates[0].Raw) != peerSHA256 {
+				return problem("tls_unavailable")
+			}
+			return nil
+		}
+	}
 	defer transport.CloseIdleConnections()
 	httpClient := &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	var reader io.Reader

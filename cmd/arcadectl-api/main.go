@@ -25,12 +25,14 @@ import (
 	"github.com/gobha-me/arcadectl/internal/catalog"
 	platformimage "github.com/gobha-me/arcadectl/internal/platform/image"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type options struct {
 	listen, healthListen, verifierFile, certificateFile, keyFile string
+	namespace                                                    string
 }
 
 func parseOptions(args []string) (options, error) {
@@ -43,7 +45,10 @@ func parseOptions(args []string) (options, error) {
 	flags.StringVar(&config.verifierFile, "verifier-file", "/var/run/arcadectl/auth/auth.json", "projected verifier bundle file")
 	flags.StringVar(&config.certificateFile, "tls-cert-file", "/var/run/arcadectl/tls/tls.crt", "TLS certificate file")
 	flags.StringVar(&config.keyFile, "tls-key-file", "/var/run/arcadectl/tls/tls.key", "TLS private key file")
-	if flags.Parse(args) != nil || flags.NArg() != 0 || config.listen == "" || config.healthListen == "" || config.listen == config.healthListen || config.verifierFile == "" || config.certificateFile == "" || config.keyFile == "" {
+	// Only the trusted process configuration selects this one installation
+	// namespace. Request headers, URLs and ordinary CLI options never do.
+	flags.StringVar(&config.namespace, "namespace", adminauth.CredentialNamespace, "single trusted installation namespace")
+	if flags.Parse(args) != nil || flags.NArg() != 0 || config.listen == "" || config.healthListen == "" || config.listen == config.healthListen || config.verifierFile == "" || config.certificateFile == "" || config.keyFile == "" || len(validation.IsDNS1123Label(config.namespace)) != 0 {
 		return options{}, errors.New("invalid API configuration")
 	}
 	return config, nil
@@ -63,7 +68,7 @@ func newServers(config options, auditOutput io.Writer) (*http.Server, *http.Serv
 	_ = verifier.Reload()
 	boundary, err := apiserver.New(apiserver.Config{
 		Authenticator: verifier, Authorizer: apiserver.AdministratorAuthorizer{},
-		Audit: apiserver.NewJSONAudit(auditOutput), Namespace: adminauth.CredentialNamespace,
+		Audit: apiserver.NewJSONAudit(auditOutput), Namespace: config.namespace,
 	})
 	if err != nil {
 		return nil, nil, nil, errors.New("API boundary configuration unavailable")

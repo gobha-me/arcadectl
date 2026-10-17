@@ -93,6 +93,11 @@ func TestRefusesSymlinksHardlinksFIFOModesAndTraversal(t *testing.T) {
 	if e := os.WriteFile(file, []byte("CANARY"), 0o644); e != nil {
 		t.Fatal(e)
 	}
+	// Establish the deliberate unsafe fixture independent of the process
+	// umask; a private validation runner may correctly start with umask 077.
+	if e := os.Chmod(file, 0o644); e != nil {
+		t.Fatal(e)
+	}
 	if _, _, e := store.Read("wide", 32); !errors.Is(e, ErrUnsafe) {
 		t.Fatal("world-readable file accepted")
 	}
@@ -232,6 +237,101 @@ func TestDurabilityFailuresPreserveHonestState(t *testing.T) {
 				}
 				if _, _, e := s.Read("record", 32); !errors.Is(e, ErrNotFound) {
 					t.Fatal("pre-rename failure published file")
+				}
+			}
+		})
+	}
+}
+
+func TestConfirmDurablePinsIdentityAndRechecksAfterSync(t *testing.T) {
+	for _, scenario := range []string{"success", "uncertain-publication", "file-sync", "directory-sync", "replacement", "replacement-during-sync", "content-drift", "content-drift-during-sync", "directory-mode-during-sync"} {
+		t.Run(scenario, func(t *testing.T) {
+			s, err := Open(privateTemp(t), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			if scenario == "uncertain-publication" {
+				s.syncDir = func(int) error { return unix.EIO }
+			}
+			id, err := s.CreateExclusive("record", []byte("private bytes"))
+			if scenario == "uncertain-publication" {
+				if !errors.Is(err, ErrDurability) {
+					t.Fatal("fixture publication was not uncertain")
+				}
+				_, id, err = s.Read("record", 64)
+				if err != nil {
+					t.Fatal(err)
+				}
+				s.syncDir = unix.Fsync
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			switch scenario {
+			case "file-sync":
+				s.syncFile = func(*os.File) error { return unix.EIO }
+			case "directory-sync":
+				s.syncDir = func(int) error { return unix.EIO }
+			case "replacement":
+				if _, err := s.AtomicWrite("record", []byte("same name new inode"), &id); err != nil {
+					t.Fatal(err)
+				}
+			case "content-drift", "content-drift-during-sync":
+				change := func(fd int) error {
+					fileFD, err := unix.Openat(fd, "record", unix.O_WRONLY|unix.O_NOFOLLOW, 0)
+					if err != nil {
+						return err
+					}
+					defer unix.Close(fileFD)
+					_, err = unix.Pwrite(fileFD, []byte("foreign bytes"), 0)
+					return err
+				}
+				if scenario == "content-drift" {
+					if err := change(s.fd); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					s.syncDir = change
+				}
+			case "directory-mode-during-sync":
+				s.syncDir = func(fd int) error { return unix.Fchmod(fd, 0755) }
+				defer unix.Fchmod(s.fd, 0700)
+			case "replacement-during-sync":
+				s.syncDir = func(fd int) error {
+					err := unix.Renameat(fd, "record", fd, "foreign-replacement")
+					if err != nil {
+						return err
+					}
+					fileFD, err := unix.Openat(fd, "record", unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL, 0600)
+					if err != nil {
+						return err
+					}
+					defer unix.Close(fileFD)
+					_, err = unix.Write(fileFD, []byte("private bytes"))
+					return err
+				}
+			}
+			err = s.ConfirmDurable("record", id)
+			switch scenario {
+			case "success", "uncertain-publication":
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, after, readErr := s.Read("record", 64)
+				if readErr != nil || after != id {
+					t.Fatal("confirmation rewrote original inode")
+				}
+			case "file-sync", "directory-sync":
+				if !errors.Is(err, ErrDurability) {
+					t.Fatal("sync failure accepted")
+				}
+			case "directory-mode-during-sync":
+				if !errors.Is(err, ErrUnsafe) {
+					t.Fatal("changed directory protection accepted")
+				}
+			default:
+				if !errors.Is(err, ErrChanged) {
+					t.Fatal("replaced identity accepted")
 				}
 			}
 		})

@@ -1,0 +1,17 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: arcadectl-destroy-worker-gate
+  labels:
+    app.kubernetes.io/name: arcadectl-destroy-controller
+    app.kubernetes.io/part-of: arcadectl
+spec:
+  policyName: arcadectl-destroy-worker-gate
+  validationActions: [Deny]
+  matchResources:
+    matchPolicy: Equivalent
+    objectSelector: {}
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: arcadectl-system

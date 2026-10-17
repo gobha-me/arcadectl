@@ -1,0 +1,851 @@
+// Copyright 2026 gobha-me
+// SPDX-License-Identifier: Apache-2.0
+
+package installengine
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"maps"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/gobha-me/arcadectl/internal/canonicaljson"
+	"github.com/gobha-me/arcadectl/internal/installbaseline"
+	"github.com/gobha-me/arcadectl/internal/installstate"
+	authv1 "k8s.io/api/authorization/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+)
+
+// This explicitly synthetic receipt/status fixture exercises the WHOLE
+// private read-only composition through its real HTTPS transports, journal,
+// bounded executable reader and complete cold observer. It is not native
+// authorization, effective admission, physical storage or installer proof.
+// Preserve every original retired scenario as its own indivisible CI tree.
+func TestBaselineRetiredHTTPSHealthy(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "healthy")
+}
+
+func TestBaselineRetiredHTTPSHarmlessTerminalPod(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "harmless-terminal-pod")
+}
+
+func TestBaselineRetiredHTTPSPartiallyWithdrawnOriginalAccess(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "partially-withdrawn-original-access")
+}
+
+func TestBaselineRetiredHTTPSPendingOriginalAccessDelete(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "pending-original-access-delete")
+}
+
+func TestBaselineRetiredHTTPSPendingAccessReplaced(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "pending-access-replaced")
+}
+
+func TestBaselineRetiredHTTPSReceiptReplacedBetweenCores(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "receipt-replaced-between-cores")
+}
+
+func TestBaselineRetiredHTTPSFirstColdReservedAlias(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "first-cold-reserved-alias")
+}
+
+func TestBaselineRetiredHTTPSSecondColdControllerImage(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "second-cold-controller-image")
+}
+
+func TestBaselineRetiredHTTPSOpeningRawControllerImage(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "opening-raw-controller-image")
+}
+
+func TestBaselineRetiredHTTPSClosingRawReservedName(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "closing-raw-reserved-name")
+}
+
+func TestBaselineRetiredHTTPSSecondColdWorldChange(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "second-cold-world-change")
+}
+
+func TestBaselineRetiredHTTPSLastListDenied(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "last-list-denied")
+}
+
+func TestBaselineRetiredHTTPSReviewDenied(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "review-denied")
+}
+
+func TestBaselineRetiredHTTPSLateListReviewDenied(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "late-list-review-denied")
+}
+
+func TestBaselineRetiredHTTPSLateGetReviewDenied(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "late-get-review-denied")
+}
+
+func TestBaselineRetiredHTTPSLateRuntimePolicyRv(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "late-runtime-policy-rv")
+}
+
+func TestBaselineRetiredHTTPSLateBaselinePolicyRv(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "late-baseline-policy-rv")
+}
+
+func TestBaselineRetiredHTTPSLateFixture(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "late-fixture")
+}
+
+func TestBaselineRetiredHTTPSLateJournal(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "late-journal")
+}
+
+func TestBaselineRetiredHTTPSCompleteHealthy(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "complete-healthy")
+}
+
+func TestBaselineRetiredHTTPSCompleteListDenied(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "complete-list-denied")
+}
+
+func TestBaselineRetiredHTTPSCompleteRootGetDenied(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "complete-root-get-denied")
+}
+
+func TestBaselineRetiredHTTPSCompleteReceiptReplaced(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "complete-receipt-replaced")
+}
+
+func TestBaselineRetiredHTTPSCompleteRemovedAccessRecreated(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "complete-removed-access-recreated")
+}
+
+func TestBaselineRetiredHTTPSCompleteRetainedCrdReplaced(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "complete-retained-crd-replaced")
+}
+
+func TestBaselineRetiredHTTPSCompleteRetainedSecretDeleting(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "complete-retained-secret-deleting")
+}
+
+func TestBaselineRetiredHTTPSCompleteLateJournal(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "complete-late-journal")
+}
+
+func TestBaselineRetiredHTTPSCompleteWorldChange(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "complete-world-change")
+}
+
+func TestBaselineRetiredHTTPSRuntimeHealthy(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "runtime-healthy")
+}
+
+func TestBaselineRetiredHTTPSRuntimePendingOriginalAccessDelete(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "runtime-pending-original-access-delete")
+}
+
+func TestBaselineRetiredHTTPSRuntimeReceiptReplacedBetweenCores(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "runtime-receipt-replaced-between-cores")
+}
+
+func TestBaselineRetiredHTTPSRuntimeCompleteHealthy(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "runtime-complete-healthy")
+}
+
+func TestBaselineRetiredHTTPSRuntimeCompleteReceiptReplaced(t *testing.T) {
+	testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "runtime-complete-receipt-replaced")
+}
+
+func testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t *testing.T, testCase string) {
+	t.Helper()
+	if testCase == "runtime-pending-original-access-delete" {
+		t.Run("acknowledged-drain", func(t *testing.T) {
+			testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "runtime-acknowledged-original-access-delete")
+		})
+		t.Run("foreign-leaf-child-refuses-without-send-or-replay", func(t *testing.T) {
+			testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t, "runtime-acknowledged-original-access-delete-child")
+		})
+	}
+	runtime := strings.HasPrefix(testCase, "runtime-")
+	scenario := strings.TrimPrefix(testCase, "runtime-")
+	acknowledged := strings.HasPrefix(scenario, "acknowledged-original-access-delete")
+	leafChild := scenario == "acknowledged-original-access-delete-child"
+	v, snapshot := retirementFixture(t)
+	completed := strings.HasPrefix(scenario, "complete-")
+	if completed {
+		snapshot = v.finish(t, snapshot)
+		if snapshot.Document().Installed || snapshot.Document().Stage != installstate.Complete || len(snapshot.Document().Resources) != 20 {
+			t.Fatal("genuine completed retaining uninstall fixture unavailable")
+		}
+	}
+	if scenario == "partially-withdrawn-original-access" {
+		before := len(snapshot.Document().Resources)
+		snapshot = v.step(t, snapshot)
+		if snapshot.Document().Pending != nil || len(snapshot.Document().Resources) != before-1 {
+			t.Fatal("settled original access withdrawal fixture unavailable")
+		}
+	}
+	if scenario == "pending-original-access-delete" || scenario == "pending-access-replaced" {
+		v.f.access.write = func(action installstate.Action, key installstate.Key, object *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+			return nil, fmt.Errorf("synthetic lost acknowledgement")
+		}
+		next, err := v.l.Step(t.Context(), snapshot, v.opts)
+		if !errors.Is(err, ErrOutcomeUnknown) || next == nil || next.Document().Pending == nil || next.Document().Pending.Action != installstate.Delete {
+			t.Fatal("original pending access DELETE fixture unavailable")
+		}
+		snapshot = next
+		key := snapshot.Document().Pending.Key
+		if scenario == "pending-access-replaced" {
+			v.f.access.objects[key].SetUID("same-name-foreign-access")
+		} else {
+			delete(v.f.access.objects, key)
+		}
+	}
+	baseline := baselineFixturePlan(t, v.f.plan.Namespace(), v.f.plan.Profile().ID, 'd')
+	document := snapshot.Document()
+	name := retirementName(document, document.AdmissionRetirementRevision)
+	body, identity, err := v.f.engine.files.Read(name, retirementMaxBytes)
+	if err != nil {
+		t.Fatal("original receipt unavailable")
+	}
+	var receipt retirementReceipt
+	if json.Unmarshal(body, &receipt) != nil {
+		t.Fatal("original receipt invalid")
+	}
+	original, err := installstate.Decode(receipt.Journal, v.f.plan)
+	if err != nil {
+		t.Fatal("original journal invalid")
+	}
+	security := &installstate.SecurityBaseline{Version: installbaseline.Version, ArtifactDigest: baseline.Digest(), Stage: installstate.BaselineVerified, Resources: []installstate.BaselineResource{}}
+	for index, resource := range baseline.Resources() {
+		object := resource.Object.DeepCopy()
+		key := installstate.Key{APIVersion: object.GetAPIVersion(), Kind: object.GetKind(), Namespace: object.GetNamespace(), Name: object.GetName()}
+		entry := installstate.BaselineResource{Key: key, UID: types.UID(fmt.Sprintf("retired-http-baseline-%d", index)), TemplateSHA256: resource.TemplateSHA256}
+		security.Resources = append(security.Resources, entry)
+		object.SetUID(entry.UID)
+		object.SetResourceVersion("100")
+		object.SetAnnotations(map[string]string{installstate.MutationAnnotation: strings.Repeat("a", 32)})
+		if key.Kind == "ValidatingAdmissionPolicy" {
+			object.SetGeneration(1)
+			object.Object["status"] = map[string]any{"observedGeneration": int64(1), "typeChecking": map[string]any{}}
+		}
+		v.f.access.objects[key] = object
+	}
+	installstate.SortBaselineResources(security.Resources)
+	document.SecurityBaseline, original.SecurityBaseline = security, security
+	receipt.Version = "v2"
+	for _, entry := range security.Resources {
+		receipt.Baseline = append(receipt.Baseline, retirementPolicy{entry.Key, admissionIdentity{entry.UID, "100", entry.TemplateSHA256}})
+	}
+	receipt.Journal, err = installstate.EncodeWithBaseline(original, baseline, v.f.plan)
+	if err != nil {
+		t.Fatal("synthetic baseline receipt journal encoding failed")
+	}
+	body, err = json.Marshal(receipt)
+	if err == nil {
+		body, err = canonicaljson.CanonicalJSON(body)
+	}
+	if err != nil {
+		t.Fatal("synthetic receipt encoding failed")
+	}
+	if _, err := v.f.engine.files.AtomicWrite(name, body, &identity); err != nil {
+		t.Fatal("protected synthetic receipt seeding failed")
+	}
+	journalBody, err := installstate.EncodeWithBaseline(document, baseline, v.f.plan)
+	if err != nil {
+		t.Fatal("synthetic baseline current journal encoding failed")
+	}
+	namespace, err := v.f.access.client.CoreV1().Namespaces().Get(t.Context(), document.Namespace, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal("original Namespace unavailable")
+	}
+	namespace.Annotations[installstate.Annotation] = string(journalBody)
+	if v.f.access.client.Tracker().Update(corev1.SchemeGroupVersion.WithResource("namespaces"), namespace, "") != nil {
+		t.Fatal("synthetic baseline Namespace seeding failed")
+	}
+	pod := servingObject(t, &corev1.Pod{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"}, ObjectMeta: metav1.ObjectMeta{Name: "unrelated-history", Namespace: namespace.Name, UID: "unrelated-history-original", ResourceVersion: "80"}, Spec: corev1.PodSpec{ServiceAccountName: "default", Containers: []corev1.Container{{Name: "history", Image: "example.invalid/unrelated@sha256:" + strings.Repeat("e", 64)}}}, Status: corev1.PodStatus{Phase: corev1.PodSucceeded}})
+	if scenario == "harmless-terminal-pod" || scenario == "late-get-review-denied" {
+		v.f.access.objects[installstate.Key{APIVersion: "v1", Kind: "Pod", Namespace: namespace.Name, Name: pod.GetName()}] = pod
+	}
+	if scenario == "first-cold-reserved-alias" {
+		_ = unstructured.SetNestedField(pod.Object, "arcadectl-destroy-admin", "spec", "serviceAccount")
+	}
+	if strings.HasSuffix(scenario, "controller-image") {
+		for _, resource := range v.f.plan.Resources() {
+			key := resourceKey(resource)
+			if key.Kind == "Deployment" && key.Name == "arcadectl-controller" {
+				containers, _, _ := unstructured.NestedSlice(resource.Object.Object, "spec", "template", "spec", "containers")
+				_ = unstructured.SetNestedSlice(pod.Object, containers, "spec", "containers")
+			}
+		}
+	}
+	if scenario == "closing-raw-reserved-name" {
+		pod.SetName("arcadectl-api")
+	}
+	claim := servingObject(t, &corev1.PersistentVolumeClaim{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"}, ObjectMeta: metav1.ObjectMeta{Name: "retained-unrelated-world", Namespace: namespace.Name, UID: "original-retained-world", ResourceVersion: "80"}, Status: corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimPending}})
+
+	var mu sync.Mutex
+	var deleteKey installstate.Key
+	if acknowledged {
+		for _, root := range document.Resources {
+			if root.Key.Kind == "RoleBinding" && !root.Retained {
+				deleteKey = root.Key
+				break
+			}
+		}
+		if deleteKey.Kind == "" {
+			t.Fatal("original signed access target unavailable")
+		}
+	}
+	deletes, namespaceCAS, drainReads := 0, 0, 0
+	lists, reviews := map[string]int{}, 0
+	seenReviews := map[string]int{}
+	// Independent protocol oracle: do not derive authorization
+	// expectations with the production helper being exercised.
+	expectedReviews := map[string]int{}
+	leafExpectedReviews, leafSeenReviews := map[string]int{}, map[string]int{}
+	leafExpectedPaths, leafSeenPaths := map[string]int{}, map[string]int{}
+	leafReading, leafLists := false, 0
+	if acknowledged {
+		for _, tuple := range [][3]string{{"arcade.gobha.me", "gameservers", "v1alpha1"}, {"arcade.gobha.me", "gamebackups", "v1alpha1"}, {"arcade.gobha.me", "gamerestores", "v1alpha1"}, {"arcade.gobha.me", "gamedestroys", "v1alpha1"}, {"arcade.gobha.me", "arcadeoperations", "v1alpha1"}, {"batch", "jobs", "v1"}, {"", "pods", "v1"}, {"coordination.k8s.io", "leases", "v1"}, {"", "persistentvolumeclaims", "v1"}, {"", "secrets", "v1"}, {"apps", "replicasets", "v1"}, {"apps", "deployments", "v1"}, {"apps", "statefulsets", "v1"}, {"apps", "daemonsets", "v1"}, {"", "replicationcontrollers", "v1"}, {"batch", "cronjobs", "v1"}, {"discovery.k8s.io", "endpointslices", "v1"}, {"rbac.authorization.k8s.io", "roles", "v1"}, {"rbac.authorization.k8s.io", "rolebindings", "v1"}, {"", "serviceaccounts", "v1"}, {"", "services", "v1"}} {
+			spec := authv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &authv1.ResourceAttributes{Group: tuple[0], Resource: tuple[1], Version: tuple[2], Namespace: namespace.Name, Verb: "list"}}
+			encoded, _ := json.Marshal(spec)
+			leafExpectedReviews[string(encoded)] = 1
+			prefix := "/apis/" + tuple[0] + "/" + tuple[2]
+			if tuple[0] == "" {
+				prefix = "/api/" + tuple[2]
+			}
+			leafExpectedPaths[prefix+"/namespaces/"+namespace.Name+"/"+tuple[1]] = 1
+		}
+	}
+	for _, target := range []struct{ group, resource string }{{"", "pods"}, {"batch", "jobs"}, {"apps", "deployments"}, {"apps", "replicasets"}, {"apps", "statefulsets"}, {"apps", "daemonsets"}, {"", "replicationcontrollers"}, {"batch", "cronjobs"}} {
+		spec := authv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &authv1.ResourceAttributes{Group: target.group, Version: "v1", Resource: target.resource, Namespace: namespace.Name, Verb: "list"}}
+		encoded, _ := json.Marshal(spec)
+		expectedReviews[string(encoded)] = 2
+	}
+	if completed {
+		// Independent literal native collection/root resource mapping;
+		// no production permission derivation is used as this oracle.
+		for _, tuple := range [][4]string{{"arcade.gobha.me", "gameservers", "v1alpha1", namespace.Name}, {"arcade.gobha.me", "gamebackups", "v1alpha1", namespace.Name}, {"arcade.gobha.me", "gamerestores", "v1alpha1", namespace.Name}, {"arcade.gobha.me", "gamedestroys", "v1alpha1", namespace.Name}, {"arcade.gobha.me", "arcadeoperations", "v1alpha1", namespace.Name}, {"batch", "jobs", "v1", namespace.Name}, {"", "pods", "v1", namespace.Name}, {"coordination.k8s.io", "leases", "v1", namespace.Name}, {"", "persistentvolumeclaims", "v1", namespace.Name}, {"", "secrets", "v1", namespace.Name}, {"admissionregistration.k8s.io", "validatingadmissionpolicies", "v1", ""}, {"admissionregistration.k8s.io", "validatingadmissionpolicybindings", "v1", ""}, {"apps", "replicasets", "v1", namespace.Name}, {"apps", "deployments", "v1", namespace.Name}, {"apps", "statefulsets", "v1", namespace.Name}, {"apps", "daemonsets", "v1", namespace.Name}, {"", "replicationcontrollers", "v1", namespace.Name}, {"batch", "cronjobs", "v1", namespace.Name}, {"storage.k8s.io", "volumeattachments", "v1", ""}, {"discovery.k8s.io", "endpointslices", "v1", namespace.Name}} {
+			spec := authv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &authv1.ResourceAttributes{Group: tuple[0], Resource: tuple[1], Version: tuple[2], Namespace: tuple[3], Verb: "list"}}
+			encoded, _ := json.Marshal(spec)
+			expectedReviews[string(encoded)] += 2
+		}
+		for _, root := range document.Resources {
+			resource, group, version := "", "", "v1"
+			switch root.Key.Kind {
+			case "Namespace":
+				resource = "namespaces"
+			case "Secret":
+				resource = "secrets"
+			case "CustomResourceDefinition":
+				resource, group = "customresourcedefinitions", "apiextensions.k8s.io"
+			case "ValidatingAdmissionPolicy":
+				resource, group = "validatingadmissionpolicies", "admissionregistration.k8s.io"
+			case "ValidatingAdmissionPolicyBinding":
+				resource, group = "validatingadmissionpolicybindings", "admissionregistration.k8s.io"
+			default:
+				t.Fatal("retirement root escaped literal read families")
+			}
+			spec := authv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &authv1.ResourceAttributes{Group: group, Resource: resource, Version: version, Namespace: root.Key.Namespace, Name: root.Key.Name, Verb: "get"}}
+			encoded, _ := json.Marshal(spec)
+			expectedReviews[string(encoded)] += 2
+		}
+	}
+	if scenario == "harmless-terminal-pod" || scenario == "late-get-review-denied" || scenario == "opening-raw-controller-image" || scenario == "closing-raw-reserved-name" {
+		spec := authv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &authv1.ResourceAttributes{Version: "v1", Resource: "pods", Namespace: namespace.Name, Name: pod.GetName(), Verb: "get"}}
+		encoded, _ := json.Marshal(spec)
+		expectedReviews[string(encoded)] = 2
+	}
+	faultHit := false
+	if scenario == "complete-removed-access-recreated" {
+		key := installstate.Key{APIVersion: "v1", Kind: "ServiceAccount", Namespace: namespace.Name, Name: "arcadectl-controller"}
+		template, err := v.f.engine.contracts[v.f.plan.Digest()].Template(key, false)
+		if err != nil {
+			t.Fatal("recreated access negative unavailable")
+		}
+		object, err := template.Candidate(strings.Repeat("a", 32))
+		if err != nil {
+			t.Fatal("recreated access negative unavailable")
+		}
+		object.SetUID("unowned-recreated-access")
+		object.SetResourceVersion("100")
+		v.f.access.objects[key], faultHit = object, true
+	}
+	if scenario == "complete-retained-crd-replaced" {
+		for key, object := range v.f.access.objects {
+			if key.Kind == "CustomResourceDefinition" {
+				object.SetUID("unowned-replaced-crd")
+				faultHit = true
+				break
+			}
+		}
+	}
+	if scenario == "complete-retained-secret-deleting" {
+		for _, secret := range v.private.objects {
+			stamp := metav1.Now()
+			secret.DeletionTimestamp = &stamp
+			faultHit = true
+			break
+		}
+	}
+	var injectedPod *unstructured.Unstructured
+	if scenario == "harmless-terminal-pod" || scenario == "late-get-review-denied" {
+		// Workload whole GETs use the private observation route, not
+		// the deliberately narrower public installation effect mapper.
+		injectedPod = pod.DeepCopy()
+	}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") != "Bearer FAKE-RETIRED-ADMIN" || r.Header.Get("Impersonate-User") != "" || r.URL.Query().Has("dryRun") {
+			t.Error("retired proof changed identity or attempted a probe")
+		}
+		if acknowledged && r.Method == http.MethodPut && r.URL.Path == "/api/v1/namespaces/"+namespace.Name {
+			var next corev1.Namespace
+			if json.NewDecoder(r.Body).Decode(&next) != nil || next.UID != namespace.UID || next.ResourceVersion != namespace.ResourceVersion || next.Name != namespace.Name || !reflect.DeepEqual(next.Spec, namespace.Spec) || !reflect.DeepEqual(next.Labels, namespace.Labels) || namespaceCAS >= 2 {
+				t.Error("retirement CAS escaped original Namespace")
+				w.WriteHeader(409)
+				return
+			}
+			before, beforeErr := installstate.DecodeWithBaseline([]byte(namespace.Annotations[installstate.Annotation]), baseline, v.f.plan)
+			after, afterErr := installstate.DecodeWithBaseline([]byte(next.Annotations[installstate.Annotation]), baseline, v.f.plan)
+			if beforeErr != nil || afterErr != nil || after.Revision != before.Revision+1 || after.InstallationID != before.InstallationID || namespaceCAS == 0 && (before.Pending != nil || after.Pending == nil || after.Pending.Action != installstate.Delete || after.Pending.Key != deleteKey) || namespaceCAS == 1 && (deletes != 1 || before.Pending == nil || after.Pending != nil || v.f.access.objects[deleteKey] != nil) {
+				t.Error("retirement intent/settlement CAS escaped exact original deletion")
+				w.WriteHeader(409)
+				return
+			}
+			namespaceCAS++
+			rv, _ := strconv.ParseUint(namespace.ResourceVersion, 10, 64)
+			next.ResourceVersion = strconv.FormatUint(rv+1, 10)
+			next.APIVersion, next.Kind = "v1", "Namespace"
+			namespace = next.DeepCopy()
+			_ = json.NewEncoder(w).Encode(next)
+			return
+		}
+		deletePath, _ := resourcePath(deleteKey, false)
+		if acknowledged && r.Method == http.MethodDelete && r.URL.Path == deletePath {
+			var options metav1.DeleteOptions
+			intent, intentErr := installstate.DecodeWithBaseline([]byte(namespace.Annotations[installstate.Annotation]), baseline, v.f.plan)
+			live := v.f.access.objects[deleteKey]
+			if json.NewDecoder(r.Body).Decode(&options) != nil || intentErr != nil || intent.Pending == nil || intent.Pending.Key != deleteKey || deletes != 0 || live == nil || options.Preconditions == nil || options.Preconditions.UID == nil || options.Preconditions.ResourceVersion == nil || *options.Preconditions.UID != live.GetUID() || *options.Preconditions.ResourceVersion != live.GetResourceVersion() || intent.Pending.BeforeUID != live.GetUID() || intent.Pending.BeforeResourceVersion != live.GetResourceVersion() || options.PropagationPolicy == nil || *options.PropagationPolicy != metav1.DeletePropagationBackground || len(options.DryRun) != 0 || leafLists != 21 || !reflect.DeepEqual(leafExpectedReviews, leafSeenReviews) || !reflect.DeepEqual(leafExpectedPaths, leafSeenPaths) {
+				t.Error("retirement effect was replayed or escaped proved UID/RV background leaf intent")
+				w.WriteHeader(409)
+				return
+			}
+			deletes++
+			rv, _ := strconv.ParseUint(live.GetResourceVersion(), 10, 64)
+			stamp := metav1.Now()
+			live.SetResourceVersion(strconv.FormatUint(rv+1, 10))
+			live.SetDeletionTimestamp(&stamp)
+			live.SetFinalizers([]string{metav1.FinalizerDeleteDependents})
+			_ = json.NewEncoder(w).Encode(metav1.Status{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Status"}, Status: metav1.StatusSuccess, Code: 200})
+			return
+		}
+		if acknowledged && r.Method == http.MethodGet && r.URL.Path == deletePath && deletes == 1 {
+			drainReads++
+			if drainReads == 3 {
+				delete(v.f.access.objects, deleteKey)
+			}
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews" {
+			var review authv1.SelfSubjectAccessReview
+			if json.NewDecoder(r.Body).Decode(&review) != nil || review.Spec.ResourceAttributes == nil || review.Spec.NonResourceAttributes != nil {
+				t.Error("invalid retired permission review")
+				w.WriteHeader(500)
+				return
+			}
+			attributes := review.Spec.ResourceAttributes
+			encoded, _ := json.Marshal(review.Spec)
+			if acknowledged && leafReading {
+				if leafExpectedReviews[string(encoded)] != 1 {
+					t.Error("leaf proof escaped exact complete namespace LIST scope")
+				}
+				leafSeenReviews[string(encoded)]++
+				review.Status.Allowed = true
+				_ = json.NewEncoder(w).Encode(review)
+				return
+			}
+			if expectedReviews[string(encoded)] == 0 {
+				t.Error("retired proof review escaped exact executable read scope")
+			}
+			seenReviews[string(encoded)]++
+			reviews++
+			review.Status.Allowed = scenario != "review-denied"
+			if scenario == "complete-list-denied" && attributes.Resource == "gamebackups" && attributes.Verb == "list" || scenario == "complete-root-get-denied" && attributes.Resource == "customresourcedefinitions" && attributes.Verb == "get" {
+				review.Status.Allowed, faultHit = false, true
+			}
+			if scenario == "review-denied" {
+				faultHit = true
+			}
+			if scenario == "late-list-review-denied" && attributes.Resource == "cronjobs" && attributes.Verb == "list" && seenReviews[string(encoded)] == 2 {
+				review.Status.Allowed = false
+				faultHit = true
+			}
+			if scenario == "late-get-review-denied" && attributes.Resource == "pods" && attributes.Verb == "get" && seenReviews[string(encoded)] == 2 {
+				review.Status.Allowed = false
+				faultHit = true
+			}
+			_ = json.NewEncoder(w).Encode(review)
+			return
+		}
+		if r.Method != http.MethodGet {
+			t.Error("retired proof attempted persistent mutation")
+			w.WriteHeader(403)
+			return
+		}
+		if acknowledged && r.URL.Path == "/api" {
+			leafReading = true
+			_ = json.NewEncoder(w).Encode(metav1.APIVersions{TypeMeta: metav1.TypeMeta{Kind: "APIVersions"}, Versions: []string{"v1"}})
+			return
+		}
+		if acknowledged && r.URL.Path == "/apis" {
+			groups := metav1.APIGroupList{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "APIGroupList"}, Groups: []metav1.APIGroup{}}
+			for _, gv := range proofGroups {
+				version, _ := schema.ParseGroupVersion(gv)
+				if version.Group != "" {
+					v := metav1.GroupVersionForDiscovery{GroupVersion: gv, Version: version.Version}
+					groups.Groups = append(groups.Groups, metav1.APIGroup{Name: version.Group, Versions: []metav1.GroupVersionForDiscovery{v}, PreferredVersion: v})
+				}
+			}
+			_ = json.NewEncoder(w).Encode(groups)
+			return
+		}
+		if acknowledged && leafReading && strings.Contains(r.Header.Get("Accept"), "PartialObjectMetadataList") {
+			leafLists++
+			if leafExpectedPaths[r.URL.Path] != 1 || leafSeenPaths[r.URL.Path] != 0 || r.URL.Query().Has("labelSelector") || r.URL.Query().Has("fieldSelector") {
+				t.Error("leaf metadata escaped independent complete collection paths")
+			}
+			leafSeenPaths[r.URL.Path]++
+			rows := []any{}
+			for key, object := range v.f.access.objects {
+				path, err := resourcePath(key, true)
+				if err == nil && path == r.URL.Path && key.Namespace == namespace.Name {
+					rows = append(rows, map[string]any{"apiVersion": "meta.k8s.io/v1", "kind": "PartialObjectMetadata", "metadata": object.Object["metadata"]})
+				}
+			}
+			if r.URL.Path == "/api/v1/namespaces/"+namespace.Name+"/secrets" {
+				for _, secret := range v.private.objects {
+					object := servingObject(t, secret)
+					rows = append(rows, map[string]any{"apiVersion": "meta.k8s.io/v1", "kind": "PartialObjectMetadata", "metadata": object.Object["metadata"]})
+				}
+				if leafChild {
+					root := v.f.access.objects[deleteKey]
+					rows = append(rows, map[string]any{"apiVersion": "meta.k8s.io/v1", "kind": "PartialObjectMetadata", "metadata": map[string]any{"name": "foreign-owned-child", "namespace": namespace.Name, "uid": "foreign-child-original", "resourceVersion": "80", "ownerReferences": []any{map[string]any{"apiVersion": deleteKey.APIVersion, "kind": deleteKey.Kind, "name": deleteKey.Name, "uid": string(root.GetUID())}}}})
+				}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"apiVersion": "meta.k8s.io/v1", "kind": "PartialObjectMetadataList", "metadata": map[string]any{"resourceVersion": "100"}, "items": rows})
+			return
+		}
+		if acknowledged && leafReading && r.URL.Path == deletePath {
+			leafReading = false // complete collection closed; original whole GET follows
+		}
+		if r.URL.Path == "/version" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"major": "1", "minor": "35", "gitVersion": "v" + v.f.plan.Profile().KubernetesVersion})
+			return
+		}
+		if r.URL.Path == "/api/v1/namespaces/"+namespace.Name {
+			copy := namespace.DeepCopy()
+			copy.APIVersion, copy.Kind = "v1", "Namespace"
+			encodeStoppedObject(t, w, r, servingObject(t, copy))
+			return
+		}
+		for _, gv := range proofGroups {
+			path, _ := discoveryPath(gv)
+			if r.URL.Path != path {
+				continue
+			}
+			resources := []metav1.APIResource{}
+			seen := map[string]bool{}
+			add := func(kind, plural string, namespaced bool) {
+				if !seen[plural] {
+					seen[plural] = true
+					verbs := metav1.Verbs{"get", "list"}
+					if acknowledged {
+						verbs = metav1.Verbs{"get", "list", "delete", "watch"}
+					}
+					resources = append(resources, metav1.APIResource{Name: plural, Kind: kind, Namespaced: namespaced, Verbs: verbs})
+				}
+			}
+			for _, c := range proofCollections {
+				if c.gv == gv {
+					add(c.kind, c.plural, c.namespaced)
+				}
+			}
+			for _, resource := range v.f.plan.Resources() {
+				key := resourceKey(resource)
+				if key.APIVersion == gv {
+					collection, err := resourcePath(key, true)
+					if err != nil {
+						t.Error("original discovery fixture unavailable")
+						return
+					}
+					add(key.Kind, collection[strings.LastIndex(collection, "/")+1:], key.Namespace != "")
+				}
+			}
+			_ = json.NewEncoder(w).Encode(metav1.APIResourceList{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "APIResourceList"}, GroupVersion: gv, APIResources: resources})
+			return
+		}
+		for _, c := range proofCollections {
+			path, _ := discoveryPath(c.gv)
+			if c.namespaced {
+				path += "/namespaces/" + namespace.Name
+			}
+			path += "/" + c.plural
+			if r.URL.Path != path {
+				continue
+			}
+			lists[c.kind]++
+			if c.kind == "CronJob" && scenario == "last-list-denied" && lists[c.kind] == 4 {
+				faultHit = true
+				w.WriteHeader(403)
+				return
+			}
+			if c.kind == "Pod" && lists[c.kind] == 4 {
+				switch scenario {
+				case "late-runtime-policy-rv", "late-baseline-policy-rv":
+					for key, object := range v.f.access.objects {
+						if key.Kind == "ValidatingAdmissionPolicy" && strings.HasPrefix(key.Name, "arcadectl-identity-") == (scenario == "late-baseline-policy-rv") {
+							object.SetResourceVersion("101")
+							faultHit = true
+							break
+						}
+					}
+				case "late-fixture":
+					if _, err := v.f.engine.files.CreateExclusive(fixtureLedgerName(snapshot), []byte("synthetic unresolved fixture")); err != nil {
+						t.Error("late fixture injection failed")
+					} else {
+						faultHit = true
+					}
+				case "late-journal":
+					namespace.ResourceVersion = "999"
+					faultHit = true
+				}
+			}
+			// First Pod LIST is after the opening core but before the
+			// closing core: neither individual core spans this replacement.
+			if c.kind == "Pod" && (scenario == "receipt-replaced-between-cores" || scenario == "complete-receipt-replaced") && !faultHit {
+				old, originalID, err := v.f.engine.files.Read(name, retirementMaxBytes)
+				if err != nil {
+					t.Error("replacement fixture read failed")
+				} else {
+					newID, err := v.f.engine.files.AtomicWrite(name, old, &originalID)
+					if err != nil || newID == originalID {
+						t.Error("replacement fixture effect/identity failed")
+					} else {
+						faultHit = true
+					}
+				}
+			}
+			if c.kind == "Pod" && scenario == "complete-late-journal" && lists[c.kind] == 2 {
+				namespace.ResourceVersion, faultHit = "999", true
+			}
+			items := []any{}
+			for key, object := range v.f.access.objects {
+				if key.Kind == c.kind {
+					items = append(items, object.DeepCopy().Object)
+				}
+			}
+			if c.kind == "Pod" && (scenario == "first-cold-reserved-alias" && lists[c.kind] == 2 || scenario == "second-cold-controller-image" && lists[c.kind] == 3 || scenario == "opening-raw-controller-image" && lists[c.kind] == 1 || scenario == "closing-raw-reserved-name" && lists[c.kind] == 4) {
+				injectedPod = pod.DeepCopy()
+				items = append(items, injectedPod.Object)
+				faultHit = true
+			}
+			if c.kind == "PersistentVolumeClaim" && (scenario == "second-cold-world-change" || scenario == "complete-world-change") {
+				copy := claim.DeepCopy()
+				if lists[c.kind] == 2 {
+					copy.SetResourceVersion("81")
+					faultHit = true
+				}
+				items = append(items, copy.Object)
+			}
+			gv, kind := c.gv, c.kind+"List"
+			if c.kind == "Secret" {
+				gv, kind = "meta.k8s.io/v1", "PartialObjectMetadataList"
+				for _, secret := range v.private.objects {
+					object := servingObject(t, secret)
+					items = append(items, map[string]any{"apiVersion": "meta.k8s.io/v1", "kind": "PartialObjectMetadata", "metadata": object.Object["metadata"]})
+				}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"apiVersion": gv, "kind": kind, "metadata": map[string]any{"resourceVersion": "100"}, "items": items})
+			return
+		}
+		if injectedPod != nil && r.URL.Path == "/api/v1/namespaces/"+namespace.Name+"/pods/"+injectedPod.GetName() {
+			encodeStoppedObject(t, w, r, injectedPod.DeepCopy())
+			return
+		}
+		for key, object := range v.f.access.objects {
+			path, err := resourcePath(key, false)
+			if err == nil && r.URL.Path == path {
+				if scenario == "pending-access-replaced" && key == document.Pending.Key {
+					faultHit = true
+				}
+				encodeStoppedObject(t, w, r, object.DeepCopy())
+				return
+			}
+		}
+		for _, secret := range v.private.objects {
+			if r.URL.Path == "/api/v1/namespaces/"+namespace.Name+"/secrets/"+secret.Name {
+				encodeStoppedObject(t, w, r, servingObject(t, secret))
+				return
+			}
+		}
+		w.WriteHeader(404)
+		_ = json.NewEncoder(w).Encode(metav1.Status{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Status"}, Status: metav1.StatusFailure, Reason: metav1.StatusReasonNotFound, Code: 404})
+	}))
+	t.Cleanup(server.Close)
+	config := serverConfig(server)
+	config.BearerToken, config.QPS, config.Burst = "FAKE-RETIRED-ADMIN", 100, 200
+	access, err := NewDirectHTTPAccess(config)
+	if err != nil {
+		t.Fatal("retired HTTPS transport unavailable")
+	}
+	store, err := installstate.NewWithBaseline(access.Namespaces(), baseline, v.f.plan)
+	if err != nil {
+		t.Fatal("retired baseline store unavailable")
+	}
+	engine, err := NewWithBaselineAccess(access, store, v.f.engine.files, baseline, v.f.plan)
+	if err != nil {
+		t.Fatal("retired baseline engine unavailable")
+	}
+	snapshot, err = store.Load(t.Context(), snapshot.Anchor())
+	if err != nil {
+		t.Fatal("retired original snapshot unavailable")
+	}
+	provider, err := NewClusterSecurityBaseline(engine, access)
+	if err != nil {
+		t.Fatal("retired provider unavailable")
+	}
+	if runtime {
+		lifecycle, constructorErr := NewClusterLifecycle(engine, access)
+		closed, ok := engine.baseline.runtimeGuard.(*ClusterSecurityBaseline)
+		if constructorErr != nil || lifecycle == nil || !ok || closed == nil || closed != engine.baseline.prerequisites || closed.engine != engine || closed.access != access {
+			t.Fatal("actual lifecycle did not wire same closed retired/runtime provider")
+		}
+		provider = closed
+	}
+	writes, namespaceWrites := v.f.access.writes, v.f.nsUpdates
+	proofCtx, diagnostic := WithLifecycleDiagnostic(t.Context())
+	if acknowledged {
+		original := snapshot
+		snapshot, err = engine.delete(proofCtx, snapshot, deleteKey, true)
+		if leafChild {
+			mu.Lock()
+			completeLeaf := deletes == 0 && namespaceCAS == 1 && leafLists == 21 && reflect.DeepEqual(leafExpectedReviews, leafSeenReviews) && reflect.DeepEqual(leafExpectedPaths, leafSeenPaths)
+			priorLeafPaths, priorLeafReviews := maps.Clone(leafSeenPaths), maps.Clone(leafSeenReviews)
+			leafReading = false // refused leaf phase ended before its final whole GET
+			mu.Unlock()
+			if !errors.Is(err, ErrOutcomeUnknown) || snapshot == nil || snapshot.Document().Pending == nil || snapshot.Document().Pending.Key != deleteKey || snapshot.Document().Revision != original.Document().Revision+1 || len(snapshot.Document().Resources) != len(original.Document().Resources) || !completeLeaf {
+				t.Fatal("foreign descendant refusal sent DELETE, settled WAL, or failed before full leaf proof", err)
+			}
+			pending := snapshot
+			observed, recoverErr := engine.Recover(proofCtx, pending)
+			mu.Lock()
+			noReplay := deletes == 0 && namespaceCAS == 1 && leafLists == 21 && reflect.DeepEqual(priorLeafPaths, leafSeenPaths) && reflect.DeepEqual(priorLeafReviews, leafSeenReviews)
+			mu.Unlock()
+			if !errors.Is(recoverErr, ErrOutcomeUnknown) || observed == nil || !bytes.Equal(observed.Bytes(), pending.Bytes()) || !noReplay {
+				t.Fatal("pending leaf refusal replayed DELETE or invented settlement", recoverErr)
+			}
+			return
+		}
+		mu.Lock()
+		gotDeletes, gotNamespaceCAS, gotDrainReads := deletes, namespaceCAS, drainReads
+		mu.Unlock()
+		if err != nil || snapshot == nil || snapshot.Document().Pending != nil || snapshot.Document().Revision != original.Document().Revision+2 || snapshot.Anchor() != original.Anchor() || len(snapshot.Document().Resources) != len(original.Document().Resources)-1 || gotDeletes != 1 || gotNamespaceCAS != 2 || gotDrainReads < 3 {
+			t.Fatal("whole closed provider did not converge exact acknowledged access deletion", err)
+		}
+	} else if runtime && completed {
+		err = engine.baseline.verifyRuntime(proofCtx, snapshot)
+	} else if runtime {
+		current, currentErr := engine.current(proofCtx, snapshot)
+		err = currentErr
+		positive := scenario == "healthy" || scenario == "pending-original-access-delete"
+		if positive && (current == nil || current.Anchor() != snapshot.Anchor() || current.ResourceVersion() != snapshot.ResourceVersion() || !bytes.Equal(current.Bytes(), snapshot.Bytes())) || !positive && (current != nil || err != ErrSecurityBaseline) {
+			t.Fatal("actual retired current boundary lost original evidence or admitted drift")
+		}
+	} else {
+		err = provider.Verify(proofCtx, snapshot)
+	}
+	if want := map[string]string{
+		"opening-raw-controller-image":   "retired-executables-opening",
+		"first-cold-reserved-alias":      "retired-cold-first",
+		"second-cold-controller-image":   "retired-stopped-second",
+		"closing-raw-reserved-name":      "retired-executables-closing",
+		"late-baseline-policy-rv":        "retired-policies-closing",
+		"receipt-replaced-between-cores": "retired-pin-closing",
+	}[scenario]; want != "" && diagnostic.BoundarySnapshot() != "operation=unknown baseline="+want {
+		t.Fatal("whole retired refusal lost its original fixed check", diagnostic.BoundarySnapshot())
+	}
+	mu.Lock()
+	hit, listedCounts, reviewCount := faultHit, maps.Clone(lists), reviews
+	mu.Unlock()
+	positive := scenario == "healthy" || scenario == "harmless-terminal-pod" || scenario == "partially-withdrawn-original-access" || scenario == "pending-original-access-delete" || scenario == "complete-healthy" || acknowledged
+	if !positive {
+		if !hit || err != ErrSecurityBaseline {
+			t.Fatal("whole provider accepted incomplete or changing evidence", hit, err)
+		}
+	} else {
+		if err != nil {
+			t.Fatal("whole retired provider rejected complete original evidence", err, listedCounts, reviewCount)
+		}
+		mu.Lock()
+		proofs := 1
+		if acknowledged {
+			// Seven independent full current guards: delete opening, its
+			// retired wrapper, pre-effect intent, post-absence opening and its
+			// retired wrapper, independent recovery and its retired wrapper.
+			proofs = 7
+			for review, count := range expectedReviews {
+				expectedReviews[review] = count * proofs
+			}
+		}
+		for _, c := range proofCollections {
+			want := 2
+			for _, executable := range baselineExecutableCollections {
+				if executable.kind == c.kind {
+					want += 2
+				}
+			}
+			want *= proofs
+			if lists[c.kind] != want {
+				t.Error("whole proof skipped complete evidence pass", c.kind, lists[c.kind], want)
+			}
+		}
+		wantReviews := 16
+		if completed {
+			wantReviews += 80 // 20 literal lists + 20 exact retained GETs, twice
+		}
+		if scenario == "harmless-terminal-pod" {
+			wantReviews += 2 // exact whole GET review on both executable passes
+		}
+		wantReviews *= proofs
+		if reviews != wantReviews {
+			t.Error("retired executable reader omitted closed administrator reviews", reviews)
+		}
+		if !reflect.DeepEqual(seenReviews, expectedReviews) {
+			t.Error("retired proof did not review exact complete read multiset")
+		}
+		mu.Unlock()
+	}
+	fresh, loadErr := store.Load(t.Context(), snapshot.Anchor())
+	if scenario == "late-journal" || scenario == "complete-late-journal" {
+		if loadErr == nil && fresh.ResourceVersion() == snapshot.ResourceVersion() {
+			t.Fatal("late external journal drift not observable")
+		}
+	} else if loadErr != nil || !bytes.Equal(fresh.Bytes(), snapshot.Bytes()) || fresh.ResourceVersion() != snapshot.ResourceVersion() {
+		t.Fatal("read-only proof changed journal")
+	}
+	if !runtime && engine.baseline.runtimeGuard != nil || runtime && (engine.baseline.runtimeGuard != provider || engine.baseline.prerequisites != provider) || v.f.access.writes != writes || v.f.nsUpdates != namespaceWrites {
+		t.Fatal("read-only proof mutated state or changed its explicit authority composition")
+	}
+}

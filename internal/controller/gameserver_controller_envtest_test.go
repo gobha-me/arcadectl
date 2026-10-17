@@ -14,6 +14,7 @@ import (
 	arcadev1alpha1 "github.com/gobha-me/arcadectl/api/v1alpha1"
 	"github.com/gobha-me/arcadectl/internal/catalog"
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -52,6 +53,7 @@ func TestEnvtestLifecycleStatusCollisionAndRecovery(t *testing.T) {
 	for name, add := range map[string]func(*runtime.Scheme) error{
 		"Arcadectl":    arcadev1alpha1.AddToScheme,
 		"apps":         appsv1.AddToScheme,
+		"batch":        batchv1.AddToScheme,
 		"core":         corev1.AddToScheme,
 		"coordination": coordinationv1.AddToScheme,
 	} {
@@ -68,6 +70,8 @@ func TestEnvtestLifecycleStatusCollisionAndRecovery(t *testing.T) {
 		t.Fatalf("create test namespace: %v", err)
 	}
 	testOperationAPI(t, ctx, configuration, kubeClient)
+	testNativeDestroyJobCleanup(t, ctx, kubeClient)
+	testNativeWorkloadApplyIdentityFence(t, ctx, kubeClient)
 	testRetainedDataAdmission(t, ctx, kubeClient)
 	server := controllerTestServer(arcadev1alpha1.DesiredStateRunning)
 	server.UID = ""
@@ -231,6 +235,17 @@ func TestEnvtestLifecycleStatusCollisionAndRecovery(t *testing.T) {
 		t.Fatalf("begin stop: %v", err)
 	}
 	assertPhase(t, kubeClient, request.NamespacedName, arcadev1alpha1.PhaseStopping, metav1.ConditionFalse, arcadev1alpha1.ReasonRuntimeStopping)
+	// Envtest has no garbage collector. Prove the real API accepted foreground
+	// deletion of the original identity, then explicitly simulate GC completion
+	// for this test-owned, descendant-free Deployment. Real Pod drain is Kind.
+	originalWorkloadUID := deployment.UID
+	if err := kubeClient.Get(ctx, request.NamespacedName, deployment); err != nil || deployment.DeletionTimestamp == nil || deployment.UID != originalWorkloadUID {
+		t.Fatalf("foreground workload deletion was not observed: %v", err)
+	}
+	deployment.Finalizers = nil
+	if err := kubeClient.Update(ctx, deployment); err != nil {
+		t.Fatalf("complete test-owned foreground deletion without envtest GC: %v", err)
+	}
 	if _, err := reconciler.Reconcile(ctx, request); err != nil {
 		t.Fatalf("finish stop: %v", err)
 	}
