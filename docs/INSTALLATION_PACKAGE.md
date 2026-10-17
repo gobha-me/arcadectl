@@ -1163,6 +1163,21 @@ settled controller removal proves authoritative absence rather than recreating
 or adopting a controller. Same-package reinstall keeps retained credential UIDs
 and never generates replacement tokens.
 
+An upgrade/rollback application step selects its first outstanding signed
+target locally, without a cluster read or mutation. For a rank-three-or-later
+target, it runs the complete **new** behavioral admission matrix once, after
+the read-only cold-data, API-absence (when applicable) and CRD checkpoints,
+instead of also running that matrix at entry to the same step. A refusal at
+one of those earlier observational checkpoints can therefore precede any
+matrix run. The final full matrix and all later credential, controller,
+runtime, original-journal and effect checks remain mandatory. There is no
+cached admission verdict, cross-step reuse, configured-only substitute or
+change to the 55 cases. Lower-ranked targets and the no-outstanding-target
+stage transition retain the entry matrix. Install/bootstrap, quiescence,
+pending recovery, uninstall and completion checkpoints keep their separate
+existing obligations. This scheduling change alone does not certify native
+timing or signed upgrade completion.
+
 Uninstall proves live runtime-identity admission behavior before withdrawing
 the first original RoleBinding or ClusterRoleBinding. After executable runtime
 and Services are gone, it fsyncs a protected receipt containing the exact

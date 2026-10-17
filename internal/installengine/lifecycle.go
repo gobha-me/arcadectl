@@ -641,13 +641,47 @@ func (l *Lifecycle) apply(ctx context.Context, s *installstate.Snapshot, opts Li
 	return l.applyOwned(ctx, s, opts, nil)
 }
 
+type lifecycleApplySelection struct {
+	key  installstate.Key
+	rank int
+}
+
+// Selection is pure: consume the first outstanding signed target in the same
+// dependency order, without observing the cluster, changing a journal or
+// minting a proof. The caller must retain this exact selection through its
+// checkpoints; an absent/invalid selection cannot defer an admission gate.
+func (l *Lifecycle) nextApplySelection(d installstate.Document) (lifecycleApplySelection, bool, error) {
+	for _, key := range l.ordered(d) {
+		want, err := l.engine.contracts[d.TargetPackage].Template(key, false)
+		r, _ := l.engine.inventory(d, key)
+		if err != nil {
+			return lifecycleApplySelection{}, false, ErrInvalid
+		}
+		if r != nil && r.TemplateSHA256 == want.Hash() {
+			continue // Step's inventory has already checked this live original.
+		}
+		return lifecycleApplySelection{key, installRank(key)}, true, nil
+	}
+	return lifecycleApplySelection{}, false, nil
+}
+
 func (l *Lifecycle) applyOwned(ctx context.Context, s *installstate.Snapshot, opts LifecycleOptions, secrets *retainedBootstrapSecrets) (*installstate.Snapshot, error) {
 	d := s.Document()
+	selection, selected, selectionErr := l.nextApplySelection(d)
 	if d.Mode != installstate.Install {
-		for _, kind := range []Checkpoint{AdmissionEffective, ColdSafety} {
-			if err := l.check(ctx, kind, s, opts); err != nil {
+		// Upgrade/rollback's rank>=3 action still owes the existing NEW full
+		// behavioral matrix below, AFTER the observational cold/API/CRD gates.
+		// Do not run a second full matrix beforehand on the same invocation.
+		// This is placement, not cached authority or reuse across Steps. Lower
+		// ranks, errors and the no-action stage transition keep the entry gate.
+		deferAdmission := (d.Mode == installstate.Upgrade || d.Mode == installstate.Rollback) && selectionErr == nil && selected && selection.rank >= 3
+		if !deferAdmission {
+			if err := l.check(ctx, AdmissionEffective, s, opts); err != nil {
 				return s, err
 			}
+		}
+		if err := l.check(ctx, ColdSafety, s, opts); err != nil {
+			return s, err
 		}
 		api := installstate.Key{APIVersion: "apps/v1", Kind: "Deployment", Namespace: d.Namespace, Name: "arcadectl-api"}
 		if r, _ := l.engine.inventory(d, api); r == nil {
@@ -656,57 +690,52 @@ func (l *Lifecycle) applyOwned(ctx context.Context, s *installstate.Snapshot, op
 			}
 		}
 	}
-	for _, key := range l.ordered(d) {
-		rank := installRank(key)
-		want, err := l.engine.contracts[d.TargetPackage].Template(key, false)
-		r, _ := l.engine.inventory(d, key)
-		if err != nil {
-			return s, ErrInvalid
-		}
-		if r != nil && r.TemplateSHA256 == want.Hash() {
-			continue // inventory() has already checked its live original shape
-		}
-		if rank > 0 {
-			if err := l.checkOwned(ctx, CRDsAvailable, s, opts, secrets); err != nil {
-				return s, err
-			}
-		}
-		if rank >= 3 {
-			gate := AdmissionEffective
-			if d.Mode == installstate.Install && key.Kind == "ServiceAccount" {
-				gate = AdmissionConfigured // fresh AND retaining reinstall
-			} else if d.Mode == installstate.Install && bootstrapRBACKey(key) {
-				gate = BootstrapAdmission
-			}
-			if err := l.checkOwned(ctx, gate, s, opts, secrets); err != nil {
-				return s, err
-			}
-		}
-		if rank >= 4 {
-			if next, done, err := l.ensureSecrets(ctx, s, opts); err != nil || !done {
-				return next, err
-			}
-		}
-		if rank == 5 {
-			if err := l.check(ctx, ControllersAvailable, s, opts); err != nil {
-				return s, err
-			}
-		}
-		// Before the first controller restarts, require the whole cold runtime
-		// proof again. Subsequent controller starts remain admission/cold gated.
-		if d.Mode != installstate.Install && rank <= 4 && !l.controllersRestoring(d) {
-			if err := l.check(ctx, RuntimeStopped, s, opts); err != nil {
-				return s, err
-			}
-		}
-		if l.engine.baseline != nil && d.Mode == installstate.Install && baselinePrerequisiteKey(key, d.Namespace) {
-			// applyPrerequisite authenticates the complete fresh inventory or
-			// retained-source union. Install/stage flags alone grant no exemption.
-			return l.engine.applyPrerequisiteOwned(ctx, s, key, d.TargetPackage, secrets)
-		}
-		return l.applyTarget(ctx, s, key, d.TargetPackage)
+	if selectionErr != nil {
+		return s, selectionErr
 	}
-	return l.stage(ctx, s, installstate.Verifying)
+	if !selected {
+		return l.stage(ctx, s, installstate.Verifying)
+	}
+	key, rank := selection.key, selection.rank
+	if rank > 0 {
+		if err := l.checkOwned(ctx, CRDsAvailable, s, opts, secrets); err != nil {
+			return s, err
+		}
+	}
+	if rank >= 3 {
+		gate := AdmissionEffective
+		if d.Mode == installstate.Install && key.Kind == "ServiceAccount" {
+			gate = AdmissionConfigured // fresh AND retaining reinstall
+		} else if d.Mode == installstate.Install && bootstrapRBACKey(key) {
+			gate = BootstrapAdmission
+		}
+		if err := l.checkOwned(ctx, gate, s, opts, secrets); err != nil {
+			return s, err
+		}
+	}
+	if rank >= 4 {
+		if next, done, err := l.ensureSecrets(ctx, s, opts); err != nil || !done {
+			return next, err
+		}
+	}
+	if rank == 5 {
+		if err := l.check(ctx, ControllersAvailable, s, opts); err != nil {
+			return s, err
+		}
+	}
+	// Before the first controller restarts, require the whole cold runtime
+	// proof again. Subsequent controller starts remain admission/cold gated.
+	if d.Mode != installstate.Install && rank <= 4 && !l.controllersRestoring(d) {
+		if err := l.check(ctx, RuntimeStopped, s, opts); err != nil {
+			return s, err
+		}
+	}
+	if l.engine.baseline != nil && d.Mode == installstate.Install && baselinePrerequisiteKey(key, d.Namespace) {
+		// applyPrerequisite authenticates the complete fresh inventory or
+		// retained-source union. Install/stage flags alone grant no exemption.
+		return l.engine.applyPrerequisiteOwned(ctx, s, key, d.TargetPackage, secrets)
+	}
+	return l.applyTarget(ctx, s, key, d.TargetPackage)
 }
 
 func (l *Lifecycle) controllersRestoring(d installstate.Document) bool {
