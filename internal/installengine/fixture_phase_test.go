@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 // Real sealed observer, immutable companion and original actor/WAL transport;
 // fake HTTPS objects are NOT native admission, effect or lifecycle certification.
 type fixturePhaseTest struct {
+	modelMu          sync.Mutex
 	test             *testing.T
 	f                *fixtureWireTest
 	lists, gets      int
@@ -98,6 +100,11 @@ func fixturePhaseFactoryFromWireFactory(t *testing.T, newPreview func(*testing.T
 		add("gc.example.test/v1", "Widget", "widgets", true)
 		add("arcade.gobha.me/v1alpha1", "GameDestroy", "gamedestroys/status", true)
 		f.actor.fixtureHandler = func(w http.ResponseWriter, r *http.Request) bool {
+			// Native reads may overlap. Serialize only this synthetic backing
+			// model and its mutation hooks; scheduling barriers live outside
+			// the server in client transports, never under this mutex.
+			h.modelMu.Lock()
+			defer h.modelMu.Unlock()
 			ns := f.actor.request.Snapshot.Anchor().Namespace
 			if r.Method == http.MethodGet && r.URL.Path == "/api/v1/namespaces/"+ns {
 				n, err := f.actor.v.f.access.client.CoreV1().Namespaces().Get(r.Context(), ns, metav1.GetOptions{})
@@ -438,7 +445,7 @@ func TestFixturePhaseRejectsLegacyWorldOnlyCompanion(t *testing.T) {
 
 func TestFixturePhasePublicOriginalDriftIncludingSecondPassTail(t *testing.T) {
 	newPhase := fixturePhaseFactory(t)
-	for _, scenario := range []string{"before-service", "first-service", "second-service", "second-crd"} {
+	for _, scenario := range []string{"before-service", "first-service", "second-service", "second-crd", "second-crd-case"} {
 		t.Run(scenario, func(t *testing.T) {
 			h := newPhase(t)
 			ledger := h.f.wire.ledger
@@ -450,7 +457,7 @@ func TestFixturePhasePublicOriginalDriftIncludingSecondPassTail(t *testing.T) {
 			mutated := false
 			mutate := func() {
 				kind := "Service"
-				if strings.HasSuffix(scenario, "crd") {
+				if strings.Contains(scenario, "crd") {
 					kind = "CustomResourceDefinition"
 				}
 				for key, o := range h.f.actor.v.f.access.objects {
@@ -459,6 +466,9 @@ func TestFixturePhasePublicOriginalDriftIncludingSecondPassTail(t *testing.T) {
 					}
 					if kind == "Service" {
 						_ = unstructured.SetNestedField(o.Object, "ExternalName", "spec", "type")
+					} else if scenario == "second-crd-case" {
+						o.Object["Status"] = o.Object["status"]
+						delete(o.Object, "status")
 					} else {
 						_ = unstructured.SetNestedSlice(o.Object, []any{"foreign-version"}, "status", "storedVersions")
 					}
