@@ -1965,7 +1965,7 @@ are process-wide samples from one source-defined interval, not matrix-thread
 exclusive cost, every admission pass, the eventual slowest invocation, the
 failed operand, an underlying cause, or a performance cure.
 
-Version-four rows identify scope
+The initial version-four rows identify scope
 `same-attempt-current-child-first-upgrade-matrix-window-only`, fixed trigger
 `first-current-upgrade-matrix-entry`, requested ordinal `1` and requested
 capture `30000000000` nanoseconds. Reaching command exit without reaching the
@@ -1976,3 +1976,38 @@ if a complete frame arrived. The raw 8 MiB profile cap, bounded nonblocking
 flush/drain, privacy/parser limits and unchanged installer output/result remain
 mandatory. Full, prefix and matrix protocols cannot cross-decode. No command
 flag, environment selector, installation effect, case, rate or deadline changes.
+
+### Matrix-only numeric classification (v5)
+
+Current source emits `installer-child-cpu-summary-v5` for the independently
+selected current transition `upgrade`, with fixed classification
+`matrix-cpu-categories-v1`. This changes only the parent's numeric projection
+of the same first-matrix profile. The child descriptor protocol, once-only
+trigger, requested interval, raw frame, exit gates, not-started semantics and
+all parser/privacy/work bounds are unchanged. Version-four records and their
+validators remain historical evidence; they cannot be reclassified from their
+aggregates or used as a fallback for current v5 output.
+
+The separate matrix summary type permits exactly sixteen literal groups:
+`apimachinery`, `client-go`, `hash`, `http`, `installengine`, `io-syscall`,
+`json`, `other`, `package-state`, `proof-contract`, `proof-observe`, `reflect`,
+`runtime`, `runtime-gc`, `tls` and `unresolved`. It retains the sixteen-bucket
+limit and exact numeric accounting. Reviewed package-qualified prefixes map
+SHA256 implementations to `hash`, reflection to `reflect`, canonical JSON to
+`json`, contract code to `proof-contract`, observation/safety code to
+`proof-observe`, and state/baseline/render code to `package-state`. Unknown and
+lookalike package names remain `other`. No symbol suffix, filename, address,
+label or other observed string is emitted. `io-syscall` also includes network
+and other uses of OS/IO/syscall helpers: it is not proof-file-exclusive.
+`runtime-gc` includes allocation helpers, not exclusively collection.
+
+Flat buckets partition the sampled CPU; cumulative buckets count a category
+once per sample and overlap, so they must not be summed. Actual profile duration
+is not clamped to the requested interval. These categories do not identify a
+failed operand, measure sleep, establish late/whole-command cost or prove a
+performance cure. Other current commands keep the unchanged v3 prefix
+vocabulary and serializer. Historical binaries still receive no descriptors.
+The harness chooses its parser from the fixed invocation context, never from
+whichever record version parses. Strict external validation must likewise bind
+the new source, expected invocation, format and classification before accepting
+numeric data; it must not reinterpret old packets or widen the legacy schema.

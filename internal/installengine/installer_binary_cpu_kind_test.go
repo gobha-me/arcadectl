@@ -96,6 +96,7 @@ func TestInstallerBinaryMatrixCustody(t *testing.T) { testInstallerBinaryMatrixC
 
 func testInstallerBinaryMatrixCustody(t *testing.T) {
 	t.Helper()
+	testInstallerBinaryMatrixV5Custody(t)
 	for _, mode := range []string{"fresh", "transition", ""} {
 		for _, command := range []string{"install", "enroll-baseline", "upgrade", "rollback", "uninstall", "resume", ""} {
 			if installerBinaryUsesMatrixCapture(mode, command) != (mode == "transition" && command == "upgrade") {
@@ -257,42 +258,49 @@ func installerBinaryPrefixCPURecordBytes(source, digest, profile, mode, command,
 	return json.Marshal(record)
 }
 
-func installerBinaryCPURecordBytes(source, digest, profile, mode, command, outcome, diagnostic string, dirty bool, summary *installerprofile.CPUSummary, refusal installerprofile.CPURefusal) ([]byte, error) {
+func validateInstallerBinaryCPURecord(source, digest, profile, mode, command, outcome, diagnostic string, dirty bool, hasSummary bool, refusal installerprofile.CPURefusal) error {
 	hexadecimal := func(value string, size int) bool {
 		decoded, err := hex.DecodeString(value)
 		return err == nil && len(decoded) == size && value == strings.ToLower(value)
 	}
 	if !hexadecimal(source, 20) || !hexadecimal(digest, 32) || profile != installrender.Profile135 && profile != installrender.Profile137 || mode != "fresh" && mode != "transition" {
-		return nil, ErrFixtures
+		return ErrFixtures
 	}
 	if !refusal.Valid() {
-		return nil, ErrFixtures
+		return ErrFixtures
 	}
 	switch command {
 	case "install", "enroll-baseline", "upgrade", "rollback", "uninstall", "resume":
 	default:
-		return nil, ErrFixtures
+		return ErrFixtures
 	}
 	switch outcome {
 	case "success", "exit-failure", "terminated", "launch-failure":
 	default:
-		return nil, ErrFixtures
+		return ErrFixtures
 	}
 	switch diagnostic {
 	case "available":
-		if summary == nil || outcome == "terminated" || outcome == "launch-failure" || refusal != (installerprofile.CPURefusal{}) {
-			return nil, ErrFixtures
+		if !hasSummary || outcome == "terminated" || outcome == "launch-failure" || refusal != (installerprofile.CPURefusal{}) {
+			return ErrFixtures
 		}
 	case "capture-incomplete":
-		if summary != nil || refusal != (installerprofile.CPURefusal{}) {
-			return nil, ErrFixtures
+		if hasSummary || refusal != (installerprofile.CPURefusal{}) {
+			return ErrFixtures
 		}
 	case "cpu-format-unavailable":
-		if summary != nil || refusal.Stage == installerprofile.CPURefusalNone || outcome == "terminated" || outcome == "launch-failure" {
-			return nil, ErrFixtures
+		if hasSummary || refusal.Stage == installerprofile.CPURefusalNone || outcome == "terminated" || outcome == "launch-failure" {
+			return ErrFixtures
 		}
 	default:
-		return nil, ErrFixtures
+		return ErrFixtures
+	}
+	return nil
+}
+
+func installerBinaryCPURecordBytes(source, digest, profile, mode, command, outcome, diagnostic string, dirty bool, summary *installerprofile.CPUSummary, refusal installerprofile.CPURefusal) ([]byte, error) {
+	if err := validateInstallerBinaryCPURecord(source, digest, profile, mode, command, outcome, diagnostic, dirty, summary != nil, refusal); err != nil {
+		return nil, err
 	}
 	return json.Marshal(installerBinaryCPURecord{
 		Format: "installer-child-cpu-summary-v2", Scope: "same-attempt-current-child-cpu-only",

@@ -19,6 +19,11 @@ func assertCPURefusal(t *testing.T, body []byte, want CPURefusal) {
 	if err != errIncomplete || oldErr != errIncomplete || !reflect.DeepEqual(summary, CPUSummary{}) || !reflect.DeepEqual(old, summary) || reason != want || !reason.Valid() {
 		t.Fatal("CPU refusal changed public error, exposed partial summary or lost exact fixed reason")
 	}
+	matrix, matrixReason, matrixErr := SummarizeCPUMatrixWithDiagnostic(body, "/owned/installer")
+	plainMatrix, plainMatrixErr := SummarizeCPUMatrix(body, "/owned/installer")
+	if matrixErr != errIncomplete || plainMatrixErr != errIncomplete || matrixReason != want || !reflect.DeepEqual(matrix, MatrixCPUSummary{}) || !reflect.DeepEqual(plainMatrix, matrix) {
+		t.Fatal("matrix parser changed refusal precedence, bounds or empty-result contract")
+	}
 	encoded, marshalErr := json.Marshal(reason)
 	if marshalErr != nil || bytes.Contains(encoded, []byte("CANARY")) || bytes.Contains(encoded, []byte("/")) || len(encoded) > 24 {
 		t.Fatal("CPU refusal escaped fixed numeric privacy boundary")

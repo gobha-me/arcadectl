@@ -266,14 +266,17 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 									}
 								}
 							}
-							parse := installerBinaryCPUParse
-							recordBytes := installerBinaryPrefixCPURecordBytes
+							var record []byte
+							var recordErr error
 							if matrixCapture {
-								parse, recordBytes = installerBinaryMatrixCPUParse, installerBinaryMatrixCPURecordBytes
+								status, summary, refusal := installerBinaryMatrixV5CPUParse(body, diagnosticErr, c.ProcessState, binary)
+								body = nil // No raw profile retention or schema fallback.
+								record, recordErr = installerBinaryMatrixV5CPURecordBytes(cpuSource, cpuBinaryDigest, profile.id, mode, command, outcome, status, cpuDirty, summary, refusal)
+							} else {
+								status, summary, refusal := installerBinaryCPUParse(body, diagnosticErr, c.ProcessState, binary)
+								body = nil
+								record, recordErr = installerBinaryPrefixCPURecordBytes(cpuSource, cpuBinaryDigest, profile.id, mode, command, outcome, status, cpuDirty, summary, refusal)
 							}
-							status, summary, refusal := parse(body, diagnosticErr, c.ProcessState, binary)
-							body = nil // No raw profile retention, artifact upload or fallback.
-							record, recordErr := recordBytes(cpuSource, cpuBinaryDigest, profile.id, mode, command, outcome, status, cpuDirty, summary, refusal)
 							if recordErr != nil {
 								t.Fatal("closed current CPU summary custody unavailable")
 							}

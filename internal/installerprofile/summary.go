@@ -376,29 +376,37 @@ func SummarizeCPU(compressed []byte, executable string) (CPUSummary, error) {
 }
 
 func summarizeCPU(compressed []byte, executable string) (CPUSummary, error) {
+	summary, err := summarizeCPUFor(compressed, executable, cpuVocabularyLegacy)
+	return CPUSummary(summary), err
+}
+
+func summarizeCPUFor(compressed []byte, executable string, vocabulary cpuVocabulary) (cpuAccounting, error) {
+	if vocabulary != cpuVocabularyLegacy && vocabulary != cpuVocabularyMatrix {
+		return cpuAccounting{}, refuseCPU(CPURefusalSchema)
+	}
 	if len(compressed) == 0 || len(compressed) > MaxProfileBytes || executable == "" {
-		return CPUSummary{}, refuseCPU(CPURefusalEnvelope)
+		return cpuAccounting{}, refuseCPU(CPURefusalEnvelope)
 	}
 	reader := bytes.NewReader(compressed)
 	gz, err := gzip.NewReader(reader)
 	if err != nil {
-		return CPUSummary{}, refuseCPU(CPURefusalEnvelope)
+		return cpuAccounting{}, refuseCPU(CPURefusalEnvelope)
 	}
 	gz.Multistream(false)
 	if gz.Name != "" || gz.Comment != "" || len(gz.Extra) != 0 || !gz.ModTime.IsZero() {
 		_ = gz.Close()
-		return CPUSummary{}, refuseCPU(CPURefusalEnvelope)
+		return cpuAccounting{}, refuseCPU(CPURefusalEnvelope)
 	}
 	decoded, err := io.ReadAll(io.LimitReader(gz, maxDecodedBytes+1))
 	closeErr := gz.Close()
 	if err != nil || closeErr != nil || len(decoded) == 0 || len(decoded) > maxDecodedBytes || reader.Len() != 0 {
-		return CPUSummary{}, refuseCPU(CPURefusalExpansion)
+		return cpuAccounting{}, refuseCPU(CPURefusalExpansion)
 	}
 	p, err := decodeCPU(decoded)
 	if err != nil {
-		return CPUSummary{}, err
+		return cpuAccounting{}, err
 	}
-	return p.summarize(executable)
+	return p.summarize(executable, vocabulary)
 }
 
 func reviewedMapping(path, executable string) bool {
@@ -438,7 +446,10 @@ func cpuCategory(symbol string) string {
 	return "other" // Never copy even a syntactically plausible unknown symbol.
 }
 
-func (p *cpuProfile) summarize(executable string) (CPUSummary, error) {
+func (p *cpuProfile) summarize(executable string, vocabulary cpuVocabulary) (cpuAccounting, error) {
+	if vocabulary != cpuVocabularyLegacy && vocabulary != cpuVocabularyMatrix {
+		return cpuAccounting{}, refuseCPU(CPURefusalSchema)
+	}
 	used := make([]bool, len(p.strings))
 	used[0] = true
 	invalidStringReference := false
@@ -457,61 +468,61 @@ func (p *cpuProfile) summarize(executable string) (CPUSummary, error) {
 	}
 	if !valueType(p.types[0], "samples", "count") || !valueType(p.types[1], "cpu", "nanoseconds") || !valueType(p.periodType, "cpu", "nanoseconds") {
 		if invalidStringReference {
-			return CPUSummary{}, refuseCPU(CPURefusalReference)
+			return cpuAccounting{}, refuseCPU(CPURefusalReference)
 		}
-		return CPUSummary{}, refuseCPU(CPURefusalSchema)
+		return cpuAccounting{}, refuseCPU(CPURefusalSchema)
 	}
 	haveExecutable := false
 	for _, mapping := range p.mappings {
 		path, ok := text(mapping[5])
 		_, good := text(mapping[6])
 		if !ok || !good {
-			return CPUSummary{}, refuseCPU(CPURefusalReference)
+			return cpuAccounting{}, refuseCPU(CPURefusalReference)
 		}
 		if !reviewedMapping(path, executable) || mapping[2] >= mapping[3] || mapping[7] > 1 {
-			return CPUSummary{}, refuseCPU(CPURefusalSchema)
+			return cpuAccounting{}, refuseCPU(CPURefusalSchema)
 		}
 		haveExecutable = haveExecutable || path == executable
 	}
 	if !haveExecutable {
-		return CPUSummary{}, refuseCPU(CPURefusalSchema)
+		return cpuAccounting{}, refuseCPU(CPURefusalSchema)
 	}
 	for _, function := range p.functions {
 		name, a := text(function[2])
 		system, b := text(function[3])
 		_, c := text(function[4])
 		if !a || !b || !c {
-			return CPUSummary{}, refuseCPU(CPURefusalReference)
+			return cpuAccounting{}, refuseCPU(CPURefusalReference)
 		}
 		if name != system || function[5] > math.MaxInt64 {
-			return CPUSummary{}, refuseCPU(CPURefusalSchema)
+			return cpuAccounting{}, refuseCPU(CPURefusalSchema)
 		}
 	}
 	for _, location := range p.locations {
 		if location.values[2] != 0 {
 			mapping, ok := p.mappings[location.values[2]]
 			if !ok || location.values[3] < mapping[2] || location.values[3] >= mapping[3] {
-				return CPUSummary{}, refuseCPU(CPURefusalReference)
+				return cpuAccounting{}, refuseCPU(CPURefusalReference)
 			}
 		}
 		for _, line := range location.lines {
 			if _, ok := p.functions[line[1]]; !ok {
-				return CPUSummary{}, refuseCPU(CPURefusalReference)
+				return cpuAccounting{}, refuseCPU(CPURefusalReference)
 			}
 		}
 	}
 	for _, present := range used {
 		if !present {
-			return CPUSummary{}, refuseCPU(CPURefusalSchema)
+			return cpuAccounting{}, refuseCPU(CPURefusalSchema)
 		}
 	}
-	summary := CPUSummary{DurationNanoseconds: p.duration}
+	summary := cpuAccounting{DurationNanoseconds: p.duration}
 	buckets := map[string]*CPUBucket{}
 	work := 0
 	for _, sample := range p.samples {
 		count, cpu := sample.values[0], sample.values[1]
 		if count > math.MaxInt64/cpuPeriod || cpu != count*cpuPeriod || summary.CPUNanoseconds > math.MaxInt64-cpu || summary.Samples > math.MaxInt64-count {
-			return CPUSummary{}, refuseCPU(CPURefusalAccounting)
+			return cpuAccounting{}, refuseCPU(CPURefusalAccounting)
 		}
 		summary.Samples += count
 		summary.CPUNanoseconds += cpu
@@ -521,11 +532,11 @@ func (p *cpuProfile) summarize(executable string) (CPUSummary, error) {
 		for _, id := range sample.locations {
 			location, ok := p.locations[id]
 			if !ok {
-				return CPUSummary{}, refuseCPU(CPURefusalReference)
+				return cpuAccounting{}, refuseCPU(CPURefusalReference)
 			}
 			work += 1 + len(location.lines)
 			if work > maxStackRefs {
-				return CPUSummary{}, refuseCPUWork(CPUBoundExpandedWork)
+				return cpuAccounting{}, refuseCPUWork(CPUBoundExpandedWork)
 			}
 			if len(location.lines) == 0 {
 				categories["unresolved"] = true
@@ -536,6 +547,9 @@ func (p *cpuProfile) summarize(executable string) (CPUSummary, error) {
 			for _, line := range location.lines {
 				function := p.functions[line[1]]
 				category := cpuCategory(p.strings[function[2]])
+				if vocabulary == cpuVocabularyMatrix {
+					category = matrixCPUCategory(p.strings[function[2]])
+				}
 				categories[category] = true
 				if first {
 					flat, first = category, false
@@ -558,7 +572,7 @@ func (p *cpuProfile) summarize(executable string) (CPUSummary, error) {
 		}
 	}
 	if summary.Samples == 0 {
-		return CPUSummary{}, refuseCPU(CPURefusalAccounting)
+		return cpuAccounting{}, refuseCPU(CPURefusalAccounting)
 	} // Too short is unavailable, not installer failure.
 	for _, bucket := range buckets {
 		summary.Buckets = append(summary.Buckets, *bucket)
