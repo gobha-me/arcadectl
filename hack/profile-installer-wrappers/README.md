@@ -11,6 +11,12 @@ retirement, journal/baseline assertions and owned cleanup. The new diagnostic
 launcher has a separate finite compile/capture/analysis envelope; it does not
 change a production, full-transition or ordinary component deadline.
 
+`native-component-v2 FULL_SOURCE_SHA` runs the SAME proof and budgets but emits
+explicit `arcadectl-native-component-screen-v2` (or v2 refusal) records using
+50 exact symbols, adding collection and defensive-copy attribution. The original
+`native-component` mode and its 36-symbol v1 records remain unchanged. Both
+versions' cumulative rows overlap; nested collection/copy rows are not additive.
+
 CPU and allocation profiles from that ONE execution supply four synchronous
 views: complete driver, phase observation, engine request and observer transport.
 The native catalogue freezes the previous v3 exact symbols plus the complete
@@ -25,6 +31,13 @@ completion, RKE2 or release certification. It cannot discharge the unfinished
 full transition/uninstall gate. Root views omit async/remote CPU and waits;
 sampled allocations and rounded overlapping cumulative rows are not exclusive
 wall time, a proven bottleneck or a performance cure.
+
+The temporary diagnostic workflow additionally compares a TEST-ONLY public JSON
+validation-without-graph candidate against the unchanged production parser, with
+explicit depth/node/decoded-key/UTF8/EOF cases, a bounded differential fuzz run,
+and paired whole-validation benchmarks over synthetic public Kubernetes pages.
+Neither production transport nor metadata envelope/redaction is changed. Parser
+microbenchmarks do not establish a native lifecycle or transition speedup.
 
 Linux-only, opt-in CI diagnostic. From the clean repository root:
 

@@ -584,6 +584,17 @@ func screen(parent context.Context, expected string) error {
 	}{"arcadectl-wrapper-screen-v1", expected, digest, "synthetic-root-focused-synchronous-stacks; formatted-rounded-values; cumulative-overlaps; sampled-allocations; profiling-perturbs-CPU; excludes-async-and-native-wait", 8192, results})
 }
 
+func refusalSchema(mode string) (string, bool) {
+	switch mode {
+	case "native-component":
+		return "arcadectl-native-component-screen-refusal-v1", true
+	case "native-component-v2":
+		return "arcadectl-native-component-screen-refusal-v2", true
+	default:
+		return "arcadectl-wrapper-screen-refusal-v1", false
+	}
+}
+
 func main() {
 	started := time.Now()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -592,15 +603,20 @@ func main() {
 		err = screen(ctx, os.Args[1])
 	} else if len(os.Args) == 3 && os.Args[1] == "native-component" {
 		err = nativeScreen(ctx, os.Args[2])
+	} else if len(os.Args) == 3 && os.Args[1] == "native-component-v2" {
+		err = nativeScreenV2(ctx, os.Args[2])
 	}
 	stop()
 	if err != nil {
 		f := &screenRefusal{Stage: "screen", Reason: "validation", ExitCode: -1}
 		_ = errors.As(err, &f)
 		schema := "arcadectl-wrapper-screen-refusal-v1"
-		if len(os.Args) == 3 && os.Args[1] == "native-component" {
-			schema = "arcadectl-native-component-screen-refusal-v1"
-			f.Roots = nil // The synthetic root census is not a native transcript.
+		if len(os.Args) == 3 {
+			var native bool
+			schema, native = refusalSchema(os.Args[1])
+			if native {
+				f.Roots = nil // The synthetic root census is not a native transcript.
+			}
 		}
 		_ = json.NewEncoder(os.Stdout).Encode(struct {
 			Schema    string         `json:"schema"`

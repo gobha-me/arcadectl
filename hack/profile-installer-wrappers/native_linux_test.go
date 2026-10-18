@@ -91,6 +91,85 @@ func TestNativeProjectionDoesNotPromoteNamesOrChangeLegacyCatalog(t *testing.T) 
 	}
 }
 
+func TestNativeV2CatalogAddsOnlyExactOwnedCollectionAndCopySymbols(t *testing.T) {
+	v1, v2 := nativeCatalog(), nativeCatalogV2()
+	extras := map[string]string{
+		enginePackage + "(*ClusterPrerequisites).collectOriginalObservation":                               "original-observation-collect",
+		enginePackage + "(*ClusterAdmission).configured":                                                   "admission-configured",
+		enginePackage + "(*ClusterAdmission).phasePublicInventoryAgainstGC":                                "phase-public-inventory",
+		enginePackage + "(*fixtureWire).getPhaseLocked":                                                    "phase-named-get",
+		"github.com/gobha-me/arcadectl/internal/installobserve.(*Observer).Collect":                        "observer-collect",
+		"github.com/gobha-me/arcadectl/internal/installobserve.(*Observer).collectListWithPagesDiagnostic": "observer-collection-decode",
+		"github.com/gobha-me/arcadectl/internal/installobserve.(*GCReader).Discover":                       "gc-discovery",
+		"github.com/gobha-me/arcadectl/internal/installobserve.(*GCReader).collect":                        "gc-collect",
+		"github.com/gobha-me/arcadectl/internal/installobserve.(*Observation).Snapshot":                    "observation-snapshot-copy",
+		"github.com/gobha-me/arcadectl/internal/installobserve.(*Observation).Runtime":                     "observation-runtime-copy",
+		"github.com/gobha-me/arcadectl/internal/installobserve.(*GCObservation).Objects":                   "gc-objects-copy",
+		"github.com/gobha-me/arcadectl/internal/installcontract.(*Template).matchWithAdmissionResult":      "contract-match",
+		"github.com/gobha-me/arcadectl/internal/installcontract.(*Template).decodeObservedMode":            "contract-observed-decode",
+		"github.com/gobha-me/arcadectl/internal/installsafety.(*RuntimeSnapshot).DeepCopy":                 "runtime-snapshot-copy",
+	}
+	if len(v1) != 36 || len(v2) != 50 || len(functions) != 19 {
+		t.Fatal("versioned catalogue membership changed")
+	}
+	ids := map[string]bool{}
+	for name, id := range v2 {
+		if id == "" || ids[id] || (v1[name] != id && extras[name] != id) {
+			t.Fatal("v2 contains a changed, duplicate or unowned mapping")
+		}
+		ids[id] = true
+	}
+	for name, id := range v1 {
+		if v2[name] != id {
+			t.Fatal("v2 reinterpreted a v1 identifier")
+		}
+	}
+	for name, id := range extras {
+		if v2[name] != id || v1[name] != "" || functions[name] != "" {
+			t.Fatal("v2 mapping missing or escaped to a frozen catalogue")
+		}
+	}
+	v2[enginePackage+"(*fixtureWire).getPhaseLocked"] = "PRIVATE-PROVIDER-CANARY"
+	delete(v2, "encoding/json.Marshal")
+	v1[enginePackage+"(*fixtureAdmissionDriver).complete"] = "PRIVATE-PROVIDER-CANARY"
+	if nativeCatalogV2()[enginePackage+"(*fixtureWire).getPhaseLocked"] != "phase-named-get" || nativeCatalogV2()["encoding/json.Marshal"] != "json-marshal" || nativeCatalogV2()[enginePackage+"(*fixtureAdmissionDriver).complete"] != "admission-complete" || nativeCatalog()[enginePackage+"(*fixtureAdmissionDriver).complete"] != "admission-complete" {
+		t.Fatal("versioned catalogue mutation escaped its caller")
+	}
+}
+
+func TestNativeV2ProjectionDoesNotChangeV1OrPromoteNearMatches(t *testing.T) {
+	root := enginePackage + "(*fixtureAdmissionDriver).complete"
+	copySymbol := "github.com/gobha-me/arcadectl/internal/installobserve.(*Observation).Snapshot"
+	text := "Type: cpu\n      flat  flat%   sum%        cum   cum%\n      10ns 10.00% 10.00%      100ns 100.00%  " + root + "\n      30ns 30.00% 40.00%       40ns 40.00%  " + copySymbol + "\n      60ns 60.00% 100.00%      60ns 60.00%  " + copySymbol + " PRIVATE-PROVIDER-CANARY\n"
+	v2, err := parseTopWithCatalog([]byte(text), root, "cpu-nanoseconds", nativeCatalogV2())
+	if err != nil || v2.UnknownFlat != 60 || len(v2.Rows) != 2 {
+		t.Fatal("v2 exact discriminator failed")
+	}
+	v1, err := parseTopWithCatalog([]byte(text), root, "cpu-nanoseconds", nativeCatalog())
+	if err != nil || v1.UnknownFlat != 90 || len(v1.Rows) != 1 {
+		t.Fatal("v2 projection changed frozen native v1")
+	}
+	body, err := json.Marshal(v2)
+	if err != nil || bytes.Contains(body, []byte("PRIVATE-PROVIDER-CANARY")) || bytes.Contains(body, []byte(copySymbol)) || !bytes.Contains(body, []byte("observation-snapshot-copy")) {
+		t.Fatal("v2 exported provider names or omitted exact identifier")
+	}
+}
+
+func TestNativeRefusalSchemasAreExplicitlyVersioned(t *testing.T) {
+	for _, tc := range []struct {
+		mode, schema string
+		native       bool
+	}{
+		{"native-component", "arcadectl-native-component-screen-refusal-v1", true},
+		{"native-component-v2", "arcadectl-native-component-screen-refusal-v2", true},
+		{"unknown", "arcadectl-wrapper-screen-refusal-v1", false},
+	} {
+		if schema, native := refusalSchema(tc.mode); schema != tc.schema || native != tc.native {
+			t.Fatal("diagnostic mode silently reinterpreted a refusal version")
+		}
+	}
+}
+
 func TestNativeWorkingDirectoryHelper(t *testing.T) {
 	if os.Getenv("ARCADECTL_NATIVE_DIRECTORY_HELPER") != "1" {
 		return

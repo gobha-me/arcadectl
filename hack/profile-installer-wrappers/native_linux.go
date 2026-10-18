@@ -51,6 +51,31 @@ func nativeCatalog() map[string]string {
 	return catalog
 }
 
+// Explicit v2 adds collection/copy attribution without reinterpreting old v1
+// records or changing the default synthetic catalogue. Cumulative rows overlap.
+func nativeCatalogV2() map[string]string {
+	catalog := nativeCatalog()
+	for name, id := range map[string]string{
+		enginePackage + "(*ClusterPrerequisites).collectOriginalObservation":                               "original-observation-collect",
+		enginePackage + "(*ClusterAdmission).configured":                                                   "admission-configured",
+		enginePackage + "(*ClusterAdmission).phasePublicInventoryAgainstGC":                                "phase-public-inventory",
+		enginePackage + "(*fixtureWire).getPhaseLocked":                                                    "phase-named-get",
+		"github.com/gobha-me/arcadectl/internal/installobserve.(*Observer).Collect":                        "observer-collect",
+		"github.com/gobha-me/arcadectl/internal/installobserve.(*Observer).collectListWithPagesDiagnostic": "observer-collection-decode",
+		"github.com/gobha-me/arcadectl/internal/installobserve.(*GCReader).Discover":                       "gc-discovery",
+		"github.com/gobha-me/arcadectl/internal/installobserve.(*GCReader).collect":                        "gc-collect",
+		"github.com/gobha-me/arcadectl/internal/installobserve.(*Observation).Snapshot":                    "observation-snapshot-copy",
+		"github.com/gobha-me/arcadectl/internal/installobserve.(*Observation).Runtime":                     "observation-runtime-copy",
+		"github.com/gobha-me/arcadectl/internal/installobserve.(*GCObservation).Objects":                   "gc-objects-copy",
+		"github.com/gobha-me/arcadectl/internal/installcontract.(*Template).matchWithAdmissionResult":      "contract-match",
+		"github.com/gobha-me/arcadectl/internal/installcontract.(*Template).decodeObservedMode":            "contract-observed-decode",
+		"github.com/gobha-me/arcadectl/internal/installsafety.(*RuntimeSnapshot).DeepCopy":                 "runtime-snapshot-copy",
+	} {
+		catalog[name] = id
+	}
+	return catalog
+}
+
 type nativeView struct {
 	ID      string   `json:"id"`
 	Metrics []metric `json:"metrics"`
@@ -119,7 +144,7 @@ func nativeOutput(body []byte) bool {
 
 // One native run supplies BOTH profiles for all views. The fixture's existing
 // 40m context, 45m Go-test limit, proof and cleanup assertions stay unchanged.
-func runNative(ctx context.Context, binary string) (nativeMeasurement, error) {
+func runNative(ctx context.Context, binary string, catalog map[string]string) (nativeMeasurement, error) {
 	analysisContext := ctx
 	ctx, cancel := context.WithTimeout(ctx, 46*time.Minute)
 	defer cancel()
@@ -170,7 +195,6 @@ func runNative(ctx context.Context, binary string) (nativeMeasurement, error) {
 		return nativeMeasurement{}, refused("native-test-transcript", "native-v3-warm", "", errScreen)
 	}
 	measurement := nativeMeasurement{WallNS: time.Since(start).Nanoseconds(), TestOutput: describe(body)}
-	catalog := nativeCatalog()
 	for _, view := range []struct{ id, root string }{
 		{"complete", enginePackage + "(*fixtureAdmissionDriver).complete"},
 		{"phase", enginePackage + "(*fixtureWire).observePhaseLocked"},
@@ -194,6 +218,14 @@ func runNative(ctx context.Context, binary string) (nativeMeasurement, error) {
 }
 
 func nativeScreen(parent context.Context, expected string) error {
+	return nativeScreenWithCatalog(parent, expected, nativeCatalog(), "arcadectl-native-component-screen-v1")
+}
+
+func nativeScreenV2(parent context.Context, expected string) error {
+	return nativeScreenWithCatalog(parent, expected, nativeCatalogV2(), "arcadectl-native-component-screen-v2")
+}
+
+func nativeScreenWithCatalog(parent context.Context, expected string, catalog map[string]string, schema string) error {
 	ctx, cancel := context.WithTimeout(parent, 65*time.Minute)
 	defer cancel()
 	if err := source(ctx, expected); err != nil {
@@ -227,7 +259,7 @@ func nativeScreen(parent context.Context, expected string) error {
 	if err != nil {
 		return refused("native-opening-binary", "", "", err)
 	}
-	measurement, err := runNative(ctx, binary)
+	measurement, err := runNative(ctx, binary, catalog)
 	if err != nil {
 		return err
 	}
@@ -247,6 +279,6 @@ func nativeScreen(parent context.Context, expected string) error {
 		MemProfileRate int               `json:"memProfileRate"`
 		Scope          string            `json:"scope"`
 		Measurement    nativeMeasurement `json:"measurement"`
-	}{"arcadectl-native-component-screen-v1", expected, digest, nativeProfile, "warm", 1, 8192,
+	}{schema, expected, digest, nativeProfile, "warm", 1, 8192,
 		"native-install-mode-v3-component-only; directly-prepared-journal-and-baseline; not-CLI-Upgrade-or-transition-certification; focused-synchronous-CPU-and-sampled-allocations; rounded-values; cumulative-overlaps; excludes-async-remote-CPU-and-wait; profiling-perturbs-execution", measurement})
 }
