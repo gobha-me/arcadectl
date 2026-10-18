@@ -1,0 +1,470 @@
+// Copyright 2026 gobha-me
+// SPDX-License-Identifier: Apache-2.0
+
+// This synthetic-fixture screen is not a native lifecycle proof. Profiles and
+// tool output stay in bounded RAM; only fixed identifiers and numbers escape.
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"io"
+	"math"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"golang.org/x/sys/unix"
+)
+
+const captureLimit = 8 << 20
+const repeats = 16
+const enginePackage = "github.com/gobha-me/arcadectl/internal/installengine."
+
+var errScreen = errors.New("wrapper screen refused")
+
+type target struct{ id, test, subtest, root string }
+
+var targets = []target{
+	{"baseline", "TestBaselineBehaviorWholeProviderRuntimeHealthy", "", enginePackage + "(*ClusterSecurityBaseline).Verify"},
+	{"phase", "TestFixturePhaseCompleteOriginalAndFixedFixtureAccounting", "original", enginePackage + "(*fixtureWire).observePhaseLocked"},
+}
+
+// Never export profile-controlled function names, labels, comments or paths.
+var functions = map[string]string{
+	enginePackage + "(*ClusterSecurityBaseline).Verify":              "baseline-verify",
+	enginePackage + "(*ClusterSecurityBaseline).newBaselineBehavior": "baseline-construction",
+	enginePackage + "(*baselineBehavior).prove":                      "baseline-proof",
+	enginePackage + "(*baselineBehavior).readExactDiagnostic":        "baseline-exact-read",
+	enginePackage + "(*baselineBehavior).close":                      "baseline-close",
+	enginePackage + "(*fixtureWire).observePhaseLocked":              "phase-observation",
+	enginePackage + "(*fixtureWire).localCurrent":                    "phase-local-current",
+	enginePackage + "(*fixtureLedger).readOriginalWorldsMode":        "original-worlds-read",
+	enginePackage + "(*fixtureLedger).originalWorldsWALCurrent":      "original-worlds-wal",
+	enginePackage + "(*fixtureLedger).matchCurrentWorlds":            "current-worlds-match",
+	enginePackage + "(*fixtureDecodeCache).worldsLocked":             "decode-worlds",
+	enginePackage + "(*fixtureDecodeCache).walLocked":                "decode-wal",
+	enginePackage + "(*fixtureDecodeCache).journalLocked":            "decode-journal",
+	enginePackage + "(*fixtureLedger).checkCurrentWAL":               "current-wal-check",
+	enginePackage + "(*fixtureLedger).accountPhaseWithAccounts":      "phase-accounting",
+	enginePackage + "(*fixtureLedger).validatePhaseFixture":          "phase-fixture-validation",
+	enginePackage + "(*fixtureLedger).phaseGCRowsWithAccountsTrace":  "phase-gc-accounting",
+	"encoding/json.Unmarshal":                                        "json-unmarshal",
+	"encoding/json.Marshal":                                          "json-marshal",
+}
+
+type custody struct {
+	Bytes  int    `json:"bytes"`
+	SHA256 string `json:"sha256"`
+}
+type row struct {
+	ID         string  `json:"id"`
+	Flat       float64 `json:"flat"`
+	Cumulative float64 `json:"cumulative"`
+}
+type metric struct {
+	Kind           string  `json:"kind"`
+	Profile        custody `json:"profile"`
+	RootCumulative float64 `json:"rootCumulative"`
+	UnknownFlat    float64 `json:"unknownFlat"`
+	Rows           []row   `json:"rows"`
+}
+type result struct {
+	ID         string   `json:"id"`
+	Repeats    int      `json:"repeats"`
+	WallNS     int64    `json:"wallNS"`
+	TestOutput custody  `json:"testOutput"`
+	Metrics    []metric `json:"metrics"`
+}
+
+// Keep draining on overflow while cancellation joins the child. Never forward
+// raw tool output, even on failure. All callers wipe retained bytes.
+type bounded struct {
+	mu       sync.Mutex
+	body     []byte
+	overflow bool
+	cancel   context.CancelFunc
+}
+
+func (b *bounded) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(p) > captureLimit-len(b.body) {
+		b.overflow = true
+		b.cancel()
+	} else if !b.overflow {
+		b.body = append(b.body, p...)
+	}
+	return len(p), nil
+}
+func (b *bounded) wipe() { clear(b.body); b.body = nil }
+func describe(b []byte) custody {
+	h := sha256.Sum256(b)
+	return custody{len(b), hex.EncodeToString(h[:])}
+}
+
+// Cancellation terminates the owned process group and joins the direct child
+// and capture readers. It cannot reap grandchildren. All commands are bounded.
+func command(ctx context.Context, timeout time.Duration, stdin *os.File, extra []*os.File, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	out, diagnostic := &bounded{cancel: cancel}, &bounded{cancel: cancel}
+	defer diagnostic.wipe()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr, cmd.ExtraFiles = stdin, out, diagnostic, extra
+	cmd.Env = append(os.Environ(), "GOMAXPROCS=2", "GOMEMLIMIT=1GiB", "GOTOOLCHAIN=local", "GOTELEMETRY=off", "PPROF_BINARY_PATH=/proc/self/fd/-1")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
+			return err
+		}
+		return nil
+	}
+	cmd.WaitDelay = 5 * time.Second
+	err := cmd.Start()
+	// Children hold their own copies. Closing these is required for EOF.
+	for _, f := range extra {
+		_ = f.Close()
+	}
+	if err == nil {
+		err = cmd.Wait()
+		// Clean up screen-owned descendants even when their parent succeeded.
+		if groupErr := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); groupErr != nil && groupErr != syscall.ESRCH {
+			err = errScreen
+		}
+	}
+	if err != nil || ctx.Err() != nil || out.overflow || diagnostic.overflow {
+		out.wipe()
+		return nil, errScreen
+	}
+	return out.body, nil
+}
+
+func source(ctx context.Context, expected string) error {
+	if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(expected) {
+		return errScreen
+	}
+	b, err := command(ctx, time.Minute, nil, nil, "git", "rev-parse", "HEAD")
+	if err != nil {
+		return errScreen
+	}
+	defer clear(b)
+	if string(bytes.TrimSpace(b)) != expected {
+		return errScreen
+	}
+	dirty, err := command(ctx, time.Minute, nil, nil, "git", "status", "--porcelain", "--untracked-files=normal")
+	defer clear(dirty)
+	if err != nil || len(dirty) != 0 {
+		return errScreen
+	}
+	return nil
+}
+
+func selectedOutput(body []byte, t target) bool {
+	counts := map[string]int{}
+	selected := t.test
+	if t.subtest != "" {
+		selected += "/" + t.subtest
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "=== RUN   ") {
+			name := strings.TrimPrefix(line, "=== RUN   ")
+			if name != t.test && name != selected {
+				return false
+			}
+			counts["run:"+name]++
+		} else if strings.HasPrefix(line, "--- PASS: ") {
+			fields := strings.Fields(strings.TrimPrefix(line, "--- PASS: "))
+			if len(fields) != 2 || (fields[0] != t.test && fields[0] != selected) {
+				return false
+			}
+			counts["pass:"+fields[0]]++
+		} else if line == "PASS" {
+			counts["whole"]++
+		} else if line != "" {
+			// No failure/skip/provider output may be accepted as a successful run.
+			return false
+		}
+	}
+	return counts["whole"] == 1 && counts["run:"+t.test] == repeats && counts["pass:"+t.test] == repeats && counts["run:"+selected] == repeats && counts["pass:"+selected] == repeats
+}
+
+func runTarget(ctx context.Context, binary string, t target) (result, error) {
+	ctx, cancel := context.WithTimeout(ctx, 4*time.Minute)
+	defer cancel()
+	var reads, writes []*os.File
+	var captures []*bounded
+	var readers sync.WaitGroup
+	defer func() {
+		for _, f := range reads {
+			_ = f.Close()
+		}
+		for _, f := range writes {
+			_ = f.Close()
+		}
+		readers.Wait()
+		for _, b := range captures {
+			b.wipe()
+		}
+	}()
+	for range 2 {
+		r, w, err := os.Pipe()
+		if err != nil {
+			return result{}, errScreen
+		}
+		reads, writes = append(reads, r), append(writes, w)
+		b := &bounded{cancel: cancel}
+		captures = append(captures, b)
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			if _, err := io.Copy(b, r); err != nil {
+				cancel()
+			}
+		}()
+	}
+	selector := "^" + t.test + "$"
+	if t.subtest != "" {
+		selector += "/^" + t.subtest + "$"
+	}
+	start := time.Now()
+	body, err := command(ctx, 4*time.Minute, nil, writes, binary,
+		"-test.run="+selector, "-test.count=16", "-test.v", "-test.timeout=3m",
+		"-test.cpuprofile=/proc/self/fd/3", "-test.memprofile=/proc/self/fd/4", "-test.memprofilerate=8192")
+	defer clear(body)
+	if !joinReaders(ctx, reads, &readers) {
+		return result{}, errScreen
+	}
+	if err != nil || !selectedOutput(body, t) {
+		return result{}, errScreen
+	}
+	r := result{ID: t.id, Repeats: repeats, WallNS: time.Since(start).Nanoseconds(), TestOutput: describe(body)}
+	for i, kind := range []string{"cpu-nanoseconds", "sampled-alloc-bytes"} {
+		if captures[i].overflow || len(captures[i].body) == 0 {
+			return result{}, errScreen
+		}
+		m, err := analyze(ctx, captures[i].body, t.root, kind)
+		if err != nil {
+			return result{}, errScreen
+		}
+		r.Metrics = append(r.Metrics, m)
+	}
+	return r, nil
+}
+
+func joinReaders(ctx context.Context, reads []*os.File, readers *sync.WaitGroup) bool {
+	done := make(chan struct{})
+	go func() { readers.Wait(); close(done) }()
+	select {
+	case <-done:
+		return ctx.Err() == nil
+	case <-ctx.Done():
+		for _, r := range reads {
+			_ = r.Close()
+		}
+		<-done
+		return false
+	}
+}
+
+func analyze(ctx context.Context, body []byte, root, kind string) (metric, error) {
+	// A perf input invokes conversion that creates a temporary raw file.
+	if len(body) < 3 || !bytes.Equal(body[:3], []byte{0x1f, 0x8b, 8}) {
+		return metric{}, errScreen
+	}
+	// pprof probes/reopens its source; a plain pipe would lose its first eight
+	// bytes. The sealed anonymous RAM file permits independent /proc opens,
+	// without creating a persistent raw profile or invoking a remote fetch.
+	fd, err := unix.MemfdCreate("wrapper-screen", unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)
+	if err != nil {
+		return metric{}, errScreen
+	}
+	f := os.NewFile(uintptr(fd), "wrapper-screen")
+	defer f.Close()
+	if _, err = f.Write(body); err != nil {
+		return metric{}, errScreen
+	}
+	if _, err = unix.FcntlInt(f.Fd(), unix.F_ADD_SEALS, unix.F_SEAL_WRITE|unix.F_SEAL_SHRINK|unix.F_SEAL_GROW|unix.F_SEAL_SEAL); err != nil {
+		return metric{}, errScreen
+	}
+	if _, err = f.Seek(0, io.SeekStart); err != nil {
+		return metric{}, errScreen
+	}
+	index, unit := "cpu", "ns"
+	if kind == "sampled-alloc-bytes" {
+		index, unit = "alloc_space", "bytes"
+	}
+	text, err := command(ctx, time.Minute, f, nil, "go", "tool", "pprof", "-top", "-cum", "-functions", "-nodecount=0", "-nodefraction=0", "-edgefraction=0", "-symbolize=none", "-unit="+unit, "-sample_index="+index, "-focus=^"+regexp.QuoteMeta(root)+"$", "/proc/self/fd/0")
+	defer clear(text)
+	if err != nil {
+		return metric{}, errScreen
+	}
+	m, err := parseTop(text, root, kind)
+	m.Profile = describe(body)
+	return m, err
+}
+
+func parseTop(body []byte, root, kind string) (metric, error) {
+	m := metric{Kind: kind, Rows: []row{}}
+	unit := "ns"
+	if kind == "sampled-alloc-bytes" {
+		unit = "B"
+	}
+	seen, header, sampleType := map[string]bool{}, false, false
+	wantType := "Type: cpu"
+	if kind == "sampled-alloc-bytes" {
+		wantType = "Type: alloc_space"
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		fields := strings.Fields(line)
+		if strings.TrimSpace(line) == wantType {
+			sampleType = true
+		}
+		if strings.Join(fields, " ") == "flat flat% sum% cum cum%" {
+			header = true
+			continue
+		}
+		if !header || len(fields) == 0 {
+			continue
+		}
+		if len(fields) != 6 && !(len(fields) == 7 && (fields[6] == "(inline)" || fields[6] == "(partial-inline)")) {
+			return metric{}, errScreen
+		}
+		value := func(s string) (float64, error) {
+			if s == "0" {
+				return 0, nil
+			}
+			if !strings.HasSuffix(s, unit) {
+				return 0, errScreen
+			}
+			v, e := strconv.ParseFloat(strings.TrimSuffix(s, unit), 64)
+			if e != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v > 1e18 {
+				return 0, errScreen
+			}
+			return v, nil
+		}
+		flat, e1 := value(fields[0])
+		cum, e2 := value(fields[3])
+		for _, i := range []int{1, 2, 4} {
+			if !strings.HasSuffix(fields[i], "%") {
+				return metric{}, errScreen
+			}
+			p, err := strconv.ParseFloat(strings.TrimSuffix(fields[i], "%"), 64)
+			if err != nil || math.IsNaN(p) || math.IsInf(p, 0) || p < 0 || p > 100.01 {
+				return metric{}, errScreen
+			}
+		}
+		if e1 != nil || e2 != nil || flat > cum || seen[fields[5]] {
+			return metric{}, errScreen
+		}
+		seen[fields[5]] = true
+		if fields[5] == root {
+			m.RootCumulative = cum
+		}
+		if id, ok := functions[fields[5]]; ok {
+			m.Rows = append(m.Rows, row{id, flat, cum})
+		} else {
+			m.UnknownFlat += flat
+		}
+	}
+	if !header || !sampleType || m.RootCumulative <= 0 {
+		return metric{}, errScreen
+	}
+	return m, nil
+}
+
+func binaryDigest(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", errScreen
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", errScreen
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func screen(parent context.Context, expected string) error {
+	ctx, cancel := context.WithTimeout(parent, 12*time.Minute)
+	defer cancel()
+	if err := source(ctx, expected); err != nil {
+		return errScreen
+	}
+	dir, err := os.MkdirTemp("", "arcadectl-wrapper-screen-")
+	if err != nil {
+		return errScreen
+	}
+	identity, err := os.Stat(dir)
+	if err != nil {
+		return errScreen
+	}
+	// Remove only our unchanged owned directory, never a shared cache/worktree.
+	defer func() {
+		if now, e := os.Lstat(dir); e == nil && os.SameFile(identity, now) {
+			_ = os.RemoveAll(dir)
+		}
+	}()
+	// Keep compiler scratch and testing.T temporary directories inside the
+	// same owned cleanup boundary; never clear a shared Go cache.
+	previousTmp := os.Getenv("TMPDIR")
+	if os.Setenv("TMPDIR", dir) != nil {
+		return errScreen
+	}
+	defer os.Setenv("TMPDIR", previousTmp)
+	binary := filepath.Join(dir, "installengine.test")
+	out, err := command(ctx, 6*time.Minute, nil, nil, "go", "test", "-c", "-p", "1", "-o", binary, "./internal/installengine")
+	clear(out)
+	if err != nil {
+		return errScreen
+	}
+	digest, err := binaryDigest(binary)
+	if err != nil {
+		return errScreen
+	}
+	results := []result{}
+	for _, t := range targets {
+		r, err := runTarget(ctx, binary, t)
+		if err != nil {
+			return errScreen
+		}
+		results = append(results, r)
+	}
+	if err := source(ctx, expected); err != nil {
+		return errScreen
+	}
+	if closing, err := binaryDigest(binary); err != nil || closing != digest {
+		return errScreen
+	}
+	return json.NewEncoder(os.Stdout).Encode(struct {
+		Schema         string   `json:"schema"`
+		Source         string   `json:"source"`
+		BinarySHA256   string   `json:"binarySHA256"`
+		Scope          string   `json:"scope"`
+		MemProfileRate int      `json:"memProfileRate"`
+		Results        []result `json:"results"`
+	}{"arcadectl-wrapper-screen-v1", expected, digest, "synthetic-root-focused-synchronous-stacks; formatted-rounded-values; cumulative-overlaps; sampled-allocations; profiling-perturbs-CPU; excludes-async-and-native-wait", 8192, results})
+}
+
+func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	failed := len(os.Args) != 2 || screen(ctx, os.Args[1]) != nil
+	stop()
+	if failed {
+		_, _ = io.WriteString(os.Stderr, "wrapper screen refused; no raw diagnostics exported\n")
+		os.Exit(1)
+	}
+}

@@ -1,0 +1,30 @@
+# Installer wrapper cost screen
+
+Linux-only, opt-in CI diagnostic. From the clean repository root:
+
+```sh
+GOMAXPROCS=2 GOMEMLIMIT=1GiB go run -p 1 ./hack/profile-installer-wrappers "$(git rev-parse HEAD)"
+```
+
+Compilation, the two existing test roots (16 fresh executions each), and profile
+analysis run sequentially. The original behavioral/request/no-effect/WAL/read
+oracles remain unchanged. This does not replace any race or native lifecycle
+proof, nor certify release or cluster compatibility. Do not run in a constrained
+shared pod without the approved build headroom.
+
+CPU and sampled allocation profiles stream through bounded pipes into RAM.
+Analysis uses a sealed anonymous memfd, not a persistent raw profile, HTTP
+endpoint, or a pipe that pprof's format probe could partially consume. All child
+stdout/stderr is bounded and private. Only source/binary/profile hashes, byte
+counts, fixed function IDs and numerical measurements are printed. Temporary
+compiled binaries are removed from the exact owned directory on exit.
+
+Each metric focuses on synchronous stacks containing its production root:
+`ClusterSecurityBaseline.Verify` or `fixtureWire.observePhaseLocked`. Unmatched
+flat values are reported separately; missing rows mean unsampled/absent, not
+zero. Values are pprof's formatted/rounded numbers, not lossless integer
+accounting. Cumulative values overlap and must not be added. Allocation weights are
+sampling estimates at rate 8192, not exact allocation counts. Profiling itself
+perturbs CPU. Setup, asynchronous descendants, synthetic server goroutines,
+remote work and wall-clock waiting are outside this focused accounting. Wall
+duration covers the repeated test process, including setup and profiling.
