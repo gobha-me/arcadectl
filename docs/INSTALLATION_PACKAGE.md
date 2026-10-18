@@ -501,7 +501,16 @@ errors, objects, names, paths, identities or credentials and performs no extra
 cluster reads or retries. Errors, exit codes and protected recovery remain
 unchanged. Diagnostics are progress, not proof or established root cause.
 
-Failed commands' numeric `command-cost` record includes `sdk-wait` calls,
+Successful and checkpoint-refused commands emit one final numeric `command-cost`
+record. A successful, nonnil lifecycle Step (including explicit baseline
+enrollment) also emits a `step-cost` record after all of that Step's operations
+have joined, before another Step starts. These are cumulative counters from the
+same command, not per-Step or exclusive costs. No concurrent snapshot is taken;
+an interrupted command may have only earlier joined-Step records and no final
+record. Diagnostic output failures do not change an effect, exit code or retry
+decision. Neither output nor these counters certify a successful lifecycle.
+
+Each record includes `sdk-wait` calls,
 returns and inclusive Wait-call wall time for the internally created shared
 SDK read limiter. Instrumentation does not select or replenish the shared
 default budget documented above. Each Wait delegates exactly once with its
@@ -512,6 +521,18 @@ Zero counters therefore do not prove zero SDK work. Inclusive elapsed time is
 not sleeping time, CPU time or proof success; overlapping costs cannot be summed.
 Response-body processing remains outside this measurement. No rate tuning,
 deadline change, extra request or performance improvement is implied.
+
+The signed-binary Kind harness forwards only complete newline-terminated cost
+records with the exact fixed field order and canonical unsigned 64-bit values.
+It rejects unknown, reordered, duplicate, oversized and unterminated lines.
+Cost forwarding has a separate finite cap (513 records per child); it does not
+consume the existing 512 stage/revision record allowance. Every successful
+current-child command must have one cost record per attempted stage/Step, a
+bounded monotonic series of joined-Step costs, and exactly one final aggregate
+matching the last joined-Step record. The
+authentic historical binary predates these counters and is not relabeled or
+subjected to this new output contract. All original completion and data checks
+remain required.
 
 The signed-binary Kind harness can additionally capture the **current child**
 CPU profile through a private Linux-only two-descriptor protocol. Ordinary

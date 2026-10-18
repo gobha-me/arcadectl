@@ -252,7 +252,7 @@ func runMutation(ctx context.Context, o options, stdout, stderr io.Writer) (code
 	defer x.files.Close()
 	ctx, costs := installengine.WithLifecycleCosts(ctx)
 	defer func() {
-		if code == 4 && costs != nil {
+		if (code == 0 || code == 4) && costs != nil {
 			_, _ = fmt.Fprintf(stderr, "installation diagnostic command-cost %s\n", costs.Snapshot())
 		}
 	}()
@@ -262,7 +262,7 @@ func runMutation(ctx context.Context, o options, stdout, stderr io.Writer) (code
 		return 4
 	}
 	if o.command == "enroll-baseline" {
-		return x.runBaselineEnrollment(ctx, o, s, stdout, stderr)
+		return x.runBaselineEnrollment(ctx, o, s, stdout, stderr, costs)
 	}
 	if o.command == "resume" && x.lifecycle.ResumeFixtures(ctx, s, mutationLifecycleOptions(o, s)) != nil {
 		_, _ = io.WriteString(stderr, "original fixture recovery refused; inspect protected evidence; no uncertain effect was replayed\n")
@@ -320,9 +320,18 @@ func runMutation(ctx context.Context, o options, stdout, stderr io.Writer) (code
 			_, _ = io.WriteString(stderr, "installation stopped at a protected checkpoint; inspect before explicit resume; no failed effect was retried\n")
 			return 4
 		}
+		// Joined successful Step only. Cumulative diagnostics cannot authorize
+		// an effect or retry; a failed diagnostic write does not change its result.
+		writeMutationStepCosts(stderr, costs)
 	}
 	_, _ = io.WriteString(stderr, "installation operation bound reached; inspect before explicit resume\n")
 	return 4
+}
+
+func writeMutationStepCosts(stderr io.Writer, costs *installengine.LifecycleCosts) {
+	if costs != nil {
+		_, _ = fmt.Fprintf(stderr, "installation diagnostic step-cost %s\n", costs.Snapshot())
+	}
 }
 
 // Only closed context labels leave the command boundary. Provider errors,
@@ -351,7 +360,7 @@ func (x *mutationInstallation) enrollmentOptions(o options, s *installstate.Snap
 // Completed runtime stage is not enrollment success. Only a successful full
 // explicit Step against the actual Verified snapshot ends this command. No
 // failed proof/effect is retried, and no ordinary runtime Step is dispatched.
-func (x *mutationInstallation) runBaselineEnrollment(ctx context.Context, o options, s *installstate.Snapshot, stdout, stderr io.Writer) int {
+func (x *mutationInstallation) runBaselineEnrollment(ctx context.Context, o options, s *installstate.Snapshot, stdout, stderr io.Writer, costs *installengine.LifecycleCosts) int {
 	for step := 0; step < 32 && ctx.Err() == nil; step++ {
 		baseline := s.Document().SecurityBaseline
 		if baseline == nil {
@@ -366,6 +375,7 @@ func (x *mutationInstallation) runBaselineEnrollment(ctx context.Context, o opti
 			return 4
 		}
 		s = next
+		writeMutationStepCosts(stderr, costs)
 		baseline = s.Document().SecurityBaseline
 		if baseline.Stage == installstate.BaselineVerified && baseline.Pending == nil {
 			message := "security baseline enrollment and native enforcement proof complete; historical runtime and worlds retained\n"

@@ -52,6 +52,7 @@ import (
 // proves claim retention, not game bytes/CSI backup (those have separate gates).
 func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 	testInstallerBinaryProgressCapture(t)
+	testInstallerBinaryCostCapture(t)
 	testInstallerBinaryProgressSubprocess(t)
 	for _, profile := range []struct{ id, node string }{{installrender.Profile135, targetKind135}, {installrender.Profile137, targetKind137}} {
 		t.Run(profile.id, func(t *testing.T) {
@@ -240,7 +241,8 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 							t.Logf("actual installer %s progress elapsed=%s: %s", command, time.Since(started).Round(time.Second), line)
 						}}
 						// Share one writer for both streams, preserving CombinedOutput
-						// capture while exposing only closed stage/revision lines live.
+						// capture while exposing only closed stage/revision and numeric
+						// cost lines live. Historical output is not relabeled.
 						c.Stdout, c.Stderr = capture, capture
 						var err error
 						var wallElapsed time.Duration
@@ -299,6 +301,15 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 							// This executable deliberately emits only fixed diagnostics and
 							// journal stages/revisions, not cluster bodies/credential paths.
 							t.Fatalf("actual installer %s refused: %s", command, output)
+						}
+						if !historical {
+							maxSteps := 512
+							if command == "enroll-baseline" {
+								maxSteps = 32
+							}
+							if !installerBinaryCompletedCosts(output, maxSteps) {
+								t.Fatal("successful current installer omitted bounded joined-step/final cost diagnostics")
+							}
 						}
 						if command == "uninstall" && !bytes.Contains(output, []byte("namespace, world claims, credentials and protections retained")) {
 							t.Fatal("actual uninstall omitted retained-world recovery guidance")

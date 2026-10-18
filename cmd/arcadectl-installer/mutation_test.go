@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
 	"net/http"
@@ -225,6 +226,19 @@ func TestMutationBootstrapResumeUsesRegisteredPlanAndRejectsFreshClientBeforeHTT
 	if code := runMutation(t.Context(), o, &output, &diagnostics); code != 4 || output.Len() != 0 || writes.Load() != 0 || strings.Count(diagnostics.String(), "installation diagnostic command-cost ") != 1 || !strings.Contains(diagnostics.String(), "installation diagnostic command-cost "+emptyCosts.Snapshot()+"\n") || strings.Contains(diagnostics.String(), "PRIVATE-CANARY") {
 		t.Fatal("actual CLI start refusal lost bounded command aggregate or altered effect boundary")
 	}
+	cancelled, cancel := context.WithCancelCause(t.Context())
+	privateCause := errors.New("PRIVATE-CANARY")
+	cancel(privateCause)
+	output.Reset()
+	diagnostics.Reset()
+	if code := runMutation(cancelled, o, &output, &diagnostics); code != 4 || output.Len() != 0 || writes.Load() != 0 || strings.Count(diagnostics.String(), "installation diagnostic command-cost ") != 1 || strings.Contains(diagnostics.String(), "installation diagnostic step-cost ") || strings.Contains(diagnostics.String(), "PRIVATE-CANARY") || context.Cause(cancelled) != privateCause {
+		t.Fatal("actual CLI cancellation changed its result, exposed cause or fabricated a joined-Step record")
+	}
+	failedDiagnostic := &mutationFailedDiagnosticWriter{}
+	output.Reset()
+	if code := runMutation(t.Context(), o, &output, failedDiagnostic); code != 4 || output.Len() != 0 || writes.Load() != 0 || failedDiagnostic.calls != 2 {
+		t.Fatal("diagnostic write failure changed actual start refusal or retried an effect")
+	}
 	for _, test := range []struct {
 		name    string
 		version string
@@ -253,6 +267,43 @@ func TestMutationBootstrapResumeUsesRegisteredPlanAndRejectsFreshClientBeforeHTT
 				t.Fatal("RKE2 compatibility bypassed remaining preflight or changed protected original state")
 			}
 		})
+	}
+}
+
+type mutationFailedDiagnosticWriter struct{ calls int }
+
+func (w *mutationFailedDiagnosticWriter) Write([]byte) (int, error) {
+	w.calls++
+	return 0, errors.New("PRIVATE-CANARY")
+}
+
+func TestMutationJoinedStepCostsAreObservationalAndCommandLocal(t *testing.T) {
+	cancelled, cancel := context.WithCancelCause(t.Context())
+	privateCause := errors.New("PRIVATE-CANARY")
+	cancel(privateCause)
+	ctx, costs := installengine.WithLifecycleCosts(cancelled)
+	var baseline *installengine.ClusterSecurityBaseline
+	if baseline.Verify(ctx, nil) != installengine.ErrSecurityBaseline {
+		t.Fatal("actual refusal changed under cost observation")
+	}
+	before := costs.Snapshot()
+	var output bytes.Buffer
+	writeMutationStepCosts(&output, costs)
+	if output.String() != "installation diagnostic step-cost "+before+"\n" || strings.Contains(output.String(), "CANARY") || !strings.Contains(output.String(), "baseline-calls=1 baseline-returned=1") {
+		t.Fatal("joined-Step output lost fixed command counters or exposed private context")
+	}
+	failed := &mutationFailedDiagnosticWriter{}
+	writeMutationStepCosts(failed, costs)
+	writeMutationStepCosts(failed, nil)
+	if failed.calls != 1 || costs.Snapshot() != before || ctx.Err() != context.Canceled || context.Cause(ctx) != privateCause {
+		t.Fatal("diagnostic writer failure altered counters, context or nil-recorder behavior")
+	}
+	_, fresh := installengine.WithLifecycleCosts(ctx)
+	var empty *installengine.LifecycleCosts
+	output.Reset()
+	writeMutationStepCosts(&output, fresh)
+	if output.String() != "installation diagnostic step-cost "+empty.Snapshot()+"\n" {
+		t.Fatal("new command inherited prior costs")
 	}
 }
 

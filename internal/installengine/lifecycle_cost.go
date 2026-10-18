@@ -64,8 +64,9 @@ func WithLifecycleCosts(ctx context.Context) (context.Context, *LifecycleCosts) 
 	return ctx, costs
 }
 
-// Snapshot is bounded numeric diagnostic data. Read only after the command's
-// joined operations return; this is not an atomic concurrent proof snapshot.
+// Snapshot is bounded command-cumulative numeric diagnostic data. Read only
+// after a Step's or command's operations have joined, before starting more work;
+// this is not an atomic concurrent proof snapshot or an exclusive CPU measure.
 func (c *LifecycleCosts) Snapshot() string {
 	var b strings.Builder
 	for kind, label := range lifecycleCostLabels {
