@@ -20,11 +20,12 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	}
 	var workflow struct {
 		Jobs map[string]struct {
-			If             string            `yaml:"if"`
-			Needs          []string          `yaml:"needs"`
-			TimeoutMinutes int               `yaml:"timeout-minutes"`
-			Env            map[string]string `yaml:"env"`
-			Strategy       struct {
+			If              string            `yaml:"if"`
+			ContinueOnError any               `yaml:"continue-on-error"`
+			Needs           []string          `yaml:"needs"`
+			TimeoutMinutes  int               `yaml:"timeout-minutes"`
+			Env             map[string]string `yaml:"env"`
+			Strategy        struct {
 				FailFast *bool `yaml:"fail-fast"`
 				Matrix   struct {
 					Shard   []int    `yaml:"shard"`
@@ -37,11 +38,13 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 				} `yaml:"matrix"`
 			} `yaml:"strategy"`
 			Steps []struct {
-				Name string            `yaml:"name"`
-				Uses string            `yaml:"uses"`
-				Run  string            `yaml:"run"`
-				Env  map[string]string `yaml:"env"`
-				With map[string]any    `yaml:"with"`
+				If              string            `yaml:"if"`
+				ContinueOnError any               `yaml:"continue-on-error"`
+				Name            string            `yaml:"name"`
+				Uses            string            `yaml:"uses"`
+				Run             string            `yaml:"run"`
+				Env             map[string]string `yaml:"env"`
+				With            map[string]any    `yaml:"with"`
 			} `yaml:"steps"`
 		} `yaml:"jobs"`
 	}
@@ -51,7 +54,7 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	// Identical PR-merge/head trees do not have identical source SHA/epoch.
 	// Signed packages, image revision labels and lifecycle evidence must use
 	// the requested head (or exact main push), not a synthetic merge identity.
-	for _, name := range []string{"kind-install-binary", "kind-install-baseline", "kind-install-gc", "kind-install-precontroller", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-api", "kind-recovery", "install-engine-race", "go-and-policy", "kind-lifecycle"} {
+	for _, name := range []string{"installer-diagnostics", "kind-install-binary", "kind-install-baseline", "kind-install-gc", "kind-install-precontroller", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-api", "kind-recovery", "install-engine-race", "go-and-policy", "kind-lifecycle"} {
 		if _, present := workflow.Jobs[name]; !present {
 			t.Errorf("required exact-source CI job %s is absent", name)
 		}
@@ -100,6 +103,27 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 		fullRun = fullRun || step.Run == "make test-kind-install-admission INSTALL_ADMISSION_PROFILE='${{ matrix.profile }}' INSTALL_ADMISSION_MODE='${{ matrix.mode }}'"
 	}
 	gate := workflow.Jobs["go-and-policy"]
+	diagnostics := workflow.Jobs["installer-diagnostics"]
+	var diagnosticRuns []string
+	for _, step := range diagnostics.Steps {
+		if step.If != "" || step.ContinueOnError != nil || len(step.Env) != 0 {
+			t.Fatal("early diagnostic step can skip, tolerate failure or override bounded environment")
+		}
+		if step.Run != "" {
+			diagnosticRuns = append(diagnosticRuns, step.Run)
+		}
+	}
+	wantDiagnosticRuns := []string{
+		"go test -race -p 1 -timeout=5m ./cmd/arcadectl-installer -count=1",
+		"go test -race -tags=kindinstall -p 1 -timeout=5m ./internal/installengine -run '^(TestInstallerBinaryProgressCapture|TestLifecycleCostsBoundedCommandAndInvocationIsolation|TestLifecycleCostsConcurrentRefusalsAndCancellation)$' -count=1",
+		"go vet -tags=kindinstall -p 1 ./cmd/arcadectl-installer ./internal/installengine",
+	}
+	if diagnostics.If != "" || diagnostics.ContinueOnError != nil || len(diagnostics.Needs) != 0 || diagnostics.TimeoutMinutes != 20 || diagnostics.Env["GOMAXPROCS"] != "2" || diagnostics.Env["GOMEMLIMIT"] != "1GiB" || !slices.Equal(diagnosticRuns, wantDiagnosticRuns) || !slices.Contains(gate.Needs, "installer-diagnostics") || len(diagnostics.Steps) != 5 {
+		t.Fatal("early CLI/diagnostic controls are missing, unbounded or gated behind native lifecycle")
+	}
+	if diagnostics.Steps[0].Uses != "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" || diagnostics.Steps[1].Uses != "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e" || diagnostics.Steps[1].With["go-version-file"] != "go.mod" || diagnostics.Steps[1].With["cache"] != true {
+		t.Fatal("early diagnostics changed pinned source/build setup")
+	}
 	baseline := workflow.Jobs["kind-install-baseline"]
 	baselineRun := false
 	for _, step := range baseline.Steps {
@@ -137,7 +161,7 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 		t.Fatal("genuine pre-controller profile or required dependency omitted")
 	}
 	binary := workflow.Jobs["kind-install-binary"]
-	if binary.If != "" || !slices.Equal(binary.Needs, []string{"kind-install-gc", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-install-baseline", "kind-install-precontroller"}) {
+	if binary.If != "" || !slices.Equal(binary.Needs, []string{"installer-diagnostics", "kind-install-gc", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-install-baseline", "kind-install-precontroller"}) {
 		t.Fatal("long signed lifecycle proofs bypass native foundations or override fail-closed scheduling")
 	}
 	for _, required := range []struct {
@@ -209,7 +233,7 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	}
 	var command string
 	for _, step := range gate.Steps {
-		if step.Env["ENGINE_RACE_RESULT"] == "${{ needs.install-engine-race.result }}" && step.Env["INSTALL_ADMISSION_RESULT"] == "${{ needs.kind-install-admission.result }}" && step.Env["INSTALL_BINARY_RESULT"] == "${{ needs.kind-install-binary.result }}" && step.Env["INSTALL_BASELINE_RESULT"] == "${{ needs.kind-install-baseline.result }}" && step.Env["INSTALL_ADMISSION_V3_RESULT"] == "${{ needs.kind-install-admission-v3.result }}" && step.Env["INSTALL_PRECONTROLLER_RESULT"] == "${{ needs.kind-install-precontroller.result }}" && step.Env["INSTALL_GC_RESULT"] == "${{ needs.kind-install-gc.result }}" && step.Env["INSTALL_AUTH_RESULT"] == "${{ needs.kind-install-auth.result }}" && step.Env["API_RESULT"] == "${{ needs.kind-api.result }}" && step.Env["RECOVERY_RESULT"] == "${{ needs.kind-recovery.result }}" {
+		if step.Env["INSTALLER_DIAGNOSTICS_RESULT"] == "${{ needs.installer-diagnostics.result }}" && step.Env["ENGINE_RACE_RESULT"] == "${{ needs.install-engine-race.result }}" && step.Env["INSTALL_ADMISSION_RESULT"] == "${{ needs.kind-install-admission.result }}" && step.Env["INSTALL_BINARY_RESULT"] == "${{ needs.kind-install-binary.result }}" && step.Env["INSTALL_BASELINE_RESULT"] == "${{ needs.kind-install-baseline.result }}" && step.Env["INSTALL_ADMISSION_V3_RESULT"] == "${{ needs.kind-install-admission-v3.result }}" && step.Env["INSTALL_PRECONTROLLER_RESULT"] == "${{ needs.kind-install-precontroller.result }}" && step.Env["INSTALL_GC_RESULT"] == "${{ needs.kind-install-gc.result }}" && step.Env["INSTALL_AUTH_RESULT"] == "${{ needs.kind-install-auth.result }}" && step.Env["API_RESULT"] == "${{ needs.kind-api.result }}" && step.Env["RECOVERY_RESULT"] == "${{ needs.kind-recovery.result }}" {
 			if command != "" {
 				t.Fatal("ambiguous required dependency gate")
 			}
@@ -226,7 +250,7 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 					for _, v3 := range []string{"success", "failure", "cancelled", "skipped", ""} {
 						for _, precontroller := range []string{"success", "failure", "cancelled", "skipped", ""} {
 							c := exec.Command("sh", "-e", "-c", command)
-							c.Env = append(os.Environ(), "ENGINE_RACE_RESULT="+races, "INSTALL_ADMISSION_RESULT="+native, "INSTALL_BINARY_RESULT="+binary, "INSTALL_BASELINE_RESULT="+baseline, "INSTALL_ADMISSION_V3_RESULT="+v3, "INSTALL_PRECONTROLLER_RESULT="+precontroller, "INSTALL_GC_RESULT=success", "INSTALL_AUTH_RESULT=success", "API_RESULT=success", "RECOVERY_RESULT=success")
+							c.Env = append(os.Environ(), "INSTALLER_DIAGNOSTICS_RESULT=success", "ENGINE_RACE_RESULT="+races, "INSTALL_ADMISSION_RESULT="+native, "INSTALL_BINARY_RESULT="+binary, "INSTALL_BASELINE_RESULT="+baseline, "INSTALL_ADMISSION_V3_RESULT="+v3, "INSTALL_PRECONTROLLER_RESULT="+precontroller, "INSTALL_GC_RESULT=success", "INSTALL_AUTH_RESULT=success", "API_RESULT=success", "RECOVERY_RESULT=success")
 							passed := c.Run() == nil
 							if passed != (races == "success" && native == "success" && binary == "success" && baseline == "success" && v3 == "success" && precontroller == "success") {
 								t.Fatal("failed/cancelled/skipped/absent dependency became a green required gate")
@@ -241,14 +265,14 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	// Separately exercise every GC outcome while all earlier proofs succeeded.
 	for _, result := range []string{"success", "failure", "cancelled", "skipped", ""} {
 		c := exec.Command("sh", "-e", "-c", command)
-		c.Env = append(os.Environ(), "ENGINE_RACE_RESULT=success", "INSTALL_ADMISSION_RESULT=success", "INSTALL_BINARY_RESULT=success", "INSTALL_BASELINE_RESULT=success", "INSTALL_ADMISSION_V3_RESULT=success", "INSTALL_PRECONTROLLER_RESULT=success", "INSTALL_GC_RESULT="+result, "INSTALL_AUTH_RESULT=success", "API_RESULT=success", "RECOVERY_RESULT=success")
+		c.Env = append(os.Environ(), "INSTALLER_DIAGNOSTICS_RESULT=success", "ENGINE_RACE_RESULT=success", "INSTALL_ADMISSION_RESULT=success", "INSTALL_BINARY_RESULT=success", "INSTALL_BASELINE_RESULT=success", "INSTALL_ADMISSION_V3_RESULT=success", "INSTALL_PRECONTROLLER_RESULT=success", "INSTALL_GC_RESULT="+result, "INSTALL_AUTH_RESULT=success", "API_RESULT=success", "RECOVERY_RESULT=success")
 		if passed := c.Run() == nil; passed != (result == "success") {
 			t.Fatal("failed/cancelled/skipped/absent GC proof became a green required gate")
 		}
 	}
 	// Independently exercise every added prerequisite outcome while the others
 	// succeed, preserving all original combinations without multiplying them.
-	added := []string{"INSTALL_AUTH_RESULT", "API_RESULT", "RECOVERY_RESULT"}
+	added := []string{"INSTALL_AUTH_RESULT", "API_RESULT", "RECOVERY_RESULT", "INSTALLER_DIAGNOSTICS_RESULT"}
 	for _, variable := range added {
 		for _, result := range []string{"success", "failure", "cancelled", "skipped", ""} {
 			c := exec.Command("sh", "-e", "-c", command)

@@ -13,6 +13,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  installer-diagnostics:
+    name: Installer CLI and diagnostic controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 1GiB
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test the actual CLI boundary with race detection
+        run: go test -race -p 1 -timeout=5m ./cmd/arcadectl-installer -count=1
+      - name: Test pure diagnostic controls without a cluster
+        run: go test -race -tags=kindinstall -p 1 -timeout=5m ./internal/installengine -run '^(TestInstallerBinaryProgressCapture|TestLifecycleCostsBoundedCommandAndInvocationIsolation|TestLifecycleCostsConcurrentRefusalsAndCancellation)$' -count=1
+      - name: Vet the CLI and tagged diagnostic harness
+        run: go vet -tags=kindinstall -p 1 ./cmd/arcadectl-installer ./internal/installengine
+
   kind-install-baseline:
     name: Kind installation security baseline ${{ matrix.profile }}
     runs-on: ubuntu-24.04
@@ -76,7 +100,7 @@ jobs:
     name: Kind signed installer binary ${{ matrix.profile }} ${{ matrix.mode }}
     # Spend the long lifecycle budget only after its native foundations pass.
     # Skipped binary proofs still fail the always-running required aggregate.
-    needs: [kind-install-gc, kind-install-admission, kind-install-admission-v3,
+    needs: [installer-diagnostics, kind-install-gc, kind-install-admission, kind-install-admission-v3,
             kind-install-auth, kind-install-baseline, kind-install-precontroller]
     runs-on: ubuntu-24.04
     timeout-minutes: 350
@@ -246,7 +270,7 @@ jobs:
 
   go-and-policy:
     name: Go and policy
-    needs: [install-engine-race, kind-install-admission, kind-install-admission-v3,
+    needs: [installer-diagnostics, install-engine-race, kind-install-admission, kind-install-admission-v3,
             kind-install-binary, kind-install-baseline, kind-install-gc,
             kind-install-precontroller, kind-install-auth, kind-api, kind-recovery]
     # Do not turn failed/cancelled dependencies into a skipped passing gate.
@@ -260,6 +284,7 @@ jobs:
     steps:
       - name: Require every installer race, full admission and signed binary profile
         env:
+          INSTALLER_DIAGNOSTICS_RESULT: ${{ needs.installer-diagnostics.result }}
           ENGINE_RACE_RESULT: ${{ needs.install-engine-race.result }}
           INSTALL_ADMISSION_RESULT: ${{ needs.kind-install-admission.result }}
           INSTALL_BINARY_RESULT: ${{ needs.kind-install-binary.result }}
@@ -271,6 +296,7 @@ jobs:
           API_RESULT: ${{ needs.kind-api.result }}
           RECOVERY_RESULT: ${{ needs.kind-recovery.result }}
         run: |
+          test "$INSTALLER_DIAGNOSTICS_RESULT" = success
           test "$ENGINE_RACE_RESULT" = success
           test "$INSTALL_ADMISSION_RESULT" = success
           test "$INSTALL_BINARY_RESULT" = success

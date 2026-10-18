@@ -534,6 +534,13 @@ authentic historical binary predates these counters and is not relabeled or
 subjected to this new output contract. All original completion and data checks
 remain required.
 
+An independent early CI job runs all installer CLI race tests, the pure tagged
+cost/progress controls and tagged vet checks before long signed-binary jobs can
+start. The required aggregate also fails closed on this job's failure,
+cancellation, skip or missing result. Diagnostic regressions therefore execute
+even when a later native lifecycle fails; no existing native or race gate is
+replaced or weakened.
+
 The signed-binary Kind harness can additionally capture the **current child**
 CPU profile through a private Linux-only two-descriptor protocol. Ordinary
 installer invocations have no profiling flags, environment toggle, output path
