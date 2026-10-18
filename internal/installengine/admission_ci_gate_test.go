@@ -13,6 +13,12 @@ import (
 	yaml "go.yaml.in/yaml/v3"
 )
 
+// This is an ordering barrier, not a success prerequisite. A diagnostic failure
+// must not hide the independent native or race proof; workflow cancellation may.
+func diagnosticOrderingOnly(needs []string, condition string, tolerate any) bool {
+	return slices.Equal(needs, []string{"installer-diagnostics"}) && condition == "${{ !cancelled() }}" && tolerate == nil
+}
+
 func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	body, err := os.ReadFile("../../.github/workflows/ci.yml")
 	if err != nil {
@@ -75,6 +81,34 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	}
 	if t.Failed() {
 		t.FailNow()
+	}
+	for _, name := range []string{"kind-install-baseline", "kind-install-gc", "kind-install-precontroller", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-api", "kind-recovery", "install-engine-race", "kind-lifecycle"} {
+		job := workflow.Jobs[name]
+		if !diagnosticOrderingOnly(job.Needs, job.If, job.ContinueOnError) {
+			t.Fatalf("CI job %s competes with early diagnostics or skips independent coverage after their failure", name)
+		}
+	}
+	if !diagnosticOrderingOnly([]string{"installer-diagnostics"}, "${{ !cancelled() }}", nil) {
+		t.Fatal("ordering-only positive control refused")
+	}
+	for _, bad := range []struct {
+		needs     []string
+		condition string
+		tolerate  any
+	}{
+		{nil, "${{ !cancelled() }}", nil},
+		{[]string{"installer-diagnostics", "go-and-policy"}, "${{ !cancelled() }}", nil},
+		{[]string{"go-and-policy", "installer-diagnostics"}, "${{ !cancelled() }}", nil},
+		{[]string{"install-engine-race"}, "${{ !cancelled() }}", nil},
+		{[]string{"installer-diagnostics"}, "", nil},
+		{[]string{"installer-diagnostics"}, "${{ success() }}", nil},
+		{[]string{"installer-diagnostics"}, "${{ always() }}", nil},
+		{[]string{"installer-diagnostics"}, "${{ !cancelled() }}", true},
+		{[]string{"installer-diagnostics"}, "${{ !cancelled() }}", "${{ true }}"},
+	} {
+		if diagnosticOrderingOnly(bad.needs, bad.condition, bad.tolerate) {
+			t.Fatal("unsafe scheduling control accepted")
+		}
 	}
 	admission := workflow.Jobs["kind-install-admission"]
 	races := workflow.Jobs["install-engine-race"]
@@ -150,7 +184,7 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 			gcRuns++
 		}
 	}
-	if gcRuns != 1 || gc.If != "" || gc.TimeoutMinutes != 30 || len(gc.Strategy.Matrix.Profile) != 0 || len(gc.Strategy.Matrix.Mode) != 0 || len(gc.Strategy.Matrix.Exclude) != 0 || !slices.Contains(gate.Needs, "kind-install-gc") || strings.Count(string(makefile), "GOMAXPROCS=2 GOMEMLIMIT=1GiB go test -tags=kindinstall -p 1 -timeout=24m -v ./internal/installengine -run '^TestKindBaselineNativeForegroundGarbageCollection$$' -count=1") != 1 {
+	if gcRuns != 1 || gc.TimeoutMinutes != 30 || len(gc.Strategy.Matrix.Profile) != 0 || len(gc.Strategy.Matrix.Mode) != 0 || len(gc.Strategy.Matrix.Exclude) != 0 || !slices.Contains(gate.Needs, "kind-install-gc") || strings.Count(string(makefile), "GOMAXPROCS=2 GOMEMLIMIT=1GiB go test -tags=kindinstall -p 1 -timeout=24m -v ./internal/installengine -run '^TestKindBaselineNativeForegroundGarbageCollection$$' -count=1") != 1 {
 		t.Fatal("native foreground GC proof or fail-closed dependency omitted")
 	}
 	precontroller := workflow.Jobs["kind-install-precontroller"]
@@ -158,7 +192,7 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	for _, step := range precontroller.Steps {
 		precontrollerRun = precontrollerRun || step.Run == "make test-kind-install-precontroller INSTALL_PRECONTROLLER_PROFILE='${{ matrix.profile }}'"
 	}
-	if !precontrollerRun || precontroller.If != "" || precontroller.TimeoutMinutes != 40 || precontroller.Strategy.FailFast == nil || *precontroller.Strategy.FailFast || !slices.Equal(precontroller.Strategy.Matrix.Profile, []int{135, 137}) || len(precontroller.Strategy.Matrix.Exclude) != 0 || len(precontroller.Strategy.Matrix.Mode) != 0 || !slices.Contains(gate.Needs, "kind-install-precontroller") || !strings.Contains(string(makefile), "^TestKindBaselinePrecontrollerRuntimeNative$$/") {
+	if !precontrollerRun || precontroller.TimeoutMinutes != 40 || precontroller.Strategy.FailFast == nil || *precontroller.Strategy.FailFast || !slices.Equal(precontroller.Strategy.Matrix.Profile, []int{135, 137}) || len(precontroller.Strategy.Matrix.Exclude) != 0 || len(precontroller.Strategy.Matrix.Mode) != 0 || !slices.Contains(gate.Needs, "kind-install-precontroller") || !strings.Contains(string(makefile), "^TestKindBaselinePrecontrollerRuntimeNative$$/") {
 		t.Fatal("genuine pre-controller profile or required dependency omitted")
 	}
 	binary := workflow.Jobs["kind-install-binary"]
@@ -181,7 +215,7 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 				runs++
 			}
 		}
-		if job.If != "" || job.TimeoutMinutes != required.minutes || runs != 1 || !slices.Contains(gate.Needs, required.name) {
+		if job.TimeoutMinutes != required.minutes || runs != 1 || !slices.Contains(gate.Needs, required.name) {
 			t.Fatalf("native proof %s or its fail-closed required dependency omitted", required.name)
 		}
 	}
@@ -216,7 +250,7 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	for _, step := range v3.Steps {
 		v3Run = v3Run || step.Run == "make test-kind-install-admission-v3 INSTALL_ADMISSION_PROFILE='${{ matrix.profile }}' INSTALL_ADMISSION_MODE='${{ matrix.mode }}'"
 	}
-	if !v3Run || v3.If != "" || v3.TimeoutMinutes != 50 || v3.Strategy.FailFast == nil || *v3.Strategy.FailFast || !slices.Equal(v3.Strategy.Matrix.Profile, []int{135, 137}) || !slices.Equal(v3.Strategy.Matrix.Mode, []string{"cold", "warm"}) || len(v3.Strategy.Matrix.Exclude) != 0 || !slices.Contains(gate.Needs, "kind-install-admission-v3") || !strings.Contains(string(makefile), "^TestKindAdmissionEffectiveV3WithBaseline$$/") {
+	if !v3Run || v3.TimeoutMinutes != 50 || v3.Strategy.FailFast == nil || *v3.Strategy.FailFast || !slices.Equal(v3.Strategy.Matrix.Profile, []int{135, 137}) || !slices.Equal(v3.Strategy.Matrix.Mode, []string{"cold", "warm"}) || len(v3.Strategy.Matrix.Exclude) != 0 || !slices.Contains(gate.Needs, "kind-install-admission-v3") || !strings.Contains(string(makefile), "^TestKindAdmissionEffectiveV3WithBaseline$$/") {
 		t.Fatal("complete baseline-active v3 matrix missing from required CI")
 	}
 	binaryRun := false
