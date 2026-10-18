@@ -78,7 +78,30 @@ func TestTopExportsOnlyClosedNumericRows(t *testing.T) {
 		if err != nil || strings.Contains(string(encoded), "canary") || strings.Contains(string(encoded), "provider") || strings.Contains(string(encoded), root) {
 			t.Fatal("raw profile metadata escaped")
 		}
+		for _, name := range []string{
+			"provider[go.shape.struct { private string }].call",
+			"provider[go.shape.struct { private string }].call (inline)",
+			"provider[go.shape.struct { private string }].call (partial-inline)",
+			"encoding/json.Marshal provider-private-canary",
+		} {
+			candidate := strings.Replace(text, "provider-controlled-symbol", name, 1)
+			projected, err := parseTop([]byte(candidate), root, fixture.kind)
+			if err != nil || projected.UnknownFlat != 50 || len(projected.Rows) != 2 {
+				t.Fatal("complete multiword symbol was split or matched by prefix")
+			}
+			b, err := json.Marshal(projected)
+			if err != nil || strings.Contains(string(b), "provider") || strings.Contains(string(b), "private") {
+				t.Fatal("unknown multiword symbol escaped")
+			}
+		}
+		sharedPrefix := strings.Replace(text, "50"+fixture.unit+" 50% 50% 50"+fixture.unit+" 50% provider-controlled-symbol\n",
+			"25"+fixture.unit+" 25% 25% 25"+fixture.unit+" 25% provider[go.shape.struct { first string }].call\n"+
+				"25"+fixture.unit+" 25% 50% 25"+fixture.unit+" 25% provider[go.shape.struct { second string }].call\n", 1)
+		if projected, err := parseTop([]byte(sharedPrefix), root, fixture.kind); err != nil || projected.UnknownFlat != 50 {
+			t.Fatal("distinct complete symbols sharing a first token were conflated")
+		}
 		for _, bad := range []string{
+			text + "0 0% 0% 0 0% \n",
 			strings.Replace(text, "Type: "+sampleType, "Type: unknown", 1),
 			strings.Replace(text, "50% 50%", "NaN% 50%", 1),
 			strings.Replace(text, "100"+fixture.unit+" 100% "+root, "0 100% "+root, 1),

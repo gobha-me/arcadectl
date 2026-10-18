@@ -28,6 +28,12 @@ No underlying error text is included. These counters diagnose incomplete runs;
 they do not replace the complete successful transcript/oracle check. A refused
 screen must not be treated as a zero-cost result or a lifecycle pass.
 
+The pprof table reader treats only the first five fields as numeric columns;
+the complete remaining function name may contain spaces (for example Go generic
+shapes). Full-name matching prevents a name with an allowlisted prefix from
+being exported as that function. Projection refusals name only the closed
+numeric/header/type/duplicate/root category, never the rejected row.
+
 Each metric focuses on synchronous stacks containing its production root:
 `ClusterSecurityBaseline.Verify` or `fixtureWire.observePhaseLocked`. Unmatched
 flat values are reported separately; missing rows mean unsampled/absent, not

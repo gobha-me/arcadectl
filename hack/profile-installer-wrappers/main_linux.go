@@ -24,6 +24,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	"golang.org/x/sys/unix"
 )
@@ -417,8 +418,28 @@ func parseTop(body []byte, root, kind string) (metric, error) {
 		if !header || len(fields) == 0 {
 			continue
 		}
-		if len(fields) != 6 && !(len(fields) == 7 && (fields[6] == "(inline)" || fields[6] == "(partial-inline)")) {
-			return metric{}, errScreen
+		// pprof prints five numeric columns, then an unquoted function name.
+		// Generic Go names can contain spaces; the remainder is one symbol,
+		// not additional columns, and must never be matched by its first word.
+		if len(fields) < 6 {
+			return metric{}, projectionFailure("profile-row")
+		}
+		name := strings.TrimSpace(line)
+		for range 5 {
+			end := strings.IndexFunc(name, unicode.IsSpace)
+			if end <= 0 {
+				return metric{}, projectionFailure("profile-row")
+			}
+			name = strings.TrimLeftFunc(name[end:], unicode.IsSpace)
+		}
+		for _, suffix := range []string{" (inline)", " (partial-inline)"} {
+			if strings.HasSuffix(name, suffix) {
+				name = strings.TrimSuffix(name, suffix)
+				break
+			}
+		}
+		if name == "" {
+			return metric{}, projectionFailure("profile-row")
 		}
 		value := func(s string) (float64, error) {
 			if s == "0" {
@@ -437,30 +458,43 @@ func parseTop(body []byte, root, kind string) (metric, error) {
 		cum, e2 := value(fields[3])
 		for _, i := range []int{1, 2, 4} {
 			if !strings.HasSuffix(fields[i], "%") {
-				return metric{}, errScreen
+				return metric{}, projectionFailure("profile-percent")
 			}
 			p, err := strconv.ParseFloat(strings.TrimSuffix(fields[i], "%"), 64)
 			if err != nil || math.IsNaN(p) || math.IsInf(p, 0) || p < 0 || p > 100.01 {
-				return metric{}, errScreen
+				return metric{}, projectionFailure("profile-percent")
 			}
 		}
-		if e1 != nil || e2 != nil || flat > cum || seen[fields[5]] {
-			return metric{}, errScreen
+		if e1 != nil || e2 != nil || flat > cum {
+			return metric{}, projectionFailure("profile-value")
 		}
-		seen[fields[5]] = true
-		if fields[5] == root {
+		if seen[name] {
+			return metric{}, projectionFailure("profile-duplicate")
+		}
+		seen[name] = true
+		if name == root {
 			m.RootCumulative = cum
 		}
-		if id, ok := functions[fields[5]]; ok {
+		if id, ok := functions[name]; ok {
 			m.Rows = append(m.Rows, row{id, flat, cum})
 		} else {
 			m.UnknownFlat += flat
 		}
 	}
-	if !header || !sampleType || m.RootCumulative <= 0 {
-		return metric{}, errScreen
+	if !header {
+		return metric{}, projectionFailure("profile-header")
+	}
+	if !sampleType {
+		return metric{}, projectionFailure("profile-sample-type")
+	}
+	if m.RootCumulative <= 0 {
+		return metric{}, projectionFailure("profile-root")
 	}
 	return m, nil
+}
+
+func projectionFailure(reason string) error {
+	return &screenRefusal{Stage: "pprof-projection", Reason: reason, ExitCode: -1}
 }
 
 func binaryDigest(path string) (string, error) {
