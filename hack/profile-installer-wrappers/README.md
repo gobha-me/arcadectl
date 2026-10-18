@@ -1,5 +1,31 @@
 # Installer wrapper cost screen
 
+## Opt-in native component diagnostic
+
+`go run -p 1 ./hack/profile-installer-wrappers native-component FULL_SOURCE_SHA`
+compiles the tagged test binary and runs exactly one fresh
+`TestKindAdmissionEffectiveV3WithBaseline/kubernetes-1.37.0/warm` proof. It uses
+the test package working directory and retains the existing 40-minute fixture
+and 45-minute Go-test limits, all 55 cases, original/closing checks, fixture
+retirement, journal/baseline assertions and owned cleanup. The new diagnostic
+launcher has a separate finite compile/capture/analysis envelope; it does not
+change a production, full-transition or ordinary component deadline.
+
+CPU and allocation profiles from that ONE execution supply four synchronous
+views: complete driver, phase observation, engine request and observer transport.
+The native catalogue freezes the previous v3 exact symbols plus the complete
+driver symbol; default synthetic v1 output and catalogue stay unchanged. Raw
+profiles/transcripts remain bounded RAM-only and are wiped, with the existing
+sealed-memfd and joined-child protections. Refusals never export provider text.
+
+This is real Kind **Install-mode component** work with directly prepared journal
+stages and separately installed baseline policies. It is NOT an actual CLI
+Upgrade, historical enrollment, identical first-upgrade state, transition
+completion, RKE2 or release certification. It cannot discharge the unfinished
+full transition/uninstall gate. Root views omit async/remote CPU and waits;
+sampled allocations and rounded overlapping cumulative rows are not exclusive
+wall time, a proven bottleneck or a performance cure.
+
 Linux-only, opt-in CI diagnostic. From the clean repository root:
 
 ```sh
