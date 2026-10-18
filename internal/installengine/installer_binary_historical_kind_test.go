@@ -49,6 +49,20 @@ func buildHistoricalInstallerBinary(t *testing.T, ctx context.Context, root, bas
 	}
 	run(root, "git", "archive", "--format=tar", "--output="+archive, binaryHistoricalInstallerSource)
 	run(root, "tar", "--extract", "--file", archive, "--directory", sourceRoot, "--no-same-owner")
+	diagnosticSources := map[string][]byte{}
+	for _, name := range []string{"fixture_accounting_diagnostic_hotfix_test.go", "admission_trace_test.go"} {
+		source, err := os.ReadFile(filepath.Join(sourceRoot, "internal", "installengine", name))
+		if err != nil {
+			t.Fatal("historical diagnostic source unavailable")
+		}
+		diagnosticSources[name] = source
+	}
+	if !historicalInstallerDiagnosticDeclarationsMatch(diagnosticSources) {
+		t.Fatal("historical diagnostic roots absent or not selected")
+	}
+	// Validate the separately pinned descendant before building or running it.
+	// This is a serial, uncached, bounded hermetic gate, not a lifecycle retry.
+	run(sourceRoot, "go", historicalInstallerDiagnosticTestArguments()...)
 	binary := filepath.Join(base, "arcadectl-installer-historical")
 	run(sourceRoot, "go", "build", "-p", "1", "-trimpath", "-o", binary, "./cmd/arcadectl-installer")
 	return binary

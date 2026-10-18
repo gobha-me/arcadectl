@@ -401,12 +401,14 @@ read-only proofs, fenced by the unchanged original journal on every attempt.
 It also waits for the complete initial phase before creating an admission
 fixture WAL, allowing an already-created original controller to finish startup
 and election while preserving absent/not-yet-created family semantics.
-For final non-uninstall verification, the original signed API must first pass
+Once Applying has acknowledged the original signed API, and again for final
+non-uninstall verification, that original API must first pass
 the same complete serving-fingerprint proof and five-second quiet interval used
 before activation, within its existing three-minute bound. This happens before
 initial phase capture or WAL creation, with original journal and fixture-fence
 barriers; it opens no forwarding/authentication channel. Missing original API
-identity refuses. Partial Applying and uninstall phase semantics are unchanged;
+identity refuses. Applying before an API is acknowledged and uninstall retain
+their existing partial-family contracts;
 changes after sealing still fail the exact whole-object/RV comparisons.
 After a reliably acknowledged original UID/RV DELETE, the lifecycle
 only observes that exact intent for up to five minutes and independently
@@ -645,10 +647,12 @@ four complete public admission runs (profiles 135/137, cold/warm) and three actu
 signed-installer executable runs. Both profiles exercise current-package fresh
 install and retaining uninstall. The profile-137 transition fixture builds the
 exact pre-baseline installer hotfix at
-`15c63004cd1ddab3f561acaf783348faf72b7ee7` to install the exact declared legacy
-package without a baseline flag. This newly identified installer is a direct
-descendant of original `2e897ca3b76617ac63c4a294d7ba8c908dcc368b`, not a relabeling
-or successful certification of that original executable. The signed runtime
+`2106372de2f2c8bb636e2369a04b1d2ccaeaca48` to install the exact declared legacy
+package without a baseline flag. This diagnostic-only installer is a direct
+descendant of timestamp hotfix `15c63004cd1ddab3f561acaf783348faf72b7ee7`, itself
+a direct descendant of original `2e897ca3b76617ac63c4a294d7ba8c908dcc368b`.
+The earlier executables and their results remain unchanged; this is not their
+relabeling or successful certification. The signed runtime
 package, API/controller source `7dcbad6497782c198c7b142a6a8b902dead4b79e`, images
 and compatibility declaration remain unchanged. The current executable explicitly enrolls
 that genuine historical journal, then upgrades, rolls back and retains worlds
@@ -656,7 +660,8 @@ on uninstall. Independent checkpoints require an initially absent baseline,
 unchanged original runtime and bootstrap/client/CA bytes, a nonempty original
 claim floor, preserved predecessor manifest/signature/payload bytes and durable
 source provenance. This expanded native journey still needs successful
-execution: the earlier candidate's transition reached its upgrade deadline.
+execution: earlier candidates include an upgrade deadline and a historical
+initial-install admission/accounting refusal. Neither result becomes a pass.
 Fixture source, component passes and fresh-install passes are not migration
 certification.
 Its predecessor runtime images are built from the pinned original
@@ -666,8 +671,8 @@ invoking the installer and does not directly bind/fabricate a journal stage.
 The pre-baseline installer commit was a PR ancestor, not a linear-main ancestor.
 CI therefore fetches the preserved read-only `refs/pull/62/head` from the exact
 authoritative repository into a local fixture ref, then checks that the pinned
-commit is its ancestor and has tree `f6ed281f6bfb2896e2dab14297cdf4e37e5f970c`.
-It additionally checks the exact original parent and its original tree.
+commit is its ancestor and has tree `77589f36c0840e1266878eb35ce38146d2761e6a`.
+It additionally checks both exact parent edges and all three pinned trees.
 Only the exact pinned commit is archived/built, never the moving PR tip. This
 keeps the test available after squash merge and branch deletion without changing
 branch protection or creating a release tag. Clean local clones running the
@@ -678,7 +683,11 @@ git fetch --no-tags --no-recurse-submodules --no-write-fetch-head \
   https://github.com/gobha-me/arcadectl.git \
   '+refs/pull/62/head:refs/arcadectl-fixtures/pr62'
 git merge-base --is-ancestor \
-  15c63004cd1ddab3f561acaf783348faf72b7ee7 refs/arcadectl-fixtures/pr62
+  2106372de2f2c8bb636e2369a04b1d2ccaeaca48 refs/arcadectl-fixtures/pr62
+test "$(git rev-parse '2106372de2f2c8bb636e2369a04b1d2ccaeaca48^{tree}')" \
+  = 77589f36c0840e1266878eb35ce38146d2761e6a
+test "$(git rev-parse '2106372de2f2c8bb636e2369a04b1d2ccaeaca48^')" \
+  = 15c63004cd1ddab3f561acaf783348faf72b7ee7
 test "$(git rev-parse '15c63004cd1ddab3f561acaf783348faf72b7ee7^{tree}')" \
   = f6ed281f6bfb2896e2dab14297cdf4e37e5f970c
 test "$(git rev-parse '15c63004cd1ddab3f561acaf783348faf72b7ee7^')" \
@@ -687,7 +696,23 @@ test "$(git rev-parse '2e897ca3b76617ac63c4a294d7ba8c908dcc368b^{tree}')" \
   = 6ba09e173b112c60a7c38d78cebf62e6d2859ec9
 ```
 
-The installer-only hotfix removes two invalid timestamp-order assumptions;
+Before building that archived installer, the native harness checks that its
+six exact selected test roots are declared in the two untagged source files.
+It then requires their serial, uncached `go test -p 1 -count=1 -timeout=10m`
+execution to succeed. This is a required gate, not a claim it has already passed.
+Compilation remains subject to the original parent fixture context; the test
+timeout does not cover compilation. These source/unit checks are not migration
+certification.
+
+The diagnostic-only descendant appends fixed accounting-refusal labels while
+preserving the original compound predicates, evaluation order and phase IDs.
+`original-row-final-check` still covers phase validation OR baseline comparison;
+`original-row-duplicate-uid` also covers accessor failure. Labels do not identify
+a provider cause or permit changed rows. Source-erasure/token-fidelity tests,
+cold/warm RecipeV2 comparisons, before-images and zero-effect assertions guard
+that boundary. No additional observation, replay or budget change is introduced.
+
+The preceding installer-only timestamp hotfix removes two invalid ordering assumptions;
 it does not add baseline support, change runtime payloads, adopt dry-run UIDs,
 relax original-identity/WAL/whole-object checks, add retries or change budgets.
 Kubernetes 1.37.0 [runs field management before REST creation](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/endpoints/handlers/create.go#L183-L192),
