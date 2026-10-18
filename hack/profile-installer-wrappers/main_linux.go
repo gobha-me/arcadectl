@@ -68,6 +68,56 @@ type custody struct {
 	Bytes  int    `json:"bytes"`
 	SHA256 string `json:"sha256"`
 }
+
+// Refusals expose only closed stage/outcome identifiers, fixed-root counts and
+// capture custody. Never include an underlying error or captured log text.
+type rootCounts struct {
+	ID     string `json:"id"`
+	Runs   int    `json:"runs"`
+	Passes int    `json:"passes"`
+}
+type screenRefusal struct {
+	Stage        string       `json:"stage"`
+	Target       string       `json:"target,omitempty"`
+	Metric       string       `json:"metric,omitempty"`
+	Reason       string       `json:"reason"`
+	ExitCode     int          `json:"exitCode"`
+	Stdout       custody      `json:"stdout"`
+	Stderr       custody      `json:"stderr"`
+	Truncated    bool         `json:"truncated"`
+	TestTimedOut bool         `json:"testTimedOut"`
+	Roots        []rootCounts `json:"roots,omitempty"`
+}
+
+func (*screenRefusal) Error() string { return "wrapper screen refused" }
+func (*screenRefusal) Unwrap() error { return errScreen }
+func refused(stage, target, metric string, err error) error {
+	f := screenRefusal{Reason: "validation", ExitCode: -1}
+	var child *screenRefusal
+	if errors.As(err, &child) {
+		f = *child
+	}
+	if stage != "" {
+		f.Stage = stage
+	}
+	if target != "" {
+		f.Target = target
+	}
+	if metric != "" {
+		f.Metric = metric
+	}
+	return &f
+}
+func transcriptCounts(body []byte) []rootCounts {
+	var counts []rootCounts
+	for _, t := range targets {
+		counts = append(counts, rootCounts{t.id,
+			bytes.Count(body, []byte("=== RUN   "+t.test+"\n")),
+			bytes.Count(body, []byte("--- PASS: "+t.test+" ("))})
+	}
+	return counts
+}
+
 type row struct {
 	ID         string  `json:"id"`
 	Flat       float64 `json:"flat"`
@@ -145,8 +195,29 @@ func command(ctx context.Context, timeout time.Duration, stdin *os.File, extra [
 		}
 	}
 	if err != nil || ctx.Err() != nil || out.overflow || diagnostic.overflow {
+		f := &screenRefusal{Stage: "command", Reason: "child-exit", ExitCode: -1,
+			Stdout: describe(out.body), Stderr: describe(diagnostic.body),
+			Truncated:    out.overflow || diagnostic.overflow,
+			TestTimedOut: bytes.Contains(out.body, []byte("panic: test timed out after ")) || bytes.Contains(diagnostic.body, []byte("panic: test timed out after ")),
+			Roots:        transcriptCounts(out.body)}
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			f.ExitCode = exit.ExitCode()
+		}
+		if cmd.Process == nil {
+			f.Reason = "start-refused"
+		}
+		if ctx.Err() == context.DeadlineExceeded {
+			f.Reason = "command-deadline"
+		}
+		if ctx.Err() == context.Canceled {
+			f.Reason = "command-cancelled"
+		}
+		if f.Truncated {
+			f.Reason = "capture-limit"
+		}
 		out.wipe()
-		return nil, errScreen
+		return nil, f
 	}
 	return out.body, nil
 }
@@ -244,20 +315,24 @@ func runTarget(ctx context.Context, binary string, t target) (result, error) {
 		"-test.run="+selector, "-test.count=16", "-test.v", "-test.timeout=3m",
 		"-test.cpuprofile=/proc/self/fd/3", "-test.memprofile=/proc/self/fd/4", "-test.memprofilerate=8192")
 	defer clear(body)
-	if !joinReaders(ctx, reads, &readers) {
-		return result{}, errScreen
+	joined := joinReaders(ctx, reads, &readers)
+	if err != nil {
+		return result{}, refused("test-child", t.id, "", err)
 	}
-	if err != nil || !selectedOutput(body, t) {
-		return result{}, errScreen
+	if !joined {
+		return result{}, refused("profile-reader-join", t.id, "", errScreen)
+	}
+	if !selectedOutput(body, t) {
+		return result{}, refused("test-transcript", t.id, "", errScreen)
 	}
 	r := result{ID: t.id, Repeats: repeats, WallNS: time.Since(start).Nanoseconds(), TestOutput: describe(body)}
 	for i, kind := range []string{"cpu-nanoseconds", "sampled-alloc-bytes"} {
 		if captures[i].overflow || len(captures[i].body) == 0 {
-			return result{}, errScreen
+			return result{}, refused("profile-capture", t.id, kind, errScreen)
 		}
 		m, err := analyze(ctx, captures[i].body, t.root, kind)
 		if err != nil {
-			return result{}, errScreen
+			return result{}, refused("", t.id, kind, err)
 		}
 		r.Metrics = append(r.Metrics, m)
 	}
@@ -282,25 +357,25 @@ func joinReaders(ctx context.Context, reads []*os.File, readers *sync.WaitGroup)
 func analyze(ctx context.Context, body []byte, root, kind string) (metric, error) {
 	// A perf input invokes conversion that creates a temporary raw file.
 	if len(body) < 3 || !bytes.Equal(body[:3], []byte{0x1f, 0x8b, 8}) {
-		return metric{}, errScreen
+		return metric{}, refused("profile-format", "", kind, errScreen)
 	}
 	// pprof probes/reopens its source; a plain pipe would lose its first eight
 	// bytes. The sealed anonymous RAM file permits independent /proc opens,
 	// without creating a persistent raw profile or invoking a remote fetch.
 	fd, err := unix.MemfdCreate("wrapper-screen", unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)
 	if err != nil {
-		return metric{}, errScreen
+		return metric{}, refused("profile-memfd", "", kind, err)
 	}
 	f := os.NewFile(uintptr(fd), "wrapper-screen")
 	defer f.Close()
 	if _, err = f.Write(body); err != nil {
-		return metric{}, errScreen
+		return metric{}, refused("profile-write", "", kind, err)
 	}
 	if _, err = unix.FcntlInt(f.Fd(), unix.F_ADD_SEALS, unix.F_SEAL_WRITE|unix.F_SEAL_SHRINK|unix.F_SEAL_GROW|unix.F_SEAL_SEAL); err != nil {
-		return metric{}, errScreen
+		return metric{}, refused("profile-seal", "", kind, err)
 	}
 	if _, err = f.Seek(0, io.SeekStart); err != nil {
-		return metric{}, errScreen
+		return metric{}, refused("profile-rewind", "", kind, err)
 	}
 	index, unit := "cpu", "ns"
 	if kind == "sampled-alloc-bytes" {
@@ -309,10 +384,13 @@ func analyze(ctx context.Context, body []byte, root, kind string) (metric, error
 	text, err := command(ctx, time.Minute, f, nil, "go", "tool", "pprof", "-top", "-cum", "-functions", "-nodecount=0", "-nodefraction=0", "-edgefraction=0", "-symbolize=none", "-unit="+unit, "-sample_index="+index, "-focus=^"+regexp.QuoteMeta(root)+"$", "/proc/self/fd/0")
 	defer clear(text)
 	if err != nil {
-		return metric{}, errScreen
+		return metric{}, refused("pprof-child", "", kind, err)
 	}
 	m, err := parseTop(text, root, kind)
 	m.Profile = describe(body)
+	if err != nil {
+		return m, refused("pprof-projection", "", kind, err)
+	}
 	return m, err
 }
 
@@ -402,15 +480,15 @@ func screen(parent context.Context, expected string) error {
 	ctx, cancel := context.WithTimeout(parent, 12*time.Minute)
 	defer cancel()
 	if err := source(ctx, expected); err != nil {
-		return errScreen
+		return refused("opening-source", "", "", err)
 	}
 	dir, err := os.MkdirTemp("", "arcadectl-wrapper-screen-")
 	if err != nil {
-		return errScreen
+		return refused("scratch-create", "", "", err)
 	}
 	identity, err := os.Stat(dir)
 	if err != nil {
-		return errScreen
+		return refused("scratch-identity", "", "", err)
 	}
 	// Remove only our unchanged owned directory, never a shared cache/worktree.
 	defer func() {
@@ -422,32 +500,32 @@ func screen(parent context.Context, expected string) error {
 	// same owned cleanup boundary; never clear a shared Go cache.
 	previousTmp := os.Getenv("TMPDIR")
 	if os.Setenv("TMPDIR", dir) != nil {
-		return errScreen
+		return refused("scratch-environment", "", "", errScreen)
 	}
 	defer os.Setenv("TMPDIR", previousTmp)
 	binary := filepath.Join(dir, "installengine.test")
 	out, err := command(ctx, 6*time.Minute, nil, nil, "go", "test", "-c", "-p", "1", "-o", binary, "./internal/installengine")
 	clear(out)
 	if err != nil {
-		return errScreen
+		return refused("build-child", "", "", err)
 	}
 	digest, err := binaryDigest(binary)
 	if err != nil {
-		return errScreen
+		return refused("opening-binary", "", "", err)
 	}
 	results := []result{}
 	for _, t := range targets {
 		r, err := runTarget(ctx, binary, t)
 		if err != nil {
-			return errScreen
+			return err
 		}
 		results = append(results, r)
 	}
 	if err := source(ctx, expected); err != nil {
-		return errScreen
+		return refused("closing-source", "", "", err)
 	}
 	if closing, err := binaryDigest(binary); err != nil || closing != digest {
-		return errScreen
+		return refused("closing-binary", "", "", errScreen)
 	}
 	return json.NewEncoder(os.Stdout).Encode(struct {
 		Schema         string   `json:"schema"`
@@ -460,10 +538,21 @@ func screen(parent context.Context, expected string) error {
 }
 
 func main() {
+	started := time.Now()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	failed := len(os.Args) != 2 || screen(ctx, os.Args[1]) != nil
+	var err error = errScreen
+	if len(os.Args) == 2 {
+		err = screen(ctx, os.Args[1])
+	}
 	stop()
-	if failed {
+	if err != nil {
+		f := &screenRefusal{Stage: "screen", Reason: "validation", ExitCode: -1}
+		_ = errors.As(err, &f)
+		_ = json.NewEncoder(os.Stdout).Encode(struct {
+			Schema    string         `json:"schema"`
+			ElapsedNS int64          `json:"elapsedNS"`
+			Refusal   *screenRefusal `json:"refusal"`
+		}{"arcadectl-wrapper-screen-refusal-v1", time.Since(started).Nanoseconds(), f})
 		_, _ = io.WriteString(os.Stderr, "wrapper screen refused; no raw diagnostics exported\n")
 		os.Exit(1)
 	}

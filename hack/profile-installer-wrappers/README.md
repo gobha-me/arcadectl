@@ -19,6 +19,15 @@ stdout/stderr is bounded and private. Only source/binary/profile hashes, byte
 counts, fixed function IDs and numerical measurements are printed. Temporary
 compiled binaries are removed from the exact owned directory on exit.
 
+Failure output is a separate closed refusal record: fixed stage/target/metric,
+child exit/deadline/cancellation classification, bounded capture hashes/lengths,
+truncation and Go-test timeout flags, and fixed-root RUN/PASS occurrence counts.
+When truncated, capture hashes describe only the retained prefix, not the full
+discarded stream. No raw capture is replayed after refusal.
+No underlying error text is included. These counters diagnose incomplete runs;
+they do not replace the complete successful transcript/oracle check. A refused
+screen must not be treated as a zero-cost result or a lifecycle pass.
+
 Each metric focuses on synchronous stacks containing its production root:
 `ClusterSecurityBaseline.Verify` or `fixtureWire.observePhaseLocked`. Unmatched
 flat values are reported separately; missing rows mean unsampled/absent, not

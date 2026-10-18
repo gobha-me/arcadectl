@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -123,10 +124,38 @@ func TestCommandCapturesAndJoinsWithoutForwardingRawErrors(t *testing.T) {
 			if err != nil || string(body) != "controlled" {
 				t.Fatal("bounded child result unavailable")
 			}
-		} else if err != errScreen || len(body) != 0 {
+		} else if !errors.Is(err, errScreen) || len(body) != 0 {
 			t.Fatal("child failure was accepted or raw output escaped")
+		} else {
+			var refusal *screenRefusal
+			if !errors.As(err, &refusal) || refusal.Stdout.SHA256 == "" || refusal.Stderr.SHA256 == "" {
+				t.Fatal("child refusal lost bounded capture custody")
+			}
+			if mode == "failure" && (refusal.Reason != "child-exit" || refusal.ExitCode != 3 || refusal.Stderr.Bytes != 14) {
+				t.Fatal("child exit classification incorrect")
+			}
+			if mode == "timeout" && refusal.Reason != "command-deadline" {
+				t.Fatal("deadline classification incorrect")
+			}
 		}
 		clear(body)
+	}
+}
+
+func TestRefusalRetainsStageWithoutRawErrors(t *testing.T) {
+	child := refused("pprof-child", "", "cpu-nanoseconds", errors.New("provider-private-canary"))
+	err := refused("", "baseline", "cpu-nanoseconds", child)
+	var refusal *screenRefusal
+	if !errors.As(err, &refusal) || !errors.Is(err, errScreen) || refusal.Stage != "pprof-child" || refusal.Target != "baseline" {
+		t.Fatal("nested refusal lost fixed context")
+	}
+	body, encodeErr := json.Marshal(refusal)
+	if encodeErr != nil || strings.Contains(string(body), "canary") || strings.Contains(string(body), "provider") {
+		t.Fatal("raw child error escaped")
+	}
+	counts := transcriptCounts(append([]byte(testTranscript(targets[0])), []byte("=== RUN   ProviderPrivateCanary\n")...))
+	if len(counts) != 2 || counts[0].ID != "baseline" || counts[0].Runs != repeats || counts[0].Passes != repeats || counts[1].Runs != 0 || counts[1].Passes != 0 {
+		t.Fatal("fixed-root transcript counters incorrect")
 	}
 }
 
@@ -149,7 +178,7 @@ func TestProfileReaderDeadlineClosesInheritedWriter(t *testing.T) {
 
 func TestAnalyzeRejectsNonGoProfilesWithoutToolExecution(t *testing.T) {
 	for _, body := range [][]byte{nil, []byte("PERFILE2-private"), []byte("private-canary")} {
-		if _, err := analyze(context.Background(), body, targets[0].root, "cpu-nanoseconds"); err != errScreen {
+		if _, err := analyze(context.Background(), body, targets[0].root, "cpu-nanoseconds"); !errors.Is(err, errScreen) {
 			t.Fatal("non-Go input reached analysis")
 		}
 	}
@@ -269,7 +298,7 @@ func TestCommandHelper(t *testing.T) {
 		_ = os.Setenv("ARCADECTL_WRAPPER_SCREEN_HELPER", "timeout")
 		body, err := command(ctx, 2*time.Second, nil, nil, os.Args[0], "-test.run=^TestCommandHelper$")
 		clear(body)
-		if err == errScreen && ctx.Err() != nil {
+		if errors.Is(err, errScreen) && ctx.Err() != nil {
 			os.Exit(0)
 		}
 		os.Exit(4)
