@@ -122,6 +122,16 @@ func TestAdmissionPhaseTraceClosedStagesAndNoArbitraryValues(t *testing.T) {
 		admissionPhaseGCEventAliasRV:       "gc-event-alias-rv-conflict",
 		admissionPhaseGCEventAliasMetadata: "gc-event-alias-metadata-conflict",
 		admissionPhaseGCGraphBound:         "gc-metadata-graph-bound",
+		admissionPhaseRowInput:             "original-row-input",
+		admissionPhaseRowCollection:        "original-row-collection",
+		admissionPhaseRowUID:               "original-row-duplicate-uid",
+		admissionPhaseRowAddress:           "original-row-duplicate-address",
+		admissionPhaseRowFixtureIdentity:   "original-row-fixture-identity",
+		admissionPhaseRowFixtureMissing:    "original-row-missing-fixture",
+		admissionPhaseRowLeaderChain:       "original-row-leader-chain",
+		admissionPhaseRowLeaderShape:       "original-row-leader-shape",
+		admissionPhaseRowShape:             "original-row-shape",
+		admissionPhaseRowFinalCheck:        "original-row-final-check",
 	}
 	for value := range 256 {
 		step := admissionPhaseStep(value)

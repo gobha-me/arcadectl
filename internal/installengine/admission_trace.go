@@ -139,6 +139,17 @@ const (
 	admissionPhaseGCEventAliasMetadata
 	admissionPhaseGCGraphBound
 	admissionPhaseComplete
+	// Append only: original phase values remain part of the pinned diagnostic.
+	admissionPhaseRowInput
+	admissionPhaseRowCollection
+	admissionPhaseRowUID
+	admissionPhaseRowAddress
+	admissionPhaseRowFixtureIdentity
+	admissionPhaseRowFixtureMissing
+	admissionPhaseRowLeaderChain
+	admissionPhaseRowLeaderShape
+	admissionPhaseRowShape
+	admissionPhaseRowFinalCheck
 )
 
 func (step admissionPhaseStep) String() string {
@@ -203,6 +214,26 @@ func (step admissionPhaseStep) String() string {
 		return "gc-metadata-graph-bound"
 	case admissionPhaseComplete:
 		return "complete"
+	case admissionPhaseRowInput:
+		return "original-row-input"
+	case admissionPhaseRowCollection:
+		return "original-row-collection"
+	case admissionPhaseRowUID:
+		return "original-row-duplicate-uid"
+	case admissionPhaseRowAddress:
+		return "original-row-duplicate-address"
+	case admissionPhaseRowFixtureIdentity:
+		return "original-row-fixture-identity"
+	case admissionPhaseRowFixtureMissing:
+		return "original-row-missing-fixture"
+	case admissionPhaseRowLeaderChain:
+		return "original-row-leader-chain"
+	case admissionPhaseRowLeaderShape:
+		return "original-row-leader-shape"
+	case admissionPhaseRowShape:
+		return "original-row-shape"
+	case admissionPhaseRowFinalCheck:
+		return "original-row-final-check"
 	}
 	return "unknown"
 }
@@ -211,7 +242,7 @@ func validAdmissionPhasePosition(step admissionPhaseStep, slot int) bool {
 	if step == admissionPhaseNamedGet || step == admissionPhaseWholeFixture {
 		return slot >= 0 && slot < len(fixtureCatalogV2)
 	}
-	return step >= admissionPhaseOriginal && step <= admissionPhaseComplete && slot == -1
+	return step >= admissionPhaseOriginal && step <= admissionPhaseRowFinalCheck && slot == -1
 }
 
 func traceAdmissionPhase(ctx context.Context, step admissionPhaseStep, slot int) {

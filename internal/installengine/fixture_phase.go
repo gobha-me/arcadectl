@@ -170,7 +170,7 @@ func (w *fixtureWire) observePhaseLocked(ctx context.Context) (*fixturePhaseObse
 			return nil, ErrFixtures
 		}
 		traceAdmissionPhase(ctx, admissionPhaseRows, -1)
-		phase, objects, err := f.accountPhase(o, floor, time.Now().UTC())
+		phase, objects, err := f.accountPhaseTraced(ctx, o, floor, time.Now().UTC())
 		if err == nil {
 			traceAdmissionPhase(ctx, admissionPhasePublicBefore, -1)
 			phase.Public, err = a.phasePublicInventory(ctx, request)
@@ -303,9 +303,16 @@ func (w *fixtureWire) phaseReadable() bool {
 // safety snapshot or a general exemption callback. Fixture addresses come ONLY
 // from the fixed durable ledger, and surviving fixtures still need whole GETs.
 func (f *fixtureLedger) accountPhase(o *installobserve.Observation, floor fixturePhaseBaseline, now time.Time) (fixturePhaseBaseline, [fixtureMaxSlots]runtime.Object, error) {
+	return f.accountPhaseTraced(nil, o, floor, now)
+}
+
+// Diagnostic-only descendant: record a closed category from this same held
+// accounting attempt. No extra observations, effects or acceptance rules.
+func (f *fixtureLedger) accountPhaseTraced(ctx context.Context, o *installobserve.Observation, floor fixturePhaseBaseline, now time.Time) (fixturePhaseBaseline, [fixtureMaxSlots]runtime.Object, error) {
 	var fixtures [fixtureMaxSlots]runtime.Object
 	zero := fixturePhaseBaseline{}
 	if f == nil || o == nil || o.Journal() == nil || !bytes.Equal(o.Journal().Bytes(), f.document.Journal) || o.Journal().ResourceVersion() != f.document.JournalResourceVersion || !completeStoppedLists(o.Snapshot(), o.Runtime()) || floor.validate(o.Journal().Anchor().Namespace) != nil || !validFixtureRecipe(f.document) {
+		traceAdmissionPhase(ctx, admissionPhaseRowInput, -1)
 		return zero, fixtures, ErrFixtures
 	}
 	addresses := map[installstate.Key]int{}
@@ -323,15 +330,18 @@ func (f *fixtureLedger) accountPhase(o *installobserve.Observation, floor fixtur
 	for _, collection := range phaseCollections(o) {
 		items, err := meta.ExtractList(collection.list)
 		if err != nil || len(items) > installsafety.MaxObjectsPerList {
+			traceAdmissionPhase(ctx, admissionPhaseRowCollection, -1)
 			return zero, fixtures, ErrFixtures
 		}
 		for _, object := range items {
 			m, err := meta.Accessor(object)
 			if err != nil || observed[m.GetUID()] != nil {
+				traceAdmissionPhase(ctx, admissionPhaseRowUID, -1)
 				return zero, fixtures, ErrFixtures
 			}
 			key := installstate.Key{APIVersion: collection.version, Kind: collection.kind, Namespace: m.GetNamespace(), Name: m.GetName()}
 			if seen[key] {
+				traceAdmissionPhase(ctx, admissionPhaseRowAddress, -1)
 				return zero, fixtures, ErrFixtures
 			}
 			seen[key], observed[m.GetUID()] = true, object
@@ -340,6 +350,7 @@ func (f *fixtureLedger) accountPhase(o *installobserve.Observation, floor fixtur
 				if entry.State != fixtureOriginal || !nativeFixtureUID(string(entry.OriginalUID)) || m.GetUID() != entry.OriginalUID {
 					// Present DELETE-attempted objects are a no-effect wait, not
 					// a relaxed deletion shape or replay authorization.
+					traceAdmissionPhase(ctx, admissionPhaseRowFixtureIdentity, -1)
 					return zero, fixtures, ErrFixtures
 				}
 				fixtures[slot] = object
@@ -348,6 +359,7 @@ func (f *fixtureLedger) accountPhase(o *installobserve.Observation, floor fixtur
 			if _, ok := leaders[key]; ok {
 				lease, ok := object.(*coordinationv1.Lease)
 				if !ok {
+					traceAdmissionPhase(ctx, admissionPhaseRowLeaderShape, -1)
 					return zero, fixtures, ErrFixtures
 				}
 				leases[key] = lease
@@ -355,6 +367,7 @@ func (f *fixtureLedger) accountPhase(o *installobserve.Observation, floor fixtur
 			}
 			row, err := phaseRow(key, m.GetUID(), m.GetResourceVersion(), object)
 			if err != nil {
+				traceAdmissionPhase(ctx, admissionPhaseRowShape, -1)
 				return zero, fixtures, ErrFixtures
 			}
 			phase.Rows = append(phase.Rows, row)
@@ -362,6 +375,7 @@ func (f *fixtureLedger) accountPhase(o *installobserve.Observation, floor fixtur
 	}
 	for slot, entry := range f.document.Entries {
 		if entry.State == fixtureOriginal && fixtures[slot] == nil || entry.State == fixtureCreateAttempted {
+			traceAdmissionPhase(ctx, admissionPhaseRowFixtureMissing, -1)
 			return zero, fixtures, ErrFixtures
 		}
 	}
@@ -370,17 +384,20 @@ func (f *fixtureLedger) accountPhase(o *installobserve.Observation, floor fixtur
 		set, setOK := observed[original.SetUID].(*appsv1.ReplicaSet)
 		pod, podOK := observed[original.PodUID].(*corev1.Pod)
 		if !parentOK || !setOK || !podOK || len(set.OwnerReferences) != 1 || set.OwnerReferences[0].UID != parent.UID || leases[original.Row.Key] == nil {
+			traceAdmissionPhase(ctx, admissionPhaseRowLeaderChain, -1)
 			return zero, fixtures, ErrFixtures
 		}
 		state := admissionControllerState{Name: parent.Name, Executing: true, Deployment: parent, Sets: []*appsv1.ReplicaSet{set}, Pods: []*corev1.Pod{pod}}
 		leader, err := capturePhaseLeader(original.Row.Key.Namespace, leases[original.Row.Key], state, now)
 		if err != nil {
+			traceAdmissionPhase(ctx, admissionPhaseRowLeaderShape, -1)
 			return zero, fixtures, ErrFixtures
 		}
 		phase.Leaders = append(phase.Leaders, leader)
 	}
 	sortFixtureWorlds(phase.Rows)
 	if phase.validate(o.Journal().Anchor().Namespace) != nil || !samePhaseBaseline(floor, phase) {
+		traceAdmissionPhase(ctx, admissionPhaseRowFinalCheck, -1)
 		return zero, fixtures, ErrFixtures
 	}
 	return phase, fixtures, nil
