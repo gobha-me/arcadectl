@@ -223,7 +223,7 @@ func TestMutationBootstrapResumeUsesRegisteredPlanAndRejectsFreshClientBeforeHTT
 	}
 	var output, diagnostics bytes.Buffer
 	var emptyCosts *installengine.LifecycleCosts
-	if code := runMutation(t.Context(), o, &output, &diagnostics); code != 4 || output.Len() != 0 || writes.Load() != 0 || strings.Count(diagnostics.String(), "installation diagnostic command-cost ") != 1 || !strings.Contains(diagnostics.String(), "installation diagnostic command-cost "+emptyCosts.Snapshot()+"\n") || strings.Contains(diagnostics.String(), "PRIVATE-CANARY") {
+	if code := runMutation(t.Context(), o, &output, &diagnostics); code != 4 || output.Len() != 0 || writes.Load() != 0 || strings.Count(diagnostics.String(), "installation diagnostic command-cost ") != 1 || strings.Count(diagnostics.String(), "installation diagnostic command-request-pipeline ") != 1 || strings.Contains(diagnostics.String(), "installation diagnostic step-request-pipeline ") || !strings.Contains(diagnostics.String(), "installation diagnostic command-cost "+emptyCosts.Snapshot()+"\n") || strings.Contains(diagnostics.String(), "PRIVATE-CANARY") {
 		t.Fatal("actual CLI start refusal lost bounded command aggregate or altered effect boundary")
 	}
 	cancelled, cancel := context.WithCancelCause(t.Context())
@@ -231,12 +231,12 @@ func TestMutationBootstrapResumeUsesRegisteredPlanAndRejectsFreshClientBeforeHTT
 	cancel(privateCause)
 	output.Reset()
 	diagnostics.Reset()
-	if code := runMutation(cancelled, o, &output, &diagnostics); code != 4 || output.Len() != 0 || writes.Load() != 0 || strings.Count(diagnostics.String(), "installation diagnostic command-cost ") != 1 || strings.Contains(diagnostics.String(), "installation diagnostic step-cost ") || strings.Contains(diagnostics.String(), "PRIVATE-CANARY") || context.Cause(cancelled) != privateCause {
+	if code := runMutation(cancelled, o, &output, &diagnostics); code != 4 || output.Len() != 0 || writes.Load() != 0 || strings.Count(diagnostics.String(), "installation diagnostic command-cost ") != 1 || strings.Count(diagnostics.String(), "installation diagnostic command-request-pipeline ") != 1 || strings.Contains(diagnostics.String(), "installation diagnostic step-cost ") || strings.Contains(diagnostics.String(), "installation diagnostic step-request-pipeline ") || strings.Contains(diagnostics.String(), "PRIVATE-CANARY") || context.Cause(cancelled) != privateCause {
 		t.Fatal("actual CLI cancellation changed its result, exposed cause or fabricated a joined-Step record")
 	}
 	failedDiagnostic := &mutationFailedDiagnosticWriter{}
 	output.Reset()
-	if code := runMutation(t.Context(), o, &output, failedDiagnostic); code != 4 || output.Len() != 0 || writes.Load() != 0 || failedDiagnostic.calls != 2 {
+	if code := runMutation(t.Context(), o, &output, failedDiagnostic); code != 4 || output.Len() != 0 || writes.Load() != 0 || failedDiagnostic.calls != 3 {
 		t.Fatal("diagnostic write failure changed actual start refusal or retried an effect")
 	}
 	for _, test := range []struct {
