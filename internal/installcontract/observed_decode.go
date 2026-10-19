@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	admissionv1 "k8s.io/api/admissionregistration/v1"
+	crdv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	strictjson "sigs.k8s.io/json"
@@ -17,7 +18,9 @@ import (
 // At most one bounded complete JSON value and one private typed conversion per
 // sealed template. This is NOT a match result, original identity, permission,
 // health observation, journal witness or durable authority. Misses/refusals
-// clear it. Readers never receive the memo's mutable typed graph.
+// clear it. Generic readers receive owning copies. Only private CRD checks may
+// borrow its actual Spec read-only; their metadata/status remain independently
+// owned and no borrowed graph escapes through a result or accessor.
 type observedDecodeMemo struct {
 	mu     sync.Mutex
 	body   []byte
@@ -43,10 +46,33 @@ func (t *Template) decodeObserved(object *unstructured.Unstructured) (runtime.Ob
 }
 
 func (t *Template) decodeObservedMode(object *unstructured.Unstructured, strictAdmission bool) (runtime.Object, error) {
+	return t.decodeObservedCopyMode(object, strictAdmission, false)
+}
+
+// Only Match's CRD branch and CheckCRD may use this result. They normalize
+// metadata/status and read Spec, never return it or mutate its nested graph.
+// Misses still return a fully owned decoded object, exactly as generic callers.
+func (t *Template) decodeObservedCRDForCheck(object *unstructured.Unstructured) (runtime.Object, error) {
+	return t.decodeObservedCopyMode(object, false, true)
+}
+
+// Called only with the memo locked. Replacement/clear drop references without
+// mutating old graphs, so a borrowed actual Spec survives either operation.
+func copyObservedMemo(object runtime.Object, borrowCRDSpec bool) runtime.Object {
+	if crd, ok := object.(*crdv1.CustomResourceDefinition); borrowCRDSpec && ok {
+		copy := *crd
+		crd.ObjectMeta.DeepCopyInto(&copy.ObjectMeta)
+		crd.Status.DeepCopyInto(&copy.Status)
+		return &copy
+	}
+	return object.DeepCopyObject()
+}
+
+func (t *Template) decodeObservedCopyMode(object *unstructured.Unstructured, strictAdmission, borrowCRDSpec bool) (runtime.Object, error) {
 	m := &t.decoded
 	m.mu.Lock()
 	if m.object != nil && m.raw != nil && (!strictAdmission || m.strictAdmission) && sameObservedJSON(object.Object, m.raw) {
-		decoded := m.object.DeepCopyObject()
+		decoded := copyObservedMemo(m.object, borrowCRDSpec)
 		m.mu.Unlock()
 		return decoded, nil
 	}
@@ -79,7 +105,7 @@ func (t *Template) decodeObservedMode(object *unstructured.Unstructured, strictA
 				}
 			}
 		}
-		return m.object.DeepCopyObject(), nil
+		return copyObservedMemo(m.object, borrowCRDSpec), nil
 	}
 	m.body, m.object, m.raw, m.strictAdmission = nil, nil, nil, false
 	m.rawCaptureHits = 0

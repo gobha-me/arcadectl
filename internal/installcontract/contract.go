@@ -273,7 +273,13 @@ func (t *Template) matchWithAdmissionResult(object *unstructured.Unstructured, j
 	if object.GetDeletionTimestamp() != nil || len(object.GetOwnerReferences()) != 0 || len(object.GetFinalizers()) != 0 {
 		return ErrDrift
 	}
-	actual, err := t.decodeObservedMode(object, admissionResult != nil)
+	var actual runtime.Object
+	var err error
+	if t.key.Kind == "CustomResourceDefinition" && admissionResult == nil {
+		actual, err = t.decodeObservedCRDForCheck(object)
+	} else {
+		actual, err = t.decodeObservedMode(object, admissionResult != nil)
+	}
 	if err != nil {
 		return err
 	}
@@ -362,7 +368,7 @@ func (t *Template) matchWithAdmissionResult(object *unstructured.Unstructured, j
 	// numeric value, including different formats (64Mi == 67108864 bytes).
 	// The privately compiled expected graph is immutable, and the pinned
 	// semantic comparison reads both operands without mutating them. Only the
-	// independently decoded actual graph above is normalized; do not allocate
+	// actual copy is normalized (CRD Spec is read-only); do not allocate
 	// another whole signed object merely to read it during this comparison.
 	if !apiequality.Semantic.DeepEqual(t.expected, actual) {
 		return ErrDrift

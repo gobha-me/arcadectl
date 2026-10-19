@@ -11,8 +11,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  image-construction-validation:
-    name: Immutable image construction validation and native measurement
+  crd-check-copy-validation:
+    name: Private CRD check ownership validation and native measurement
     runs-on: ubuntu-24.04
     timeout-minutes: 85
     env:
@@ -31,24 +31,18 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Race test signed value accessors and defensive copies
-        run: go test -race -p 1 -timeout=8m ./internal/installrender -count=1
-      # Preserve every selected complete tree; the combined suite exceeded one
-      # 8m package timer. Existing race weights guide placement, not runtime bounds.
-      - name: Race test constructor and fixture cohort 1 of 4
-        run: go test -race -p 1 -timeout=8m ./internal/installengine -run='^(TestAdmissionCreateProbeMetadataMembershipAndIndependentResults|TestFixturePhaseColdLeaderTailMetadataRemainsExact|TestFixturePhaseDestroyShapeUsesDestroyFamilyNotOrdinaryWarmth|TestFixturePhaseNamedScanClosesEveryRemoteOriginalWitness|TestFixtureRecipeRefusesUnknownOwnersClosedLedgerAndAlteredEvidence|TestFixtureRecipeV2OriginalWirePreviewAckDeleteAndAbsence|TestFixtureResultRefusesExecutionBindingAndStatusAuthority)$' -count=1
-      - name: Race test constructor and fixture cohort 2 of 4
-        run: go test -race -p 1 -timeout=8m ./internal/installengine -run='^(TestFixturePhaseCompleteOriginalAndFixedFixtureAccounting|TestFixturePhaseNamedScanKeepsPerGETAuthorizationAndLocalEvidence|TestFixturePhasePublicOriginalDriftIncludingSecondPassTail|TestFixturePhaseRejectsLegacyWorldOnlyCompanion|TestFixtureRecipeV2BehaviorVersionRequiresAllOriginals|TestFixtureRecipeV2CompletePhaseAndHistoricalRetirement|TestFixtureResultClosedPhasesOriginalOwnershipAndWholeShape|TestFixtureResultReloadKeepsOriginalOwnershipAndNoSendCapability)$' -count=1
-      - name: Race test constructor and fixture cohort 3 of 4
-        run: go test -race -p 1 -timeout=8m ./internal/installengine -run='^(TestFixturePhaseOriginalWarmRenewalBoundsAndFloors|TestFixturePhaseOriginalWarmRenewalClosure|TestFixturePhaseStateReadabilityDoesNotRepairUnknownAcknowledgements|TestFixturePhaseWarmRenewalCompletedFloorSurvivesLaterRefusal|TestFixturePhaseWarmRenewalUnrelatedLeaseWholeClosure|TestFixtureRecipeClosedInertObjectsAndOriginalOwner|TestFixtureRecipeV2ClosedVerifiedOriginalAndWholeShapes|TestLifecycleBoundaryDiagnosticActualRefusalsPreserveEffects)$' -count=1
-      - name: Race test constructor and fixture cohort 4 of 4
-        run: go test -race -p 1 -timeout=8m ./internal/installengine -run='^(TestFixturePhaseFinalActorReadCannotHideProtectedFileReplacement|TestFixturePhaseLeaderRefreshWholeGCAndMonotonicTypedFloor|TestFixturePhaseOriginalWarmRenewalIdentity|TestFixturePhaseReadPassKeepsCompleteCollectionsAndNativeRefusals|TestFixtureRecipeV1UnusedCompositionTailRefused|TestFixtureRecipeVersionsAreClosedAndImmutable|TestFixtureResultIndependentNativeMetadataTimes)$' -count=1
+      - name: Race test complete default-build contract package and owning results
+        run: go test -race -p 1 -timeout=8m ./internal/installcontract -count=1
       - name: Race test native diagnostic controls
         run: go test -race -p 1 -timeout=2m ./hack/profile-installer-wrappers -count=1
-      - name: Vet immutable image access and tagged installer harness
-        run: go vet -tags=kindinstall -p 1 ./internal/installrender ./internal/installengine ./hack/profile-installer-wrappers
-      - name: Benchmark paired complete probe constructors
-        run: go test -p 1 ./internal/installengine -run='^$' -bench='^BenchmarkAdmissionCreateProbeImages$' -benchmem -benchtime=300ms -count=5 -timeout=5m
+      - name: Vet CRD ownership and tagged installer consumers
+        run: go vet -tags=kindinstall -p 1 ./internal/installcontract ./internal/installengine ./hack/profile-installer-wrappers
+      - name: Differential fuzz complete CRD operations
+        run: go test -p 1 ./internal/installcontract -run='^$' -fuzz='^FuzzCRDCheckCopyWholeOperations$' -fuzztime=30s -parallel=2 -timeout=3m
+      # 240 cases x five repetitions, both orders; stable and every-call churn.
+      # This is synthetic complete-method timing, not a lifecycle deadline test.
+      - name: Benchmark paired complete CRD operations in both orders
+        run: go test -p 1 ./internal/installcontract -run='^$' -bench='^BenchmarkCRDCheckCopyWholeOperations(Reverse)?$' -benchmem -benchtime=200ms -count=5 -timeout=12m
       - name: Profile one complete native component without raw artifacts
         run: go run -p 1 ./hack/profile-installer-wrappers native-component-v2 '${{ github.sha }}'
       - name: Require unchanged exact source checkout
