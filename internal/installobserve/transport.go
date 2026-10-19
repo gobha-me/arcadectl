@@ -72,7 +72,7 @@ func (t readTransport) RoundTrip(request *http.Request) (*http.Response, error) 
 		if err != nil {
 			return nil, ErrRead
 		}
-	} else if _, err := boundedJSON(body); err != nil {
+	} else if err := validatePublicJSON(body); err != nil {
 		// Check raw syntax before a permissive SDK decoder can collapse
 		// duplicate keys or replace invalid UTF-8 in public safety objects.
 		return nil, ErrRead

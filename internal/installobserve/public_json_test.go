@@ -4,84 +4,12 @@
 package installobserve
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
 	"strings"
 	"testing"
-	"unicode/utf8"
 )
 
-// TEST-ONLY candidate. Public replies need syntax validation before SDK decoding,
-// not the discarded value graph. Metadata envelope/redaction STILL needs that
-// graph. Keep production boundedJSON/jsonValue unchanged as the acceptance oracle.
-func boundedJSONNoGraphCandidate(body []byte) error {
-	if !utf8.Valid(body) {
-		return ErrRead
-	}
-	d := json.NewDecoder(bytes.NewReader(body))
-	d.UseNumber()
-	nodes := 0
-	if err := jsonNoGraphCandidate(d, 0, &nodes); err != nil {
-		return ErrRead
-	}
-	if _, err := d.Token(); err != io.EOF {
-		return ErrRead
-	}
-	return nil
-}
-
-func jsonNoGraphCandidate(d *json.Decoder, depth int, nodes *int) error {
-	(*nodes)++
-	if depth > 64 || *nodes > 200000 {
-		return ErrRead
-	}
-	token, err := d.Token()
-	if err != nil {
-		return ErrRead
-	}
-	switch token {
-	case json.Delim('{'):
-		keys := map[string]struct{}{}
-		for d.More() {
-			token, err := d.Token()
-			key, ok := token.(string)
-			if err != nil || !ok {
-				return ErrRead
-			}
-			if _, duplicate := keys[key]; duplicate {
-				return ErrRead
-			}
-			if err := jsonNoGraphCandidate(d, depth+1, nodes); err != nil {
-				return ErrRead
-			}
-			keys[key] = struct{}{}
-		}
-		if end, err := d.Token(); err != nil || end != json.Delim('}') {
-			return ErrRead
-		}
-		return nil
-	case json.Delim('['):
-		for d.More() {
-			if err := jsonNoGraphCandidate(d, depth+1, nodes); err != nil {
-				return ErrRead
-			}
-		}
-		if end, err := d.Token(); err != nil || end != json.Delim(']') {
-			return ErrRead
-		}
-		return nil
-	default:
-		switch token.(type) {
-		case string, json.Number, bool, nil:
-			return nil
-		}
-		return ErrRead
-	}
-}
-
-func TestNoGraphCandidateMatchesBoundedJSONOracle(t *testing.T) {
+func TestPublicJSONMatchesBoundedJSONOracle(t *testing.T) {
 	cases := []struct {
 		name, body string
 		valid      bool
@@ -115,6 +43,21 @@ func TestNoGraphCandidateMatchesBoundedJSONOracle(t *testing.T) {
 		{"whitespace-heavy", strings.Repeat(" \t\r\n", 10000) + `[0]` + strings.Repeat(" ", 10000), true},
 		{"empty", ``, false},
 		{"space-only", " \r\n\t", false},
+		{"unterminated-string", "\"" + strings.Repeat("x", 10000), false},
+		{"unterminated-key", "{\"" + strings.Repeat("x", 10000), false},
+		{"key-backslash-eof", "{\"key" + "\\", false},
+		{"value-backslash-eof", "{\"key\":\"value" + "\\", false},
+		{"missing-colon", `{"a" 0}`, false},
+		{"missing-comma", `{"a":0 "b":1}`, false},
+		{"bad-key-escape", `{"\x20":0}`, false},
+		{"bad-key-unicode", `{"\u00xz":0}`, false},
+		{"bad-key-control", "{\"a\x00b\":0}", false},
+		{"bad-value-large", "{\"x\":\"" + strings.Repeat("a", 1024*1024) + `\x20"}`, false},
+		{"bad-key-large", "{\"" + strings.Repeat("a", 1024*1024) + `\x20":0}`, false},
+		{"bad-primitive-deep-tail", "nul" + strings.Repeat("[", 1000), false},
+		{"bad-primitive-with-delimiter", `[truex,false]`, false},
+		{"bad-object-root", `{]`, false},
+		{"bad-array-root", `[}`, false},
 		{"invalid-utf8", string([]byte{'"', 0xff, '"'}), false},
 		{"invalid-key-utf8", string([]byte{'{', '"', 0xff, '"', ':', '0', '}'}), false},
 		{"raw-control", "\"a\x00b\"", false},
@@ -160,23 +103,25 @@ func TestNoGraphCandidateMatchesBoundedJSONOracle(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, oracle := boundedJSON([]byte(tc.body))
-			candidate := boundedJSONNoGraphCandidate([]byte(tc.body))
-			scan := boundedJSONScanCandidate([]byte(tc.body))
-			if (oracle == nil) != tc.valid || (candidate == nil) != tc.valid || (scan == nil) != tc.valid {
+			candidate := validatePublicJSON([]byte(tc.body))
+			if (oracle == nil) != tc.valid || (candidate == nil) != tc.valid {
 				t.Fatal("oracle/candidate acceptance differs from the explicit contract")
 			}
-			if candidate != nil && candidate != ErrRead || scan != nil && scan != ErrRead {
+			if candidate != nil && candidate != ErrRead {
 				t.Fatal("candidate leaked a decoder error")
 			}
 		})
 	}
 }
 
-func FuzzNoGraphCandidateMatchesBoundedJSON(f *testing.F) {
+func FuzzPublicJSONMatchesBoundedJSON(f *testing.F) {
 	for _, body := range []string{
 		`{}`, `[]`, `null`, `true`, `1e999999999`, `"\ud800"`, `{"a":null,"\u0061":false}`,
 		`[{"x":[0,null,true]},{"x":{}}]`, `{"�":0,"\ud800":1}`, `{} []`,
 		strings.Repeat("[", 65) + "0" + strings.Repeat("]", 65), string([]byte{'"', 0xff, '"'}),
+		`"\x20"`, `"\u00xz"`, `{"\x20":0}`, `{"a" 0}`, `{"a":0 "b":1}`,
+		`{"a":}`, `[truex,false]`, `1e+`, `null[`, `{]`, `[}`, `{"a":"unfinished`,
+		"{\"key" + "\\", "{\"key\":\"value" + "\\", "\"a\x00b\"",
 	} {
 		f.Add([]byte(body))
 	}
@@ -185,9 +130,8 @@ func FuzzNoGraphCandidateMatchesBoundedJSON(f *testing.F) {
 			t.Skip()
 		}
 		_, oracle := boundedJSON(body)
-		candidate := boundedJSONNoGraphCandidate(body)
-		scan := boundedJSONScanCandidate(body)
-		if (oracle == nil) != (candidate == nil) || (oracle == nil) != (scan == nil) || (candidate != nil && candidate != ErrRead) || (scan != nil && scan != ErrRead) {
+		candidate := validatePublicJSON(body)
+		if (oracle == nil) != (candidate == nil) || (candidate != nil && candidate != ErrRead) {
 			t.Fatal("candidate differs from unchanged acceptance oracle")
 		}
 	})
@@ -211,16 +155,16 @@ func publicValidationBenchBodies() map[string][]byte {
 	}
 }
 
-func BenchmarkPublicJSONWholeValidation(b *testing.B) {
+func BenchmarkPublicJSONValidation(b *testing.B) {
 	bodies := publicValidationBenchBodies()
 	// Fixed order, both implementations receive exactly the same prepared bytes.
 	for _, name := range []string{"SmallPublicGET", "ManagedFieldsPodGET", "PodList128", "PolicyList12", "BindingList12"} {
 		body := bodies[name]
-		if _, err := boundedJSON(body); err != nil || boundedJSONNoGraphCandidate(body) != nil || boundedJSONScanCandidate(body) != nil {
+		if _, err := boundedJSON(body); err != nil || validatePublicJSON(body) != nil {
 			b.Fatal("benchmark fixture refused outside timing")
 		}
 		b.Run(name, func(b *testing.B) {
-			for _, implementation := range []string{"OracleGraph", "CandidateNoGraph", "CandidateScan"} {
+			for _, implementation := range []string{"OracleGraph", "Production"} {
 				b.Run(implementation, func(b *testing.B) {
 					b.ReportAllocs()
 					b.SetBytes(int64(len(body)))
@@ -230,10 +174,8 @@ func BenchmarkPublicJSONWholeValidation(b *testing.B) {
 							if _, err := boundedJSON(body); err != nil {
 								b.Fatal("oracle refused public fixture")
 							}
-						} else if implementation == "CandidateNoGraph" && boundedJSONNoGraphCandidate(body) != nil {
+						} else if implementation == "Production" && validatePublicJSON(body) != nil {
 							b.Fatal("candidate refused public fixture")
-						} else if implementation == "CandidateScan" && boundedJSONScanCandidate(body) != nil {
-							b.Fatal("scan candidate refused public fixture")
 						}
 					}
 				})
@@ -242,9 +184,9 @@ func BenchmarkPublicJSONWholeValidation(b *testing.B) {
 	}
 }
 
-// Full json.Valid precedes the bounded walk in the scan prototype. Measure its
-// extra full-scan cost on early refusals too, not just accepted public replies.
-func BenchmarkPublicJSONRejectedBudget(b *testing.B) {
+// Measure early refusals too, not just accepted public replies. Input MB/s is
+// nominal full-input size, not actual scanned bytes for early refusals.
+func BenchmarkPublicJSONRejected(b *testing.B) {
 	inputs := map[string][]byte{
 		"Depth65LargeTail":   []byte(strings.Repeat("[", 65) + "0" + strings.Repeat("]", 65) + strings.Repeat(" ", 3*1024*1024)),
 		"NodesOver":          []byte("[" + strings.Repeat("0,", 199999) + "0]"),
@@ -252,11 +194,11 @@ func BenchmarkPublicJSONRejectedBudget(b *testing.B) {
 	}
 	for _, name := range []string{"Depth65LargeTail", "NodesOver", "DuplicateLargeTail"} {
 		body := inputs[name]
-		if _, err := boundedJSON(body); err == nil || boundedJSONNoGraphCandidate(body) == nil || boundedJSONScanCandidate(body) == nil {
+		if _, err := boundedJSON(body); err == nil || validatePublicJSON(body) == nil {
 			b.Fatal("rejection benchmark unexpectedly accepted outside timing")
 		}
 		b.Run(name, func(b *testing.B) {
-			for _, implementation := range []string{"OracleGraph", "CandidateNoGraph", "CandidateScan"} {
+			for _, implementation := range []string{"OracleGraph", "Production"} {
 				b.Run(implementation, func(b *testing.B) {
 					b.ReportAllocs()
 					b.SetBytes(int64(len(body)))
@@ -266,10 +208,8 @@ func BenchmarkPublicJSONRejectedBudget(b *testing.B) {
 						switch implementation {
 						case "OracleGraph":
 							_, err = boundedJSON(body)
-						case "CandidateNoGraph":
-							err = boundedJSONNoGraphCandidate(body)
-						case "CandidateScan":
-							err = boundedJSONScanCandidate(body)
+						case "Production":
+							err = validatePublicJSON(body)
 						}
 						if err != ErrRead {
 							b.Fatal("rejection candidate changed the fixed refusal")

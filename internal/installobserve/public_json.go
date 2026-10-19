@@ -8,31 +8,33 @@ import (
 	"unicode/utf8"
 )
 
-// TEST-ONLY: the standard library validates ALL syntax first. The second pass
-// enforces the unchanged depth/node/decoded-key bounds without materializing
-// scalar values. This is not a new JSON syntax implementation or a metadata
-// sanitizer. Production boundedJSON and transport remain untouched.
-func boundedJSONScanCandidate(body []byte) error {
-	if !utf8.Valid(body) || !json.Valid(body) {
+// validatePublicJSON preserves boundedJSON's acceptance without constructing a
+// value graph for public responses. The first pass enforces decoded-key, depth
+// and node limits, refusing early without a full JSON syntax pass over a large
+// rejected tail. It is NOT a syntax validator: the standard library must validate
+// the complete JSON before acceptance. Metadata still uses boundedJSON and its
+// original sanitizer.
+func validatePublicJSON(body []byte) error {
+	if !utf8.Valid(body) {
 		return ErrRead
 	}
-	w := jsonBudgetCandidate{body: body}
+	w := publicJSONBudget{body: body}
 	if !w.value(0) {
 		return ErrRead
 	}
 	w.space()
-	if w.at != len(body) {
+	if w.at != len(body) || !json.Valid(body) {
 		return ErrRead
 	}
 	return nil
 }
 
-type jsonBudgetCandidate struct {
+type publicJSONBudget struct {
 	body      []byte
 	at, nodes int
 }
 
-func (w *jsonBudgetCandidate) space() {
+func (w *publicJSONBudget) space() {
 	for w.at < len(w.body) {
 		switch w.body[w.at] {
 		case ' ', '\t', '\n', '\r':
@@ -43,7 +45,7 @@ func (w *jsonBudgetCandidate) space() {
 	}
 }
 
-func (w *jsonBudgetCandidate) take(c byte) bool {
+func (w *publicJSONBudget) take(c byte) bool {
 	if w.at >= len(w.body) || w.body[w.at] != c {
 		return false
 	}
@@ -51,9 +53,9 @@ func (w *jsonBudgetCandidate) take(c byte) bool {
 	return true
 }
 
-// Returns the physical quoted span, not decoded contents. Even after
-// json.Valid, all accesses/slices stay bounded and unmatched quotes refuse.
-func (w *jsonBudgetCandidate) quoted() (start, end int, escaped, ok bool) {
+// Returns the physical quoted span, not decoded contents. All accesses and
+// slices stay bounded even on malformed input; unmatched quotes refuse.
+func (w *publicJSONBudget) quoted() (start, end int, escaped, ok bool) {
 	start = w.at
 	if !w.take('"') {
 		return 0, 0, false, false
@@ -70,14 +72,14 @@ func (w *jsonBudgetCandidate) quoted() (start, end int, escaped, ok bool) {
 				return 0, 0, false, false
 			}
 			// Escaped quotes/backslashes are not physical terminators. For
-			// Unicode escapes the already-validated hex digits need no decode.
+			// Unicode escapes need no decode here; json.Valid checks syntax later.
 			w.at++
 		}
 	}
 	return 0, 0, false, false
 }
 
-func (w *jsonBudgetCandidate) value(depth int) bool {
+func (w *publicJSONBudget) value(depth int) bool {
 	w.nodes++
 	if depth > 64 || w.nodes > 200000 {
 		return false
@@ -147,9 +149,9 @@ func (w *jsonBudgetCandidate) value(depth int) bool {
 		_, _, _, ok := w.quoted()
 		return ok
 	case 'n', 't', 'f', '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
-		// ALL scalar spelling/number constraints are enforced by json.Valid,
+		// Scalar spelling/number constraints are enforced by the final json.Valid,
 		// including huge exponents without a float conversion. Here only find
-		// the end of this already-valid scalar, without allocating its value.
+		// a prospective end, without accepting or allocating the scalar value.
 		start := w.at
 		for w.at < len(w.body) {
 			switch w.body[w.at] {

@@ -11,10 +11,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  pure-candidate-comparison:
-    name: Public parser and CRD normalization comparison
+  guarded-runtime-validation:
+    name: Guarded runtime validation and native measurement
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 85
     env:
       GOMAXPROCS: "2"
       GOMEMLIMIT: 1GiB
@@ -31,20 +31,22 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Race test unchanged production and test-only candidates
-        run: go test -race -p 1 -timeout=8m ./internal/installobserve ./internal/installcontract -count=1
-      - name: Vet unchanged production and test-only candidates
-        run: go vet -p 1 ./internal/installobserve ./internal/installcontract
+      - name: Race test production validators and profiling boundaries
+        run: go test -race -p 1 -timeout=8m ./internal/installobserve ./internal/installcontract ./hack/profile-installer-wrappers -count=1
+      - name: Vet production validators and profiling boundaries
+        run: go vet -p 1 ./internal/installobserve ./internal/installcontract ./hack/profile-installer-wrappers
       - name: Report bounded eligibility of all signed CRDs
         run: go test -p 1 ./internal/installcontract -run='^TestCRDShallowBorrowMatchesAllSignedSchemas$' -count=1 -v -timeout=3m
-      - name: Differential fuzz both public JSON candidates
-        run: go test -p 1 ./internal/installobserve -run='^$' -fuzz='^FuzzNoGraphCandidateMatchesBoundedJSON$' -fuzztime=60s -parallel=1 -timeout=3m
+      - name: Differential fuzz production public JSON before syntax validation
+        run: go test -p 1 ./internal/installobserve -run='^$' -fuzz='^FuzzPublicJSONMatchesBoundedJSON$' -fuzztime=60s -parallel=1 -timeout=3m
       - name: Differential fuzz complete CRD normalization
         run: go test -p 1 ./internal/installcontract -run='^$' -fuzz='^FuzzCRDShallowBorrowMatchesDeepCopy$' -fuzztime=30s -parallel=1 -timeout=2m
       - name: Benchmark paired whole public JSON validation
-        run: go test -p 1 ./internal/installobserve -run='^$' -bench='^(BenchmarkPublicJSONWholeValidation|BenchmarkPublicJSONRejectedBudget)$' -benchmem -benchtime=300ms -count=5 -timeout=5m
-      - name: Benchmark complete signed CRD normalization
-        run: go test -p 1 ./internal/installcontract -run='^$' -bench='^BenchmarkCRDSpecWholeNormalization$' -benchmem -benchtime=200ms -count=5 -timeout=5m
+        run: go test -p 1 ./internal/installobserve -run='^$' -bench='^(BenchmarkPublicJSONValidation|BenchmarkPublicJSONRejected)$' -benchmem -benchtime=300ms -count=5 -timeout=5m
+      - name: Benchmark complete signed CRD match and health checks
+        run: go test -p 1 ./internal/installcontract -run='^$' -bench='^BenchmarkCRDWholeMatch$' -benchmem -benchtime=200ms -count=5 -timeout=5m
+      - name: Profile one complete native component without raw artifacts
+        run: go run -p 1 ./hack/profile-installer-wrappers native-component-v2 '${{ github.sha }}'
       - name: Require unchanged exact source checkout
         run: |
           test "$(git rev-parse HEAD)" = '${{ github.sha }}'

@@ -16,38 +16,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-// TEST-ONLY: eligibility is a bounded optimization, never an acceptance limit.
-// Unsupported/large graphs take the unchanged production deep-copy path,
-// including its refusal/panic behavior and no custom-marshaler invocation.
-func shallowCRDSpecCandidate(o *unstructured.Unstructured) []byte {
-	if o == nil {
-		return nil
-	}
-	value, exists, err := unstructured.NestedFieldNoCopy(o.Object, "spec")
-	spec, ok := value.(map[string]any)
-	if err != nil || !exists || !ok || spec == nil {
-		return nil
-	}
-	if !sameObservedJSON(spec, spec) {
-		return normalizedCRDSpec(o)
-	}
-	local := make(map[string]any, len(spec)+1)
-	for key, value := range spec {
-		local[key] = value
-	}
-	if _, exists := local["conversion"]; !exists {
-		local["conversion"] = map[string]any{"strategy": "None"}
-	}
-	if value, exists := local["preserveUnknownFields"]; exists && value == false {
-		delete(local, "preserveUnknownFields")
-	}
-	body, err := json.Marshal(local)
-	if err != nil {
-		return nil
-	}
-	return body
-}
-
 // Frozen independent oracle: exact previous complete normalization, including
 // the nil-spec guard (the older previousCRDSpecBytes test helper predates it).
 func deepCRDSpecOracle(o *unstructured.Unstructured) []byte {
@@ -83,7 +51,7 @@ func captureNormalization(fn func(*unstructured.Unstructured) []byte, o *unstruc
 func assertCRDNormalizationOracle(t testing.TB, o *unstructured.Unstructured) {
 	t.Helper()
 	want, wantPanic := captureNormalization(deepCRDSpecOracle, o)
-	got, gotPanic := captureNormalization(shallowCRDSpecCandidate, o)
+	got, gotPanic := captureNormalization(normalizedCRDSpecShallow, o)
 	if wantPanic != gotPanic || (want == nil) != (got == nil) || !bytes.Equal(want, got) {
 		t.Fatal("shallow candidate changed complete normalization disposition")
 	}
@@ -144,13 +112,13 @@ func TestCRDShallowBorrowPreservesFallbackAndRawShape(t *testing.T) {
 	shared := map[string]any{"minimum": int64(1), "unknown": []any{"public", nil}}
 	live := &unstructured.Unstructured{Object: map[string]any{"spec": map[string]any{"a": shared, "b": shared, "preserveUnknownFields": false}}}
 	before := live.DeepCopy()
-	first := shallowCRDSpecCandidate(live)
+	first := normalizedCRDSpecShallow(live)
 	assertCRDNormalizationOracle(t, live)
 	if !reflect.DeepEqual(before, live) {
 		t.Fatal("shallow normalization mutated the caller graph")
 	}
 	shared["minimum"] = int64(2)
-	if bytes.Equal(first, shallowCRDSpecCandidate(live)) {
+	if bytes.Equal(first, normalizedCRDSpecShallow(live)) {
 		t.Fatal("earlier normalization hid fresh nested drift")
 	}
 	cycle := map[string]any{}
@@ -177,7 +145,7 @@ func TestCRDShallowBorrowConcurrentImmutableInput(t *testing.T) {
 			go func() {
 				defer group.Done()
 				for range 4 {
-					if !bytes.Equal(shallowCRDSpecCandidate(live), want) {
+					if !bytes.Equal(normalizedCRDSpecShallow(live), want) {
 						t.Error("immutable concurrent normalization changed")
 						return
 					}
@@ -277,7 +245,7 @@ func BenchmarkCRDSpecWholeNormalization(b *testing.B) {
 			assertCRDNormalizationOracle(b, live)
 			want := deepCRDSpecOracle(live)
 			b.Run(generation+id, func(b *testing.B) {
-				for _, implementation := range []string{"OracleDeepCopy", "CandidateBorrow"} {
+				for _, implementation := range []string{"OracleDeepCopy", "ProductionShallow"} {
 					b.Run(implementation, func(b *testing.B) {
 						b.ReportAllocs()
 						b.SetBytes(int64(len(want)))
@@ -287,11 +255,144 @@ func BenchmarkCRDSpecWholeNormalization(b *testing.B) {
 							if implementation == "OracleDeepCopy" {
 								got = deepCRDSpecOracle(live)
 							} else {
-								got = shallowCRDSpecCandidate(live)
+								got = normalizedCRDSpecShallow(live)
 							}
 							if !bytes.Equal(got, want) {
 								b.Fatal("whole normalization changed")
 							}
+						}
+					})
+				}
+			})
+		}
+	}
+}
+
+func TestCRDCompiledShallowHintIsNotAuthority(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		c := testContract(t, legacy)
+		for key := range c.resources {
+			if key.Kind != "CustomResourceDefinition" {
+				continue
+			}
+			production, err := c.compileTemplate(key, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			baseline, err := c.compileTemplate(key, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Independently compiled: never copy Template's memo mutex.
+			baseline.crdShallow = false
+			raw, _, _ := unstructured.NestedFieldNoCopy(production.resource.Object.Object, "spec")
+			if production.crdShallow != sameObservedJSON(raw, raw) {
+				t.Fatal("compiled hint does not reflect private signed input")
+			}
+			live := liveObject(t, production)
+			if production.MatchLive(live, live.GetUID()) != nil || baseline.MatchLive(live, live.GetUID()) != nil || production.CheckCRD(live, live.GetUID(), baseline) != nil || baseline.CheckCRD(live, live.GetUID(), production) != nil {
+				t.Fatal("complete signed live fixture was refused")
+			}
+			// Even a forced hint cannot bypass fresh eligibility or signed bytes.
+			production.crdShallow = true
+			for _, value := range []any{true, json.Number("1"), strings.Repeat("x", observedJSONStrings+1), make([]any, observedJSONNodes+1)} {
+				changed := live.DeepCopy()
+				changed.Object["spec"].(map[string]any)["unknownNested"] = map[string]any{"value": value}
+				if production.matchCRDSpec(changed) || baseline.matchCRDSpec(changed) || production.MatchLive(changed, live.GetUID()) == nil || baseline.MatchLive(changed, live.GetUID()) == nil {
+					t.Fatal("hint accepted fresh unsigned nested drift")
+				}
+			}
+			foreign := live.DeepCopy()
+			foreign.SetUID("foreign-uid")
+			if production.MatchLive(foreign, live.GetUID()) == nil || baseline.MatchLive(foreign, live.GetUID()) == nil {
+				t.Fatal("hint bypassed original identity")
+			}
+			stale := live.DeepCopy()
+			if err := unstructured.SetNestedField(stale.Object, int64(0), "status", "observedGeneration"); err != nil {
+				t.Fatal(err)
+			}
+			if production.CheckCRD(stale, live.GetUID(), baseline) == nil || baseline.CheckCRD(stale, live.GetUID(), production) == nil {
+				t.Fatal("hint bypassed fresh health")
+			}
+			other, err := c.compileTemplate(key, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			other.crdSpec = append(append([]byte(nil), other.crdSpec...), ' ')
+			if production.CheckCRD(live, live.GetUID(), other) == nil {
+				t.Fatal("hint bypassed signed target agreement")
+			}
+			wantBytes := append([]byte(nil), production.crdSpec...)
+			wantHint := production.crdShallow
+			candidate, err := production.Candidate(strings.Repeat("a", 32))
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidate.Object["spec"].(map[string]any)["unsigned"] = true
+			if production.crdShallow != wantHint || !bytes.Equal(production.crdSpec, wantBytes) || production.matchCRDSpec(candidate) || !production.matchCRDSpec(live) {
+				t.Fatal("candidate mutation escaped private signed state")
+			}
+		}
+	}
+}
+
+// Complete fresh MatchLive/CheckCRD operations, including normalization guards,
+// strict conversion/memo checks, original identity and health. Setup and warmup
+// are outside timing. Each mode owns a separately compiled memo, never a copy.
+// Warm stable-input, fixed-oracle-first ordering; not network/native latency.
+func BenchmarkCRDWholeMatch(b *testing.B) {
+	for _, legacy := range []bool{false, true} {
+		generation := "Current"
+		if legacy {
+			generation = "Legacy"
+		}
+		c := testContract(b, legacy)
+		for key := range c.resources {
+			if key.Kind != "CustomResourceDefinition" {
+				continue
+			}
+			id, ok := crdBorrowIDs[key.Name]
+			if !ok {
+				b.Fatal("unmapped whole-match CRD")
+			}
+			b.Run(generation+id, func(b *testing.B) {
+				for _, operation := range []string{"MatchLive", "CheckCRD"} {
+					b.Run(operation, func(b *testing.B) {
+						for _, implementation := range []string{"OracleDeepCopy", "Production"} {
+							b.Run(implementation, func(b *testing.B) {
+								template, err := c.compileTemplate(key, false)
+								if err != nil {
+									b.Fatal(err)
+								}
+								if implementation == "OracleDeepCopy" {
+									template.crdShallow = false
+								}
+								target, err := c.compileTemplate(key, false)
+								if err != nil {
+									b.Fatal(err)
+								}
+								live := liveObject(b, template)
+								if template.MatchLive(live, live.GetUID()) != nil || template.CheckCRD(live, live.GetUID(), target) != nil {
+									b.Fatal("whole fixture refused outside timing")
+								}
+								body, err := json.Marshal(live.Object)
+								if err != nil {
+									b.Fatal(err)
+								}
+								b.ReportAllocs()
+								b.SetBytes(int64(len(body)))
+								b.ResetTimer()
+								for range b.N {
+									if operation == "MatchLive" {
+										err = template.MatchLive(live, live.GetUID())
+									} else {
+										err = template.CheckCRD(live, live.GetUID(), target)
+									}
+									if err != nil {
+										b.Fatal("whole live comparison changed")
+									}
+								}
+							})
 						}
 					})
 				}
