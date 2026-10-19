@@ -36,10 +36,10 @@ jobs:
           roots='^TestBaseline(Access|RuntimeAccess|OriginalAccess|Configuration|Actors)'
           compiled="$(go test -race -p=1 -list "$roots" ./internal/installengine)"
           printf '%s\n' "$compiled"
-          test "$(printf '%s\n' "$compiled" | rg -c '^TestBaseline(Access|RuntimeAccess|OriginalAccess|Configuration|Actors)')" -eq 16
-          printf '%s\n' "$compiled" | rg -q '^TestBaselineAccessEightLanesPreserveWholeMembershipAndClosingJoin$'
-          printf '%s\n' "$compiled" | rg -q '^TestBaselineConfigurationEightLanesPreserveCompletePassesAndClosingJoin$'
-          printf '%s\n' "$compiled" | rg -q '^TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe$'
+          test "$(printf '%s\n' "$compiled" | grep -Ec '^TestBaseline(Access|RuntimeAccess|OriginalAccess|Configuration|Actors)')" -eq 16
+          printf '%s\n' "$compiled" | grep -Eq '^TestBaselineAccessEightLanesPreserveWholeMembershipAndClosingJoin$'
+          printf '%s\n' "$compiled" | grep -Eq '^TestBaselineConfigurationEightLanesPreserveCompletePassesAndClosingJoin$'
+          printf '%s\n' "$compiled" | grep -Eq '^TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe$'
           bash ./hack/test-installengine-race-shard.sh 0 --list-only
           printf '%s\n' 'eight-lane-compiled-roots-complete-v1'
       - name: Race check catalog scheduling and existing whole-witness refusals three times
