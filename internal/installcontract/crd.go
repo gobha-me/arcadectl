@@ -44,7 +44,7 @@ func (t *Template) CheckCRD(live *unstructured.Unstructured, originalUID types.U
 	}
 	// MatchLive above populated only a strict whole-byte conversion, never a
 	// health verdict. All fresh raw generation and typed status checks remain.
-	object, err := t.decodeObserved(live)
+	object, err := t.decodeObservedCRDForCheck(live)
 	if err != nil {
 		return ErrCRD
 	}

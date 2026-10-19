@@ -340,6 +340,16 @@ func (p *Plan) Manifest() installpackage.Manifest {
 	return result
 }
 
+// Images returns only immutable value fields from the sealed signed manifest.
+// It is not live observation or authorization; callers still require IsTrusted
+// and the complete original-resource, journal and admission checks.
+func (p *Plan) Images() installpackage.Images {
+	if p == nil {
+		return installpackage.Images{}
+	}
+	return p.manifest.Images
+}
+
 // Compile checks sealed verification through defensive accessors and permits
 // only byte-exact canonical payloads rendered by this binary. It does not repeat
 // signature verification or certify declared source/image provenance.
