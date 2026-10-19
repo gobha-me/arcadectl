@@ -7,62 +7,55 @@ permissions:
   contents: read
 
 concurrency:
-  group: denied-lookup-prototype-${{ github.ref }}
+  group: eight-lane-native-transition-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  denied-lookup-prototype:
-    name: Denied catalog immutable lookup prototype
+  eight-lane-contract:
+    name: Eight-lane original catalog contract
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 35
     env:
       GOTOOLCHAIN: local
       GOTELEMETRY: off
       GOMAXPROCS: '2'
       GOMEMLIMIT: 1GiB
     steps:
-      - name: Check out exact diagnostic source
+      - name: Check out exact candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 1
           persist-credentials: false
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
-      - name: Require compiled correctness and benchmark roots
-        shell: bash
+      - name: Require compiled catalog concurrency and refusal roots
         run: |
-          set -euo pipefail
-          go test -p=1 -list '^(TestBaselineDeniedLookupPrototypeParity|BenchmarkBaselineDeniedLookupPrototype)$' ./internal/installengine > "$RUNNER_TEMP/denied-lookup-discovery.txt"
-          test "$(awk '/^TestBaselineDeniedLookupPrototypeParity$/ {n++} END {print n+0}' "$RUNNER_TEMP/denied-lookup-discovery.txt")" = 1
-          test "$(awk '/^BenchmarkBaselineDeniedLookupPrototype$/ {n++} END {print n+0}' "$RUNNER_TEMP/denied-lookup-discovery.txt")" = 1
-          test "$(awk '/^(Test|Benchmark)/ {n++} END {print n+0}' "$RUNNER_TEMP/denied-lookup-discovery.txt")" = 2
-          echo denied-lookup-prototype-discovery-complete-v1
-      - name: Race check exact prototype parity three times
-        shell: bash
+          roots='^TestBaseline(Access|RuntimeAccess|OriginalAccess|Configuration|Actors)'
+          compiled="$(go test -race -p=1 -list "$roots" ./internal/installengine)"
+          printf '%s\n' "$compiled"
+          test "$(printf '%s\n' "$compiled" | rg -c '^TestBaseline(Access|RuntimeAccess|OriginalAccess|Configuration|Actors)')" -eq 16
+          printf '%s\n' "$compiled" | rg -q '^TestBaselineAccessEightLanesPreserveWholeMembershipAndClosingJoin$'
+          printf '%s\n' "$compiled" | rg -q '^TestBaselineConfigurationEightLanesPreserveCompletePassesAndClosingJoin$'
+          printf '%s\n' "$compiled" | rg -q '^TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe$'
+          bash ./hack/test-installengine-race-shard.sh 0 --list-only
+          printf '%s\n' 'eight-lane-compiled-roots-complete-v1'
+      - name: Race check catalog scheduling and existing whole-witness refusals three times
         run: |
-          set -euo pipefail
-          go test -p=1 -race -count=3 -timeout=10m -run '^TestBaselineDeniedLookupPrototypeParity$' ./internal/installengine
-          echo denied-lookup-prototype-race-complete-v1
-      - name: Benchmark unchanged lookup queries in both fixed orders
-        shell: bash
+          go test -v -p=1 -race -count=3 -timeout=25m -run '^TestBaseline(Access|RuntimeAccess|OriginalAccess|Configuration|Actors)' ./internal/installengine
+          printf '%s\n' 'eight-lane-race-complete-v1'
+      - name: Race check actual CLI composition
         run: |
-          set -euo pipefail
-          go test -p=1 -run '^$' -bench '^BenchmarkBaselineDeniedLookupPrototype$' -benchmem -benchtime=200x -count=5 -cpu=2 -timeout=15m ./internal/installengine
-          echo denied-lookup-prototype-bench-complete-v1
-      - name: Vet unchanged engine with prototype tests
-        shell: bash
+          go test -p=1 -race -count=1 -timeout=5m ./cmd/arcadectl-installer
+          printf '%s\n' 'eight-lane-cli-complete-v1'
+      - name: Vet engine and CLI
         run: |
-          set -euo pipefail
-          go vet -p=1 ./internal/installengine
-          echo denied-lookup-prototype-vet-complete-v1
+          go vet -p=1 ./internal/installengine ./cmd/arcadectl-installer
+          printf '%s\n' 'eight-lane-vet-complete-v1'
       - name: Require unchanged exact source checkout
-        shell: bash
         run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = '${{ github.sha }}'
           test -z "$(git status --porcelain --untracked-files=normal)"
-          echo denied-lookup-prototype-source-complete-v1
+          printf '%s\n' 'eight-lane-source-complete-v1'

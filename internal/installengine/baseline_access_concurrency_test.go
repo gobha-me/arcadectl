@@ -6,9 +6,11 @@ package installengine
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -21,11 +23,11 @@ import (
 
 // Synthetic signed originals exercise scheduling and identity closure only,
 // not native admission enforcement or historical enrollment eligibility.
-func testOriginalAccessReadLanes(t *testing.T) (*baselineWorkflow, *installstate.Snapshot, [2][]string) {
+func testOriginalAccessReadLanes(t *testing.T) (*baselineWorkflow, *installstate.Snapshot, [8][]string) {
 	t.Helper()
 	f := seedBaselineAccessWitness(t)
 	objects := make(map[string]*unstructured.Unstructured)
-	var paths [2][]string
+	var paths [8][]string
 	index := 0
 	for _, resource := range f.snapshot.Document().Resources {
 		if !accessRetirementKey(resource.Key) {
@@ -35,7 +37,7 @@ func testOriginalAccessReadLanes(t *testing.T) (*baselineWorkflow, *installstate
 		if err != nil {
 			t.Fatal("original access route unavailable")
 		}
-		paths[index%2] = append(paths[index%2], path)
+		paths[index%8] = append(paths[index%8], path)
 		index++
 		objects[path] = f.access.objects[resource.Key].DeepCopy()
 	}
@@ -84,10 +86,10 @@ func testOriginalAccessReadLanes(t *testing.T) (*baselineWorkflow, *installstate
 	return engine.baseline, snapshot, paths
 }
 
-func TestBaselineAccessTwoLanesPreserveWholeMembershipAndClosingJoin(t *testing.T) {
+func TestBaselineAccessEightLanesPreserveWholeMembershipAndClosingJoin(t *testing.T) {
 	baseline, snapshot, paths := testOriginalAccessReadLanes(t)
-	var entered, release [2]chan struct{}
-	var once [2]sync.Once
+	var entered, release [8]chan struct{}
+	var once [8]sync.Once
 	for lane := range paths {
 		entered[lane], release[lane] = make(chan struct{}), make(chan struct{})
 	}
@@ -109,7 +111,7 @@ func TestBaselineAccessTwoLanesPreserveWholeMembershipAndClosingJoin(t *testing.
 	}()
 	var active, maximum, blocked, closes atomic.Int32
 	var mu sync.Mutex
-	var seen [2][]string
+	var seen [8][]string
 	access := baseline.engine.access.(*HTTPAccess)
 	next := access.client.Transport
 	access.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -151,7 +153,7 @@ func TestBaselineAccessTwoLanesPreserveWholeMembershipAndClosingJoin(t *testing.
 	})
 	go func() {
 		witness, err := baseline.readOriginalRuntimeAccess(ctx, snapshot)
-		if err == nil && len(witness) != len(paths[0])+len(paths[1]) {
+		if err == nil && len(witness) != 16 {
 			t.Error("original access witness omitted signed membership")
 		}
 		done <- err
@@ -161,19 +163,21 @@ func TestBaselineAccessTwoLanesPreserveWholeMembershipAndClosingJoin(t *testing.
 		case <-entered[lane]:
 		case <-done:
 			joined = true
-			t.Fatal("original access returned before both final reads overlapped")
+			t.Fatal("original access returned before all eight final reads overlapped")
 		case <-ctx.Done():
-			t.Fatal("original access failed to overlap two fixed lanes")
+			t.Fatal("original access failed to overlap eight fixed lanes")
 		}
 	}
-	once[0].Do(func() { close(release[0]) })
+	for lane := range 7 {
+		once[lane].Do(func() { close(release[lane]) })
+	}
 	select {
 	case <-done:
 		joined = true
-		t.Fatal("original access returned before second reader joined")
+		t.Fatal("original access returned before its eighth reader joined")
 	case <-time.After(100 * time.Millisecond):
 	}
-	once[1].Do(func() { close(release[1]) })
+	once[7].Do(func() { close(release[7]) })
 	select {
 	case err := <-done:
 		joined = true
@@ -183,107 +187,200 @@ func TestBaselineAccessTwoLanesPreserveWholeMembershipAndClosingJoin(t *testing.
 	case <-ctx.Done():
 		t.Fatal("released access readers failed to join")
 	}
-	if active.Load() != 0 || maximum.Load() != 2 || blocked.Load() != 0 || closes.Load() != 2 {
+	if active.Load() != 0 || maximum.Load() != 8 || blocked.Load() != 0 || closes.Load() != 2 {
 		t.Fatal("original access changed lane bound or closing fences")
 	}
 	for lane := range paths {
-		if len(paths[lane]) != 8 || !reflect.DeepEqual(seen[lane], paths[lane]) {
+		if len(paths[lane]) != 2 || !reflect.DeepEqual(seen[lane], paths[lane]) {
 			t.Fatal("original access omitted, replayed or reordered signed membership")
 		}
 	}
 }
 
-func TestBaselineAccessTwoLanesCancelAndJoinEitherRefusedSibling(t *testing.T) {
-	for refused := range 2 {
-		t.Run([]string{"even", "odd"}[refused], func(t *testing.T) {
-			baseline, snapshot, paths := testOriginalAccessReadLanes(t)
-			started, canceled, exited, release := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
-			var once sync.Once
-			var seen [2]atomic.Int32
-			var closes atomic.Int32
-			access := baseline.engine.access.(*HTTPAccess)
-			next := access.client.Transport
-			access.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
-				lane := -1
-				for i := range paths {
-					if r.URL.Path == paths[i][0] {
-						lane = i
-					}
-				}
-				if lane < 0 {
-					closes.Add(1)
-					return next.RoundTrip(r)
-				}
-				if seen[lane].Add(1) != 1 {
-					t.Error("refused access reader replayed a request")
-					return nil, ErrRead
-				}
-				if lane == refused {
-					select {
-					case <-started:
-					case <-r.Context().Done():
-					}
-					return nil, ErrRead
-				}
-				close(started)
-				defer close(exited)
-				<-r.Context().Done()
-				close(canceled)
-				<-release // Joining must include a canceled but still live reader.
-				return nil, ErrRead
+func TestBaselineAccessEightLanesCancelAndJoinEveryRefusedSibling(t *testing.T) {
+	for _, mode := range []string{"request", "body"} {
+		for refused := range 8 {
+			t.Run(mode+"/"+strconv.Itoa(refused), func(t *testing.T) {
+				baseline, snapshot, paths := testOriginalAccessReadLanes(t)
+				testBaselineEightReadLaneRefusal(t, baseline.engine.access.(*HTTPAccess), paths, mode, refused, 0, func(ctx context.Context) error {
+					_, err := baseline.readOriginalRuntimeAccess(ctx, snapshot)
+					return err
+				})
 			})
-			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-			done := make(chan error, 1)
-			joined := false
-			defer func() {
-				cancel()
-				once.Do(func() { close(release) })
-				if !joined {
-					select {
-					case <-done:
-					case <-time.After(2 * time.Second):
-						t.Error("refused access invocation leaked")
-					}
-				}
-			}()
-			go func() { _, err := baseline.readOriginalRuntimeAccess(ctx, snapshot); done <- err }()
-			select {
-			case <-canceled:
-			case <-done:
-				joined = true
-				t.Fatal("access refusal returned before sibling cancellation")
-			case <-ctx.Done():
-				t.Fatal("access refusal failed to cancel sibling")
-			}
-			select {
-			case <-done:
-				joined = true
-				t.Fatal("access refusal returned before canceled sibling exited")
-			case <-time.After(100 * time.Millisecond):
-			}
-			once.Do(func() { close(release) })
-			select {
-			case err := <-done:
-				joined = true
-				if err != ErrSecurityBaseline {
-					t.Fatal("access refusal changed fixed public error")
-				}
-			case <-ctx.Done():
-				t.Fatal("released access sibling failed to join")
-			}
-			select {
-			case <-exited:
-			default:
-				t.Fatal("access refusal escaped live reader")
-			}
-			if ctx.Err() != nil || seen[0].Load() != 1 || seen[1].Load() != 1 || closes.Load() != 0 {
-				t.Fatal("access refusal canceled caller or reached closing fence")
-			}
-		})
+		}
 	}
 }
 
-func TestBaselineAccessTwoLanesFreezeAllSignedEntriesBeforeReads(t *testing.T) {
+func TestBaselineAccessEightLanesCallerCancellationJoinsEveryReader(t *testing.T) {
+	baseline, snapshot, paths := testOriginalAccessReadLanes(t)
+	testBaselineEightReadLaneRefusal(t, baseline.engine.access.(*HTTPAccess), paths, "caller", -1, 0, func(ctx context.Context) error {
+		_, err := baseline.readOriginalRuntimeAccess(ctx, snapshot)
+		return err
+	})
+}
+
+// The independent eight-lane oracle is shared by both reader test files. A
+// refused lane waits until every sibling has entered. All siblings observe
+// cancellation, but one deliberately stays alive until the test releases it.
+// Body mode returns real native headers first and refuses from a delayed body
+// read, proving that joining headers alone cannot publish a witness.
+func testBaselineEightReadLaneRefusal(t *testing.T, access *HTTPAccess, paths [8][]string, mode string, refused int, openingCloses int32, invoke func(context.Context) error) {
+	t.Helper()
+	var entered, canceled, exited [8]chan struct{}
+	for lane := range 8 {
+		if len(paths[lane]) == 0 {
+			t.Fatal("eight-lane refusal oracle has an empty lane")
+		}
+		entered[lane], canceled[lane], exited[lane] = make(chan struct{}), make(chan struct{}), make(chan struct{})
+	}
+	release := make(chan struct{})
+	var once sync.Once
+	var seen [8]atomic.Int32
+	var closes atomic.Int32
+	delayed := (refused + 1) % 8
+	if refused < 0 {
+		delayed = 7
+	}
+	next := access.client.Transport
+	access.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		lane := -1
+		for i := range paths {
+			for _, path := range paths[i] {
+				if r.URL.Path == path {
+					lane = i
+				}
+			}
+		}
+		if lane < 0 {
+			closes.Add(1)
+			return next.RoundTrip(r)
+		}
+		if r.Method != http.MethodGet || r.URL.Path != paths[lane][0] || seen[lane].Add(1) != 1 {
+			t.Error("refused reader mutated, reordered or replayed its catalog")
+			return nil, ErrRead
+		}
+		wait := func() (int, error) {
+			if lane == refused {
+				for _, sibling := range entered {
+					select {
+					case <-sibling:
+					case <-r.Context().Done():
+						return 0, ErrRead
+					}
+				}
+				return 0, ErrRead
+			}
+			<-r.Context().Done()
+			close(canceled[lane])
+			if lane == delayed {
+				<-release
+			}
+			return 0, ErrRead
+		}
+		if mode == "body" {
+			response, err := next.RoundTrip(r)
+			if err != nil || response == nil || response.Body == nil {
+				close(entered[lane])
+				close(exited[lane])
+				t.Error("native body refusal fixture could not obtain headers")
+				return nil, ErrRead
+			}
+			body := response.Body
+			response.Body = &baselineEightLaneRefusalBody{read: wait, close: func() error {
+				defer close(exited[lane])
+				return body.Close()
+			}}
+			close(entered[lane])
+			return response, nil
+		}
+		defer close(exited[lane])
+		close(entered[lane])
+		_, err := wait()
+		return nil, err
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	done := make(chan error, 1)
+	joined := false
+	defer func() {
+		cancel()
+		once.Do(func() { close(release) })
+		if !joined {
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Error("eight-lane refusal invocation leaked")
+			}
+		}
+	}()
+	go func() { done <- invoke(ctx) }()
+	for _, sibling := range entered {
+		select {
+		case <-sibling:
+		case <-done:
+			joined = true
+			t.Fatal("reader refused before all eight lanes entered")
+		case <-ctx.Done():
+			t.Fatal("eight-lane refusal did not reach every sibling")
+		}
+	}
+	if mode == "caller" {
+		cancel()
+	}
+	for lane, sibling := range canceled {
+		if lane == refused {
+			continue
+		}
+		select {
+		case <-sibling:
+		case <-done:
+			joined = true
+			t.Fatal("refusal returned before every sibling observed cancellation")
+		case <-time.After(2 * time.Second):
+			t.Fatal("refusal did not cancel every sibling")
+		}
+	}
+	select {
+	case <-done:
+		joined = true
+		t.Fatal("refusal returned while its canceled delayed reader was alive")
+	case <-time.After(100 * time.Millisecond):
+	}
+	once.Do(func() { close(release) })
+	select {
+	case err := <-done:
+		joined = true
+		if err != ErrSecurityBaseline {
+			t.Fatal("eight-lane refusal changed its fixed public error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("refusal did not join released readers")
+	}
+	for lane := range 8 {
+		select {
+		case <-exited[lane]:
+		default:
+			t.Fatal("refusal escaped a live reader")
+		}
+		if seen[lane].Load() != 1 {
+			t.Fatal("refusal omitted or replayed a lane")
+		}
+	}
+	if (mode == "caller") != (ctx.Err() != nil) || closes.Load() != openingCloses {
+		t.Fatal("refusal changed caller cancellation or reached a closing fence")
+	}
+}
+
+type baselineEightLaneRefusalBody struct {
+	read  func() (int, error)
+	close func() error
+}
+
+func (b *baselineEightLaneRefusalBody) Read([]byte) (int, error) { return b.read() }
+func (b *baselineEightLaneRefusalBody) Close() error             { return b.close() }
+
+var _ io.ReadCloser = (*baselineEightLaneRefusalBody)(nil)
+
+func TestBaselineAccessEightLanesFreezeAllSignedEntriesBeforeReads(t *testing.T) {
 	baseline, snapshot, _ := testOriginalAccessReadLanes(t)
 	var last installstate.Resource
 	for _, resource := range snapshot.Document().Resources {
@@ -309,7 +406,7 @@ func TestBaselineAccessTwoLanesFreezeAllSignedEntriesBeforeReads(t *testing.T) {
 	}
 }
 
-func TestBaselineAccessTwoLanesCloseLateProtectedFileFence(t *testing.T) {
+func TestBaselineAccessEightLanesCloseLateProtectedFileFence(t *testing.T) {
 	baseline, snapshot, paths := testOriginalAccessReadLanes(t)
 	var injected atomic.Bool
 	access := baseline.engine.access.(*HTTPAccess)

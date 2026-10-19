@@ -12,6 +12,11 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
+// Only the independent named GETs within one frozen read-only catalog overlap.
+// This is a private finite bound, not a caller-controlled concurrency setting.
+// Complete passes, original identity fences, probes and effects remain serial.
+const baselineReadLanes = 8
+
 // A read-only original signed access witness for the continuous guard. It does
 // not call current(), normalize Pending away in the snapshot, require runtime
 // policy health, create accounts or adopt matching names. Fresh prerequisite
@@ -47,14 +52,16 @@ func (b *baselineWorkflow) readOriginalRuntimeAccess(ctx context.Context, fresh 
 	// Mixed upgrades use the recorded active/target inventory, not prospective
 	// access objects which have not been created yet. Every accepted template
 	// still comes from one of this engine's authenticated sealed contracts.
-	// Freeze complete original membership before any request. Two fixed lanes
-	// retain their original order and every uncached UID/whole-template check.
+	// Freeze complete original membership before any request. Eight fixed lanes
+	// retain their own order and every uncached UID/whole-template check. This
+	// is a bounded observation pass, not an atomic snapshot or a guarantee about
+	// authorization decisions between individual requests.
 	type accessResource struct {
 		resource installstate.Resource
 		template *installcontract.Template
 	}
 	var frozen []accessResource
-	var lanes [2][]int
+	var lanes [baselineReadLanes][]int
 	seen := make(map[installstate.Key]bool)
 	for _, resource := range d.Resources {
 		key := resource.Key
@@ -71,13 +78,17 @@ func (b *baselineWorkflow) readOriginalRuntimeAccess(ctx context.Context, fresh 
 		frozen = append(frozen, accessResource{resource: *entry, template: template})
 	}
 	observed := make([]admissionIdentity, len(frozen))
-	var failures [2]error
+	var failures [baselineReadLanes]error
 	readCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var readers sync.WaitGroup
 	for lane, indices := range lanes {
 		readers.Go(func() {
 			for _, index := range indices {
+				if readCtx.Err() != nil {
+					failures[lane] = ErrSecurityBaseline
+					return
+				}
 				entry := frozen[index]
 				live, err := e.access.Get(readCtx, entry.resource.Key)
 				if err != nil || live == nil {
@@ -95,11 +106,16 @@ func (b *baselineWorkflow) readOriginalRuntimeAccess(ctx context.Context, fresh 
 			}
 		})
 	}
-	// A refusal cancels its sibling but must still join it. No map, catalog or
+	// A refusal cancels all siblings but must still join them. No map, catalog or
 	// original Namespace/journal close may escape an in-flight signed read.
 	readers.Wait()
-	if failures[0] != nil || failures[1] != nil || ctx.Err() != nil {
+	if ctx.Err() != nil {
 		return nil, ErrSecurityBaseline
+	}
+	for _, err := range failures {
+		if err != nil {
+			return nil, ErrSecurityBaseline
+		}
 	}
 	witness := make(map[installstate.Key]admissionIdentity, len(frozen))
 	for index, entry := range frozen {
