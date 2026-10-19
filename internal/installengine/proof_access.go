@@ -73,7 +73,7 @@ func (a *HTTPAccess) proofRequest(ctx context.Context, method, path string, body
 	if body != nil {
 		r.Header.Set("Content-Type", "application/json")
 	}
-	response, err := a.client.Do(r)
+	response, err := requestPipelineDo(a.client, r)
 	if err != nil || response == nil || response.Body == nil {
 		if response != nil && response.Body != nil {
 			_ = response.Body.Close()
@@ -88,7 +88,11 @@ func (a *HTTPAccess) proofRequest(ctx context.Context, method, path string, body
 	if err != nil || typ != "application/json" {
 		return nil, ErrRead
 	}
+	bodyCost := beginRequestPipelineCost(ctx, pipelineBodyRead)
 	raw, err := io.ReadAll(io.LimitReader(response.Body, 1024*1024+1))
+	bodyCost.finish()
+	validationCost := beginRequestPipelineCost(ctx, pipelineValidation)
+	defer validationCost.finish()
 	if err != nil || len(raw) == 0 || len(raw) > 1024*1024 || !utf8.Valid(raw) || !boundedJSON(raw) {
 		return nil, ErrRead
 	}

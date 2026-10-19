@@ -92,7 +92,7 @@ func (w *fixtureWire) markRetainedPVCLocked(ctx context.Context) (*unstructured.
 		return nil, ErrFixtures
 	}
 	f.markerEffect = false // consume BEFORE Do, shared by all clients/rebuilds
-	response, requestErr := a.client.Do(r)
+	response, requestErr := requestPipelineDo(a.client, r)
 	if response != nil && response.Body != nil {
 		_ = response.Body.Close()
 	}

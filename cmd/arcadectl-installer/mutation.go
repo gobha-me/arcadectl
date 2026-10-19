@@ -254,6 +254,7 @@ func runMutation(ctx context.Context, o options, stdout, stderr io.Writer) (code
 	defer func() {
 		if (code == 0 || code == 4) && costs != nil {
 			_, _ = fmt.Fprintf(stderr, "installation diagnostic command-cost %s\n", costs.Snapshot())
+			_, _ = fmt.Fprintf(stderr, "installation diagnostic command-request-pipeline %s\n", costs.RequestPipelineSnapshot())
 		}
 	}()
 	s, err := x.start(ctx, o)
@@ -331,6 +332,7 @@ func runMutation(ctx context.Context, o options, stdout, stderr io.Writer) (code
 func writeMutationStepCosts(stderr io.Writer, costs *installengine.LifecycleCosts) {
 	if costs != nil {
 		_, _ = fmt.Fprintf(stderr, "installation diagnostic step-cost %s\n", costs.Snapshot())
+		_, _ = fmt.Fprintf(stderr, "installation diagnostic step-request-pipeline %s\n", costs.RequestPipelineSnapshot())
 	}
 }
 

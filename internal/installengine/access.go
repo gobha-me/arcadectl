@@ -98,11 +98,15 @@ func (t attemptTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 		return nil, ErrFixtures
 	}
 	finishDiagnostic := beginBaselineProbeRoundTrip(r.Context())
+	headersCost := beginRequestPipelineCost(r.Context(), pipelineHeaders)
 	response, err := t.next.RoundTrip(r)
+	headersCost.finish()
 	finishDiagnostic()
 	if err != nil || response == nil {
 		return response, err
 	}
+	postHeadersCost := beginRequestPipelineCost(r.Context(), pipelinePostHeaders)
+	defer postHeadersCost.finish()
 	// Sanitize before client-go's outer debug/auth wrappers can observe headers.
 	copyResponse := *response
 	copyResponse.Header = http.Header{}
@@ -448,7 +452,7 @@ func (a *HTTPAccess) requestAt(ctx context.Context, method string, key installst
 	if body != nil {
 		r.Header.Set("Content-Type", "application/json")
 	}
-	response, err := a.client.Do(r)
+	response, err := requestPipelineDo(a.client, r)
 	if err != nil || response == nil || response.Body == nil {
 		if response != nil && response.Body != nil {
 			_ = response.Body.Close()
@@ -489,7 +493,11 @@ func (a *HTTPAccess) requestAt(ctx context.Context, method string, key installst
 	if err != nil || typ != "application/json" {
 		return nil, ErrRead
 	}
+	bodyCost := beginRequestPipelineCost(ctx, pipelineBodyRead)
 	raw, err := io.ReadAll(io.LimitReader(response.Body, 1024*1024+1))
+	bodyCost.finish()
+	validationCost := beginRequestPipelineCost(ctx, pipelineValidation)
+	defer validationCost.finish()
 	if err != nil || len(raw) == 0 || len(raw) > 1024*1024 || !boundedJSONLimits(raw) {
 		return nil, ErrRead
 	}

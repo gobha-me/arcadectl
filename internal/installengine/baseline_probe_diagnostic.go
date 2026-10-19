@@ -150,6 +150,7 @@ func baselineProbePhaseContext(ctx context.Context, phase baselineProbePhase) (c
 	if ctx == nil || phase < baselineProbeDiscovery || phase > baselineProbeClosing {
 		return ctx, func() {}
 	}
+	ctx = withRequestPipelineScope(ctx, requestPipelineScope(phase-baselineProbeDiscovery))
 	probe, ok := ctx.Value(baselineProbeDiagnosticKey{}).(*baselineProbeDiagnostic)
 	if !ok || probe == nil {
 		return ctx, func() {}

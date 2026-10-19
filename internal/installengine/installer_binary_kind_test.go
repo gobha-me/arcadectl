@@ -315,6 +315,9 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 							if !installerBinaryCompletedCosts(output, maxSteps) {
 								t.Fatal("successful current installer omitted bounded joined-step/final cost diagnostics")
 							}
+							if !installerBinaryCompletedPipelineCosts(output, maxSteps) {
+								t.Fatal("successful current installer omitted bounded joined-step/final request pipeline diagnostics")
+							}
 						}
 						if command == "uninstall" && !bytes.Contains(output, []byte("namespace, world claims, credentials and protections retained")) {
 							t.Fatal("actual uninstall omitted retained-world recovery guidance")

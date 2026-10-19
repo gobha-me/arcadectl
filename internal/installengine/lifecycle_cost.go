@@ -48,7 +48,8 @@ type lifecycleCostMetric struct {
 // proof or retry authority.
 // Nested and overlapping durations must NOT be summed or called CPU time.
 type LifecycleCosts struct {
-	metrics [costKinds]lifecycleCostMetric
+	metrics  [costKinds]lifecycleCostMetric
+	pipeline *requestPipelineCosts
 }
 
 // WithLifecycleCosts starts a fresh command-wide recorder. Step-local progress
@@ -58,6 +59,7 @@ func WithLifecycleCosts(ctx context.Context) (context.Context, *LifecycleCosts) 
 		return nil, nil
 	}
 	costs := &LifecycleCosts{}
+	ctx, costs.pipeline = withRequestPipelineCosts(ctx)
 	ctx = context.WithValue(ctx, lifecycleCostKey{}, costs)
 	// A new command cannot continue an inherited old invocation's stage span.
 	ctx = context.WithValue(ctx, admissionCostKey{}, (*admissionCostScope)(nil))
