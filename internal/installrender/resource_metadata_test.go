@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/gobha-me/arcadectl/internal/installpackage"
 )
 
 func TestResourceMetadataMatchesSignedParameterizedResourcesAndIsDefensive(t *testing.T) {
@@ -22,6 +24,17 @@ func TestResourceMetadataMatchesSignedParameterizedResourcesAndIsDefensive(t *te
 	} {
 		t.Run(tc.namespace+"/"+tc.profile+map[bool]string{false: "/current", true: "/predecessor"}[tc.legacy], func(t *testing.T) {
 			p := mustCompile(t, tc.legacy, tc.namespace, tc.profile)
+			manifest := p.Manifest()
+			wantImages := manifest.Images
+			if p.Images() != wantImages {
+				t.Fatal("value-only images differ from the signed manifest")
+			}
+			images := p.Images()
+			images.Controller, images.API = "foreign-controller", "foreign-api"
+			manifest.Images = images
+			if p.Images() != wantImages || p.Manifest().Images != wantImages {
+				t.Fatal("returned images or manifest changed the sealed plan")
+			}
 			objects := p.Resources()
 			want := make([]ResourceMetadata, len(objects))
 			for i, r := range objects {
@@ -48,6 +61,9 @@ func TestResourceMetadataMatchesSignedParameterizedResourcesAndIsDefensive(t *te
 				wg.Go(func() {
 					for range 10 {
 						copy := p.ResourceMetadata()
+						if p.Images() != wantImages {
+							t.Error("concurrent immutable image values changed")
+						}
 						if !reflect.DeepEqual(copy, want) {
 							t.Error("concurrent immutable metadata changed")
 						}
@@ -61,6 +77,9 @@ func TestResourceMetadataMatchesSignedParameterizedResourcesAndIsDefensive(t *te
 	var absent *Plan
 	if absent.ResourceMetadata() != nil {
 		t.Fatal("nil plan produced metadata")
+	}
+	if absent.Images() != (installpackage.Images{}) || new(Plan).Images() != (installpackage.Images{}) {
+		t.Fatal("absent or untrusted plan manufactured image values")
 	}
 }
 

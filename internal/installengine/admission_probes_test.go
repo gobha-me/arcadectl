@@ -66,6 +66,10 @@ func TestAdmissionCreateProbeMetadataMembershipAndIndependentResults(t *testing.
 			for _, resource := range resources {
 				policy := resource.Object.GetName()
 				positive, negative, index, err := admissionCreateProbe(plan, policy, "arcadectl-controller", name)
+				oldPositive, oldNegative, oldIndex, oldErr := manifestAdmissionCreateProbe(plan, policy, "arcadectl-controller", name)
+				if err != oldErr || index != oldIndex || !reflect.DeepEqual(positive, oldPositive) || !reflect.DeepEqual(negative, oldNegative) {
+					t.Fatal("value-only image selection changed complete constructor behavior")
+				}
 				// A binding can share its policy's name. Preserve the original
 				// predicate: at least one exact Kind/Name policy match exists.
 				if !policies[policy] {

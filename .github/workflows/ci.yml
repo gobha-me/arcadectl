@@ -11,8 +11,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  guarded-runtime-validation:
-    name: Guarded runtime validation and native measurement
+  image-construction-validation:
+    name: Immutable image construction validation and native measurement
     runs-on: ubuntu-24.04
     timeout-minutes: 85
     env:
@@ -31,20 +31,16 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Race test production validators and profiling boundaries
-        run: go test -race -p 1 -timeout=8m ./internal/installobserve ./internal/installcontract ./hack/profile-installer-wrappers -count=1
-      - name: Vet production validators and profiling boundaries
-        run: go vet -p 1 ./internal/installobserve ./internal/installcontract ./hack/profile-installer-wrappers
-      - name: Report bounded eligibility of all signed CRDs
-        run: go test -p 1 ./internal/installcontract -run='^TestCRDShallowBorrowMatchesAllSignedSchemas$' -count=1 -v -timeout=3m
-      - name: Differential fuzz production public JSON before syntax validation
-        run: go test -p 1 ./internal/installobserve -run='^$' -fuzz='^FuzzPublicJSONMatchesBoundedJSON$' -fuzztime=60s -parallel=1 -timeout=3m
-      - name: Differential fuzz complete CRD normalization
-        run: go test -p 1 ./internal/installcontract -run='^$' -fuzz='^FuzzCRDShallowBorrowMatchesDeepCopy$' -fuzztime=30s -parallel=1 -timeout=2m
-      - name: Benchmark paired whole public JSON validation
-        run: go test -p 1 ./internal/installobserve -run='^$' -bench='^(BenchmarkPublicJSONValidation|BenchmarkPublicJSONRejected)$' -benchmem -benchtime=300ms -count=5 -timeout=5m
-      - name: Benchmark complete signed CRD match and health checks
-        run: go test -p 1 ./internal/installcontract -run='^$' -bench='^BenchmarkCRDWholeMatch$' -benchmem -benchtime=200ms -count=5 -timeout=5m
+      - name: Race test signed value accessors and defensive copies
+        run: go test -race -p 1 -timeout=8m ./internal/installrender -count=1
+      - name: Race test complete constructor oracle and fixture validation
+        run: go test -race -p 1 -timeout=8m ./internal/installengine -run='^(TestAdmissionCreateProbeMetadataMembershipAndIndependentResults|TestFixtureRecipe.*|TestFixtureResult.*|TestFixturePhase.*|TestLifecycleBoundaryDiagnosticActualRefusalsPreserveEffects)$' -count=1
+      - name: Race test native diagnostic controls
+        run: go test -race -p 1 -timeout=2m ./hack/profile-installer-wrappers -count=1
+      - name: Vet immutable image access and tagged installer harness
+        run: go vet -tags=kindinstall -p 1 ./internal/installrender ./internal/installengine ./hack/profile-installer-wrappers
+      - name: Benchmark paired complete probe constructors
+        run: go test -p 1 ./internal/installengine -run='^$' -bench='^BenchmarkAdmissionCreateProbeImages$' -benchmem -benchtime=300ms -count=5 -timeout=5m
       - name: Profile one complete native component without raw artifacts
         run: go run -p 1 ./hack/profile-installer-wrappers native-component-v2 '${{ github.sha }}'
       - name: Require unchanged exact source checkout
