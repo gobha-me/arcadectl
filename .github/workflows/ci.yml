@@ -33,8 +33,16 @@ jobs:
           cache: true
       - name: Race test signed value accessors and defensive copies
         run: go test -race -p 1 -timeout=8m ./internal/installrender -count=1
-      - name: Race test complete constructor oracle and fixture validation
-        run: go test -race -p 1 -timeout=8m ./internal/installengine -run='^(TestAdmissionCreateProbeMetadataMembershipAndIndependentResults|TestFixtureRecipe.*|TestFixtureResult.*|TestFixturePhase.*|TestLifecycleBoundaryDiagnosticActualRefusalsPreserveEffects)$' -count=1
+      # Preserve every selected complete tree; the combined suite exceeded one
+      # 8m package timer. Existing race weights guide placement, not runtime bounds.
+      - name: Race test constructor and fixture cohort 1 of 4
+        run: go test -race -p 1 -timeout=8m ./internal/installengine -run='^(TestAdmissionCreateProbeMetadataMembershipAndIndependentResults|TestFixturePhaseColdLeaderTailMetadataRemainsExact|TestFixturePhaseDestroyShapeUsesDestroyFamilyNotOrdinaryWarmth|TestFixturePhaseNamedScanClosesEveryRemoteOriginalWitness|TestFixtureRecipeRefusesUnknownOwnersClosedLedgerAndAlteredEvidence|TestFixtureRecipeV2OriginalWirePreviewAckDeleteAndAbsence|TestFixtureResultRefusesExecutionBindingAndStatusAuthority)$' -count=1
+      - name: Race test constructor and fixture cohort 2 of 4
+        run: go test -race -p 1 -timeout=8m ./internal/installengine -run='^(TestFixturePhaseCompleteOriginalAndFixedFixtureAccounting|TestFixturePhaseNamedScanKeepsPerGETAuthorizationAndLocalEvidence|TestFixturePhasePublicOriginalDriftIncludingSecondPassTail|TestFixturePhaseRejectsLegacyWorldOnlyCompanion|TestFixtureRecipeV2BehaviorVersionRequiresAllOriginals|TestFixtureRecipeV2CompletePhaseAndHistoricalRetirement|TestFixtureResultClosedPhasesOriginalOwnershipAndWholeShape|TestFixtureResultReloadKeepsOriginalOwnershipAndNoSendCapability)$' -count=1
+      - name: Race test constructor and fixture cohort 3 of 4
+        run: go test -race -p 1 -timeout=8m ./internal/installengine -run='^(TestFixturePhaseOriginalWarmRenewalBoundsAndFloors|TestFixturePhaseOriginalWarmRenewalClosure|TestFixturePhaseStateReadabilityDoesNotRepairUnknownAcknowledgements|TestFixturePhaseWarmRenewalCompletedFloorSurvivesLaterRefusal|TestFixturePhaseWarmRenewalUnrelatedLeaseWholeClosure|TestFixtureRecipeClosedInertObjectsAndOriginalOwner|TestFixtureRecipeV2ClosedVerifiedOriginalAndWholeShapes|TestLifecycleBoundaryDiagnosticActualRefusalsPreserveEffects)$' -count=1
+      - name: Race test constructor and fixture cohort 4 of 4
+        run: go test -race -p 1 -timeout=8m ./internal/installengine -run='^(TestFixturePhaseFinalActorReadCannotHideProtectedFileReplacement|TestFixturePhaseLeaderRefreshWholeGCAndMonotonicTypedFloor|TestFixturePhaseOriginalWarmRenewalIdentity|TestFixturePhaseReadPassKeepsCompleteCollectionsAndNativeRefusals|TestFixtureRecipeV1UnusedCompositionTailRefused|TestFixtureRecipeVersionsAreClosedAndImmutable|TestFixtureResultIndependentNativeMetadataTimes)$' -count=1
       - name: Race test native diagnostic controls
         run: go test -race -p 1 -timeout=2m ./hack/profile-installer-wrappers -count=1
       - name: Vet immutable image access and tagged installer harness
