@@ -7,44 +7,62 @@ permissions:
   contents: read
 
 concurrency:
-  group: request-pipeline-native-transition-${{ github.ref }}
+  group: denied-lookup-prototype-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  request-pipeline-native-transition:
-    name: Native signed transition with complete command diagnostics
+  denied-lookup-prototype:
+    name: Denied catalog immutable lookup prototype
     runs-on: ubuntu-24.04
-    timeout-minutes: 350
+    timeout-minutes: 30
     env:
       GOTOOLCHAIN: local
       GOTELEMETRY: off
+      GOMAXPROCS: '2'
+      GOMEMLIMIT: 1GiB
     steps:
       - name: Check out exact diagnostic source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
-      - name: Acquire exact historical installer source
-        run: |
-          git fetch --no-tags --no-recurse-submodules --no-write-fetch-head \
-            https://github.com/gobha-me/arcadectl.git \
-            '+refs/pull/62/head:refs/arcadectl-fixtures/pr62'
-          test "$(git rev-parse '2106372de2f2c8bb636e2369a04b1d2ccaeaca48^{commit}')" = 2106372de2f2c8bb636e2369a04b1d2ccaeaca48
-          git merge-base --is-ancestor 2106372de2f2c8bb636e2369a04b1d2ccaeaca48 refs/arcadectl-fixtures/pr62
-          test "$(git rev-parse '2106372de2f2c8bb636e2369a04b1d2ccaeaca48^{tree}')" = 77589f36c0840e1266878eb35ce38146d2761e6a
-          test "$(git rev-parse '2106372de2f2c8bb636e2369a04b1d2ccaeaca48^')" = 15c63004cd1ddab3f561acaf783348faf72b7ee7
-          test "$(git rev-parse '15c63004cd1ddab3f561acaf783348faf72b7ee7^{tree}')" = f6ed281f6bfb2896e2dab14297cdf4e37e5f970c
-          test "$(git rev-parse '15c63004cd1ddab3f561acaf783348faf72b7ee7^')" = 2e897ca3b76617ac63c4a294d7ba8c908dcc368b
-          test "$(git rev-parse '2e897ca3b76617ac63c4a294d7ba8c908dcc368b^{tree}')" = 6ba09e173b112c60a7c38d78cebf62e6d2859ec9
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
-      - name: Exercise the unchanged complete native transition and retaining uninstall
-        run: make test-kind-install-binary INSTALL_BINARY_PROFILE='137' INSTALL_BINARY_MODE='transition'
-      - name: Require unchanged exact source checkout
+      - name: Require compiled correctness and benchmark roots
+        shell: bash
         run: |
-          test "$(git rev-parse HEAD)" = '${{ github.sha }}'
+          set -euo pipefail
+          go test -p=1 -list '^(TestBaselineDeniedLookupPrototypeParity|BenchmarkBaselineDeniedLookupPrototype)$' ./internal/installengine > "$RUNNER_TEMP/denied-lookup-discovery.txt"
+          test "$(awk '/^TestBaselineDeniedLookupPrototypeParity$/ {n++} END {print n+0}' "$RUNNER_TEMP/denied-lookup-discovery.txt")" = 1
+          test "$(awk '/^BenchmarkBaselineDeniedLookupPrototype$/ {n++} END {print n+0}' "$RUNNER_TEMP/denied-lookup-discovery.txt")" = 1
+          test "$(awk '/^(Test|Benchmark)/ {n++} END {print n+0}' "$RUNNER_TEMP/denied-lookup-discovery.txt")" = 2
+          echo denied-lookup-prototype-discovery-complete-v1
+      - name: Race check exact prototype parity three times
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -p=1 -race -count=3 -timeout=10m -run '^TestBaselineDeniedLookupPrototypeParity$' ./internal/installengine
+          echo denied-lookup-prototype-race-complete-v1
+      - name: Benchmark unchanged lookup queries in both fixed orders
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -p=1 -run '^$' -bench '^BenchmarkBaselineDeniedLookupPrototype$' -benchmem -benchtime=200x -count=5 -cpu=2 -timeout=15m ./internal/installengine
+          echo denied-lookup-prototype-bench-complete-v1
+      - name: Vet unchanged engine with prototype tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          go vet -p=1 ./internal/installengine
+          echo denied-lookup-prototype-vet-complete-v1
+      - name: Require unchanged exact source checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test -z "$(git status --porcelain --untracked-files=normal)"
+          echo denied-lookup-prototype-source-complete-v1
