@@ -70,6 +70,9 @@ type Template struct {
 	// Private normalized signed-side bytes only. Every live comparison still
 	// normalizes its freshly observed spec; no live match or identity is cached.
 	crdSpec []byte
+	// Immutable optimization hint from the private signed spec, not a live
+	// match verdict. Fresh observations still require complete normalization.
+	crdShallow bool
 	// Pure strict conversion only, keyed by complete bounded JSON bytes or an
 	// exactly bound owned whole JSON operand. Every match still checks fresh
 	// identity, journal, whole shape and raw CRD fields.
@@ -137,6 +140,9 @@ func (c *Contract) compileTemplate(key installstate.Key, paused bool) (*Template
 	t := &Template{contract: c, resource: r, key: key, expected: expected, hash: hex.EncodeToString(sum[:]), paused: paused}
 	if key.Kind == "CustomResourceDefinition" {
 		t.crdSpec = normalizedCRDSpec(r.Object)
+		raw, _, _ := unstructured.NestedFieldNoCopy(r.Object.Object, "spec")
+		spec, ok := raw.(map[string]any)
+		t.crdShallow = ok && spec != nil && sameObservedJSON(spec, spec)
 	}
 	return t, nil
 }
@@ -499,7 +505,12 @@ func (t *Template) matchCRDSpec(live *unstructured.Unstructured) bool {
 	if t == nil || t.crdSpec == nil {
 		return false
 	}
-	got := normalizedCRDSpec(live)
+	var got []byte
+	if t.crdShallow {
+		got = normalizedCRDSpecShallow(live)
+	} else {
+		got = normalizedCRDSpec(live)
+	}
 	return got != nil && bytes.Equal(t.crdSpec, got)
 }
 

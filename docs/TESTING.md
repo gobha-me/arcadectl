@@ -305,3 +305,34 @@ cover crash/replay boundaries, frozen bytes/ETags, missing admitted receipts,
 fresh destructive replay, and changed contexts. A dependency guard proves the
 ordinary CLI cannot import Kubernetes mutation clients/controllers. Generated
 offline help/completions have a drift gate.
+
+## Pure installation observation validation
+
+Public JSON validation has a graph-building acceptance oracle, explicit malformed
+input and exact-limit cases, and differential fuzzing. Its bounded walker is not
+the syntax authority: complete standard-library JSON syntax validation is always
+required before acceptance. The metadata sanitizer still uses the original graph
+parser. CRD normalization is compared with an independent deep-copy oracle,
+including unsupported types, unknown nested fields, fresh drift and immutable
+concurrent reads. A compiled eligibility hint only selects equivalent work; it
+does not authorize or accept an observation.
+
+On an adequately sized development machine or hosted runner:
+
+```sh
+go test -race -p 1 -timeout=8m ./internal/installobserve ./internal/installcontract
+go test -p 1 ./internal/installobserve -run='^$' -fuzz='^FuzzPublicJSONMatchesBoundedJSON$' -fuzztime=60s -parallel=1 -timeout=3m
+go test -p 1 ./internal/installcontract -run='^$' -fuzz='^FuzzCRDShallowBorrowMatchesDeepCopy$' -fuzztime=30s -parallel=1 -timeout=2m
+go test -p 1 ./internal/installobserve -run='^$' -bench='^(BenchmarkPublicJSONValidation|BenchmarkPublicJSONRejected)$' -benchmem -benchtime=300ms -count=5
+go test -p 1 ./internal/installcontract -run='^$' -bench='^BenchmarkCRDWholeMatch$' -benchmem -benchtime=200ms -count=5
+```
+
+Benchmarks include accepted synthetic public pages and large-tail refusals, plus
+complete warm, stable-input CRD match/health operations on both signed generations.
+Their fixed oracle-first ordering limits timing claims; refusal throughput uses
+nominal input size, not bytes actually scanned. Sampled allocation is not RSS.
+The [guarded-runtime measurement](https://github.com/gobha-me/arcadectl/actions/runs/39182572802)
+validated these production files at `d21e79c8ee8f51564e6ba3a52450bdebaacf6122`.
+Its separate native Install-mode component proof is not actual CLI transition,
+RKE2 or release certification, and did not establish a wall-time improvement.
+Full required lifecycle CI remains a separate gate.
