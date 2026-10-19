@@ -7,16 +7,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: warm-baseline-diagnostics-${{ github.ref }}
+  group: parent-context-diagnostics-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  warm-baseline-diagnostics:
-    name: Warm native baseline refusal diagnostics
+  parent-context-diagnostics:
+    name: Installer parent-context closed diagnostics
     runs-on: ubuntu-24.04
-    # Includes added unit-race/vet setup; the original native proof remains48m.
-    # This diagnostic run is not required-PR, release or lifecycle acceptance.
-    timeout-minutes: 60
+    timeout-minutes: 20
     env:
       GOMAXPROCS: "2"
       GOMEMLIMIT: 1GiB
@@ -33,12 +31,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Race test warm baseline diagnostic order and closed labels
-        run: go test -race -p 1 -timeout=2m ./internal/installengine -run='^TestWarmInitialBaselineDiagnosticOrderingAndClosedStages$' -count=1
-      - name: Vet unchanged native provider and diagnostic consumer
+      - name: Race test real process cancellation and closed parent observations
+        run: go test -race -tags=kindinstall -p 1 -timeout=3m ./internal/installengine -run='^(TestInstallerBinaryParentContext|TestInstallerBinaryProgressCapture)$' -count=3
+      - name: Vet the tagged integration and diagnostics
         run: go vet -tags=kindinstall -p 1 ./internal/installengine
-      - name: Prove original native authentication and inert fixtures on both profiles
-        run: make test-kind-install-auth
       - name: Require unchanged exact source checkout
         run: |
           test "$(git rev-parse HEAD)" = '${{ github.sha }}'

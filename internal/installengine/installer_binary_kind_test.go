@@ -233,6 +233,7 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 							args = append(args, "--api-certificate", tls.CertificateFile, "--api-key", tls.KeyFile)
 						}
 						t.Log("running actual signed installer binary: " + command)
+						t.Logf("actual installer parent context: %s", installerBinaryParentContext(ctx, time.Now(), command, "before-attempt", nil, nil))
 						c := exec.CommandContext(ctx, executable, args...)
 						c.Dir = root
 						c.Env = append(os.Environ(), "GOMAXPROCS=2", "GOMEMLIMIT=1GiB")
@@ -246,9 +247,11 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 						c.Stdout, c.Stderr = capture, capture
 						var err error
 						var wallElapsed time.Duration
+						var parentAfterAttempt string
 						if historical {
 							err = c.Run() // Authentic predecessor receives no hook/descriptors.
 							wallElapsed = time.Since(started)
+							parentAfterAttempt = installerBinaryParentContext(ctx, time.Now(), command, "after-attempt", c.ProcessState, err)
 						} else {
 							constructor := installerprofile.NewPrefixCapture
 							matrixCapture := installerBinaryUsesMatrixCapture(mode, command)
@@ -258,6 +261,7 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 							body, diagnosticErr, commandErr := installerBinaryCPUAttempt(c, constructor)
 							wallElapsed = time.Since(started) // Exclude parent decoding/logging.
 							err = commandErr                  // Never replace the actual installation result.
+							parentAfterAttempt = installerBinaryParentContext(ctx, time.Now(), command, "after-attempt", c.ProcessState, err)
 							outcome := "launch-failure"
 							if c.ProcessState != nil {
 								outcome = "terminated"
@@ -290,6 +294,7 @@ func TestKindSignedInstallerBinaryLifecycle(t *testing.T) {
 						if c.ProcessState != nil {
 							t.Logf("actual installer %s process timing wall=%s user-cpu=%s system-cpu=%s", command, wallElapsed.Round(time.Millisecond), c.ProcessState.UserTime(), c.ProcessState.SystemTime())
 						}
+						t.Logf("actual installer parent context: %s", parentAfterAttempt)
 						output := capture.output()
 						if err != nil {
 							if historical {

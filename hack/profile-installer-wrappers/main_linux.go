@@ -168,16 +168,11 @@ func describe(b []byte) custody {
 // Cancellation terminates the owned process group and joins the direct child
 // and capture readers. It cannot reap grandchildren. All commands are bounded.
 func command(ctx context.Context, timeout time.Duration, stdin *os.File, extra []*os.File, name string, args ...string) ([]byte, error) {
-	return commandAt(ctx, timeout, stdin, extra, "", name, args...)
-}
-
-func commandAt(ctx context.Context, timeout time.Duration, stdin *os.File, extra []*os.File, directory, name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	out, diagnostic := &bounded{cancel: cancel}, &bounded{cancel: cancel}
 	defer diagnostic.wipe()
 	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Dir = directory
 	cmd.Stdin, cmd.Stdout, cmd.Stderr, cmd.ExtraFiles = stdin, out, diagnostic, extra
 	cmd.Env = append(os.Environ(), "GOMAXPROCS=2", "GOMEMLIMIT=1GiB", "GOTOOLCHAIN=local", "GOTELEMETRY=off", "PPROF_BINARY_PATH=/proc/self/fd/-1")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -361,10 +356,6 @@ func joinReaders(ctx context.Context, reads []*os.File, readers *sync.WaitGroup)
 }
 
 func analyze(ctx context.Context, body []byte, root, kind string) (metric, error) {
-	return analyzeWithCatalog(ctx, body, root, kind, functions)
-}
-
-func analyzeWithCatalog(ctx context.Context, body []byte, root, kind string, catalog map[string]string) (metric, error) {
 	// A perf input invokes conversion that creates a temporary raw file.
 	if len(body) < 3 || !bytes.Equal(body[:3], []byte{0x1f, 0x8b, 8}) {
 		return metric{}, refused("profile-format", "", kind, errScreen)
@@ -396,7 +387,7 @@ func analyzeWithCatalog(ctx context.Context, body []byte, root, kind string, cat
 	if err != nil {
 		return metric{}, refused("pprof-child", "", kind, err)
 	}
-	m, err := parseTopWithCatalog(text, root, kind, catalog)
+	m, err := parseTop(text, root, kind)
 	m.Profile = describe(body)
 	if err != nil {
 		return m, refused("pprof-projection", "", kind, err)
@@ -405,10 +396,6 @@ func analyzeWithCatalog(ctx context.Context, body []byte, root, kind string, cat
 }
 
 func parseTop(body []byte, root, kind string) (metric, error) {
-	return parseTopWithCatalog(body, root, kind, functions)
-}
-
-func parseTopWithCatalog(body []byte, root, kind string, catalog map[string]string) (metric, error) {
 	m := metric{Kind: kind, Rows: []row{}}
 	unit := "ns"
 	if kind == "sampled-alloc-bytes" {
@@ -488,7 +475,7 @@ func parseTopWithCatalog(body []byte, root, kind string, catalog map[string]stri
 		if name == root {
 			m.RootCumulative = cum
 		}
-		if id, ok := catalog[name]; ok {
+		if id, ok := functions[name]; ok {
 			m.Rows = append(m.Rows, row{id, flat, cum})
 		} else {
 			m.UnknownFlat += flat
@@ -584,45 +571,22 @@ func screen(parent context.Context, expected string) error {
 	}{"arcadectl-wrapper-screen-v1", expected, digest, "synthetic-root-focused-synchronous-stacks; formatted-rounded-values; cumulative-overlaps; sampled-allocations; profiling-perturbs-CPU; excludes-async-and-native-wait", 8192, results})
 }
 
-func refusalSchema(mode string) (string, bool) {
-	switch mode {
-	case "native-component":
-		return "arcadectl-native-component-screen-refusal-v1", true
-	case "native-component-v2":
-		return "arcadectl-native-component-screen-refusal-v2", true
-	default:
-		return "arcadectl-wrapper-screen-refusal-v1", false
-	}
-}
-
 func main() {
 	started := time.Now()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	var err error = errScreen
 	if len(os.Args) == 2 {
 		err = screen(ctx, os.Args[1])
-	} else if len(os.Args) == 3 && os.Args[1] == "native-component" {
-		err = nativeScreen(ctx, os.Args[2])
-	} else if len(os.Args) == 3 && os.Args[1] == "native-component-v2" {
-		err = nativeScreenV2(ctx, os.Args[2])
 	}
 	stop()
 	if err != nil {
 		f := &screenRefusal{Stage: "screen", Reason: "validation", ExitCode: -1}
 		_ = errors.As(err, &f)
-		schema := "arcadectl-wrapper-screen-refusal-v1"
-		if len(os.Args) == 3 {
-			var native bool
-			schema, native = refusalSchema(os.Args[1])
-			if native {
-				f.Roots = nil // The synthetic root census is not a native transcript.
-			}
-		}
 		_ = json.NewEncoder(os.Stdout).Encode(struct {
 			Schema    string         `json:"schema"`
 			ElapsedNS int64          `json:"elapsedNS"`
 			Refusal   *screenRefusal `json:"refusal"`
-		}{schema, time.Since(started).Nanoseconds(), f})
+		}{"arcadectl-wrapper-screen-refusal-v1", time.Since(started).Nanoseconds(), f})
 		_, _ = io.WriteString(os.Stderr, "wrapper screen refused; no raw diagnostics exported\n")
 		os.Exit(1)
 	}

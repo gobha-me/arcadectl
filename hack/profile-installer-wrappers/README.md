@@ -1,57 +1,5 @@
 # Installer wrapper cost screen
 
-## Opt-in native component diagnostic
-
-`go run -p 1 ./hack/profile-installer-wrappers native-component FULL_SOURCE_SHA`
-compiles the tagged test binary and runs exactly one fresh
-`TestKindAdmissionEffectiveV3WithBaseline/kubernetes-1.37.0/warm` proof. It uses
-the test package working directory and retains the existing 40-minute fixture
-and 45-minute Go-test limits, all 55 cases, original/closing checks, fixture
-retirement, journal/baseline assertions and owned cleanup. The new diagnostic
-launcher has a separate finite compile/capture/analysis envelope; it does not
-change a production, full-transition or ordinary component deadline.
-
-`native-component-v2 FULL_SOURCE_SHA` runs the SAME proof and budgets but emits
-explicit `arcadectl-native-component-screen-v2` (or v2 refusal) records using
-50 exact symbols, adding collection and defensive-copy attribution. The original
-`native-component` mode and its 36-symbol v1 records remain unchanged. Both
-versions' cumulative rows overlap; nested collection/copy rows are not additive.
-
-CPU and allocation profiles from that ONE execution supply four synchronous
-views: complete driver, phase observation, engine request and observer transport.
-The native catalogue freezes the previous v3 exact symbols plus the complete
-driver symbol; default synthetic v1 output and catalogue stay unchanged. Raw
-profiles/transcripts remain bounded RAM-only and are wiped, with the existing
-sealed-memfd and joined-child protections. Refusals never export provider text.
-
-This is real Kind **Install-mode component** work with directly prepared journal
-stages and separately installed baseline policies. It is NOT an actual CLI
-Upgrade, historical enrollment, identical first-upgrade state, transition
-completion, RKE2 or release certification. It cannot discharge the unfinished
-full transition/uninstall gate. Root views omit async/remote CPU and waits;
-sampled allocations and rounded overlapping cumulative rows are not exclusive
-wall time, a proven bottleneck or a performance cure.
-
-The temporary diagnostic workflow is experiment-specific and must not replace
-required CI. Its guarded-runtime iteration now tests the production public JSON
-validator against the unchanged graph-building acceptance oracle, including
-malformed walker-first paths and exact depth/node/decoded-key/UTF8/EOF cases.
-UTF-8 validation remains first; the bounded walk precedes the mandatory whole
-stdlib JSON syntax check to avoid the previous prototype's costly early-refusal
-syntax pass. Metadata redaction remains unchanged. Accepted synthetic pages and
-large-tail refusals are both benchmarked; rejection MB/s is nominal full-input
-size, not bytes actually scanned.
-
-CRD normalization retains the existing2048-node/64-KiB/depth-64 eligibility and
-unchanged deep-copy fallback. A private signed-side eligibility hint avoids
-redundant failed walks on ineligible templates; the enabled path still freshly
-checks, normalizes and marshals the COMPLETE live spec. Current/legacy signed
-eligibility is reported, and complete MatchLive/CheckCRD operations are measured
-with independently compiled templates. Benchmarks are warm stable-input,
-fixed-oracle-first comparisons, not uncached/network or native lifecycle timing.
-The subsequent native component proof uses the actual production delta but
-still cannot replace the full required transition/uninstall lifecycle gates.
-
 Linux-only, opt-in CI diagnostic. From the clean repository root:
 
 ```sh

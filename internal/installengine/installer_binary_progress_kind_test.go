@@ -246,6 +246,7 @@ func testInstallerBinaryProgressSubprocess(t *testing.T) {
 // must not silently omit the capture contract. No cluster setup is used here.
 func testInstallerBinaryProgressCapture(t *testing.T) {
 	t.Helper()
+	t.Run("parent-context-diagnostic", testInstallerBinaryParentContext)
 	valid := []string{}
 	for _, stage := range []string{"preparing", "quiescing", "applying", "verifying", "complete", "recovery-required"} {
 		valid = append(valid, "installation stage "+stage+" revision 18446744073709551615")
