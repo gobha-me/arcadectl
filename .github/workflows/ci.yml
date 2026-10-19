@@ -7,17 +7,15 @@ permissions:
   contents: read
 
 concurrency:
-  group: request-pipeline-integration-${{ github.ref }}
+  group: request-pipeline-native-transition-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  request-pipeline-integration:
-    name: Request pipeline integrated diagnostic controls
+  request-pipeline-native-transition:
+    name: Native signed transition with complete command diagnostics
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 350
     env:
-      GOMAXPROCS: "2"
-      GOMEMLIMIT: 1GiB
       GOTOOLCHAIN: local
       GOTELEMETRY: off
     steps:
@@ -25,28 +23,27 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
+      - name: Acquire exact historical installer source
+        run: |
+          git fetch --no-tags --no-recurse-submodules --no-write-fetch-head \
+            https://github.com/gobha-me/arcadectl.git \
+            '+refs/pull/62/head:refs/arcadectl-fixtures/pr62'
+          test "$(git rev-parse '2106372de2f2c8bb636e2369a04b1d2ccaeaca48^{commit}')" = 2106372de2f2c8bb636e2369a04b1d2ccaeaca48
+          git merge-base --is-ancestor 2106372de2f2c8bb636e2369a04b1d2ccaeaca48 refs/arcadectl-fixtures/pr62
+          test "$(git rev-parse '2106372de2f2c8bb636e2369a04b1d2ccaeaca48^{tree}')" = 77589f36c0840e1266878eb35ce38146d2761e6a
+          test "$(git rev-parse '2106372de2f2c8bb636e2369a04b1d2ccaeaca48^')" = 15c63004cd1ddab3f561acaf783348faf72b7ee7
+          test "$(git rev-parse '15c63004cd1ddab3f561acaf783348faf72b7ee7^{tree}')" = f6ed281f6bfb2896e2dab14297cdf4e37e5f970c
+          test "$(git rev-parse '15c63004cd1ddab3f561acaf783348faf72b7ee7^')" = 2e897ca3b76617ac63c4a294d7ba8c908dcc368b
+          test "$(git rev-parse '2e897ca3b76617ac63c4a294d7ba8c908dcc368b^{tree}')" = 6ba09e173b112c60a7c38d78cebf62e6d2859ec9
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
-      - name: Race test actual request boundaries and fixture invariants
-        run: |
-          go test -race -p 1 -timeout=10m ./internal/installengine -run='^TestRequestPipeline' -count=3
-          printf '%s\n' 'arcadectl-request-pipeline-integrated-race-v1-complete'
-      - name: Race test the actual CLI output boundary
-        run: |
-          go test -race -p 1 -timeout=5m ./cmd/arcadectl-installer -count=1
-          printf '%s\n' 'arcadectl-request-pipeline-integrated-cli-v1-complete'
-      - name: Race test tagged live capture and parent diagnostic controls
-        run: |
-          go test -race -tags=kindinstall -p 1 -timeout=5m ./internal/installengine -run='^TestInstallerBinary(ProgressCapture|RequestPipelineCapture|ParentContext)$' -count=3
-          printf '%s\n' 'arcadectl-request-pipeline-integrated-capture-v1-complete'
-      - name: Vet the tagged engine and CLI
-        run: |
-          go vet -tags=kindinstall -p 1 ./internal/installengine ./cmd/arcadectl-installer
-          printf '%s\n' 'arcadectl-request-pipeline-integrated-vet-v1-complete'
+      - name: Exercise the unchanged complete native transition and retaining uninstall
+        run: make test-kind-install-binary INSTALL_BINARY_PROFILE='137' INSTALL_BINARY_MODE='transition'
       - name: Require unchanged exact source checkout
         run: |
           test "$(git rev-parse HEAD)" = '${{ github.sha }}'
