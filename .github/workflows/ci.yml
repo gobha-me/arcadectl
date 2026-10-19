@@ -7,12 +7,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: parent-context-diagnostics-${{ github.ref }}
+  group: request-pipeline-foundation-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  parent-context-diagnostics:
-    name: Installer parent-context closed diagnostics
+  request-pipeline-foundation:
+    name: Request pipeline recorder foundation
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -31,10 +31,14 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Race test real process cancellation and closed parent observations
-        run: go test -race -tags=kindinstall -p 1 -timeout=3m ./internal/installengine -run='^(TestInstallerBinaryParentContext|TestInstallerBinaryProgressCapture)$' -count=3
-      - name: Vet the tagged integration and diagnostics
-        run: go vet -tags=kindinstall -p 1 ./internal/installengine
+      - name: Race test recorder privacy isolation and disabled overhead
+        run: |
+          go test -race -p 1 -timeout=2m ./internal/installengine -run='^TestRequestPipeline' -count=3
+          printf '%s\n' 'arcadectl-request-pipeline-race-v1-complete'
+      - name: Vet the tagged engine and diagnostic consumers
+        run: |
+          go vet -tags=kindinstall -p 1 ./internal/installengine
+          printf '%s\n' 'arcadectl-request-pipeline-vet-v1-complete'
       - name: Require unchanged exact source checkout
         run: |
           test "$(git rev-parse HEAD)" = '${{ github.sha }}'
