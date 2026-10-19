@@ -32,12 +32,19 @@ full transition/uninstall gate. Root views omit async/remote CPU and waits;
 sampled allocations and rounded overlapping cumulative rows are not exclusive
 wall time, a proven bottleneck or a performance cure.
 
-The temporary diagnostic workflow additionally compares a TEST-ONLY public JSON
-validation-without-graph candidate against the unchanged production parser, with
-explicit depth/node/decoded-key/UTF8/EOF cases, a bounded differential fuzz run,
-and paired whole-validation benchmarks over synthetic public Kubernetes pages.
-Neither production transport nor metadata envelope/redaction is changed. Parser
-microbenchmarks do not establish a native lifecycle or transition speedup.
+The temporary diagnostic workflow is experiment-specific and must not replace
+required CI. Its pure-comparison iteration tests two TEST-ONLY public JSON
+candidates (Token without graph, and stdlib syntax validation plus budget/key
+walk) against the unchanged parser, including exact depth/node/decoded-key/UTF8/
+EOF cases and bounded differential fuzzing. Whole-validation benchmarks cover
+accepted synthetic public pages AND early-refusal large-tail inputs, because a
+full syntax scan before budget refusal can cost more than the original parser.
+A separate TEST-ONLY shallow-top-level CRD normalizer retains the existing
+2048-node/64-KiB/depth-64 eligibility limits and unchanged deep-copy fallback,
+reports eligibility for all signed current/legacy schemas, and measures the
+whole normalization including its guard. Neither production transport, metadata
+redaction nor CRD normalization is changed. These microbenchmarks do not
+establish a native lifecycle or transition speedup.
 
 Linux-only, opt-in CI diagnostic. From the clean repository root:
 
