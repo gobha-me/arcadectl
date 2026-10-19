@@ -47,6 +47,9 @@ func (a *ClusterAdmission) phasePublicInventoryAgainstGC(ctx context.Context, re
 	if a == nil || a.prerequisites == nil || request.Snapshot == nil {
 		return nil, ErrFixtures
 	}
+	ctx = withRequestPipelineInventory(ctx)
+	inventoryCost := beginRequestPipelineCost(ctx, pipelineInventory)
+	defer inventoryCost.finish()
 	e := a.prerequisites.engine
 	d := request.Snapshot.Document()
 	rows := []fixtureWorldRow{}
@@ -63,17 +66,20 @@ func (a *ClusterAdmission) phasePublicInventoryAgainstGC(ctx context.Context, re
 		if entry == nil || template == nil || err != nil {
 			return nil, ErrFixtures
 		}
+		contractCost := beginRequestPipelineCost(ctx, pipelineContract)
 		if key.Kind == "Namespace" {
 			err = template.MatchNamespace(live, request.Snapshot)
 		} else if key.Kind == "CustomResourceDefinition" {
 			target, targetErr := e.contracts[d.TargetPackage].Template(key, false)
 			if targetErr != nil {
+				contractCost.finish()
 				return nil, ErrFixtures
 			}
 			err = template.CheckCRD(live, entry.UID, target)
 		} else {
 			err = template.MatchLive(live, entry.UID)
 		}
+		contractCost.finish()
 		if err != nil {
 			return nil, ErrFixtures
 		}
@@ -96,7 +102,9 @@ func (a *ClusterAdmission) phasePublicInventoryAgainstGC(ctx context.Context, re
 				return nil, ErrFixtures
 			}
 		}
+		rowCost := beginRequestPipelineCost(ctx, pipelineRow)
 		row, err := phaseRow(key, live.GetUID(), live.GetResourceVersion(), live)
+		rowCost.finish()
 		if err != nil {
 			return nil, ErrFixtures
 		}

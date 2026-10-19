@@ -280,7 +280,7 @@ func (a *HTTPAccess) probeOperation(ctx context.Context, operation admissionProb
 	request.GetBody = nil
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Content-Type", probeContentType(operation))
-	response, err := a.client.Do(request)
+	response, err := requestPipelineDo(a.client, request)
 	if err != nil || response == nil || response.Body == nil {
 		if response != nil && response.Body != nil {
 			_ = response.Body.Close()

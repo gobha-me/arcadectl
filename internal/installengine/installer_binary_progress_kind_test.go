@@ -21,15 +21,16 @@ import (
 // Test-harness observation only: never evidence or authority for a lifecycle
 // effect. Retain every byte for the existing completion/failure assertions, but
 // emit only complete bounded fixed stage/revision or numeric cost lines. The
-// two channels have independent limits. No EOF suffix flush.
+// three channels have independent limits. No EOF suffix flush.
 type installerBinaryProgressCapture struct {
-	mu          sync.Mutex
-	capture     bytes.Buffer
-	line        []byte
-	discard     bool
-	emitted     int
-	costEmitted int
-	log         func(string)
+	mu              sync.Mutex
+	capture         bytes.Buffer
+	line            []byte
+	discard         bool
+	emitted         int
+	costEmitted     int
+	pipelineEmitted int
+	log             func(string)
 }
 
 func (c *installerBinaryProgressCapture) Write(p []byte) (int, error) {
@@ -46,11 +47,16 @@ func (c *installerBinaryProgressCapture) Write(p []byte) (int, error) {
 				} else if _, ok := installerBinaryCostLine(line); ok && c.costEmitted < 513 {
 					c.costEmitted++
 					c.log(line)
+				} else if c.pipelineEmitted < 513 {
+					if _, ok := installerBinaryPipelineLine(line); ok {
+						c.pipelineEmitted++
+						c.log(line)
+					}
 				}
 			}
 			c.line, c.discard = c.line[:0], false
 		} else if !c.discard {
-			if len(c.line) == 2048 {
+			if len(c.line) == installerBinaryPipelineLineLimit {
 				c.line, c.discard = c.line[:0], true
 			} else {
 				c.line = append(c.line, b)
@@ -187,12 +193,13 @@ func testInstallerBinaryProgressSubprocess(t *testing.T) {
 	t.Helper()
 	var empty *LifecycleCosts
 	costLine := "installation diagnostic step-cost " + empty.Snapshot()
+	pipelineLine := "installation diagnostic step-request-pipeline " + empty.RequestPipelineSnapshot()
 	for _, mode := range []string{"ok", "failure", "cancel"} {
 		func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			cmd := exec.CommandContext(ctx, "sh", "-c", "printf '%s\\n' SECRET-CANARY >&2; printf '%s\\n' 'installation stage applying revision 7'; printf '%s\\n' \"$1\" >&2; read -r decision; case \"$decision\" in ok) exit 0;; *) exit 7;; esac", "cost-capture", costLine)
-			progress := make(chan string, 2)
+			cmd := exec.CommandContext(ctx, "sh", "-c", "printf '%s\\n' SECRET-CANARY >&2; printf '%s\\n' 'installation stage applying revision 7'; printf '%s\\n' \"$1\" >&2; printf '%s\\n' \"$2\" >&2; read -r decision; case \"$decision\" in ok) exit 0;; *) exit 7;; esac", "cost-capture", costLine, pipelineLine)
+			progress := make(chan string, 3)
 			capture := &installerBinaryProgressCapture{log: func(line string) { progress <- line }}
 			cmd.Stdout, cmd.Stderr = capture, capture
 			stdin, err := cmd.StdinPipe()
@@ -205,7 +212,7 @@ func testInstallerBinaryProgressSubprocess(t *testing.T) {
 			}
 			done := make(chan error, 1)
 			go func() { done <- cmd.Wait() }()
-			for _, want := range []string{"installation stage applying revision 7", costLine} {
+			for _, want := range []string{"installation stage applying revision 7", costLine, pipelineLine} {
 				select {
 				case line := <-progress:
 					if line != want {
@@ -235,7 +242,7 @@ func testInstallerBinaryProgressSubprocess(t *testing.T) {
 			if mode == "ok" && err != nil || mode == "failure" && (!errors.As(err, &exit) || exit.ExitCode() != 7) || mode == "cancel" && (err == nil || !errors.Is(ctx.Err(), context.Canceled)) {
 				t.Fatal("capture masked subprocess exit or cancellation")
 			}
-			if string(capture.output()) != "SECRET-CANARY\ninstallation stage applying revision 7\n"+costLine+"\n" {
+			if string(capture.output()) != "SECRET-CANARY\ninstallation stage applying revision 7\n"+costLine+"\n"+pipelineLine+"\n" {
 				t.Fatal("capture changed original combined subprocess output")
 			}
 		}()
@@ -247,6 +254,7 @@ func testInstallerBinaryProgressSubprocess(t *testing.T) {
 func testInstallerBinaryProgressCapture(t *testing.T) {
 	t.Helper()
 	t.Run("parent-context-diagnostic", testInstallerBinaryParentContext)
+	t.Run("request-pipeline-channel", testInstallerBinaryRequestPipelineCapture)
 	valid := []string{}
 	for _, stage := range []string{"preparing", "quiescing", "applying", "verifying", "complete", "recovery-required"} {
 		valid = append(valid, "installation stage "+stage+" revision 18446744073709551615")

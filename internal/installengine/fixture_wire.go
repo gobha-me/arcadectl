@@ -667,7 +667,7 @@ func (w *fixtureWire) request(ctx context.Context, slot int, operation fixtureRe
 	if seedRequest {
 		f.seedEffect = false
 	}
-	response, err := a.client.Do(r)
+	response, err := requestPipelineDo(a.client, r)
 	if response != nil && response.Body != nil {
 		_ = response.Body.Close()
 	}

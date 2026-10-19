@@ -99,7 +99,7 @@ func (w *fixtureWire) counterpartAbsentLocked(ctx context.Context, number fixtur
 	request.GetBody = nil
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Content-Type", "application/json")
-	response, requestErr := a.client.Do(request)
+	response, requestErr := requestPipelineDo(a.client, request)
 	if response != nil && response.Body != nil {
 		_ = response.Body.Close()
 	}

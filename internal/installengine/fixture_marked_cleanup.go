@@ -132,7 +132,7 @@ func (w *fixtureWire) removeKnownOriginal(ctx context.Context, slot int, marked 
 		r.Header.Set("Accept", "application/json")
 		r.Header.Set("Content-Type", "application/json")
 		f.effectSlot = -1 // shared capability consumed BEFORE any possible send
-		response, requestErr := a.client.Do(r)
+		response, requestErr := requestPipelineDo(a.client, r)
 		if response != nil && response.Body != nil {
 			_ = response.Body.Close()
 		}

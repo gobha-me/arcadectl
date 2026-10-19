@@ -7,14 +7,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: request-pipeline-foundation-${{ github.ref }}
+  group: request-pipeline-integration-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  request-pipeline-foundation:
-    name: Request pipeline recorder foundation
+  request-pipeline-integration:
+    name: Request pipeline integrated diagnostic controls
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       GOMAXPROCS: "2"
       GOMEMLIMIT: 1GiB
@@ -31,14 +31,22 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Race test recorder privacy isolation and disabled overhead
+      - name: Race test actual request boundaries and fixture invariants
         run: |
-          go test -race -p 1 -timeout=2m ./internal/installengine -run='^TestRequestPipeline' -count=3
-          printf '%s\n' 'arcadectl-request-pipeline-race-v1-complete'
-      - name: Vet the tagged engine and diagnostic consumers
+          go test -race -p 1 -timeout=10m ./internal/installengine -run='^TestRequestPipeline' -count=3
+          printf '%s\n' 'arcadectl-request-pipeline-integrated-race-v1-complete'
+      - name: Race test the actual CLI output boundary
         run: |
-          go vet -tags=kindinstall -p 1 ./internal/installengine
-          printf '%s\n' 'arcadectl-request-pipeline-vet-v1-complete'
+          go test -race -p 1 -timeout=5m ./cmd/arcadectl-installer -count=1
+          printf '%s\n' 'arcadectl-request-pipeline-integrated-cli-v1-complete'
+      - name: Race test tagged live capture and parent diagnostic controls
+        run: |
+          go test -race -tags=kindinstall -p 1 -timeout=5m ./internal/installengine -run='^TestInstallerBinary(ProgressCapture|RequestPipelineCapture|ParentContext)$' -count=3
+          printf '%s\n' 'arcadectl-request-pipeline-integrated-capture-v1-complete'
+      - name: Vet the tagged engine and CLI
+        run: |
+          go vet -tags=kindinstall -p 1 ./internal/installengine ./cmd/arcadectl-installer
+          printf '%s\n' 'arcadectl-request-pipeline-integrated-vet-v1-complete'
       - name: Require unchanged exact source checkout
         run: |
           test "$(git rev-parse HEAD)" = '${{ github.sha }}'
