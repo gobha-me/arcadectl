@@ -70,34 +70,38 @@ func (c *ClusterSecurityBaseline) configuredPass(ctx context.Context, snapshot *
 	if baseline == nil || baseline.Stage != installstate.BaselineVerified || baseline.Pending != nil || baseline.Version != installbaseline.Version || baseline.ArtifactDigest != c.engine.baselinePlan().Digest() || len(baseline.Resources) != installbaseline.ResourceCount {
 		return nil, ErrSecurityBaseline
 	}
-	// Freeze and validate the entire signed membership before either read lane
-	// starts. Each lane preserves its original resource order; observations are
-	// still uncached and both complete passes retain separate closing fences.
+	// Freeze and validate the entire signed membership before any read lane
+	// starts. Four policy lanes and four binding lanes preserve their own
+	// resource order. Observations are still uncached and both complete passes
+	// retain separate closing fences.
 	type configuredResource struct {
 		resource installstate.BaselineResource
 		template *installcontract.Template
 	}
 	frozen := make([]configuredResource, 0, installbaseline.ResourceCount)
-	var lanes [2][]int
+	var lanes [baselineReadLanes][]int
+	var kindCounts [2]int
 	seen := make(map[installstate.Key]bool, installbaseline.ResourceCount)
 	for _, resource := range baseline.Resources {
 		template, err := c.engine.baseline.contract.Template(resource.Key, false)
 		if err != nil || template.Hash() != resource.TemplateSHA256 || resource.Key.Namespace != "" || seen[resource.Key] {
 			return nil, ErrSecurityBaseline
 		}
-		lane := 0
+		kind := 0
 		switch resource.Key.Kind {
 		case "ValidatingAdmissionPolicy":
 		case "ValidatingAdmissionPolicyBinding":
-			lane = 1
+			kind = 1
 		default:
 			return nil, ErrSecurityBaseline
 		}
 		seen[resource.Key] = true
+		lane := kind*(baselineReadLanes/2) + kindCounts[kind]%(baselineReadLanes/2)
+		kindCounts[kind]++
 		lanes[lane] = append(lanes[lane], len(frozen))
 		frozen = append(frozen, configuredResource{resource: resource, template: template})
 	}
-	if len(lanes[0]) != installbaseline.ResourceCount/2 || len(lanes[1]) != installbaseline.ResourceCount/2 {
+	if kindCounts[0] != installbaseline.ResourceCount/2 || kindCounts[1] != installbaseline.ResourceCount/2 {
 		return nil, ErrSecurityBaseline
 	}
 	type configuredObservation struct {
@@ -105,13 +109,17 @@ func (c *ClusterSecurityBaseline) configuredPass(ctx context.Context, snapshot *
 		policyName string
 	}
 	observed := make([]configuredObservation, len(frozen))
-	var failures [2]error
+	var failures [baselineReadLanes]error
 	readCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var readers sync.WaitGroup
 	for lane, indices := range lanes {
 		readers.Go(func() {
 			for _, index := range indices {
+				if readCtx.Err() != nil {
+					failures[lane] = ErrSecurityBaseline
+					return
+				}
 				entry := frozen[index]
 				live, err := c.access.Get(readCtx, entry.resource.Key)
 				if err != nil {
@@ -125,7 +133,7 @@ func (c *ClusterSecurityBaseline) configuredPass(ctx context.Context, snapshot *
 					cancel()
 					return
 				}
-				if lane == 0 {
+				if entry.resource.Key.Kind == "ValidatingAdmissionPolicy" {
 					policy, ok := matched.(*admissionv1.ValidatingAdmissionPolicy)
 					if !ok || !healthyAdmissionPolicy(policy) {
 						failures[lane] = ErrSecurityBaseline
@@ -145,11 +153,16 @@ func (c *ClusterSecurityBaseline) configuredPass(ctx context.Context, snapshot *
 			}
 		})
 	}
-	// No early return, second pass or journal close may outlive either reader.
+	// No early return, second pass or journal close may outlive any reader.
 	// Workers own disjoint result slots; only this joined caller builds maps.
 	readers.Wait()
-	if failures[0] != nil || failures[1] != nil || ctx.Err() != nil {
+	if ctx.Err() != nil {
 		return nil, ErrSecurityBaseline
+	}
+	for _, err := range failures {
+		if err != nil {
+			return nil, ErrSecurityBaseline
+		}
 	}
 	witness := make(map[installstate.Key]admissionIdentity, installbaseline.ResourceCount)
 	policies := make(map[string]bool, installbaseline.ResourceCount/2)

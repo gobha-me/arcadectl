@@ -174,13 +174,27 @@ lost responses and public recovery cannot reconstruct the purpose. Any later
 whole-object drift still refuses the full proof rather than being retried or
 ignored. Native lifecycle certification remains mandatory.
 
-Each original signed access witness reads its frozen recorded catalog in two
-balanced serial lanes. Baseline configuration uses two serial lanes for its
-policies and bindings. Every fresh GET and complete pass is retained; either
-refusal cancels and joins both readers before result publication or the original
-Namespace/journal close. No access witness is cached or removed, including the
-final access observation after closing configuration. These bounded read-only
-schedules do not relax historical caller eligibility or runtime deadlines.
+Each original signed access witness reads its frozen recorded catalog in eight
+fixed, balanced serial lanes. Baseline configuration uses four policy lanes and
+four binding lanes. The private bound is eight independent named GETs, not a
+caller-controlled setting. Every fresh GET, full-object check and complete pass
+is retained. A refusal cancels all siblings and joins every reader, including
+canceled readers still consuming a body, before result publication or the
+original Namespace/journal close. Configuration still requires two separate
+complete passes agreeing on every original UID/resource version. No access
+witness is cached or removed, including the final access observation after
+closing configuration. Probes, effects, complete passes and outer fences do
+not overlap. Historical caller eligibility, permissions, request contents,
+response limits, retries, QPS settings and deadlines are unchanged.
+
+This revises the previous two-lane observation schedule; it is not a claim of
+identical outcomes under arbitrary transient authorization or transport
+failures. Neither schedule is an atomic snapshot or a continuous authorization
+guarantee. Every accepted response must satisfy the same fresh checks, and any
+observed failure refuses the whole pass. Eight concurrent reads increase
+instantaneous API-server load even though successful request counts are
+unchanged. Synthetic concurrency tests alone do not establish a native speedup
+or signed-lifecycle certification.
 
 Named public GET replies may reuse only the strict JSON conversion of identical
 complete response bytes. Every request still reaches the cluster, and status,
