@@ -285,7 +285,7 @@ func (t *Template) matchWithAdmissionResult(object *unstructured.Unstructured, j
 	}
 	var unnormalized runtime.Object
 	if admissionResult != nil {
-		unnormalized = actual.DeepCopyObject()
+		unnormalized = copyObservedOwning(actual)
 	}
 	m, err := meta.Accessor(actual)
 	if err != nil {

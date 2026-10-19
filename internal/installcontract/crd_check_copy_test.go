@@ -23,9 +23,9 @@ import (
 )
 
 type crdCheckCopyFixture struct {
-	name                         string
-	production, baseline, target *Template
-	live                         *unstructured.Unstructured
+	name                                 string
+	production, baseline, owning, target *Template
+	live                                 *unstructured.Unstructured
 }
 
 func crdCheckCopyFixtures(t testing.TB) []crdCheckCopyFixture {
@@ -58,6 +58,10 @@ func crdCheckCopyFixtures(t testing.TB) []crdCheckCopyFixture {
 			if err != nil {
 				t.Fatal(err)
 			}
+			owning, err := c.compileTemplate(template.key, false)
+			if err != nil {
+				t.Fatal(err)
+			}
 			target, err := c.compileTemplate(template.key, false)
 			if err != nil {
 				t.Fatal(err)
@@ -66,7 +70,7 @@ func crdCheckCopyFixtures(t testing.TB) []crdCheckCopyFixture {
 			if legacy {
 				generation = "Legacy"
 			}
-			fixtures = append(fixtures, crdCheckCopyFixture{profile + generation + crdBorrowIDs[name], template, baseline, target, liveObject(t, template)})
+			fixtures = append(fixtures, crdCheckCopyFixture{profile + generation + crdBorrowIDs[name], template, baseline, owning, target, liveObject(t, template)})
 		}
 	}
 	return fixtures
@@ -77,11 +81,17 @@ func compareCRDCheckCopy(t testing.TB, fixture crdCheckCopyFixture, live *unstru
 	before, _ := json.Marshal(live.Object)
 	got := fixture.production.MatchLive(live, uid)
 	want := fixture.baseline.frozenCRDMatchLive(live, uid)
+	if fixture.owning.owningCRDMatchLive(live, uid) != want {
+		t.Fatal("corrected-owning whole MatchLive differs from historical oracle")
+	}
 	if got != want {
 		t.Fatalf("whole MatchLive differs: got %v want %v", got, want)
 	}
 	got = fixture.production.CheckCRD(live, uid, fixture.target)
 	want = fixture.baseline.frozenCRDCheck(live, uid, fixture.target)
+	if fixture.owning.owningCRDCheck(live, uid, fixture.target) != want {
+		t.Fatal("corrected-owning whole CheckCRD differs from historical oracle")
+	}
 	if got != want {
 		t.Fatalf("whole CheckCRD differs: got %v want %v", got, want)
 	}
@@ -192,6 +202,10 @@ func TestCRDCheckCopyOwnsMetadataStatusAndGenericResults(t *testing.T) {
 			// The borrowed Spec MUST come from actual conversion, never signed defaults.
 			crdCopySchema(live)["description"] = "actual-only"
 			crdCopySchema(live)["default"] = map[string]any{"proof": "actual"}
+			crdCopySchema(live)["enum"] = []any{map[string]any{"proof": "enum"}}
+			crdCopySchema(live)["example"] = map[string]any{"proof": "example"}
+			crdCopySchema(live)["x-kubernetes-list-map-keys"] = []any{"name"}
+			crdCopySchema(live)["x-kubernetes-list-type"] = "map"
 			live.SetManagedFields([]metav1.ManagedFieldsEntry{{Manager: "owned", FieldsV1: &metav1.FieldsV1{Raw: []byte("{}")}}})
 			template.decoded.clear()
 			first, err := template.decodeObservedCRDForCheck(live)
@@ -209,6 +223,10 @@ func TestCRDCheckCopyOwnsMetadataStatusAndGenericResults(t *testing.T) {
 			miss := first.(*crdv1.CustomResourceDefinition)
 			miss.Spec.Versions[0].Schema.OpenAPIV3Schema.Description = "foreign"
 			miss.Spec.Versions[0].Schema.OpenAPIV3Schema.Default.Raw[0] = '['
+			miss.Spec.Versions[0].Schema.OpenAPIV3Schema.Enum[0].Raw[0] = '['
+			miss.Spec.Versions[0].Schema.OpenAPIV3Schema.Example.Raw[0] = '['
+			miss.Spec.Versions[0].Schema.OpenAPIV3Schema.XListMapKeys[0] = "foreign"
+			*miss.Spec.Versions[0].Schema.OpenAPIV3Schema.XListType = "foreign"
 			miss.ManagedFields[0].FieldsV1.Raw[0] = '['
 			miss.Status.StoredVersions[0] = "foreign"
 			missAfter, _ := json.Marshal(memo)
@@ -246,6 +264,10 @@ func TestCRDCheckCopyOwnsMetadataStatusAndGenericResults(t *testing.T) {
 				}
 				owned.Spec.Versions[0].Schema.OpenAPIV3Schema.Description = "foreign"
 				owned.Spec.Versions[0].Schema.OpenAPIV3Schema.Default.Raw[0] = '['
+				owned.Spec.Versions[0].Schema.OpenAPIV3Schema.Enum[0].Raw[0] = '['
+				owned.Spec.Versions[0].Schema.OpenAPIV3Schema.Example.Raw[0] = '['
+				owned.Spec.Versions[0].Schema.OpenAPIV3Schema.XListMapKeys[0] = "foreign"
+				*owned.Spec.Versions[0].Schema.OpenAPIV3Schema.XListType = "foreign"
 				nested := owned.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"]
 				nested.Description = "foreign"
 				owned.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"] = nested
@@ -311,6 +333,7 @@ func TestCRDCheckCopyConcurrentLifetimeAndRefusal(t *testing.T) {
 						return
 					}
 					owned := object.(*crdv1.CustomResourceDefinition)
+					mutateObservedCopyJSONBytes(reflect.ValueOf(&owned.Spec))
 					owned.Spec.Versions[0].Schema.OpenAPIV3Schema.Description = "foreign"
 					owned.Spec.Versions[0].Name = "foreign"
 				case 2:
@@ -435,6 +458,7 @@ func FuzzCRDCheckCopyWholeOperations(f *testing.F) {
 		fixture := fixtures[int(fixtureSelector)%len(fixtures)]
 		fixture.production.decoded.clear()
 		fixture.baseline.decoded.clear()
+		fixture.owning.decoded.clear()
 		for i := 0; i < 4; i++ {
 			compareCRDCheckCopy(t, fixture, fixture.live, fixture.live.GetUID())
 		}
@@ -489,7 +513,7 @@ func benchmarkCRDCheckCopyWholeOperations(b *testing.B, reverse bool) {
 							for _, baseline := range []bool{!reverse, reverse} {
 								name := "Production"
 								if baseline {
-									name = "FrozenOwning"
+									name = "CorrectedOwning"
 								}
 								b.Run(name, func(b *testing.B) {
 									template, err := fixture.production.contract.compileTemplate(fixture.production.key, false)
@@ -503,9 +527,9 @@ func benchmarkCRDCheckCopyWholeOperations(b *testing.B, reverse bool) {
 									check := func(input *unstructured.Unstructured) error {
 										if baseline {
 											if operation == "MatchLive" {
-												return template.frozenCRDMatchLive(input, input.GetUID())
+												return template.owningCRDMatchLive(input, input.GetUID())
 											}
-											return template.frozenCRDCheck(input, input.GetUID(), fixture.target)
+											return template.owningCRDCheck(input, input.GetUID(), fixture.target)
 										}
 										if operation == "MatchLive" {
 											return template.MatchLive(input, input.GetUID())

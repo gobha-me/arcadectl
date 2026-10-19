@@ -65,7 +65,7 @@ func copyObservedMemo(object runtime.Object, borrowCRDSpec bool) runtime.Object 
 		crd.Status.DeepCopyInto(&copy.Status)
 		return &copy
 	}
-	return object.DeepCopyObject()
+	return copyObservedOwning(object)
 }
 
 func (t *Template) decodeObservedCopyMode(object *unstructured.Unstructured, strictAdmission, borrowCRDSpec bool) (runtime.Object, error) {
@@ -133,6 +133,6 @@ func (t *Template) decodeObservedCopyMode(object *unstructured.Unstructured, str
 		return nil, err
 	}
 	// Match normalizes its return; retain a different unnormalized private graph.
-	m.body, m.object, m.strictAdmission = body, decoded.DeepCopyObject(), strictAdmission
+	m.body, m.object, m.strictAdmission = body, copyObservedOwning(decoded), strictAdmission
 	return decoded, nil
 }

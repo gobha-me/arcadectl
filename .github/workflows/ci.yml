@@ -40,6 +40,7 @@ jobs:
       - name: Differential fuzz complete CRD operations
         run: go test -p 1 ./internal/installcontract -run='^$' -fuzz='^FuzzCRDCheckCopyWholeOperations$' -fuzztime=30s -parallel=2 -timeout=3m
       # 240 cases x five repetitions, both orders; stable and every-call churn.
+      # Compare corrected-owning copies, not the historical defective copy.
       # This is synthetic complete-method timing, not a lifecycle deadline test.
       - name: Benchmark paired complete CRD operations in both orders
         run: go test -p 1 ./internal/installcontract -run='^$' -bench='^BenchmarkCRDCheckCopyWholeOperations(Reverse)?$' -benchmem -benchtime=200ms -count=5 -timeout=12m
