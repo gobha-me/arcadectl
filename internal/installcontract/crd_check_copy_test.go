@@ -199,6 +199,15 @@ func TestCRDCheckCopyOwnsMetadataStatusAndGenericResults(t *testing.T) {
 		t.Run(fixture.name, func(t *testing.T) {
 			template := fixture.production
 			live := fixture.live.DeepCopy()
+			// Signed CRDs may have nil labels. Populate this private decoder
+			// fixture before testing map mutation; nil preservation is tested
+			// independently. This fixture does not claim a signed shape match.
+			labels := live.GetLabels()
+			if labels == nil {
+				labels = map[string]string{}
+			}
+			labels["copy-proof"] = "original"
+			live.SetLabels(labels)
 			// The borrowed Spec MUST come from actual conversion, never signed defaults.
 			crdCopySchema(live)["description"] = "actual-only"
 			crdCopySchema(live)["default"] = map[string]any{"proof": "actual"}
