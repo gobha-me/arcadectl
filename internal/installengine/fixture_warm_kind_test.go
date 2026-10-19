@@ -121,8 +121,9 @@ func proveKindWarmFixtureRecipe(t *testing.T, recipe string) {
 			}
 			baselineObservation, err := p.observe(ctx, request)
 			baseline, mapErr := warmNativeObjects(baselineObservation)
-			if err != nil || mapErr != nil || controllers.Verify(ctx, request) != nil || warmNativeLeaders(baseline, baseline, time.Now().UTC()) != nil {
-				t.Fatal("warm complete original runtime/leadership baseline unavailable")
+			if stage := warmInitialBaselineDiagnostic(err, mapErr, baseline,
+				func() error { return controllers.Verify(ctx, request) }, warmNativeLeaders, time.Now); stage != "" {
+				t.Fatalf("warm complete original runtime/leadership baseline unavailable (stage=%s)", stage)
 			}
 			admission, err := NewClusterAdmission(engine, access)
 			if err != nil {

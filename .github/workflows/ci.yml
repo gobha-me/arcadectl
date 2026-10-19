@@ -7,14 +7,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: native-component-profile-${{ github.ref }}
+  group: warm-baseline-diagnostics-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  crd-check-copy-validation:
-    name: Private CRD check ownership validation and native measurement
+  warm-baseline-diagnostics:
+    name: Warm native baseline refusal diagnostics
     runs-on: ubuntu-24.04
-    timeout-minutes: 85
+    # Includes added unit-race/vet setup; the original native proof remains48m.
+    # This diagnostic run is not required-PR, release or lifecycle acceptance.
+    timeout-minutes: 60
     env:
       GOMAXPROCS: "2"
       GOMEMLIMIT: 1GiB
@@ -31,21 +33,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Race test complete default-build contract package and owning results
-        run: go test -race -p 1 -timeout=8m ./internal/installcontract -count=1
-      - name: Race test native diagnostic controls
-        run: go test -race -p 1 -timeout=2m ./hack/profile-installer-wrappers -count=1
-      - name: Vet CRD ownership and tagged installer consumers
-        run: go vet -tags=kindinstall -p 1 ./internal/installcontract ./internal/installengine ./hack/profile-installer-wrappers
-      - name: Differential fuzz complete CRD operations
-        run: go test -p 1 ./internal/installcontract -run='^$' -fuzz='^FuzzCRDCheckCopyWholeOperations$' -fuzztime=30s -parallel=2 -timeout=3m
-      # 240 cases x five repetitions, both orders; stable and every-call churn.
-      # Compare corrected-owning copies, not the historical defective copy.
-      # This is synthetic complete-method timing, not a lifecycle deadline test.
-      - name: Benchmark paired complete CRD operations in both orders
-        run: go test -p 1 ./internal/installcontract -run='^$' -bench='^BenchmarkCRDCheckCopyWholeOperations(Reverse)?$' -benchmem -benchtime=200ms -count=5 -timeout=12m
-      - name: Profile one complete native component without raw artifacts
-        run: go run -p 1 ./hack/profile-installer-wrappers native-component-v2 '${{ github.sha }}'
+      - name: Race test warm baseline diagnostic order and closed labels
+        run: go test -race -p 1 -timeout=2m ./internal/installengine -run='^TestWarmInitialBaselineDiagnosticOrderingAndClosedStages$' -count=1
+      - name: Vet unchanged native provider and diagnostic consumer
+        run: go vet -tags=kindinstall -p 1 ./internal/installengine
+      - name: Prove original native authentication and inert fixtures on both profiles
+        run: make test-kind-install-auth
       - name: Require unchanged exact source checkout
         run: |
           test "$(git rev-parse HEAD)" = '${{ github.sha }}'
