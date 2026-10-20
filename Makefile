@@ -1,4 +1,4 @@
-.PHONY: generate generate-openapi generate-cli verify-cli render-api render-controller test-envtest test-kind-api test-kind-install-auth test-kind-install-admission test-kind-install-admission-v3 test-kind-install-baseline test-kind-install-gc test-kind-install-precontroller test-kind-install-binary test-kind-factorio test-kind-lifecycle test-kind-recovery verify-generated verify-openapi verify-runtime-assets
+.PHONY: generate generate-openapi generate-cli verify-cli render-api render-controller test-envtest test-envtest-part test-kind-api test-kind-install-auth test-kind-install-admission test-kind-install-admission-v3 test-kind-install-baseline test-kind-install-gc test-kind-install-precontroller test-kind-install-binary test-kind-factorio test-kind-lifecycle test-kind-recovery verify-generated verify-openapi verify-runtime-assets
 
 CANONICAL_CONTROLLER_IMAGE := ghcr.io/gobha-me/arcadectl-controller@sha256:0000000000000000000000000000000000000000000000000000000000000000
 
@@ -30,12 +30,15 @@ render-api:
 	@bash ./hack/render-api.sh "$(API_IMAGE)"
 
 test-envtest:
-	# This also runs every ordinary test in these packages. Keep that coverage;
-	# the installer suite must not consume the budget before native profiles start.
-	# Native API-server evidence must execute, not reuse a prior test-result cache.
-	# The complete measured engine suite takes about 21m before CI variability;
-	# retain a finite 30m package budget within the 45m hosted job envelope.
-	go test -tags=envtest -p 1 -timeout=30m -count=1 ./api/v1alpha1 ./internal/controller ./internal/install ./internal/installcontract ./internal/installengine
+	# Complete five-package coverage, including every ordinary engine tree WITH
+	# envtest enabled. Compiled discovery includes new tests, examples and fuzz seeds.
+	# Run all partitions sequentially here; CI runs each on a separate hosted worker.
+	# Fresh count=1 evidence and the finite 30m process caps are unchanged.
+	GOMAXPROCS=2 GOMEMLIMIT=1GiB bash ./hack/test-envtest-part.sh --all
+
+test-envtest-part:
+	@test -n "$(ENVTEST_PART)" || (echo "ENVTEST_PART=base-packages or 0..31 is required" >&2; exit 2)
+	GOMAXPROCS=2 GOMEMLIMIT=1GiB bash ./hack/test-envtest-part.sh "$(ENVTEST_PART)"
 
 test-kind-api:
 	GOMAXPROCS=2 GOMEMLIMIT=1GiB go test -tags=kindapi -p 1 -timeout=35m -v ./internal/install -run '^TestKind(AuthenticatedAdmin|APIRequestDiagnostic.*)$$' -count=1
