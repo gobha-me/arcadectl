@@ -1,86 +1,61 @@
 name: CI
-
 on:
   workflow_dispatch:
-
 permissions:
   contents: read
-
-concurrency:
-  group: complete-envtest-validation-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
-  workflow-contract:
-    name: Exact scheduler contract and native identity boundaries
+  expanded-wrapper-profile:
+    name: Bounded synthetic guard attribution v2
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       GOMAXPROCS: "2"
       GOMEMLIMIT: 1GiB
     steps:
-      - name: Check out exact delivery candidate
+      - name: Check out exact measurement tool
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          path: screen
+          fetch-depth: 3
+      - name: Check out unchanged actual delivery source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: 43e1e7fe9855691123bc755e4ac334e42d554ebf
-          fetch-depth: 0
-          persist-credentials: false
+          path: source
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
-          go-version-file: go.mod
+          go-version-file: source/go.mod
+          cache-dependency-path: source/go.sum
           cache: true
-      - name: Require exact clean source
+      - name: Verify measurement-only source delta and identities
+        working-directory: screen
         run: |
+          ulimit -c 0
+          test "$(git rev-parse HEAD^)" = cef28541bb3dba30112ea4b743bdcf136aac1e2d
+          git merge-base --is-ancestor 43e1e7fe9855691123bc755e4ac334e42d554ebf HEAD
+          test "$(git diff --name-only 43e1e7fe9855691123bc755e4ac334e42d554ebf HEAD | LC_ALL=C sort)" = "$(printf '%s\n' '.github/workflows/ci.yml' 'hack/profile-installer-wrappers/expanded_test.go' 'hack/profile-installer-wrappers/main_linux.go')"
+          test -z "$(git status --porcelain)"
+          git rev-parse HEAD HEAD^{tree}
+          git hash-object hack/profile-installer-wrappers/main_linux.go hack/profile-installer-wrappers/expanded_test.go
+      - name: Race-test unchanged wrapper controls and expanded projection controls
+        working-directory: screen
+        run: |
+          ulimit -c 0
+          go test -race -p 1 -timeout=1m ./hack/profile-installer-wrappers -count=1 -v
+      - name: Profile complete unchanged synthetic targets with separate root and whole-process views
+        working-directory: source
+        run: |
+          ulimit -c 0
           test "$(git rev-parse HEAD)" = 43e1e7fe9855691123bc755e4ac334e42d554ebf
-          test "$(git rev-parse HEAD^{tree})" = 5c4feb8c40e2c845fa18a8264552759291b93509
-          test -z "$(git status --porcelain --untracked-files=normal)"
-      - name: Race check untagged contract and all nine tagged pure controls
+          test -z "$(git status --porcelain)"
+          go run -p 1 "$GITHUB_WORKSPACE/screen/hack/profile-installer-wrappers/main_linux.go" 43e1e7fe9855691123bc755e4ac334e42d554ebf
+          test -z "$(git status --porcelain)"
+      - name: Close both source identities
+        working-directory: screen
         run: |
-          go test -v -race -p 1 -timeout=5m ./internal/installengine -run '^TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate$' -count=1
-          go test -v -race -tags=kindinstall -p 1 -timeout=5m ./internal/installengine -run '^(TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate|TestEnvtestPartitionsCompleteCompiledUnion|TestEnvtestPartitionsRefuseInvalidInputs|TestEnvtestPartitionsAllPartsAndFailures|TestInstallerBinaryProgressCapture|TestInstallerBinaryRequestPipelineCapture|TestInstallerBinaryParentContext|TestLifecycleCostsBoundedCommandAndInvocationIsolation|TestLifecycleCostsConcurrentRefusalsAndCancellation)$' -count=1
-      - name: Prove both complete native identity boundary roots on both profiles
-        run: |
-          go test -tags=envtest -p 1 -timeout=30m -v ./internal/installengine -run '^(TestEnvtestOrdinaryControllerCannotLaunchPrivilegedIdentity|TestEnvtestReservedIdentityGuardStandalone)$' -count=1
-      - name: Require unchanged exact source after tests
-        run: |
-          test "$(git rev-parse HEAD)" = 43e1e7fe9855691123bc755e4ac334e42d554ebf
-          test "$(git rev-parse HEAD^{tree})" = 5c4feb8c40e2c845fa18a8264552759291b93509
-          test -z "$(git status --porcelain --untracked-files=normal)"
-
-  envtest:
-    name: Complete fresh envtest part ${{ matrix.part }}
-    needs: [workflow-contract]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        part: [base-packages, "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31"]
-    env:
-      GOMAXPROCS: "2"
-      GOMEMLIMIT: 1GiB
-    steps:
-      - name: Check out exact delivery candidate
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: 43e1e7fe9855691123bc755e4ac334e42d554ebf
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Require exact clean source
-        run: |
-          test "$(git rev-parse HEAD)" = 43e1e7fe9855691123bc755e4ac334e42d554ebf
-          test "$(git rev-parse HEAD^{tree})" = 5c4feb8c40e2c845fa18a8264552759291b93509
-          test -z "$(git status --porcelain --untracked-files=normal)"
-      - name: Run complete compiled envtest partition
-        run: make test-envtest-part ENVTEST_PART='${{ matrix.part }}'
-      - name: Require unchanged exact source after tests
-        run: |
-          test "$(git rev-parse HEAD)" = 43e1e7fe9855691123bc755e4ac334e42d554ebf
-          test "$(git rev-parse HEAD^{tree})" = 5c4feb8c40e2c845fa18a8264552759291b93509
-          test -z "$(git status --porcelain --untracked-files=normal)"
+          test -z "$(git status --porcelain)"
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          test "$(git -C ../source rev-parse HEAD)" = 43e1e7fe9855691123bc755e4ac334e42d554ebf
+          test -z "$(git -C ../source status --porcelain)"

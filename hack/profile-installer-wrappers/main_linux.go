@@ -44,25 +44,64 @@ var targets = []target{
 
 // Never export profile-controlled function names, labels, comments or paths.
 var functions = map[string]string{
-	enginePackage + "(*ClusterSecurityBaseline).Verify":              "baseline-verify",
-	enginePackage + "(*ClusterSecurityBaseline).newBaselineBehavior": "baseline-construction",
-	enginePackage + "(*baselineBehavior).prove":                      "baseline-proof",
-	enginePackage + "(*baselineBehavior).readExactDiagnostic":        "baseline-exact-read",
-	enginePackage + "(*baselineBehavior).close":                      "baseline-close",
-	enginePackage + "(*fixtureWire).observePhaseLocked":              "phase-observation",
-	enginePackage + "(*fixtureWire).localCurrent":                    "phase-local-current",
-	enginePackage + "(*fixtureLedger).readOriginalWorldsMode":        "original-worlds-read",
-	enginePackage + "(*fixtureLedger).originalWorldsWALCurrent":      "original-worlds-wal",
-	enginePackage + "(*fixtureLedger).matchCurrentWorlds":            "current-worlds-match",
-	enginePackage + "(*fixtureDecodeCache).worldsLocked":             "decode-worlds",
-	enginePackage + "(*fixtureDecodeCache).walLocked":                "decode-wal",
-	enginePackage + "(*fixtureDecodeCache).journalLocked":            "decode-journal",
-	enginePackage + "(*fixtureLedger).checkCurrentWAL":               "current-wal-check",
-	enginePackage + "(*fixtureLedger).accountPhaseWithAccounts":      "phase-accounting",
-	enginePackage + "(*fixtureLedger).validatePhaseFixture":          "phase-fixture-validation",
-	enginePackage + "(*fixtureLedger).phaseGCRowsWithAccountsTrace":  "phase-gc-accounting",
-	"encoding/json.Unmarshal":                                        "json-unmarshal",
-	"encoding/json.Marshal":                                          "json-marshal",
+	enginePackage + "(*baselineWorkflow).readOriginalRuntimeAccess.func1":                         "runtime-access-worker",
+	enginePackage + "(*ClusterSecurityBaseline).configuredPass.func1":                             "baseline-configured-worker",
+	enginePackage + "(*baselineActors).verifyWithProbe":                                           "actor-verify",
+	enginePackage + "(*baselineActors).verifyContainment":                                         "actor-containment",
+	enginePackage + "(*baselineWorkflow).runtimeAccessWitness":                                    "runtime-access-witness",
+	enginePackage + "(*baselineWorkflow).readOriginalRuntimeAccess":                               "runtime-access-read",
+	enginePackage + "(*ClusterSecurityBaseline).configured":                                       "baseline-configured",
+	enginePackage + "(*ClusterSecurityBaseline).configuredPass":                                   "baseline-configured-pass",
+	enginePackage + "(*baselineActors).verifyDeniedComposition":                                   "denied-composition",
+	enginePackage + "(*Engine).baselineDeniedCatalog":                                             "denied-catalog",
+	enginePackage + "baselineDeniedReviews":                                                       "denied-reviews",
+	enginePackage + "(*publicReplyMemo).decode":                                                   "public-reply-decode",
+	enginePackage + "(*Lifecycle).original":                                                       "lifecycle-original",
+	"github.com/gobha-me/arcadectl/internal/installcontract.(*Template).MatchLive":                "contract-match-live",
+	"github.com/gobha-me/arcadectl/internal/installcontract.(*Template).MatchLiveAdmissionObject": "contract-match-admission",
+	"github.com/gobha-me/arcadectl/internal/installcontract.(*Template).matchWithAdmissionResult": "contract-match-shape",
+	"github.com/gobha-me/arcadectl/internal/installcontract.(*Template).decodeObservedCopyMode":   "contract-observed-decode",
+	"github.com/gobha-me/arcadectl/internal/installcontract.sameObservedJSON":                     "contract-raw-equality",
+	"github.com/gobha-me/arcadectl/internal/installstate.(*Snapshot).Document":                    "journal-document-copy",
+	"github.com/gobha-me/arcadectl/internal/installstate.cloneDocument":                           "journal-clone",
+	"github.com/gobha-me/arcadectl/internal/installobserve.(*Observer).Collect":                   "observer-collect",
+	"github.com/gobha-me/arcadectl/internal/installobserve.readTransport.RoundTrip":               "observer-roundtrip",
+	"k8s.io/apimachinery/pkg/runtime.DeepCopyJSONValue":                                           "unstructured-deep-copy",
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured.(*Unstructured).DeepCopy":                  "unstructured-copy",
+	"encoding/json.(*encodeState).marshal":                                                        "json-encode-state",
+	"encoding/json.(*decodeState).unmarshal":                                                      "json-decode-state",
+	"sigs.k8s.io/json.UnmarshalStrict":                                                            "strict-json",
+	"runtime.mallocgc":                                                                            "runtime-allocation",
+	"runtime.makeslice":                                                                           "runtime-make-slice",
+	"runtime.mapassign_faststr":                                                                   "runtime-map-assignment",
+	"runtime.mapaccess2_faststr":                                                                  "runtime-map-read",
+	"runtime.memmove":                                                                             "runtime-memory-copy",
+	"runtime.memclrNoHeapPointers":                                                                "runtime-memory-clear",
+	"runtime.scanobject":                                                                          "runtime-scan",
+	"runtime.gcAssistAlloc":                                                                       "runtime-gc-assist",
+	"reflect.deepValueEqual":                                                                      "reflect-deep-equality",
+	"bytes.Equal":                                                                                 "bytes-equality",
+	"strings.Join":                                                                                "strings-join",
+	"crypto/sha256.Sum256":                                                                        "sha256-sum",
+	enginePackage + "(*ClusterSecurityBaseline).Verify":                                           "baseline-verify",
+	enginePackage + "(*ClusterSecurityBaseline).newBaselineBehavior":                              "baseline-construction",
+	enginePackage + "(*baselineBehavior).prove":                                                   "baseline-proof",
+	enginePackage + "(*baselineBehavior).readExactDiagnostic":                                     "baseline-exact-read",
+	enginePackage + "(*baselineBehavior).close":                                                   "baseline-close",
+	enginePackage + "(*fixtureWire).observePhaseLocked":                                           "phase-observation",
+	enginePackage + "(*fixtureWire).localCurrent":                                                 "phase-local-current",
+	enginePackage + "(*fixtureLedger).readOriginalWorldsMode":                                     "original-worlds-read",
+	enginePackage + "(*fixtureLedger).originalWorldsWALCurrent":                                   "original-worlds-wal",
+	enginePackage + "(*fixtureLedger).matchCurrentWorlds":                                         "current-worlds-match",
+	enginePackage + "(*fixtureDecodeCache).worldsLocked":                                          "decode-worlds",
+	enginePackage + "(*fixtureDecodeCache).walLocked":                                             "decode-wal",
+	enginePackage + "(*fixtureDecodeCache).journalLocked":                                         "decode-journal",
+	enginePackage + "(*fixtureLedger).checkCurrentWAL":                                            "current-wal-check",
+	enginePackage + "(*fixtureLedger).accountPhaseWithAccounts":                                   "phase-accounting",
+	enginePackage + "(*fixtureLedger).validatePhaseFixture":                                       "phase-fixture-validation",
+	enginePackage + "(*fixtureLedger).phaseGCRowsWithAccountsTrace":                               "phase-gc-accounting",
+	"encoding/json.Unmarshal":                                                                     "json-unmarshal",
+	"encoding/json.Marshal":                                                                       "json-marshal",
 }
 
 type custody struct {
@@ -125,11 +164,13 @@ type row struct {
 	Cumulative float64 `json:"cumulative"`
 }
 type metric struct {
-	Kind           string  `json:"kind"`
-	Profile        custody `json:"profile"`
-	RootCumulative float64 `json:"rootCumulative"`
-	UnknownFlat    float64 `json:"unknownFlat"`
-	Rows           []row   `json:"rows"`
+	Kind            string  `json:"kind"`
+	Scope           string  `json:"scope"`
+	ReportedFlatSum float64 `json:"reportedFlatSum"`
+	Profile         custody `json:"profile"`
+	RootCumulative  float64 `json:"rootCumulative"`
+	UnknownFlat     float64 `json:"unknownFlat"`
+	Rows            []row   `json:"rows"`
 }
 type result struct {
 	ID         string   `json:"id"`
@@ -336,6 +377,11 @@ func runTarget(ctx context.Context, binary string, t target) (result, error) {
 			return result{}, refused("", t.id, kind, err)
 		}
 		r.Metrics = append(r.Metrics, m)
+		whole, wholeErr := analyzeMode(ctx, captures[i].body, t.root, kind, true)
+		if wholeErr != nil {
+			return result{}, refused("whole-profile", t.id, kind, wholeErr)
+		}
+		r.Metrics = append(r.Metrics, whole)
 	}
 	return r, nil
 }
@@ -356,6 +402,10 @@ func joinReaders(ctx context.Context, reads []*os.File, readers *sync.WaitGroup)
 }
 
 func analyze(ctx context.Context, body []byte, root, kind string) (metric, error) {
+	return analyzeMode(ctx, body, root, kind, false)
+}
+
+func analyzeMode(ctx context.Context, body []byte, root, kind string, whole bool) (metric, error) {
 	// A perf input invokes conversion that creates a temporary raw file.
 	if len(body) < 3 || !bytes.Equal(body[:3], []byte{0x1f, 0x8b, 8}) {
 		return metric{}, refused("profile-format", "", kind, errScreen)
@@ -382,19 +432,31 @@ func analyze(ctx context.Context, body []byte, root, kind string) (metric, error
 	if kind == "sampled-alloc-bytes" {
 		index, unit = "alloc_space", "bytes"
 	}
-	text, err := command(ctx, time.Minute, f, nil, "go", "tool", "pprof", "-top", "-cum", "-functions", "-nodecount=0", "-nodefraction=0", "-edgefraction=0", "-symbolize=none", "-unit="+unit, "-sample_index="+index, "-focus=^"+regexp.QuoteMeta(root)+"$", "/proc/self/fd/0")
+	args := pprofArguments(root, index, unit, whole)
+	text, err := command(ctx, time.Minute, f, nil, "go", args...)
 	defer clear(text)
 	if err != nil {
 		return metric{}, refused("pprof-child", "", kind, err)
 	}
 	m, err := parseTop(text, root, kind)
 	m.Profile = describe(body)
+	m.Scope = "synchronous-root-focused"
+	if whole {
+		m.Scope = "whole-synthetic-process-including-workers-and-fixture-server"
+	}
 	if err != nil {
 		return m, refused("pprof-projection", "", kind, err)
 	}
 	return m, err
 }
 
+func pprofArguments(root, index, unit string, whole bool) []string {
+	args := []string{"tool", "pprof", "-top", "-cum", "-functions", "-nodecount=0", "-nodefraction=0", "-edgefraction=0", "-symbolize=none", "-unit=" + unit, "-sample_index=" + index}
+	if !whole {
+		args = append(args, "-focus=^"+regexp.QuoteMeta(root)+"$")
+	}
+	return append(args, "/proc/self/fd/0")
+}
 func parseTop(body []byte, root, kind string) (metric, error) {
 	m := metric{Kind: kind, Rows: []row{}}
 	unit := "ns"
@@ -472,6 +534,10 @@ func parseTop(body []byte, root, kind string) (metric, error) {
 			return metric{}, projectionFailure("profile-duplicate")
 		}
 		seen[name] = true
+		m.ReportedFlatSum += flat
+		if math.IsInf(m.ReportedFlatSum, 0) || math.IsNaN(m.ReportedFlatSum) || m.ReportedFlatSum > 1e18 {
+			return metric{}, projectionFailure("profile-total")
+		}
 		if name == root {
 			m.RootCumulative = cum
 		}
@@ -568,7 +634,7 @@ func screen(parent context.Context, expected string) error {
 		Scope          string   `json:"scope"`
 		MemProfileRate int      `json:"memProfileRate"`
 		Results        []result `json:"results"`
-	}{"arcadectl-wrapper-screen-v1", expected, digest, "synthetic-root-focused-synchronous-stacks; formatted-rounded-values; cumulative-overlaps; sampled-allocations; profiling-perturbs-CPU; excludes-async-and-native-wait", 8192, results})
+	}{"arcadectl-wrapper-screen-v2", expected, digest, "synthetic-root-and-whole-process-separate; whole-includes-workers-and-fixture-server; reported-flat-sum-not-root-attribution; rounded-values; cumulative-overlaps; sampled-allocations; profiling-perturbs-CPU; not-native-wait", 8192, results})
 }
 
 func main() {
@@ -586,7 +652,7 @@ func main() {
 			Schema    string         `json:"schema"`
 			ElapsedNS int64          `json:"elapsedNS"`
 			Refusal   *screenRefusal `json:"refusal"`
-		}{"arcadectl-wrapper-screen-refusal-v1", time.Since(started).Nanoseconds(), f})
+		}{"arcadectl-wrapper-screen-refusal-v2", time.Since(started).Nanoseconds(), f})
 		_, _ = io.WriteString(os.Stderr, "wrapper screen refused; no raw diagnostics exported\n")
 		os.Exit(1)
 	}
