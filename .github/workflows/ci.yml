@@ -7,24 +7,22 @@ permissions:
   contents: read
 
 concurrency:
-  group: workflow-oracle-validation-${{ github.ref }}
+  group: post-gate-validation-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  workflow-oracle:
-    name: Required workflow contract and six early diagnostic roots
+  post-gate-validation:
+    name: Supplemental exact-BB4 post-dependency Go and policy checks
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 45
     env:
-      GOTOOLCHAIN: local
-      GOTELEMETRY: off
-      GOMAXPROCS: '2'
+      GOMAXPROCS: "2"
       GOMEMLIMIT: 1GiB
     steps:
-      - name: Check out exact validation source and delivery parent
+      - name: Check out exact delivery candidate, not validation workflow commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: bb4a20313f3d122762d8f468eabf7749d23effc4
           fetch-depth: 0
           persist-credentials: false
       - name: Set up Go
@@ -32,27 +30,64 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Require exact delivery source for workflow oracle
+      - name: Require clean exact delivery source
         run: |
-          test "$(git rev-parse HEAD^2)" = bb4a20313f3d122762d8f468eabf7749d23effc4
-          test "$(git diff --name-only bb4a20313f3d122762d8f468eabf7749d23effc4 HEAD)" = .github/workflows/ci.yml
-          git restore --source=bb4a20313f3d122762d8f468eabf7749d23effc4 --worktree -- .github/workflows/ci.yml
-          git diff --exit-code bb4a20313f3d122762d8f468eabf7749d23effc4 -- .
-          test "$(git hash-object .github/workflows/ci.yml)" = "$(git rev-parse bb4a20313f3d122762d8f468eabf7749d23effc4:.github/workflows/ci.yml)"
-          printf '%s\n' 'workflow-oracle-delivery-source-v1'
-      - name: Race check workflow contract without tags
-        run: |
-          go test -v -race -p 1 -timeout=5m ./internal/installengine -run '^TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate$' -count=1
-          printf '%s\n' 'workflow-oracle-untagged-complete-v1'
-      - name: Race check all six tagged early diagnostic roots
-        run: |
-          go test -v -race -tags=kindinstall -p 1 -timeout=5m ./internal/installengine -run '^(TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate|TestInstallerBinaryProgressCapture|TestInstallerBinaryRequestPipelineCapture|TestInstallerBinaryParentContext|TestLifecycleCostsBoundedCommandAndInvocationIsolation|TestLifecycleCostsConcurrentRefusalsAndCancellation)$' -count=1
-          printf '%s\n' 'workflow-oracle-six-tagged-complete-v1'
-      - name: Require unchanged delivery bytes and restore validation workflow
-        run: |
-          git diff --exit-code bb4a20313f3d122762d8f468eabf7749d23effc4 -- .
-          test -z "$(git ls-files --others --exclude-standard)"
-          git restore --source=HEAD --worktree -- .github/workflows/ci.yml
-          test "$(git rev-parse HEAD)" = '${{ github.sha }}'
+          test "$(git rev-parse HEAD)" = bb4a20313f3d122762d8f468eabf7749d23effc4
+          test "$(git rev-parse HEAD^{tree})" = 89c3c0f46e5ae587ab24069d312a316193129e06
           test -z "$(git status --porcelain --untracked-files=normal)"
-          printf '%s\n' 'workflow-oracle-source-complete-v1'
+          printf '%s\n' 'post-gate-delivery-source-v1'
+      - name: Verify module
+        run: go mod verify
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+      - name: Verify generated API artifacts
+        run: make verify-generated
+      - name: Verify pinned runtime assets
+        run: make verify-runtime-assets
+      - name: Vet
+        run: go vet -p 1 ./...
+      - name: Test with race detector
+        run: |
+          discovered=$(go list ./...)
+          mapfile -t packages < <(printf '%s\n' "$discovered" | awk '$0 != "github.com/gobha-me/arcadectl/internal/installengine"')
+          test "${#packages[@]}" -gt 0
+          go test -race -p 1 -timeout=15m "${packages[@]}"
+      - name: Test API-server lifecycle transitions
+        run: make test-envtest
+      - name: Build reproducible controller image
+        run: |
+          for tag in first second; do
+            docker build --no-cache \
+              --build-arg VCS_REF="$(git rev-parse HEAD)" \
+              --build-arg SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" \
+              --tag "arcadectl-controller:ci-$tag" \
+              .
+          done
+          first_id=$(docker image inspect --format '{{.Id}}' arcadectl-controller:ci-first)
+          second_id=$(docker image inspect --format '{{.Id}}' arcadectl-controller:ci-second)
+          if [ "$first_id" != "$second_id" ]; then
+            docker image inspect arcadectl-controller:ci-first arcadectl-controller:ci-second \
+              --format 'id={{.Id}} created={{.Created}} layers={{json .RootFS.Layers}}'
+            echo "Independent clean builds produced different controller images" >&2
+            exit 1
+          fi
+      - name: Build and inspect reproducible API image
+        run: |
+          for tag in first second; do
+            docker build --no-cache --file Dockerfile.api \
+              --build-arg VCS_REF="$(git rev-parse HEAD)" \
+              --build-arg SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" \
+              --tag "arcadectl-api:ci-$tag" .
+          done
+          first_id=$(docker image inspect --format '{{.Id}}' arcadectl-api:ci-first)
+          second_id=$(docker image inspect --format '{{.Id}}' arcadectl-api:ci-second)
+          test "$first_id" = "$second_id"
+          test "$(docker image inspect --format '{{.Config.User}}' arcadectl-api:ci-first)" = '65532:65532'
+          test "$(docker image inspect --format '{{json .Config.Entrypoint}}' arcadectl-api:ci-first)" = '["/arcadectl-api"]'
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' arcadectl-api:ci-first)" = "$(git rev-parse HEAD)"
+      - name: Require unchanged exact delivery source after all checks
+        run: |
+          test "$(git rev-parse HEAD)" = bb4a20313f3d122762d8f468eabf7749d23effc4
+          test "$(git rev-parse HEAD^{tree})" = 89c3c0f46e5ae587ab24069d312a316193129e06
+          test -z "$(git status --porcelain --untracked-files=normal)"
+          printf '%s\n' 'post-gate-checks-complete-v1'
