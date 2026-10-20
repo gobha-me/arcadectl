@@ -239,6 +239,9 @@ func TestBaselineDeniedProviderClosesOriginalWholeEvidenceAndLateGrants(t *testi
 					_ = json.NewEncoder(w).Encode(copy)
 					return
 				}
+				if testBaselineConfigurationList(t, w, r, originals) {
+					return
+				}
 				if object := originals[r.URL.Path]; object != nil {
 					_ = json.NewEncoder(w).Encode(object.Object)
 					return

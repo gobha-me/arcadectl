@@ -3,25 +3,91 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+env:
+  BASELINE_SHA: 430d6911e1ebc9a7ebe707fb1eb1594e6bd2c154
+  DELIVERY_SHA: bd386c14f17d92db03cfd7e002b2e3bb316777e0
+  EXPERIMENT_BASE: b08348d0c99318969cd73a455472c139aadefdf8
+  GOMAXPROCS: "2"
+  GOMEMLIMIT: 1GiB
 jobs:
-  public-body-paired-profile:
-    name: Experimental public-body buffers paired synthetic comparison
+  focused-race:
+    name: Experimental baseline LIST race shard ${{ matrix.shard }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    env:
-      GOMAXPROCS: "2"
-      GOMEMLIMIT: 1GiB
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+                16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+    steps:
+      - name: Check out source-equivalent experimental candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Verify exact delivery equivalence and unchanged V3 tool
+        run: |
+          set -euo pipefail
+          ulimit -c 0
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse "$DELIVERY_SHA^")" = "$BASELINE_SHA"
+          git merge-base --is-ancestor "$EXPERIMENT_BASE" HEAD
+          git merge-base --is-ancestor "$DELIVERY_SHA" HEAD
+          git diff --exit-code "$EXPERIMENT_BASE" HEAD -- hack/profile-installer-wrappers
+          git diff --exit-code "$BASELINE_SHA" "$DELIVERY_SHA" -- hack/profile-installer-wrappers
+          git diff --exit-code "$DELIVERY_SHA" HEAD -- . ':(exclude).github/workflows/ci.yml' ':(exclude)hack/profile-installer-wrappers'
+          printf '%s\n' '08e732b3048c071a738dd9397baac13455549f233d28a1cc7b404d937efff79a  hack/profile-installer-wrappers/main_linux.go' 'a88b81e0c70a7f5275bf0e1f2b159d46f8213310d9bc3efae36d9744692d6295  hack/profile-installer-wrappers/expanded_test.go' | sha256sum -c -
+          test -z "$(git status --porcelain)"
+          git rev-parse HEAD HEAD^{tree} "$DELIVERY_SHA" "$DELIVERY_SHA^{tree}"
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Census and race-test complete focused trees in the reviewed partition
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          ulimit -c 0
+          focus='^Test(Baseline(Configuration|Actors|DeniedProvider|DeniedComposition|BehaviorWholeProvider|Precontroller|Prerequisite|RetiredHTTPS|Enrollment|MetadataWholeProvider|AccessEightLanes)|Acknowledged(Prerequisite|Deployment)|ActivationEpoch|LifecycleBoundaryDiagnostic|SDKWaitDiagnosticKeepsDefaultReadBucketShared|HTTP|PublicReplyMemo|PublicBodyBuffers)'
+          census="$(go test -race -p 1 ./internal/installengine -run '^$' -list "$focus")"
+          printf '%s\n' "$census"
+          for root in TestBaselineConfigurationListsRequireCompleteStrictBoundedSnapshots TestBaselineConfigurationListsRejectEveryChangedOriginalMember TestBaselineConfigurationListsRefuseUnboundOrActorRoutesWithoutWire TestBaselineConfigurationListsKeepOriginalFencesAcrossPagesAndPasses; do
+            test "$(printf '%s\n' "$census" | grep -Fxc "$root")" = 1
+          done
+          assignment="$(bash hack/test-installengine-race-shard.sh "$SHARD" --list-only)"
+          selected="$(awk -v wanted="$focus" '$0 ~ wanted' <<< "$assignment")"
+          if [[ -n "$selected" ]]; then
+            pattern="$(awk 'NF { printf "%s^%s$", separator, $0; separator="|" }' <<< "$selected")"
+            printf 'Focused selected: %s\n' "$selected"
+            go test -race -p 1 -timeout=20m ./internal/installengine -run "$pattern" -count=1 -v
+          else
+            printf '%s\n' 'No focused roots assigned to this validated shard.'
+          fi
+          if [[ "$SHARD" == 0 ]]; then
+            go vet -p 1 ./internal/installengine ./hack/profile-installer-wrappers
+            go test -race -p 1 -timeout=1m ./hack/profile-installer-wrappers -count=1 -v
+          fi
+          test -z "$(git status --porcelain)"
+          git diff --exit-code "$DELIVERY_SHA" HEAD -- . ':(exclude).github/workflows/ci.yml' ':(exclude)hack/profile-installer-wrappers'
+  paired-profile:
+    name: Experimental baseline LIST unchanged V3 ABBA
+    needs: [focused-race]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Check out experimental candidate and unchanged V3 tool
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
           path: screen
-          fetch-depth: 5
+          fetch-depth: 0
       - name: Check out unchanged actual delivery baseline
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 43e1e7fe9855691123bc755e4ac334e42d554ebf
+          ref: 430d6911e1ebc9a7ebe707fb1eb1594e6bd2c154
           path: source
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
@@ -29,72 +95,58 @@ jobs:
           go-version-file: source/go.mod
           cache-dependency-path: source/go.sum
           cache: true
-      - name: Verify exact experimental delta and unchanged measurement tool
+      - name: Verify exact delivery equivalence and unchanged V3 tool
         working-directory: screen
         run: |
           set -euo pipefail
           ulimit -c 0
-          test "$(git rev-parse HEAD^)" = f27055ad2851bf07714c073876558420bc943879
-          git merge-base --is-ancestor 43e1e7fe9855691123bc755e4ac334e42d554ebf HEAD
-          test "$(git diff --name-only 43e1e7fe9855691123bc755e4ac334e42d554ebf HEAD | LC_ALL=C sort)" = "$(printf '%s\n' '.github/workflows/ci.yml' 'hack/profile-installer-wrappers/expanded_test.go' 'hack/profile-installer-wrappers/main_linux.go' 'internal/installengine/access.go' 'internal/installengine/public_body_buffers.go' 'internal/installengine/public_body_buffers_test.go')"
-          git diff --exit-code f27055ad2851bf07714c073876558420bc943879 HEAD -- hack/profile-installer-wrappers
-          printf '%s\n' '08e732b3048c071a738dd9397baac13455549f233d28a1cc7b404d937efff79a  hack/profile-installer-wrappers/main_linux.go' 'a88b81e0c70a7f5275bf0e1f2b159d46f8213310d9bc3efae36d9744692d6295  hack/profile-installer-wrappers/expanded_test.go' '210889b92f0b051d8389e1d00cbd0fe63b286b62758160d18dc614ad370f277c  internal/installengine/access.go' '0caf98607b9f2a84439b27dc77565e65c3e7353797afdf7bd69fc82e44b93ab5  internal/installengine/public_body_buffers.go' '4969e6df45fbd80db3f74b16f1c9a1e5a22985dad64b9204c4ba1f086c19747c  internal/installengine/public_body_buffers_test.go' | sha256sum -c -
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse "$DELIVERY_SHA^")" = "$BASELINE_SHA"
+          test "$(git -C ../source rev-parse HEAD)" = "$BASELINE_SHA"
+          git merge-base --is-ancestor "$EXPERIMENT_BASE" HEAD
+          git merge-base --is-ancestor "$DELIVERY_SHA" HEAD
+          git diff --exit-code "$EXPERIMENT_BASE" HEAD -- hack/profile-installer-wrappers
+          git diff --exit-code "$BASELINE_SHA" "$DELIVERY_SHA" -- hack/profile-installer-wrappers
+          git diff --exit-code "$DELIVERY_SHA" HEAD -- . ':(exclude).github/workflows/ci.yml' ':(exclude)hack/profile-installer-wrappers'
+          printf '%s\n' '08e732b3048c071a738dd9397baac13455549f233d28a1cc7b404d937efff79a  hack/profile-installer-wrappers/main_linux.go' 'a88b81e0c70a7f5275bf0e1f2b159d46f8213310d9bc3efae36d9744692d6295  hack/profile-installer-wrappers/expanded_test.go' | sha256sum -c -
           test -z "$(git status --porcelain)"
-          test "$(git -C ../source rev-parse HEAD)" = 43e1e7fe9855691123bc755e4ac334e42d554ebf
           test -z "$(git -C ../source status --porcelain)"
-          git rev-parse HEAD HEAD^{tree}
-      - name: Race-test unchanged V3 measurement controls
-        working-directory: screen
-        run: |
-          set -euo pipefail
-          ulimit -c 0
-          go test -race -p 1 -timeout=1m ./hack/profile-installer-wrappers -count=1 -v
-      - name: Census and race-test candidate HTTP body controls
-        working-directory: screen
-        run: |
-          set -euo pipefail
-          ulimit -c 0
-          selector='^Test(HTTP|PublicReplyMemo|PublicBodyBuffers)'
-          census="$(go test -p 1 ./internal/installengine -run '^$' -list "$selector")"
-          printf '%s\n' "$census"
-          for root in TestPublicBodyBuffersReadAllOracle TestPublicBodyBuffersOwnershipZeroingAndCap TestPublicBodyBuffersConcurrentIsolation TestHTTPPublicBodyBuffersOwnResultsAndRefetch TestHTTPPublicBodyBuffersPartialAndCancellation TestHTTPPublicBodyBuffersExcludePrivateAndNonGET; do
-            test "$(printf '%s\n' "$census" | grep -Fxc "$root")" = 1
-          done
-          go test -race -p 1 -timeout=3m ./internal/installengine -run "$selector" -count=1 -v
-          test -z "$(git status --porcelain)"
+          git rev-parse HEAD HEAD^{tree} "$DELIVERY_SHA" "$DELIVERY_SHA^{tree}"
       - name: A1 profile complete unchanged baseline targets
         working-directory: source
         run: |
           set -euo pipefail
           ulimit -c 0
           printf '%s\n' 'PAIR A1 baseline'
-          go run -p 1 "$GITHUB_WORKSPACE/screen/hack/profile-installer-wrappers/main_linux.go" 43e1e7fe9855691123bc755e4ac334e42d554ebf
+          go run -p 1 "$GITHUB_WORKSPACE/screen/hack/profile-installer-wrappers/main_linux.go" "$BASELINE_SHA"
       - name: B1 profile complete candidate targets
         working-directory: screen
         run: |
           set -euo pipefail
           ulimit -c 0
           printf '%s\n' 'PAIR B1 candidate'
-          go run -p 1 ./hack/profile-installer-wrappers/main_linux.go "${{ github.sha }}"
+          go run -p 1 ./hack/profile-installer-wrappers/main_linux.go "$GITHUB_SHA"
       - name: B2 profile complete candidate targets
         working-directory: screen
         run: |
           set -euo pipefail
           ulimit -c 0
           printf '%s\n' 'PAIR B2 candidate'
-          go run -p 1 ./hack/profile-installer-wrappers/main_linux.go "${{ github.sha }}"
+          go run -p 1 ./hack/profile-installer-wrappers/main_linux.go "$GITHUB_SHA"
       - name: A2 profile complete unchanged baseline targets
         working-directory: source
         run: |
           set -euo pipefail
           ulimit -c 0
           printf '%s\n' 'PAIR A2 baseline'
-          go run -p 1 "$GITHUB_WORKSPACE/screen/hack/profile-installer-wrappers/main_linux.go" 43e1e7fe9855691123bc755e4ac334e42d554ebf
-      - name: Close baseline and experimental source identities
+          go run -p 1 "$GITHUB_WORKSPACE/screen/hack/profile-installer-wrappers/main_linux.go" "$BASELINE_SHA"
+      - name: Close exact source identities and delivery equivalence
         working-directory: screen
         run: |
           set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C ../source rev-parse HEAD)" = "$BASELINE_SHA"
           test -z "$(git status --porcelain)"
-          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
-          test "$(git -C ../source rev-parse HEAD)" = 43e1e7fe9855691123bc755e4ac334e42d554ebf
           test -z "$(git -C ../source status --porcelain)"
+          git diff --exit-code "$DELIVERY_SHA" HEAD -- . ':(exclude).github/workflows/ci.yml' ':(exclude)hack/profile-installer-wrappers'
+          git diff --exit-code "$EXPERIMENT_BASE" HEAD -- hack/profile-installer-wrappers

@@ -303,6 +303,9 @@ func newEnrollmentSafetyTLSFixture(t *testing.T, mode installstate.Mode) *enroll
 		if f.onRead != nil {
 			f.onRead(r.URL.Path)
 		}
+		if r.URL.Query().Has("labelSelector") && testBaselineConfigurationList(t, w, r, f.objects) {
+			return
+		}
 		if r.URL.Path == "/version" {
 			_ = json.NewEncoder(w).Encode(map[string]any{"major": "1", "minor": "37", "gitVersion": "v1.37.0"})
 			return

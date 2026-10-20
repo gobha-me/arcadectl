@@ -92,11 +92,6 @@ func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 			var mu sync.Mutex
 			catalog := testBaselineContainmentAttributes(f.plan.Namespace())
 			seen := map[string]map[int]int{}
-			lastResource := f.snapshot.Document().SecurityBaseline.Resources[len(f.snapshot.Document().SecurityBaseline.Resources)-1].Key
-			lastConfigurationPath, pathErr := resourcePath(lastResource, false)
-			if pathErr != nil {
-				t.Fatal("unit closing configuration route unavailable")
-			}
 			catalogReviews, closingReads := 0, 0
 			operationReviews := 0
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -136,16 +131,21 @@ func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 						_ = json.NewEncoder(w).Encode(ns)
 						return
 					}
-					if object := objects[r.URL.Path]; object != nil {
-						_ = json.NewEncoder(w).Encode(object.Object)
+					if testBaselineConfigurationList(t, w, r, objects) {
 						closingConfiguration := mode == "closing-config-access-rv" && catalogReviews == 2*len(catalog) ||
 							mode == "late-closing-config-access-rv" && probes.Load() == 1 && catalogReviews == 6*len(catalog)
-						if closingConfiguration && r.URL.Path == lastConfigurationPath {
+						if closingConfiguration {
 							closingReads++
-							if closingReads == 2 {
+							// Both kind replies in BOTH complete passes must be
+							// encoded before this deliberately late access drift.
+							if closingReads == 4 {
 								objects[accountPath].SetResourceVersion("9000")
 							}
 						}
+						return
+					}
+					if object := objects[r.URL.Path]; object != nil {
+						_ = json.NewEncoder(w).Encode(object.Object)
 						return
 					}
 				} else if r.URL.Path == "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews" && r.Method == http.MethodPost {

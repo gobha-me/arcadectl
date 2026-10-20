@@ -226,8 +226,13 @@ func TestBaselineAccessEightLanesCallerCancellationJoinsEveryReader(t *testing.T
 // read, proving that joining headers alone cannot publish a witness.
 func testBaselineEightReadLaneRefusal(t *testing.T, access *HTTPAccess, paths [8][]string, mode string, refused int, openingCloses int32, invoke func(context.Context) error) {
 	t.Helper()
-	var entered, canceled, exited [8]chan struct{}
-	for lane := range 8 {
+	testBaselineReadLaneRefusal(t, access, paths[:], mode, refused, openingCloses, invoke)
+}
+
+func testBaselineReadLaneRefusal(t *testing.T, access *HTTPAccess, paths [][]string, mode string, refused int, openingCloses int32, invoke func(context.Context) error) {
+	t.Helper()
+	entered, canceled, exited := make([]chan struct{}, len(paths)), make([]chan struct{}, len(paths)), make([]chan struct{}, len(paths))
+	for lane := range paths {
 		if len(paths[lane]) == 0 {
 			t.Fatal("eight-lane refusal oracle has an empty lane")
 		}
@@ -235,11 +240,11 @@ func testBaselineEightReadLaneRefusal(t *testing.T, access *HTTPAccess, paths [8
 	}
 	release := make(chan struct{})
 	var once sync.Once
-	var seen [8]atomic.Int32
+	seen := make([]atomic.Int32, len(paths))
 	var closes atomic.Int32
-	delayed := (refused + 1) % 8
+	delayed := (refused + 1) % len(paths)
 	if refused < 0 {
-		delayed = 7
+		delayed = len(paths) - 1
 	}
 	next := access.client.Transport
 	access.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -355,7 +360,7 @@ func testBaselineEightReadLaneRefusal(t *testing.T, access *HTTPAccess, paths [8
 	case <-time.After(2 * time.Second):
 		t.Fatal("refusal did not join released readers")
 	}
-	for lane := range 8 {
+	for lane := range paths {
 		select {
 		case <-exited[lane]:
 		default:

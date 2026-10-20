@@ -13,6 +13,8 @@ import (
 	"github.com/gobha-me/arcadectl/internal/installcontract"
 	"github.com/gobha-me/arcadectl/internal/installstate"
 	admissionv1 "k8s.io/api/admissionregistration/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // ClusterSecurityBaseline is the closed READ-only baseline observation
@@ -70,16 +72,15 @@ func (c *ClusterSecurityBaseline) configuredPass(ctx context.Context, snapshot *
 	if baseline == nil || baseline.Stage != installstate.BaselineVerified || baseline.Pending != nil || baseline.Version != installbaseline.Version || baseline.ArtifactDigest != c.engine.baselinePlan().Digest() || len(baseline.Resources) != installbaseline.ResourceCount {
 		return nil, ErrSecurityBaseline
 	}
-	// Freeze and validate the entire signed membership before any read lane
-	// starts. Four policy lanes and four binding lanes preserve their own
-	// resource order. Observations are still uncached and both complete passes
-	// retain separate closing fences.
+	// Freeze and validate the entire signed membership before either collection
+	// starts. Two complete fresh LISTs replace only the twelve named reads;
+	// both uncached passes retain their separate original closing fences.
 	type configuredResource struct {
 		resource installstate.BaselineResource
 		template *installcontract.Template
 	}
 	frozen := make([]configuredResource, 0, installbaseline.ResourceCount)
-	var lanes [baselineReadLanes][]int
+	expected := [2]map[installstate.Key]bool{{}, {}}
 	var kindCounts [2]int
 	seen := make(map[installstate.Key]bool, installbaseline.ResourceCount)
 	for _, resource := range baseline.Resources {
@@ -96,9 +97,8 @@ func (c *ClusterSecurityBaseline) configuredPass(ctx context.Context, snapshot *
 			return nil, ErrSecurityBaseline
 		}
 		seen[resource.Key] = true
-		lane := kind*(baselineReadLanes/2) + kindCounts[kind]%(baselineReadLanes/2)
 		kindCounts[kind]++
-		lanes[lane] = append(lanes[lane], len(frozen))
+		expected[kind][resource.Key] = true
 		frozen = append(frozen, configuredResource{resource: resource, template: template})
 	}
 	if kindCounts[0] != installbaseline.ResourceCount/2 || kindCounts[1] != installbaseline.ResourceCount/2 {
@@ -109,47 +109,18 @@ func (c *ClusterSecurityBaseline) configuredPass(ctx context.Context, snapshot *
 		policyName string
 	}
 	observed := make([]configuredObservation, len(frozen))
-	var failures [baselineReadLanes]error
+	var failures [2]error
+	var collections [2]map[installstate.Key]*unstructured.Unstructured
 	readCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var readers sync.WaitGroup
-	for lane, indices := range lanes {
+	for group, kind := range []string{"ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding"} {
 		readers.Go(func() {
-			for _, index := range indices {
-				if readCtx.Err() != nil {
-					failures[lane] = ErrSecurityBaseline
-					return
-				}
-				entry := frozen[index]
-				live, err := c.access.Get(readCtx, entry.resource.Key)
-				if err != nil {
-					failures[lane] = ErrSecurityBaseline
-					cancel()
-					return
-				}
-				matched, err := entry.template.MatchLiveAdmissionObject(live, entry.resource.UID)
-				if err != nil {
-					failures[lane] = ErrSecurityBaseline
-					cancel()
-					return
-				}
-				if entry.resource.Key.Kind == "ValidatingAdmissionPolicy" {
-					policy, ok := matched.(*admissionv1.ValidatingAdmissionPolicy)
-					if !ok || !healthyAdmissionPolicy(policy) {
-						failures[lane] = ErrSecurityBaseline
-						cancel()
-						return
-					}
-				} else {
-					binding, ok := matched.(*admissionv1.ValidatingAdmissionPolicyBinding)
-					if !ok {
-						failures[lane] = ErrSecurityBaseline
-						cancel()
-						return
-					}
-					observed[index].policyName = binding.Spec.PolicyName
-				}
-				observed[index].identity = admissionIdentity{UID: entry.resource.UID, ResourceVersion: live.GetResourceVersion(), TemplateSHA256: entry.template.Hash()}
+			var err error
+			collections[group], err = c.access.listBaselineConfiguration(readCtx, kind, expected[group])
+			if err != nil {
+				failures[group] = ErrSecurityBaseline
+				cancel()
 			}
 		})
 	}
@@ -163,6 +134,37 @@ func (c *ClusterSecurityBaseline) configuredPass(ctx context.Context, snapshot *
 		if err != nil {
 			return nil, ErrSecurityBaseline
 		}
+	}
+	// Validation order remains the frozen signed order, independent of page or
+	// goroutine ordering. Collection labels never stand in for this whole match.
+	seenUIDs := make(map[types.UID]bool, installbaseline.ResourceCount)
+	for index, entry := range frozen {
+		group := 0
+		if entry.resource.Key.Kind == "ValidatingAdmissionPolicyBinding" {
+			group = 1
+		}
+		live := collections[group][entry.resource.Key]
+		if live == nil || seenUIDs[live.GetUID()] {
+			return nil, ErrSecurityBaseline
+		}
+		seenUIDs[live.GetUID()] = true
+		matched, err := entry.template.MatchLiveAdmissionObject(live, entry.resource.UID)
+		if err != nil {
+			return nil, ErrSecurityBaseline
+		}
+		if group == 0 {
+			policy, ok := matched.(*admissionv1.ValidatingAdmissionPolicy)
+			if !ok || !healthyAdmissionPolicy(policy) {
+				return nil, ErrSecurityBaseline
+			}
+		} else {
+			binding, ok := matched.(*admissionv1.ValidatingAdmissionPolicyBinding)
+			if !ok {
+				return nil, ErrSecurityBaseline
+			}
+			observed[index].policyName = binding.Spec.PolicyName
+		}
+		observed[index].identity = admissionIdentity{UID: entry.resource.UID, ResourceVersion: live.GetResourceVersion(), TemplateSHA256: entry.template.Hash()}
 	}
 	witness := make(map[installstate.Key]admissionIdentity, installbaseline.ResourceCount)
 	policies := make(map[string]bool, installbaseline.ResourceCount/2)

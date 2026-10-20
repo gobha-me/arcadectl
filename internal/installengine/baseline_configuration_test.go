@@ -104,27 +104,33 @@ func TestBaselineConfigurationOriginalShapesHealthAndRepeatedIdentity(t *testing
 					_ = json.NewEncoder(w).Encode(namespace)
 					return
 				}
-				object := objects[request.URL.Path]
-				if object == nil {
-					t.Error("configuration observation escaped closed routes")
-					w.WriteHeader(404)
-					return
+				kind := "ValidatingAdmissionPolicy"
+				if request.URL.Path == "/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicybindings" {
+					kind = "ValidatingAdmissionPolicyBinding"
 				}
-				reads[request.URL.Path]++
-				if request.URL.Path == policyPath && reads[policyPath] == 2 && mode == "between-pass-rv" {
-					object = object.DeepCopy()
-					object.SetResourceVersion("999")
-				}
-				if request.URL.Path == policyPath && reads[policyPath] == 2 && mode == "between-pass-status" {
-					object = object.DeepCopy()
-					_ = unstructured.SetNestedField(object.Object, int64(0), "status", "observedGeneration")
-				}
-				if request.URL.Path == policyPath && mode == "late-fixture" && reads[policyPath] == 1 {
-					if _, err := f.engine.files.CreateExclusive(fixtureLedgerName(f.snapshot), []byte("uncertain active fixture")); err != nil {
-						t.Error("late fixture seed failed")
+				for path, object := range objects {
+					if object.GetKind() != kind {
+						continue
+					}
+					reads[path]++
+					if path == policyPath && reads[path] == 2 {
+						if mode == "between-pass-rv" {
+							object.SetResourceVersion("999")
+						}
+						if mode == "between-pass-status" {
+							_ = unstructured.SetNestedField(object.Object, int64(0), "status", "observedGeneration")
+						}
+					}
+					if path == policyPath && mode == "late-fixture" && reads[path] == 1 {
+						if _, err := f.engine.files.CreateExclusive(fixtureLedgerName(f.snapshot), []byte("uncertain active fixture")); err != nil {
+							t.Error("late fixture seed failed")
+						}
 					}
 				}
-				_ = json.NewEncoder(w).Encode(object)
+				if !testBaselineConfigurationList(t, w, request, objects) {
+					t.Error("configuration observation escaped closed routes")
+					w.WriteHeader(404)
+				}
 			}))
 			t.Cleanup(server.Close)
 			access, err := NewDirectHTTPAccess(serverConfig(server))
@@ -178,6 +184,9 @@ func TestBaselineConfigurationOriginalShapesHealthAndRepeatedIdentity(t *testing
 					t.Fatal("strict configured fixture refused")
 				}
 				mu.Lock()
+				if len(reads) != 12 {
+					t.Fatal("configured verification omitted signed policy or binding members")
+				}
 				for _, count := range reads {
 					if count != 2 {
 						t.Fatal("configured verification skipped complete repeated original observations")

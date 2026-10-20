@@ -24,29 +24,22 @@ import (
 
 // Synthetic healthy native status tests scheduling and strict configuration
 // closure only; it is not evidence of effective native admission enforcement.
-func testConfiguredReadLanes(t *testing.T) (*ClusterSecurityBaseline, *installstate.Snapshot, [8][]string) {
+func testConfiguredReadLanes(t *testing.T) (*ClusterSecurityBaseline, *installstate.Snapshot, [2][]string) {
 	t.Helper()
 	f := newBaselineFixture(t)
 	completeBaselineFixture(t, f)
 	objects := make(map[string]*unstructured.Unstructured)
-	var paths [8][]string
-	var policies, bindings int
+	paths := [2][]string{{"/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicies"}, {"/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicybindings"}}
 	for _, resource := range f.snapshot.Document().SecurityBaseline.Resources {
 		path, err := resourcePath(resource.Key, false)
 		if err != nil {
 			t.Fatal("configuration lane route unavailable")
 		}
 		object := f.access.objects[resource.Key].DeepCopy()
-		lane := 4 + bindings%4
 		if resource.Key.Kind == "ValidatingAdmissionPolicy" {
-			lane = policies % 4
-			policies++
 			object.SetGeneration(1)
 			object.Object["status"] = map[string]any{"observedGeneration": int64(1), "typeChecking": map[string]any{}}
-		} else {
-			bindings++
 		}
-		paths[lane] = append(paths[lane], path)
 		objects[path] = object
 	}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -66,13 +59,10 @@ func testConfiguredReadLanes(t *testing.T) (*ClusterSecurityBaseline, *installst
 			_ = json.NewEncoder(w).Encode(namespace)
 			return
 		}
-		object := objects[r.URL.Path]
-		if object == nil {
+		if !testBaselineConfigurationList(t, w, r, objects) {
 			t.Error("configuration lane escaped exact signed routes")
 			w.WriteHeader(404)
-			return
 		}
-		_ = json.NewEncoder(w).Encode(object)
 	}))
 	t.Cleanup(server.Close)
 	access, err := NewDirectHTTPAccess(serverConfig(server))
@@ -98,10 +88,10 @@ func testConfiguredReadLanes(t *testing.T) (*ClusterSecurityBaseline, *installst
 	return configuration, snapshot, paths
 }
 
-func TestBaselineConfigurationEightLanesPreserveCompletePassesAndClosingJoin(t *testing.T) {
+func TestBaselineConfigurationTwoListsPreserveCompletePassesAndClosingJoin(t *testing.T) {
 	configuration, snapshot, paths := testConfiguredReadLanes(t)
-	var entered, release [2][8]chan struct{}
-	var once [2][8]sync.Once
+	var entered, release [2][2]chan struct{}
+	var once [2][2]sync.Once
 	for pass := range entered {
 		for lane := range entered[pass] {
 			entered[pass][lane], release[pass][lane] = make(chan struct{}), make(chan struct{})
@@ -126,9 +116,9 @@ func TestBaselineConfigurationEightLanesPreserveCompletePassesAndClosingJoin(t *
 		}
 	}()
 	var active, maximum, blocked, closes atomic.Int32
-	var finished [8]atomic.Int32
+	var finished [2]atomic.Int32
 	var mu sync.Mutex
-	var seen [8][]string
+	var seen [2][]string
 	next := configuration.access.client.Transport
 	configuration.access.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		lane := -1
@@ -161,7 +151,7 @@ func TestBaselineConfigurationEightLanesPreserveCompletePassesAndClosingJoin(t *
 			return nil, ErrRead
 		}
 		if pass != 0 {
-			for sibling := range 8 {
+			for sibling := range 2 {
 				if finished[sibling].Load() < int32(len(paths[sibling])) {
 					t.Error("second configuration pass outran an original read lane")
 					return nil, ErrRead
@@ -185,28 +175,42 @@ func TestBaselineConfigurationEightLanesPreserveCompletePassesAndClosingJoin(t *
 		finished[lane].Add(1)
 		return response, err
 	})
-	go func() { done <- configuration.VerifyConfigured(ctx, snapshot) }()
+	go func() {
+		witness, err := configuration.configured(ctx, snapshot)
+		if err == nil {
+			if len(witness) != 12 {
+				t.Error("configured LIST witness omitted signed members")
+			}
+			for _, original := range snapshot.Document().SecurityBaseline.Resources {
+				identity, found := witness[original.Key]
+				if !found || identity.UID != original.UID || identity.TemplateSHA256 != original.TemplateSHA256 || identity.ResourceVersion == "" {
+					t.Error("configured LIST witness changed original signed membership")
+				}
+			}
+		}
+		done <- err
+	}()
 	for pass := range entered {
 		for lane := range entered[pass] {
 			select {
 			case <-entered[pass][lane]:
 			case <-done:
 				joined = true
-				t.Fatal("configuration returned before all eight final reads overlapped")
+				t.Fatal("configuration returned before both final LIST reads overlapped")
 			case <-ctx.Done():
-				t.Fatal("configuration failed to overlap eight bounded lanes")
+				t.Fatal("configuration failed to overlap two bounded LIST readers")
 			}
 		}
-		for lane := range 7 {
+		for lane := range 1 {
 			once[pass][lane].Do(func() { close(release[pass][lane]) })
 		}
 		select {
 		case <-done:
 			joined = true
-			t.Fatal("configuration returned before its eighth lane joined")
+			t.Fatal("configuration returned before its second LIST joined")
 		case <-time.After(100 * time.Millisecond):
 		}
-		once[pass][7].Do(func() { close(release[pass][7]) })
+		once[pass][1].Do(func() { close(release[pass][1]) })
 	}
 	select {
 	case err := <-done:
@@ -217,24 +221,24 @@ func TestBaselineConfigurationEightLanesPreserveCompletePassesAndClosingJoin(t *
 	case <-ctx.Done():
 		t.Fatal("released configuration lanes failed to join")
 	}
-	if active.Load() != 0 || maximum.Load() != 8 || blocked.Load() != 0 || closes.Load() != 8 {
+	if active.Load() != 0 || maximum.Load() != 2 || blocked.Load() != 0 || closes.Load() != 8 {
 		t.Fatal("configuration changed lane bound, leaked readers or skipped original fences")
 	}
 	for lane := range paths {
 		want := append(append([]string(nil), paths[lane]...), paths[lane]...)
-		wantLength := []int{2, 2, 1, 1, 2, 2, 1, 1}[lane]
+		wantLength := 1
 		if len(paths[lane]) != wantLength || finished[lane].Load() != int32(2*wantLength) || !reflect.DeepEqual(seen[lane], want) {
 			t.Fatal("configuration omitted, replayed or reordered signed lane membership")
 		}
 	}
 }
 
-func TestBaselineConfigurationEightLanesCancelAndJoinEveryRefusedSibling(t *testing.T) {
+func TestBaselineConfigurationTwoListsCancelAndJoinEveryRefusedSibling(t *testing.T) {
 	for _, mode := range []string{"request", "body"} {
-		for refused := range 8 {
+		for refused := range 2 {
 			t.Run(mode+"/"+strconv.Itoa(refused), func(t *testing.T) {
 				configuration, snapshot, paths := testConfiguredReadLanes(t)
-				testBaselineEightReadLaneRefusal(t, configuration.access, paths, mode, refused, 2, func(ctx context.Context) error {
+				testBaselineReadLaneRefusal(t, configuration.access, paths[:], mode, refused, 2, func(ctx context.Context) error {
 					return configuration.VerifyConfigured(ctx, snapshot)
 				})
 			})
@@ -242,22 +246,22 @@ func TestBaselineConfigurationEightLanesCancelAndJoinEveryRefusedSibling(t *test
 	}
 }
 
-func TestBaselineConfigurationEightLanesCallerCancellationJoinsEveryReader(t *testing.T) {
+func TestBaselineConfigurationTwoListsCallerCancellationJoinsEveryReader(t *testing.T) {
 	configuration, snapshot, paths := testConfiguredReadLanes(t)
-	testBaselineEightReadLaneRefusal(t, configuration.access, paths, "caller", -1, 2, func(ctx context.Context) error {
+	testBaselineReadLaneRefusal(t, configuration.access, paths[:], "caller", -1, 2, func(ctx context.Context) error {
 		return configuration.VerifyConfigured(ctx, snapshot)
 	})
 }
 
-func TestBaselineConfigurationEightLanesRejectUnhealthyPolicyInEveryPolicyLane(t *testing.T) {
-	for unhealthy := range 4 {
+func TestBaselineConfigurationTwoListsRejectEveryUnhealthyPolicy(t *testing.T) {
+	for unhealthy := range 6 {
 		t.Run(strconv.Itoa(unhealthy), func(t *testing.T) {
 			configuration, snapshot, paths := testConfiguredReadLanes(t)
 			next := configuration.access.client.Transport
 			var injected atomic.Bool
 			configuration.access.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 				response, err := next.RoundTrip(r)
-				if r.URL.Path != paths[unhealthy][0] || err != nil || response == nil || response.Body == nil {
+				if r.URL.Path != paths[0][0] || err != nil || response == nil || response.Body == nil {
 					return response, err
 				}
 				defer response.Body.Close()
@@ -266,9 +270,12 @@ func TestBaselineConfigurationEightLanesRejectUnhealthyPolicyInEveryPolicyLane(t
 					t.Error("unhealthy policy fixture could not decode native response")
 					return nil, ErrRead
 				}
-				// Generation-current status is mandatory in all four policy lanes,
-				// not only lane zero from the former policy/binding split.
-				object.Object["status"] = map[string]any{"observedGeneration": int64(0), "typeChecking": map[string]any{}}
+				items, ok := object.Object["items"].([]any)
+				if !ok || len(items) != 6 {
+					t.Error("unhealthy policy LIST fixture lost membership")
+					return nil, ErrRead
+				}
+				items[unhealthy].(map[string]any)["status"] = map[string]any{"observedGeneration": int64(0), "typeChecking": map[string]any{}}
 				body, encodeErr := json.Marshal(object.Object)
 				if encodeErr != nil {
 					t.Error("unhealthy policy fixture could not encode response")

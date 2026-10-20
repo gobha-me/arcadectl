@@ -565,6 +565,9 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 			if user != "" {
 				t.Error("behavior actor acquired generic GET")
 			}
+			if testBaselineConfigurationList(t, w, r, objects) {
+				return
+			}
 			if r.URL.Path == "/version" {
 				_ = json.NewEncoder(w).Encode(serverVersion)
 				return
