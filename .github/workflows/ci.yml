@@ -5,7 +5,7 @@ permissions:
   contents: read
 jobs:
   expanded-wrapper-profile:
-    name: Bounded synthetic guard attribution v2
+    name: Bounded synthetic guard attribution v3
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -17,7 +17,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           path: screen
-          fetch-depth: 3
+          fetch-depth: 4
       - name: Check out unchanged actual delivery source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -33,7 +33,7 @@ jobs:
         working-directory: screen
         run: |
           ulimit -c 0
-          test "$(git rev-parse HEAD^)" = cef28541bb3dba30112ea4b743bdcf136aac1e2d
+          test "$(git rev-parse HEAD^)" = 4793574c591e51701e83757fcffec3d8c332c8c3
           git merge-base --is-ancestor 43e1e7fe9855691123bc755e4ac334e42d554ebf HEAD
           test "$(git diff --name-only 43e1e7fe9855691123bc755e4ac334e42d554ebf HEAD | LC_ALL=C sort)" = "$(printf '%s\n' '.github/workflows/ci.yml' 'hack/profile-installer-wrappers/expanded_test.go' 'hack/profile-installer-wrappers/main_linux.go')"
           test -z "$(git status --porcelain)"

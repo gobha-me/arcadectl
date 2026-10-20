@@ -44,6 +44,26 @@ var targets = []target{
 
 // Never export profile-controlled function names, labels, comments or paths.
 var functions = map[string]string{
+	"github.com/gobha-me/arcadectl/internal/installengine.(*Engine).fixtureFence":                 "original-fixture-fence",
+	"github.com/gobha-me/arcadectl/internal/installengine.(*Engine).readFixtureRetirement":        "original-retirement-read",
+	"github.com/gobha-me/arcadectl/internal/installengine.decodeFixtureRetirement":                "original-retirement-decode",
+	"github.com/gobha-me/arcadectl/internal/installengine.fixtureWorldsShapeBody":                 "original-worlds-canonical",
+	"github.com/gobha-me/arcadectl/internal/installengine.namespaces.Get":                         "original-namespace-get",
+	"github.com/gobha-me/arcadectl/internal/installengine.namespaceResult":                        "original-namespace-convert",
+	"github.com/gobha-me/arcadectl/internal/installengine.(*HTTPAccess).Get":                      "direct-public-get",
+	"github.com/gobha-me/arcadectl/internal/installengine.(*HTTPAccess).requestAt":                "direct-request",
+	"github.com/gobha-me/arcadectl/internal/installengine.boundedJSONLimits":                      "direct-json-budget",
+	"github.com/gobha-me/arcadectl/internal/installstate.(*Store).Load":                           "original-journal-load",
+	"github.com/gobha-me/arcadectl/internal/installstate.(*Store).observe":                        "original-journal-observe",
+	"github.com/gobha-me/arcadectl/internal/installstate.(*Store).decodeJournal":                  "original-journal-decode",
+	"github.com/gobha-me/arcadectl/internal/installstate.safeNamespace":                           "original-namespace-shape",
+	"github.com/gobha-me/arcadectl/internal/installcontract.(*Template).MatchNamespace":           "original-namespace-match",
+	"github.com/gobha-me/arcadectl/internal/privatefs.(*Store).Read":                              "private-file-read",
+	"github.com/gobha-me/arcadectl/internal/privatefs.(*Store).ReadEvidence":                      "private-evidence-read",
+	"github.com/gobha-me/arcadectl/internal/privatefs.(*Store).ConfirmDurable":                    "private-file-confirm",
+	"github.com/gobha-me/arcadectl/internal/privatefs.(*Store).ConfirmEvidenceDurable":            "private-evidence-confirm",
+	"github.com/gobha-me/arcadectl/internal/canonicaljson.canonicalBounded":                       "canonical-value",
+	"k8s.io/api/core/v1.(*Namespace).DeepCopy":                                                    "typed-namespace-copy",
 	enginePackage + "(*baselineWorkflow).readOriginalRuntimeAccess.func1":                         "runtime-access-worker",
 	enginePackage + "(*ClusterSecurityBaseline).configuredPass.func1":                             "baseline-configured-worker",
 	enginePackage + "(*baselineActors).verifyWithProbe":                                           "actor-verify",
@@ -164,13 +184,14 @@ type row struct {
 	Cumulative float64 `json:"cumulative"`
 }
 type metric struct {
-	Kind            string  `json:"kind"`
-	Scope           string  `json:"scope"`
-	ReportedFlatSum float64 `json:"reportedFlatSum"`
-	Profile         custody `json:"profile"`
-	RootCumulative  float64 `json:"rootCumulative"`
-	UnknownFlat     float64 `json:"unknownFlat"`
-	Rows            []row   `json:"rows"`
+	Kind                  string             `json:"kind"`
+	Scope                 string             `json:"scope"`
+	ReportedFlatSum       float64            `json:"reportedFlatSum"`
+	Profile               custody            `json:"profile"`
+	RootCumulative        float64            `json:"rootCumulative"`
+	UnknownFlat           float64            `json:"unknownFlat"`
+	UnknownFlatByCategory map[string]float64 `json:"unknownFlatByCategory"`
+	Rows                  []row              `json:"rows"`
 }
 type result struct {
 	ID         string   `json:"id"`
@@ -457,8 +478,62 @@ func pprofArguments(root, index, unit string, whole bool) []string {
 	}
 	return append(args, "/proc/self/fd/0")
 }
+
+// These labels describe ONLY unmatched flat rows, not source identity,
+// authority, exclusive command wall time or native operator-only CPU.
+// Prefixes are fixed source constants; no original symbol is exported.
+func unknownFlatCategory(symbol string) string {
+	for _, item := range []struct{ prefix, id string }{
+		{"internal/runtime/maps.", "runtime-maps"},
+		{"runtime.gc", "runtime-gc"},
+		{"runtime.scan", "runtime-gc"},
+		{"runtime.malloc", "runtime-allocation"},
+		{"runtime.newobject", "runtime-allocation"},
+		{"runtime.makeslice", "runtime-allocation"},
+		{"runtime.", "runtime-other"},
+		{"reflect.", "reflect"},
+		{"internal/reflectlite.", "reflect"},
+		{"encoding/json.", "standard-json"},
+		{"sigs.k8s.io/json.", "strict-json"},
+		{"sigs.k8s.io/json/", "strict-json"},
+		{"github.com/gobha-me/arcadectl/internal/canonicaljson.", "canonical-json"},
+		{"github.com/gobha-me/arcadectl/internal/privatefs.", "private-files"},
+		{"github.com/gobha-me/arcadectl/internal/installstate.", "project-state"},
+		{"github.com/gobha-me/arcadectl/internal/installcontract.", "project-contract"},
+		{"github.com/gobha-me/arcadectl/internal/installobserve.", "project-observe"},
+		{"github.com/gobha-me/arcadectl/internal/installsafety.", "project-observe"},
+		{"github.com/gobha-me/arcadectl/internal/installengine.", "project-engine"},
+		{"github.com/gobha-me/arcadectl/", "project-other"},
+		{"k8s.io/client-go/", "client-go"},
+		{"k8s.io/apimachinery/", "api-machinery"},
+		{"k8s.io/api/", "typed-api"},
+		{"crypto/", "crypto"},
+		{"net/http.", "http"},
+		{"net.", "network"},
+		{"internal/poll.", "network-poll"},
+		{"os.", "file-io"},
+		{"io.", "file-io"},
+		{"io/", "file-io"},
+		{"syscall.", "syscall"},
+		{"golang.org/x/sys/", "syscall"},
+		{"strings.", "strings"},
+		{"bytes.", "bytes"},
+		{"sort.", "sort"},
+		{"slices.", "sort"},
+		{"sync.", "sync"},
+		{"sync/", "sync"},
+		{"fmt.", "format"},
+		{"strconv.", "number-format"},
+	} {
+		if strings.HasPrefix(symbol, item.prefix) {
+			return item.id
+		}
+	}
+	return "other"
+}
+
 func parseTop(body []byte, root, kind string) (metric, error) {
-	m := metric{Kind: kind, Rows: []row{}}
+	m := metric{Kind: kind, Rows: []row{}, UnknownFlatByCategory: map[string]float64{}}
 	unit := "ns"
 	if kind == "sampled-alloc-bytes" {
 		unit = "B"
@@ -545,6 +620,7 @@ func parseTop(body []byte, root, kind string) (metric, error) {
 			m.Rows = append(m.Rows, row{id, flat, cum})
 		} else {
 			m.UnknownFlat += flat
+			m.UnknownFlatByCategory[unknownFlatCategory(name)] += flat
 		}
 	}
 	if !header {
@@ -634,7 +710,7 @@ func screen(parent context.Context, expected string) error {
 		Scope          string   `json:"scope"`
 		MemProfileRate int      `json:"memProfileRate"`
 		Results        []result `json:"results"`
-	}{"arcadectl-wrapper-screen-v2", expected, digest, "synthetic-root-and-whole-process-separate; whole-includes-workers-and-fixture-server; reported-flat-sum-not-root-attribution; rounded-values; cumulative-overlaps; sampled-allocations; profiling-perturbs-CPU; not-native-wait", 8192, results})
+	}{"arcadectl-wrapper-screen-v3", expected, digest, "synthetic-root-and-whole-process-separate; unknown-flat-categories-fixed-prefixes-not-symbols; whole-includes-workers-and-fixture-server; reported-flat-sum-not-root-attribution; rounded-values; cumulative-overlaps; sampled-allocations; profiling-perturbs-CPU; not-native-wait", 8192, results})
 }
 
 func main() {
@@ -652,7 +728,7 @@ func main() {
 			Schema    string         `json:"schema"`
 			ElapsedNS int64          `json:"elapsedNS"`
 			Refusal   *screenRefusal `json:"refusal"`
-		}{"arcadectl-wrapper-screen-refusal-v2", time.Since(started).Nanoseconds(), f})
+		}{"arcadectl-wrapper-screen-refusal-v3", time.Since(started).Nanoseconds(), f})
 		_, _ = io.WriteString(os.Stderr, "wrapper screen refused; no raw diagnostics exported\n")
 		os.Exit(1)
 	}
