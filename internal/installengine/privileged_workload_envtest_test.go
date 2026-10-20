@@ -45,7 +45,7 @@ func TestEnvtestReservedIdentityGuardStandalone(t *testing.T) {
 	testPrivilegedIdentityBoundary(t, true)
 }
 
-func testPrivilegedIdentityBoundary(t *testing.T, standaloneGuard bool) {
+func testPrivilegedIdentityBoundary(t *testing.T, extendedGuardProof bool) {
 	for _, profile := range []string{installrender.Profile135, installrender.Profile137} {
 		t.Run(profile, func(t *testing.T) {
 			plan := fixturePlanProfile(t, "identity-boundary", profile)
@@ -80,6 +80,11 @@ func testPrivilegedIdentityBoundary(t *testing.T, standaloneGuard bool) {
 			if err != nil {
 				t.Fatal("owned administration transport unavailable")
 			}
+			// Both fixtures need the independently signed baseline, not only the
+			// runtime package's worker policies. The production mutation CLI binds
+			// this baseline before granting ordinary runtime authority. This native
+			// fixture checks policy/RBAC behavior, not its durable ownership protocol.
+			installStandaloneBaselineContract(t, ctx, access, plan.Namespace(), profile)
 			for _, resource := range plan.Resources() {
 				switch resource.Object.GetKind() {
 				case "Namespace", "ServiceAccount", "Role", "RoleBinding", "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding":
@@ -87,9 +92,6 @@ func testPrivilegedIdentityBoundary(t *testing.T, standaloneGuard bool) {
 						t.Fatal("signed fixture dependency refused")
 					}
 				}
-			}
-			if standaloneGuard {
-				installStandaloneBaselineContract(t, ctx, access, plan.Namespace(), profile)
 			}
 			// Authenticate the exact ordinary actor, not an omnipotent admin.
 			user, err := environment.AddUser(envtest.User{
@@ -180,19 +182,17 @@ func testPrivilegedIdentityBoundary(t *testing.T, standaloneGuard bool) {
 						SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: ptr.To(false), ReadOnlyRootFilesystem: ptr.To(true), Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}}}},
 				}}},
 			}
-			if standaloneGuard {
-				if wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 15*time.Second, true, func(ctx context.Context) (bool, error) {
-					_, err := ordinary.BatchV1().Jobs(plan.Namespace()).Create(ctx, job, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}, FieldValidation: "Strict"})
-					return baselineDenial(err, "template", plan.Namespace()), nil
-				}) != nil {
-					t.Fatal("standalone guard's exact native denial was not observed")
-				}
-				allowed := job.DeepCopy()
-				allowed.Name = "ordinary-unprivileged-worker"
-				allowed.Spec.Template.Spec.ServiceAccountName = "default"
-				if _, err := ordinary.BatchV1().Jobs(plan.Namespace()).Create(ctx, allowed, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}, FieldValidation: "Strict"}); err != nil {
-					t.Fatal("standalone guard rejected an ordinary unprivileged Job")
-				}
+			if wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 15*time.Second, true, func(ctx context.Context) (bool, error) {
+				_, err := ordinary.BatchV1().Jobs(plan.Namespace()).Create(ctx, job, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}, FieldValidation: "Strict"})
+				return baselineDenial(err, "template", plan.Namespace()), nil
+			}) != nil {
+				t.Fatal("required baseline's exact native denial was not observed")
+			}
+			allowed := job.DeepCopy()
+			allowed.Name = "ordinary-unprivileged-worker"
+			allowed.Spec.Template.Spec.ServiceAccountName = "default"
+			if _, err := ordinary.BatchV1().Jobs(plan.Namespace()).Create(ctx, allowed, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}, FieldValidation: "Strict"}); err != nil {
+				t.Fatal("required baseline rejected an ordinary unprivileged Job")
 			}
 			_, err = ordinary.BatchV1().Jobs(plan.Namespace()).Create(ctx, job, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}, FieldValidation: "Strict"})
 			if err == nil {
@@ -257,7 +257,7 @@ func testPrivilegedIdentityBoundary(t *testing.T, standaloneGuard bool) {
 				DryRun: []string{metav1.DryRunAll}, Preconditions: &metav1.Preconditions{UID: &account.UID, ResourceVersion: &account.ResourceVersion},
 			})
 			deny("delete the reserved privileged ServiceAccount", "identity", err)
-			if standaloneGuard {
+			if extendedGuardProof {
 				testStandaloneProducerBoundary(t, ctx, environment, config, admin, ordinary, plan.Namespace(), job, installed, actorCan)
 				testStandaloneNodeTerminationBoundary(t, ctx, environment, config, admin, plan.Namespace(), profile, &job.Spec.Template.Spec, actorCan)
 			}
