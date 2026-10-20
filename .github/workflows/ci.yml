@@ -7,55 +7,52 @@ permissions:
   contents: read
 
 concurrency:
-  group: eight-lane-native-transition-${{ github.ref }}
+  group: workflow-oracle-validation-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  eight-lane-contract:
-    name: Eight-lane original catalog contract
+  workflow-oracle:
+    name: Required workflow contract and six early diagnostic roots
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 20
     env:
       GOTOOLCHAIN: local
       GOTELEMETRY: off
       GOMAXPROCS: '2'
       GOMEMLIMIT: 1GiB
     steps:
-      - name: Check out exact candidate
+      - name: Check out exact validation source and delivery parent
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
-      - name: Require compiled catalog concurrency and refusal roots
+      - name: Require exact delivery source for workflow oracle
         run: |
-          roots='^TestBaseline(Access|RuntimeAccess|OriginalAccess|Configuration|Actors)'
-          compiled="$(go test -race -p=1 -list "$roots" ./internal/installengine)"
-          printf '%s\n' "$compiled"
-          test "$(printf '%s\n' "$compiled" | grep -Ec '^TestBaseline(Access|RuntimeAccess|OriginalAccess|Configuration|Actors)')" -eq 16
-          printf '%s\n' "$compiled" | grep -Eq '^TestBaselineAccessEightLanesPreserveWholeMembershipAndClosingJoin$'
-          printf '%s\n' "$compiled" | grep -Eq '^TestBaselineConfigurationEightLanesPreserveCompletePassesAndClosingJoin$'
-          printf '%s\n' "$compiled" | grep -Eq '^TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe$'
-          bash ./hack/test-installengine-race-shard.sh 0 --list-only
-          printf '%s\n' 'eight-lane-compiled-roots-complete-v1'
-      - name: Race check catalog scheduling and existing whole-witness refusals three times
+          test "$(git rev-parse HEAD^2)" = bb4a20313f3d122762d8f468eabf7749d23effc4
+          test "$(git diff --name-only bb4a20313f3d122762d8f468eabf7749d23effc4 HEAD)" = .github/workflows/ci.yml
+          git restore --source=bb4a20313f3d122762d8f468eabf7749d23effc4 --worktree -- .github/workflows/ci.yml
+          git diff --exit-code bb4a20313f3d122762d8f468eabf7749d23effc4 -- .
+          test "$(git hash-object .github/workflows/ci.yml)" = "$(git rev-parse bb4a20313f3d122762d8f468eabf7749d23effc4:.github/workflows/ci.yml)"
+          printf '%s\n' 'workflow-oracle-delivery-source-v1'
+      - name: Race check workflow contract without tags
         run: |
-          go test -v -p=1 -race -count=3 -timeout=25m -run '^TestBaseline(Access|RuntimeAccess|OriginalAccess|Configuration|Actors)' ./internal/installengine
-          printf '%s\n' 'eight-lane-race-complete-v1'
-      - name: Race check actual CLI composition
+          go test -v -race -p 1 -timeout=5m ./internal/installengine -run '^TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate$' -count=1
+          printf '%s\n' 'workflow-oracle-untagged-complete-v1'
+      - name: Race check all six tagged early diagnostic roots
         run: |
-          go test -p=1 -race -count=1 -timeout=5m ./cmd/arcadectl-installer
-          printf '%s\n' 'eight-lane-cli-complete-v1'
-      - name: Vet engine and CLI
+          go test -v -race -tags=kindinstall -p 1 -timeout=5m ./internal/installengine -run '^(TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate|TestInstallerBinaryProgressCapture|TestInstallerBinaryRequestPipelineCapture|TestInstallerBinaryParentContext|TestLifecycleCostsBoundedCommandAndInvocationIsolation|TestLifecycleCostsConcurrentRefusalsAndCancellation)$' -count=1
+          printf '%s\n' 'workflow-oracle-six-tagged-complete-v1'
+      - name: Require unchanged delivery bytes and restore validation workflow
         run: |
-          go vet -p=1 ./internal/installengine ./cmd/arcadectl-installer
-          printf '%s\n' 'eight-lane-vet-complete-v1'
-      - name: Require unchanged exact source checkout
-        run: |
+          git diff --exit-code bb4a20313f3d122762d8f468eabf7749d23effc4 -- .
+          test -z "$(git ls-files --others --exclude-standard)"
+          git restore --source=HEAD --worktree -- .github/workflows/ci.yml
           test "$(git rev-parse HEAD)" = '${{ github.sha }}'
           test -z "$(git status --porcelain --untracked-files=normal)"
-          printf '%s\n' 'eight-lane-source-complete-v1'
+          printf '%s\n' 'workflow-oracle-source-complete-v1'
