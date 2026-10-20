@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   workflow-contract:
-    name: Exact compiled-suite scheduler and required CI contract
+    name: Exact scheduler contract and native identity boundaries
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -22,7 +22,7 @@ jobs:
       - name: Check out exact delivery candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 9164e1bd5d92d618c110ca5c0bb78e3a0521a05c
+          ref: 43e1e7fe9855691123bc755e4ac334e42d554ebf
           fetch-depth: 0
           persist-credentials: false
       - name: Set up Go
@@ -32,17 +32,20 @@ jobs:
           cache: true
       - name: Require exact clean source
         run: |
-          test "$(git rev-parse HEAD)" = 9164e1bd5d92d618c110ca5c0bb78e3a0521a05c
-          test "$(git rev-parse HEAD^{tree})" = 5afabd30c1494ec52094d322286b4eb85de5df32
+          test "$(git rev-parse HEAD)" = 43e1e7fe9855691123bc755e4ac334e42d554ebf
+          test "$(git rev-parse HEAD^{tree})" = 5c4feb8c40e2c845fa18a8264552759291b93509
           test -z "$(git status --porcelain --untracked-files=normal)"
       - name: Race check untagged contract and all nine tagged pure controls
         run: |
           go test -v -race -p 1 -timeout=5m ./internal/installengine -run '^TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate$' -count=1
           go test -v -race -tags=kindinstall -p 1 -timeout=5m ./internal/installengine -run '^(TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate|TestEnvtestPartitionsCompleteCompiledUnion|TestEnvtestPartitionsRefuseInvalidInputs|TestEnvtestPartitionsAllPartsAndFailures|TestInstallerBinaryProgressCapture|TestInstallerBinaryRequestPipelineCapture|TestInstallerBinaryParentContext|TestLifecycleCostsBoundedCommandAndInvocationIsolation|TestLifecycleCostsConcurrentRefusalsAndCancellation)$' -count=1
+      - name: Prove both complete native identity boundary roots on both profiles
+        run: |
+          go test -tags=envtest -p 1 -timeout=30m -v ./internal/installengine -run '^(TestEnvtestOrdinaryControllerCannotLaunchPrivilegedIdentity|TestEnvtestReservedIdentityGuardStandalone)$' -count=1
       - name: Require unchanged exact source after tests
         run: |
-          test "$(git rev-parse HEAD)" = 9164e1bd5d92d618c110ca5c0bb78e3a0521a05c
-          test "$(git rev-parse HEAD^{tree})" = 5afabd30c1494ec52094d322286b4eb85de5df32
+          test "$(git rev-parse HEAD)" = 43e1e7fe9855691123bc755e4ac334e42d554ebf
+          test "$(git rev-parse HEAD^{tree})" = 5c4feb8c40e2c845fa18a8264552759291b93509
           test -z "$(git status --porcelain --untracked-files=normal)"
 
   envtest:
@@ -61,7 +64,7 @@ jobs:
       - name: Check out exact delivery candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 9164e1bd5d92d618c110ca5c0bb78e3a0521a05c
+          ref: 43e1e7fe9855691123bc755e4ac334e42d554ebf
           fetch-depth: 0
           persist-credentials: false
       - name: Set up Go
@@ -71,13 +74,13 @@ jobs:
           cache: true
       - name: Require exact clean source
         run: |
-          test "$(git rev-parse HEAD)" = 9164e1bd5d92d618c110ca5c0bb78e3a0521a05c
-          test "$(git rev-parse HEAD^{tree})" = 5afabd30c1494ec52094d322286b4eb85de5df32
+          test "$(git rev-parse HEAD)" = 43e1e7fe9855691123bc755e4ac334e42d554ebf
+          test "$(git rev-parse HEAD^{tree})" = 5c4feb8c40e2c845fa18a8264552759291b93509
           test -z "$(git status --porcelain --untracked-files=normal)"
       - name: Run complete compiled envtest partition
         run: make test-envtest-part ENVTEST_PART='${{ matrix.part }}'
       - name: Require unchanged exact source after tests
         run: |
-          test "$(git rev-parse HEAD)" = 9164e1bd5d92d618c110ca5c0bb78e3a0521a05c
-          test "$(git rev-parse HEAD^{tree})" = 5afabd30c1494ec52094d322286b4eb85de5df32
+          test "$(git rev-parse HEAD)" = 43e1e7fe9855691123bc755e4ac334e42d554ebf
+          test "$(git rev-parse HEAD^{tree})" = 5c4feb8c40e2c845fa18a8264552759291b93509
           test -z "$(git status --porcelain --untracked-files=normal)"
