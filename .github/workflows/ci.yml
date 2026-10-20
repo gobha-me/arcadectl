@@ -5,7 +5,8 @@ permissions:
   contents: read
 env:
   BASELINE_SHA: 430d6911e1ebc9a7ebe707fb1eb1594e6bd2c154
-  DELIVERY_SHA: bd386c14f17d92db03cfd7e002b2e3bb316777e0
+  DELIVERY_SHA: c9cac6dead7f417e1cbd607c2138eeb575c2d111
+  DELIVERY_PARENT: bd386c14f17d92db03cfd7e002b2e3bb316777e0
   EXPERIMENT_BASE: b08348d0c99318969cd73a455472c139aadefdf8
   GOMAXPROCS: "2"
   GOMEMLIMIT: 1GiB
@@ -31,7 +32,8 @@ jobs:
           set -euo pipefail
           ulimit -c 0
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(git rev-parse "$DELIVERY_SHA^")" = "$BASELINE_SHA"
+          test "$(git rev-parse "$DELIVERY_SHA^")" = "$DELIVERY_PARENT"
+          git merge-base --is-ancestor "$BASELINE_SHA" "$DELIVERY_SHA"
           git merge-base --is-ancestor "$EXPERIMENT_BASE" HEAD
           git merge-base --is-ancestor "$DELIVERY_SHA" HEAD
           git diff --exit-code "$EXPERIMENT_BASE" HEAD -- hack/profile-installer-wrappers
@@ -101,7 +103,8 @@ jobs:
           set -euo pipefail
           ulimit -c 0
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(git rev-parse "$DELIVERY_SHA^")" = "$BASELINE_SHA"
+          test "$(git rev-parse "$DELIVERY_SHA^")" = "$DELIVERY_PARENT"
+          git merge-base --is-ancestor "$BASELINE_SHA" "$DELIVERY_SHA"
           test "$(git -C ../source rev-parse HEAD)" = "$BASELINE_SHA"
           git merge-base --is-ancestor "$EXPERIMENT_BASE" HEAD
           git merge-base --is-ancestor "$DELIVERY_SHA" HEAD
@@ -150,3 +153,4 @@ jobs:
           test -z "$(git -C ../source status --porcelain)"
           git diff --exit-code "$DELIVERY_SHA" HEAD -- . ':(exclude).github/workflows/ci.yml' ':(exclude)hack/profile-installer-wrappers'
           git diff --exit-code "$EXPERIMENT_BASE" HEAD -- hack/profile-installer-wrappers
+
