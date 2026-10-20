@@ -87,7 +87,10 @@ func TestActivationEpochReadinessHasNoCredentialProbeOrAuthentication(t *testing
 		var armed atomic.Bool
 		var injected atomic.Bool
 		fixture.onRead = func(path string, objects map[installstate.Key]*unstructured.Unstructured) {
-			if armed.Load() && strings.Contains(path, "/validatingadmissionpolicies/") && injected.CompareAndSwap(false, true) {
+			// Configuration now reads this exact complete collection, not
+			// named policies. Inject before its fresh reply, at the same
+			// opening authority boundary; do not wait for a behavioral probe.
+			if armed.Load() && path == "/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicies" && injected.CompareAndSwap(false, true) {
 				for key, object := range objects {
 					if key.Kind == "ValidatingAdmissionPolicy" {
 						object.Object["status"] = map[string]any{"observedGeneration": int64(0)}
@@ -120,7 +123,7 @@ func TestActivationEpochOpeningRefusalBlocksForwardAndToken(t *testing.T) {
 	var armed atomic.Bool
 	var injected atomic.Bool
 	fixture.onRead = func(path string, objects map[installstate.Key]*unstructured.Unstructured) {
-		if armed.Load() && strings.Contains(path, "/validatingadmissionpolicies/") && injected.CompareAndSwap(false, true) {
+		if armed.Load() && path == "/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicies" && injected.CompareAndSwap(false, true) {
 			for key, object := range objects {
 				if key.Kind == "ValidatingAdmissionPolicy" {
 					object.Object["status"] = map[string]any{"observedGeneration": int64(0)}
@@ -206,7 +209,7 @@ func TestActivationEpochSecretDriftDuringDialFenceBlocksToken(t *testing.T) {
 	var injected atomic.Bool
 	fixture.onUpgrade = func() { connected.Store(true) }
 	fixture.onRead = func(path string, objects map[installstate.Key]*unstructured.Unstructured) {
-		if connected.Load() && strings.Contains(path, "/validatingadmissionpolicies/") && injected.CompareAndSwap(false, true) {
+		if connected.Load() && path == "/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicies" && injected.CompareAndSwap(false, true) {
 			for key, object := range objects {
 				if key.Kind == "Secret" && key.Name == "arcadectl-admin-credential" {
 					object.SetResourceVersion("dial-fence-secret-rv")
@@ -235,7 +238,7 @@ func TestActivationEpochSecretDriftDuringFinalFenceBlocksSuccess(t *testing.T) {
 		if finishing.Load() && strings.HasSuffix(path, "/secrets/arcadectl-api-tls") {
 			jointRead.Store(true)
 		}
-		if jointRead.Load() && strings.Contains(path, "/validatingadmissionpolicies/") && injected.CompareAndSwap(false, true) {
+		if jointRead.Load() && path == "/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicies" && injected.CompareAndSwap(false, true) {
 			for key, object := range objects {
 				if key.Kind == "Secret" && key.Name == "arcadectl-api-tls" {
 					object.SetResourceVersion("final-fence-secret-rv")
