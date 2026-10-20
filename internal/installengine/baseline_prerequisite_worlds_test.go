@@ -564,6 +564,17 @@ func testBaselinePrerequisiteRetainedWorldsHTTPS(t *testing.T, scenario string) 
 			encodeStoppedObject(t, w, r, servingObject(t, copy))
 			return
 		}
+		if r.URL.Query().Has("labelSelector") {
+			selected := map[installstate.Key]*unstructured.Unstructured{}
+			for _, group := range objects {
+				for _, object := range group {
+					selected[baselineObjectKey(object)] = object
+				}
+			}
+			if testBaselineConfigurationList(t, w, r, selected) {
+				return
+			}
+		}
 		for _, res := range resources {
 			if r.URL.Path != pathFor(res) {
 				continue

@@ -407,6 +407,12 @@ func (a *HTTPAccess) requestBound(ctx context.Context, method string, key instal
 // requestAt is private: every caller derives a fixed reviewed route, never a
 // path supplied by a journal/object. Serving routes expose read-only mappings.
 func (a *HTTPAccess) requestAt(ctx context.Context, method string, key installstate.Key, body any, dry bool, path string, extra url.Values) (*unstructured.Unstructured, error) {
+	return a.requestAtBudget(ctx, method, key, body, dry, path, extra, nil)
+}
+
+// A closed collection reader may additionally bound the aggregate RAW bytes
+// across pages. The budget belongs to one joined reader, never shared callers.
+func (a *HTTPAccess) requestAtBudget(ctx context.Context, method string, key installstate.Key, body any, dry bool, path string, extra url.Values, remaining *int) (*unstructured.Unstructured, error) {
 	if a == nil || a.client == nil || a.base == nil || ctx == nil {
 		return nil, ErrInvalid
 	}
@@ -510,6 +516,12 @@ func (a *HTTPAccess) requestAt(ctx context.Context, method string, key installst
 	defer validationCost.finish()
 	if err != nil || len(raw) == 0 || len(raw) > 1024*1024 || !boundedJSONLimits(raw) {
 		return nil, ErrRead
+	}
+	if remaining != nil {
+		if len(raw) > *remaining {
+			return nil, ErrRead
+		}
+		*remaining -= len(raw)
 	}
 	// A memo can reuse ONLY the strict conversion of identical complete fresh
 	// bytes. All transport/size/limits checks above still run, and original

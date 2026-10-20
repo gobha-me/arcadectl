@@ -560,6 +560,12 @@ func testBaselineRetiredHTTPSClosesWholeEvidenceWithoutAuthority(t *testing.T, t
 			encodeStoppedObject(t, w, r, servingObject(t, copy))
 			return
 		}
+		// These filtered configuration reads are not the complete unfiltered
+		// executable/cold inventories counted below. Preserve every old counter
+		// and its late-refusal window while supplying fresh original policies.
+		if r.URL.Query().Has("labelSelector") && testBaselineConfigurationList(t, w, r, v.f.access.objects) {
+			return
+		}
 		for _, gv := range proofGroups {
 			path, _ := discoveryPath(gv)
 			if r.URL.Path != path {

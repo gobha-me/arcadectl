@@ -757,6 +757,37 @@ func testBaselinePrerequisiteCompleteDiscovery(t *testing.T, scenario string) {
 			_ = json.NewEncoder(w).Encode(ns)
 			return
 		}
+		if r.URL.Query().Has("labelSelector") {
+			selected := objects
+			if r.URL.Path == "/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicies" {
+				if creates == 1 && !postCreateProof {
+					postCreateProof, quietReads = true, ackReads
+					if scenario == "effect-crd-late-policy" {
+						weakenBaseline()
+					}
+				}
+				// This counter records original policy MEMBERS observed, not
+				// transport calls; the old 24-member final-fence window remains.
+				selected = make(map[string]*unstructured.Unstructured, len(objects))
+				for path, object := range objects {
+					selected[path] = object
+					if object.GetKind() != "ValidatingAdmissionPolicy" {
+						continue
+					}
+					policyReads++
+					if scenario == "pending-receipt-policy" && lists == 2*len(sources) && !receiptReplaced {
+						replaceReceipt()
+					}
+					if scenario == "baseline-drift" && lists > 0 {
+						selected[path] = object.DeepCopy()
+						selected[path].SetResourceVersion("999")
+					}
+				}
+			}
+			if testBaselineConfigurationList(t, w, r, selected) {
+				return
+			}
+		}
 		if object := objects[r.URL.Path]; object != nil {
 			if targetPath, _ := resourcePath(key, false); r.URL.Path == targetPath && policyReads == 0 {
 				prePolicyTargetReads++

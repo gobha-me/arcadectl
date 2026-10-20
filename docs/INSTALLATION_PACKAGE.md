@@ -174,27 +174,37 @@ lost responses and public recovery cannot reconstruct the purpose. Any later
 whole-object drift still refuses the full proof rather than being retried or
 ignored. Native lifecycle certification remains mandatory.
 
-Each original signed access witness reads its frozen recorded catalog in eight
-fixed, balanced serial lanes. Baseline configuration uses four policy lanes and
-four binding lanes. The private bound is eight independent named GETs, not a
-caller-controlled setting. Every fresh GET, full-object check and complete pass
-is retained. A refusal cancels all siblings and joins every reader, including
-canceled readers still consuming a body, before result publication or the
-original Namespace/journal close. Configuration still requires two separate
-complete passes agreeing on every original UID/resource version. No access
-witness is cached or removed, including the final access observation after
-closing configuration. Probes, effects, complete passes and outer fences do
-not overlap. Historical caller eligibility, permissions, request contents,
-response limits, retries, QPS settings and deadlines are unchanged.
+Each original signed runtime-access witness still reads its frozen recorded
+catalog in eight fixed, balanced serial lanes of named GETs. Baseline
+configuration instead joins two fresh, fixed-kind LIST readers: policies and
+bindings. The fixed part-of and security-baseline labels are only transport
+filters, not namespace selection, ownership or signed membership. Other
+matching installations cannot fill a missing original member; their object
+bodies are not retained. The authenticated contract must still supply exactly
+six original policies and six bindings, with full UID/template/health checks.
 
-This revises the previous two-lane observation schedule; it is not a claim of
-identical outcomes under arbitrary transient authorization or transport
-failures. Neither schedule is an atomic snapshot or a continuous authorization
-guarantee. Every accepted response must satisfy the same fresh checks, and any
-observed failure refuses the whole pass. Eight concurrent reads increase
-instantaneous API-server load even though successful request counts are
-unchanged. Synthetic concurrency tests alone do not establish a native speedup
-or signed-lifecycle certification.
+Each LIST starts with resourceVersion absent (most recent, never `0`) and drains
+all pages, including pages after every expected member was found. Each kind
+must retain its own nonempty collection resource version across pages; versions
+are not compared across kinds. Limits are 128 requested items per page,
+32 pages, 1000 total items and 4 MiB aggregate raw response bytes per kind,
+2048-byte continuation tokens, and the existing 1 MiB/depth-64/200000-token
+response limits. Unknown or ambiguous JSON, wrong types, repeated/cyclic
+tokens, expired snapshots, permission refusal, changing collection versions or
+incomplete membership fail closed without a named-GET fallback.
+
+Both complete uncached passes and all original Namespace/journal/file fences
+remain, and passes must agree on each original object's UID/resource version.
+Every refusal cancels and joins both readers, including a canceled body reader,
+before return or any closing fence. Lists never use the named-public reply memo
+or body pool. No runtime-access witness, SSAR, behavioral probe, effect, outer
+fence, QPS policy or deadline is removed or relaxed. The installer now requires
+existing LIST permission for these two cluster-scoped kinds; named GET-only
+credentials fail closed. Operator RBAC is unchanged.
+
+Neither schedule is an atomic snapshot or continuous authorization guarantee,
+nor do synthetic concurrency tests establish a native speedup or signed-lifecycle
+certification. Every observed failure refuses the complete proof.
 
 Named public GET replies may reuse only the strict JSON conversion of identical
 complete response bytes. Every request still reaches the cluster, and status,
