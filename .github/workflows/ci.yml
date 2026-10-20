@@ -4,42 +4,38 @@ on:
 permissions:
   contents: read
 env:
-  BASELINE_SHA: 430d6911e1ebc9a7ebe707fb1eb1594e6bd2c154
-  DELIVERY_SHA: c9cac6dead7f417e1cbd607c2138eeb575c2d111
-  DELIVERY_PARENT: bd386c14f17d92db03cfd7e002b2e3bb316777e0
-  EXPERIMENT_BASE: b08348d0c99318969cd73a455472c139aadefdf8
+  DELIVERY_SHA: b07af308b5806dc16603410d5d1d94852733c04e
+  PRIOR_DELIVERY: c9cac6dead7f417e1cbd607c2138eeb575c2d111
+  EXPERIMENT_BASE: dc01de4d0f10b7ee6f852bd35f37f81031f95538
   GOMAXPROCS: "2"
   GOMEMLIMIT: 1GiB
 jobs:
-  focused-race:
-    name: Experimental baseline LIST race shard ${{ matrix.shard }}
+  fixture-controls:
+    name: Experimental delete and reinstall fixture controls ${{ matrix.mode }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 2
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-                16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+        mode: [race, envtest]
     steps:
-      - name: Check out source-equivalent experimental candidate
+      - name: Check out source-equivalent fixture correction
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      - name: Verify exact delivery equivalence and unchanged V3 tool
+      - name: Verify exact delivery and test-only correction
         run: |
           set -euo pipefail
           ulimit -c 0
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(git rev-parse "$DELIVERY_SHA^")" = "$DELIVERY_PARENT"
-          git merge-base --is-ancestor "$BASELINE_SHA" "$DELIVERY_SHA"
+          test "$(git rev-parse "$DELIVERY_SHA^")" = "$PRIOR_DELIVERY"
           git merge-base --is-ancestor "$EXPERIMENT_BASE" HEAD
           git merge-base --is-ancestor "$DELIVERY_SHA" HEAD
+          git diff --exit-code "$PRIOR_DELIVERY" "$DELIVERY_SHA" -- . ':(exclude)internal/installengine/acknowledged_delete_preparation_test.go' ':(exclude)internal/installengine/admission_reinstall_begin_http_test.go'
           git diff --exit-code "$EXPERIMENT_BASE" HEAD -- hack/profile-installer-wrappers
-          git diff --exit-code "$BASELINE_SHA" "$DELIVERY_SHA" -- hack/profile-installer-wrappers
           git diff --exit-code "$DELIVERY_SHA" HEAD -- . ':(exclude).github/workflows/ci.yml' ':(exclude)hack/profile-installer-wrappers'
-          printf '%s\n' '08e732b3048c071a738dd9397baac13455549f233d28a1cc7b404d937efff79a  hack/profile-installer-wrappers/main_linux.go' 'a88b81e0c70a7f5275bf0e1f2b159d46f8213310d9bc3efae36d9744692d6295  hack/profile-installer-wrappers/expanded_test.go' | sha256sum -c -
           test -z "$(git status --porcelain)"
           git rev-parse HEAD HEAD^{tree} "$DELIVERY_SHA" "$DELIVERY_SHA^{tree}"
       - name: Set up Go
@@ -47,110 +43,39 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Census and race-test complete focused trees in the reviewed partition
+      - name: Census and run every delete and reinstall control tree
         env:
-          SHARD: ${{ matrix.shard }}
+          MODE: ${{ matrix.mode }}
         run: |
           set -euo pipefail
           ulimit -c 0
-          focus='^Test(Baseline(Configuration|Actors|DeniedProvider|DeniedComposition|BehaviorWholeProvider|Precontroller|Prerequisite|RetiredHTTPS|Enrollment|MetadataWholeProvider|AccessEightLanes)|Acknowledged(Prerequisite|Deployment)|ActivationEpoch|LifecycleBoundaryDiagnostic|SDKWaitDiagnosticKeepsDefaultReadBucketShared|HTTP|PublicReplyMemo|PublicBodyBuffers)'
-          census="$(go test -race -p 1 ./internal/installengine -run '^$' -list "$focus")"
+          case "$MODE" in
+            race) set -- -race ;;
+            envtest) set -- -tags=envtest ;;
+            *) exit 2 ;;
+          esac
+          focus='^Test(AcknowledgedDelete.*|AdmissionReinstallActualBeginHTTPSPreservesSourceAndOriginals)$'
+          census="$(go test "$@" -p 1 ./internal/installengine -run '^$' -list "$focus")"
           printf '%s\n' "$census"
-          for root in TestBaselineConfigurationListsRequireCompleteStrictBoundedSnapshots TestBaselineConfigurationListsRejectEveryChangedOriginalMember TestBaselineConfigurationListsRefuseUnboundOrActorRoutesWithoutWire TestBaselineConfigurationListsKeepOriginalFencesAcrossPagesAndPasses; do
+          expected='TestAcknowledgedDeletePreparesWholeAbsenceBeforeProof
+          TestAcknowledgedDeleteRejectsLateWholePodDrift
+          TestAcknowledgedDeleteRejectsReplacementDuringPreparation
+          TestAcknowledgedDeleteRejectsUnsignedParentDuringPreparation
+          TestAcknowledgedDeleteRejectsReadRefusalDuringPreparation
+          TestAcknowledgedDeleteRejectsJournalDriftDuringPreparation
+          TestAcknowledgedDeleteRejectsProtectedFileFenceDuringPreparation
+          TestAcknowledgedDeleteCancellationKeepsOriginalIntent
+          TestAcknowledgedDeleteRejectsCollectedTargetReappearance
+          TestAcknowledgedDeleteRejectsTargetReappearanceAfterFullProof
+          TestAcknowledgedDeleteDiagnosticClosedFreshAndConcurrent
+          TestAcknowledgedDeleteDiagnosticActualEarlyRefusals
+          TestAdmissionReinstallActualBeginHTTPSPreservesSourceAndOriginals'
+          test "$(printf '%s\n' "$census" | awk '/^Test[A-Za-z0-9_]+$/ {n++} END {print n}')" = 13
+          while IFS= read -r root; do
             test "$(printf '%s\n' "$census" | grep -Fxc "$root")" = 1
-          done
-          assignment="$(bash hack/test-installengine-race-shard.sh "$SHARD" --list-only)"
-          selected="$(awk -v wanted="$focus" '$0 ~ wanted' <<< "$assignment")"
-          if [[ -n "$selected" ]]; then
-            pattern="$(awk 'NF { printf "%s^%s$", separator, $0; separator="|" }' <<< "$selected")"
-            printf 'Focused selected: %s\n' "$selected"
-            go test -race -p 1 -timeout=20m ./internal/installengine -run "$pattern" -count=1 -v
-          else
-            printf '%s\n' 'No focused roots assigned to this validated shard.'
-          fi
-          if [[ "$SHARD" == 0 ]]; then
-            go vet -p 1 ./internal/installengine ./hack/profile-installer-wrappers
-            go test -race -p 1 -timeout=1m ./hack/profile-installer-wrappers -count=1 -v
-          fi
+          done <<< "$expected"
+          printf '%s\n' 'Validated fixture roots: 13'
+          go test "$@" -p 1 -timeout=20m ./internal/installengine -run "$focus" -count=1 -v
           test -z "$(git status --porcelain)"
           git diff --exit-code "$DELIVERY_SHA" HEAD -- . ':(exclude).github/workflows/ci.yml' ':(exclude)hack/profile-installer-wrappers'
-  paired-profile:
-    name: Experimental baseline LIST unchanged V3 ABBA
-    needs: [focused-race]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - name: Check out experimental candidate and unchanged V3 tool
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.sha }}
-          path: screen
-          fetch-depth: 0
-      - name: Check out unchanged actual delivery baseline
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: 430d6911e1ebc9a7ebe707fb1eb1594e6bd2c154
-          path: source
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-        with:
-          go-version-file: source/go.mod
-          cache-dependency-path: source/go.sum
-          cache: true
-      - name: Verify exact delivery equivalence and unchanged V3 tool
-        working-directory: screen
-        run: |
-          set -euo pipefail
-          ulimit -c 0
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(git rev-parse "$DELIVERY_SHA^")" = "$DELIVERY_PARENT"
-          git merge-base --is-ancestor "$BASELINE_SHA" "$DELIVERY_SHA"
-          test "$(git -C ../source rev-parse HEAD)" = "$BASELINE_SHA"
-          git merge-base --is-ancestor "$EXPERIMENT_BASE" HEAD
-          git merge-base --is-ancestor "$DELIVERY_SHA" HEAD
-          git diff --exit-code "$EXPERIMENT_BASE" HEAD -- hack/profile-installer-wrappers
-          git diff --exit-code "$BASELINE_SHA" "$DELIVERY_SHA" -- hack/profile-installer-wrappers
-          git diff --exit-code "$DELIVERY_SHA" HEAD -- . ':(exclude).github/workflows/ci.yml' ':(exclude)hack/profile-installer-wrappers'
-          printf '%s\n' '08e732b3048c071a738dd9397baac13455549f233d28a1cc7b404d937efff79a  hack/profile-installer-wrappers/main_linux.go' 'a88b81e0c70a7f5275bf0e1f2b159d46f8213310d9bc3efae36d9744692d6295  hack/profile-installer-wrappers/expanded_test.go' | sha256sum -c -
-          test -z "$(git status --porcelain)"
-          test -z "$(git -C ../source status --porcelain)"
-          git rev-parse HEAD HEAD^{tree} "$DELIVERY_SHA" "$DELIVERY_SHA^{tree}"
-      - name: A1 profile complete unchanged baseline targets
-        working-directory: source
-        run: |
-          set -euo pipefail
-          ulimit -c 0
-          printf '%s\n' 'PAIR A1 baseline'
-          go run -p 1 "$GITHUB_WORKSPACE/screen/hack/profile-installer-wrappers/main_linux.go" "$BASELINE_SHA"
-      - name: B1 profile complete candidate targets
-        working-directory: screen
-        run: |
-          set -euo pipefail
-          ulimit -c 0
-          printf '%s\n' 'PAIR B1 candidate'
-          go run -p 1 ./hack/profile-installer-wrappers/main_linux.go "$GITHUB_SHA"
-      - name: B2 profile complete candidate targets
-        working-directory: screen
-        run: |
-          set -euo pipefail
-          ulimit -c 0
-          printf '%s\n' 'PAIR B2 candidate'
-          go run -p 1 ./hack/profile-installer-wrappers/main_linux.go "$GITHUB_SHA"
-      - name: A2 profile complete unchanged baseline targets
-        working-directory: source
-        run: |
-          set -euo pipefail
-          ulimit -c 0
-          printf '%s\n' 'PAIR A2 baseline'
-          go run -p 1 "$GITHUB_WORKSPACE/screen/hack/profile-installer-wrappers/main_linux.go" "$BASELINE_SHA"
-      - name: Close exact source identities and delivery equivalence
-        working-directory: screen
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(git -C ../source rev-parse HEAD)" = "$BASELINE_SHA"
-          test -z "$(git status --porcelain)"
-          test -z "$(git -C ../source status --porcelain)"
-          git diff --exit-code "$DELIVERY_SHA" HEAD -- . ':(exclude).github/workflows/ci.yml' ':(exclude)hack/profile-installer-wrappers'
-          git diff --exit-code "$EXPERIMENT_BASE" HEAD -- hack/profile-installer-wrappers
 

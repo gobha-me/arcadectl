@@ -371,6 +371,9 @@ func testAcknowledgedDeletePreparation(t *testing.T, failure string) {
 				_ = json.NewEncoder(w).Encode(copy)
 				return
 			}
+			if testBaselineConfigurationList(t, w, r, objects) {
+				return
+			}
 			for _, gv := range []string{"v1", "apps/v1", "batch/v1", "rbac.authorization.k8s.io/v1"} {
 				path, _ := discoveryPath(gv)
 				if r.URL.Path == path {
