@@ -72,6 +72,8 @@ type HTTPAccess struct {
 	// Pure decoding of complete fresh named public GET replies only. Never a
 	// cached observation, permission, identity, health or mutation result.
 	publicReplies *publicReplyMemo
+	// Per-parent zeroed scratch for eligible fresh public GET bodies only.
+	responseBodies *publicBodyBuffers
 }
 
 type attemptKey struct{}
@@ -243,7 +245,7 @@ func newHTTPAccessWithPool(config *rest.Config, direct bool, inherited http.Roun
 		return nil, ErrInvalid
 	}
 	h.CheckRedirect = func(*http.Request, []*http.Request) error { return ErrRead }
-	a := &HTTPAccess{client: h, base: u, native: native, frozen: frozen, direct: direct, pool: pool, publicReplies: &publicReplyMemo{}}
+	a := &HTTPAccess{client: h, base: u, native: native, frozen: frozen, direct: direct, pool: pool, publicReplies: &publicReplyMemo{}, responseBodies: &publicBodyBuffers{}}
 	if frozen.RateLimiter == nil && frozen.QPS == 0 && frozen.Burst == 0 {
 		a.readLimiter = &sdkWaitDiagnosticLimiter{RateLimiter: flowcontrol.NewTokenBucketRateLimiter(installerReadQPS, installerReadBurst)}
 	}
@@ -494,7 +496,15 @@ func (a *HTTPAccess) requestAt(ctx context.Context, method string, key installst
 		return nil, ErrRead
 	}
 	bodyCost := beginRequestPipelineCost(ctx, pipelineBodyRead)
-	raw, err := io.ReadAll(io.LimitReader(response.Body, 1024*1024+1))
+	var raw []byte
+	if memo != nil && a.responseBodies != nil {
+		var loan publicBodyLoan
+		loan, err = a.responseBodies.read(io.LimitReader(response.Body, 1024*1024+1))
+		defer loan.release()
+		raw = loan.body
+	} else {
+		raw, err = io.ReadAll(io.LimitReader(response.Body, 1024*1024+1))
+	}
 	bodyCost.finish()
 	validationCost := beginRequestPipelineCost(ctx, pipelineValidation)
 	defer validationCost.finish()
