@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -35,6 +36,7 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 				FailFast *bool `yaml:"fail-fast"`
 				Matrix   struct {
 					Shard   []int    `yaml:"shard"`
+					Part    []string `yaml:"part"`
 					Profile []int    `yaml:"profile"`
 					Mode    []string `yaml:"mode"`
 					Exclude []struct {
@@ -152,7 +154,7 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	}
 	wantDiagnosticRuns := []string{
 		"go test -race -p 1 -timeout=5m ./cmd/arcadectl-installer -count=1",
-		"go test -race -tags=kindinstall -p 1 -timeout=5m ./internal/installengine -run '^(TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate|TestInstallerBinaryProgressCapture|TestInstallerBinaryRequestPipelineCapture|TestInstallerBinaryParentContext|TestLifecycleCostsBoundedCommandAndInvocationIsolation|TestLifecycleCostsConcurrentRefusalsAndCancellation)$' -count=1",
+		"go test -race -tags=kindinstall -p 1 -timeout=5m ./internal/installengine -run '^(TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate|TestEnvtestPartitionsCompleteCompiledUnion|TestEnvtestPartitionsRefuseInvalidInputs|TestEnvtestPartitionsAllPartsAndFailures|TestInstallerBinaryProgressCapture|TestInstallerBinaryRequestPipelineCapture|TestInstallerBinaryParentContext|TestLifecycleCostsBoundedCommandAndInvocationIsolation|TestLifecycleCostsConcurrentRefusalsAndCancellation)$' -count=1",
 		"go test -race -p 1 -timeout=1m ./hack/profile-installer-wrappers -count=1\ngo run -p 1 ./hack/profile-installer-wrappers '${{ github.event.pull_request.head.sha || github.sha }}'\n",
 		"go vet -tags=kindinstall -p 1 ./cmd/arcadectl-installer ./internal/installengine",
 	}
@@ -171,10 +173,18 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 		t.Fatal("native baseline profile or fail-closed dependency omitted")
 	}
 	envtest := workflow.Jobs["envtest"]
+	wantEnvtestParts := []string{"base-packages"}
+	for i := range 32 {
+		wantEnvtestParts = append(wantEnvtestParts, strconv.Itoa(i))
+	}
+	if !slices.Equal(envtest.Strategy.Matrix.Part, wantEnvtestParts) || len(envtest.Strategy.Matrix.Exclude) != 0 || len(envtest.Strategy.Matrix.Shard) != 0 || len(envtest.Strategy.Matrix.Mode) != 0 || len(envtest.Strategy.Matrix.Profile) != 0 || envtest.Strategy.FailFast == nil || *envtest.Strategy.FailFast {
+		t.Fatal("complete compiled envtest partition matrix omitted or sibling coverage cancelled")
+	}
+	wantEnvtestRun := "make test-envtest-part ENVTEST_PART='${{ matrix.part }}'"
 	nativeSuiteRuns := 0
 	for _, job := range workflow.Jobs {
 		for _, step := range job.Steps {
-			if step.Run == "make test-envtest" {
+			if step.Run == wantEnvtestRun {
 				nativeSuiteRuns++
 			}
 		}
@@ -187,11 +197,11 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 			t.Fatal("complete API-server suite can skip, tolerate failure or override its environment")
 		}
 	}
-	if envtest.Steps[0].Uses != "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" || envtest.Steps[1].Uses != "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e" || envtest.Steps[1].With["go-version-file"] != "go.mod" || envtest.Steps[1].With["cache"] != true || envtest.Steps[2].Run != "make test-envtest" || nativeSuiteRuns != 1 {
+	if envtest.Steps[0].Uses != "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" || envtest.Steps[1].Uses != "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e" || envtest.Steps[1].With["go-version-file"] != "go.mod" || envtest.Steps[1].With["cache"] != true || envtest.Steps[2].Run != wantEnvtestRun || nativeSuiteRuns != 1 {
 		t.Fatal("complete API-server suite changed pinned setup or fresh full-suite execution")
 	}
 	makefile, err := os.ReadFile("../../Makefile")
-	if err != nil || strings.Count(string(makefile), "go test -tags=envtest -p 1 -timeout=30m -count=1 ./api/v1alpha1 ./internal/controller ./internal/install ./internal/installcontract ./internal/installengine") != 1 || gate.TimeoutMinutes != 45 {
+	if err != nil || strings.Count(string(makefile), "GOMAXPROCS=2 GOMEMLIMIT=1GiB bash ./hack/test-envtest-part.sh --all") != 1 || strings.Count(string(makefile), "GOMAXPROCS=2 GOMEMLIMIT=1GiB bash ./hack/test-envtest-part.sh \"$(ENVTEST_PART)\"") != 1 || gate.TimeoutMinutes != 45 {
 		t.Fatal("complete fresh API-server suite or its bounded CI envelope changed")
 	}
 	gc := workflow.Jobs["kind-install-gc"]

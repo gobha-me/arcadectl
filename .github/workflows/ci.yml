@@ -33,7 +33,7 @@ jobs:
       - name: Test the actual CLI boundary with race detection
         run: go test -race -p 1 -timeout=5m ./cmd/arcadectl-installer -count=1
       - name: Test pure diagnostic controls without a cluster
-        run: go test -race -tags=kindinstall -p 1 -timeout=5m ./internal/installengine -run '^(TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate|TestInstallerBinaryProgressCapture|TestInstallerBinaryRequestPipelineCapture|TestInstallerBinaryParentContext|TestLifecycleCostsBoundedCommandAndInvocationIsolation|TestLifecycleCostsConcurrentRefusalsAndCancellation)$' -count=1
+        run: go test -race -tags=kindinstall -p 1 -timeout=5m ./internal/installengine -run '^(TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate|TestEnvtestPartitionsCompleteCompiledUnion|TestEnvtestPartitionsRefuseInvalidInputs|TestEnvtestPartitionsAllPartsAndFailures|TestInstallerBinaryProgressCapture|TestInstallerBinaryRequestPipelineCapture|TestInstallerBinaryParentContext|TestLifecycleCostsBoundedCommandAndInvocationIsolation|TestLifecycleCostsConcurrentRefusalsAndCancellation)$' -count=1
       - name: Measure complete synthetic installer wrappers without raw profile artifacts
         run: |
           go test -race -p 1 -timeout=1m ./hack/profile-installer-wrappers -count=1
@@ -293,13 +293,17 @@ jobs:
         run: bash ./hack/test-installengine-race-shard.sh '${{ matrix.shard }}'
 
   envtest:
-    name: API-server lifecycle transitions
+    name: API-server lifecycle transitions ${{ matrix.part }}
     needs: [installer-diagnostics]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
-    # Keep the complete fresh suite in its own envelope, not the remainder
-    # after static checks and all-package race tests. Its package cap is 30m.
+    # The full tagged engine union exceeds one 30m package process. Partition
+    # compiled whole trees, not a native-test prefix or an ordinary-test omission.
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [base-packages, "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31"]
     env:
       GOMAXPROCS: "2"
       GOMEMLIMIT: 1GiB
@@ -314,7 +318,7 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Test API-server lifecycle transitions
-        run: make test-envtest
+        run: make test-envtest-part ENVTEST_PART='${{ matrix.part }}'
 
   go-and-policy:
     name: Go and policy
