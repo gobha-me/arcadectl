@@ -7,35 +7,100 @@ permissions:
   contents: read
 
 concurrency:
-  group: post-gate-validation-${{ github.ref }}
+  group: partition-validation-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  post-gate-validation:
-    name: Supplemental exact-BB4 post-dependency Go and policy checks
+  workflow-contract:
+    name: Exact delivery workflow contract and six diagnostic roots
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 1GiB
+    steps:
+      - name: Check out exact delivery candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 5bc16a942bb16c96adcd141bcf359e50cb5b3250
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Require exact clean source
+        run: |
+          test "$(git rev-parse HEAD)" = 5bc16a942bb16c96adcd141bcf359e50cb5b3250
+          test "$(git rev-parse HEAD^{tree})" = f7ba758082fc4e20261ca2717bb73cd26b23d5a2
+          test -z "$(git status --porcelain --untracked-files=normal)"
+      - name: Race check untagged workflow contract and six tagged roots
+        run: |
+          go test -v -race -p 1 -timeout=5m ./internal/installengine -run '^TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate$' -count=1
+          go test -v -race -tags=kindinstall -p 1 -timeout=5m ./internal/installengine -run '^(TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate|TestInstallerBinaryProgressCapture|TestInstallerBinaryRequestPipelineCapture|TestInstallerBinaryParentContext|TestLifecycleCostsBoundedCommandAndInvocationIsolation|TestLifecycleCostsConcurrentRefusalsAndCancellation)$' -count=1
+      - name: Require unchanged exact source after tests
+        run: |
+          test "$(git rev-parse HEAD)" = 5bc16a942bb16c96adcd141bcf359e50cb5b3250
+          test "$(git rev-parse HEAD^{tree})" = f7ba758082fc4e20261ca2717bb73cd26b23d5a2
+          test -z "$(git status --porcelain --untracked-files=normal)"
+
+  envtest:
+    name: Exact delivery complete fresh API-server suite
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       GOMAXPROCS: "2"
       GOMEMLIMIT: 1GiB
     steps:
-      - name: Check out exact delivery candidate, not validation workflow commit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out exact delivery candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: bb4a20313f3d122762d8f468eabf7749d23effc4
+          ref: 5bc16a942bb16c96adcd141bcf359e50cb5b3250
           fetch-depth: 0
           persist-credentials: false
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
           cache: true
-      - name: Require clean exact delivery source
+      - name: Require exact clean source
         run: |
-          test "$(git rev-parse HEAD)" = bb4a20313f3d122762d8f468eabf7749d23effc4
-          test "$(git rev-parse HEAD^{tree})" = 89c3c0f46e5ae587ab24069d312a316193129e06
+          test "$(git rev-parse HEAD)" = 5bc16a942bb16c96adcd141bcf359e50cb5b3250
+          test "$(git rev-parse HEAD^{tree})" = f7ba758082fc4e20261ca2717bb73cd26b23d5a2
           test -z "$(git status --porcelain --untracked-files=normal)"
-          printf '%s\n' 'post-gate-delivery-source-v1'
+      - name: Run complete fresh API-server lifecycle transitions
+        run: make test-envtest
+      - name: Require unchanged exact source after tests
+        run: |
+          test "$(git rev-parse HEAD)" = 5bc16a942bb16c96adcd141bcf359e50cb5b3250
+          test "$(git rev-parse HEAD^{tree})" = f7ba758082fc4e20261ca2717bb73cd26b23d5a2
+          test -z "$(git status --porcelain --untracked-files=normal)"
+
+  go-and-images:
+    name: Exact delivery remaining Go policy and reproducible images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 1GiB
+    steps:
+      - name: Check out exact delivery candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 5bc16a942bb16c96adcd141bcf359e50cb5b3250
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Require exact clean source
+        run: |
+          test "$(git rev-parse HEAD)" = 5bc16a942bb16c96adcd141bcf359e50cb5b3250
+          test "$(git rev-parse HEAD^{tree})" = f7ba758082fc4e20261ca2717bb73cd26b23d5a2
+          test -z "$(git status --porcelain --untracked-files=normal)"
       - name: Verify module
         run: go mod verify
       - name: Check formatting
@@ -52,8 +117,6 @@ jobs:
           mapfile -t packages < <(printf '%s\n' "$discovered" | awk '$0 != "github.com/gobha-me/arcadectl/internal/installengine"')
           test "${#packages[@]}" -gt 0
           go test -race -p 1 -timeout=15m "${packages[@]}"
-      - name: Test API-server lifecycle transitions
-        run: make test-envtest
       - name: Build reproducible controller image
         run: |
           for tag in first second; do
@@ -85,9 +148,8 @@ jobs:
           test "$(docker image inspect --format '{{.Config.User}}' arcadectl-api:ci-first)" = '65532:65532'
           test "$(docker image inspect --format '{{json .Config.Entrypoint}}' arcadectl-api:ci-first)" = '["/arcadectl-api"]'
           test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' arcadectl-api:ci-first)" = "$(git rev-parse HEAD)"
-      - name: Require unchanged exact delivery source after all checks
+      - name: Require unchanged exact source after all checks
         run: |
-          test "$(git rev-parse HEAD)" = bb4a20313f3d122762d8f468eabf7749d23effc4
-          test "$(git rev-parse HEAD^{tree})" = 89c3c0f46e5ae587ab24069d312a316193129e06
+          test "$(git rev-parse HEAD)" = 5bc16a942bb16c96adcd141bcf359e50cb5b3250
+          test "$(git rev-parse HEAD^{tree})" = f7ba758082fc4e20261ca2717bb73cd26b23d5a2
           test -z "$(git status --porcelain --untracked-files=normal)"
-          printf '%s\n' 'post-gate-checks-complete-v1'
