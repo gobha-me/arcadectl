@@ -308,6 +308,23 @@ func testAdmissionReinstallActualBeginHTTPS(t *testing.T, scenario string) {
 			_ = json.NewEncoder(w).Encode(metav1.APIResourceList{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "APIResourceList"}, GroupVersion: gv, APIResources: resources})
 			return
 		}
+		if r.URL.Query().Has("labelSelector") && testBaselineConfigurationList(t, w, r, f.access.objects) {
+			// Filtered configuration transport is not a cold inventory pass.
+			// Count the original members encoded on this page, not HTTP calls,
+			// so the final 24 configured + 12 retired-core row fence is intact.
+			if lists["Pod"] == 12 {
+				kind := "ValidatingAdmissionPolicy"
+				if r.URL.Path == "/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicybindings" {
+					kind = "ValidatingAdmissionPolicyBinding"
+				}
+				for _, object := range f.access.objects {
+					if object != nil && object.GetAPIVersion() == "admissionregistration.k8s.io/v1" && object.GetKind() == kind && strings.HasPrefix(object.GetName(), "arcadectl-identity-") && object.GetLabels()["app.kubernetes.io/part-of"] == "arcadectl" && object.GetLabels()["arcade.gobha.me/security-baseline"] == "privileged-identity-v1" {
+						closingBaselineGets++
+					}
+				}
+			}
+			return
+		}
 		for index, resource := range reinstallHTTPResources {
 			path := reinstallHTTPGroupPath(resource.gv)
 			if resource.namespaced {
