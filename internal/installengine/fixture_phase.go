@@ -8,6 +8,7 @@ import (
 	"context"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gobha-me/arcadectl/internal/installobserve"
@@ -44,7 +45,7 @@ func (a *ClusterAdmission) phasePublicInventory(ctx context.Context, request Lif
 }
 
 func (a *ClusterAdmission) phasePublicInventoryAgainstGC(ctx context.Context, request LifecycleCheck, gcRows []installobserve.GCObject) ([]fixtureWorldRow, error) {
-	if a == nil || a.prerequisites == nil || request.Snapshot == nil {
+	if a == nil || a.prerequisites == nil || ctx == nil || request.Snapshot == nil {
 		return nil, ErrFixtures
 	}
 	ctx = withRequestPipelineInventory(ctx)
@@ -52,7 +53,8 @@ func (a *ClusterAdmission) phasePublicInventoryAgainstGC(ctx context.Context, re
 	defer inventoryCost.finish()
 	e := a.prerequisites.engine
 	d := request.Snapshot.Document()
-	rows := []fixtureWorldRow{}
+	var frozen []admissionOriginalRead
+	seen := map[installstate.Key]bool{}
 	for _, original := range d.Resources {
 		key := original.Key
 		if key.Kind == "Secret" {
@@ -62,53 +64,107 @@ func (a *ClusterAdmission) phasePublicInventoryAgainstGC(ctx context.Context, re
 			continue
 		}
 		entry, template := e.inventory(d, key)
-		live, err := e.access.Get(ctx, key)
-		if entry == nil || template == nil || err != nil {
+		if entry == nil || template == nil || seen[key] {
 			return nil, ErrFixtures
 		}
-		contractCost := beginRequestPipelineCost(ctx, pipelineContract)
+		seen[key] = true
+		member := admissionOriginalRead{resource: *entry, template: template}
+		if key.Kind == "CustomResourceDefinition" {
+			target := e.contracts[d.TargetPackage]
+			if target == nil {
+				return nil, ErrFixtures
+			}
+			targetCRD, err := target.Template(key, false)
+			if err != nil {
+				return nil, ErrFixtures
+			}
+			member.targetCRD = targetCRD
+		}
+		frozen = append(frozen, member)
+	}
+	if len(frozen) > installstate.MaxResources {
+		return nil, ErrFixtures
+	}
+	readCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	// This local reader cannot select a new key/template or perform an effect.
+	// Each whole-object/GC match completes in the same worker as its exact GET.
+	read := func(member admissionOriginalRead) (fixtureWorldRow, error) {
+		entry, template := &member.resource, member.template
+		key := entry.Key
+		live, err := e.access.Get(readCtx, key)
+		if err != nil || live == nil || readCtx.Err() != nil {
+			return fixtureWorldRow{}, ErrFixtures
+		}
+		contractCost := beginRequestPipelineCost(readCtx, pipelineContract)
 		if key.Kind == "Namespace" {
 			err = template.MatchNamespace(live, request.Snapshot)
 		} else if key.Kind == "CustomResourceDefinition" {
-			target, targetErr := e.contracts[d.TargetPackage].Template(key, false)
-			if targetErr != nil {
-				contractCost.finish()
-				return nil, ErrFixtures
-			}
-			err = template.CheckCRD(live, entry.UID, target)
+			err = template.CheckCRD(live, entry.UID, member.targetCRD)
 		} else {
 			err = template.MatchLive(live, entry.UID)
 		}
 		contractCost.finish()
 		if err != nil {
-			return nil, ErrFixtures
+			return fixtureWorldRow{}, ErrFixtures
 		}
 		if gcRows != nil && key.Namespace != "" {
 			path, err := resourcePath(key, true)
 			if err != nil {
-				return nil, ErrFixtures
+				return fixtureWorldRow{}, ErrFixtures
 			}
 			plural := path[strings.LastIndex(path, "/")+1:]
 			matches := 0
 			for _, observed := range gcRows {
 				if observed.Metadata.UID == live.GetUID() || observed.Source.Kind == key.Kind && observed.Source.GVR.GroupVersion().String() == key.APIVersion && observed.Metadata.Namespace == key.Namespace && observed.Metadata.Name == key.Name {
 					if observed.Source.Kind != key.Kind || observed.Source.GVR.GroupVersion().String() != key.APIVersion || observed.Source.GVR.Resource != plural || !reflect.DeepEqual(observed.Metadata, fixtureGCMetadata(live)) {
-						return nil, ErrFixtures
+						return fixtureWorldRow{}, ErrFixtures
 					}
 					matches++
 				}
 			}
 			if matches != 1 {
-				return nil, ErrFixtures
+				return fixtureWorldRow{}, ErrFixtures
 			}
 		}
-		rowCost := beginRequestPipelineCost(ctx, pipelineRow)
+		rowCost := beginRequestPipelineCost(readCtx, pipelineRow)
 		row, err := phaseRow(key, live.GetUID(), live.GetResourceVersion(), live)
 		rowCost.finish()
 		if err != nil {
+			return fixtureWorldRow{}, ErrFixtures
+		}
+		return row, nil
+	}
+	rows := make([]fixtureWorldRow, len(frozen))
+	var failures [admissionReadLanes]error
+	var readers sync.WaitGroup
+	for lane := range admissionReadLanes {
+		readers.Go(func() {
+			for index := lane; index < len(frozen); index += admissionReadLanes {
+				if readCtx.Err() != nil {
+					failures[lane] = ErrFixtures
+					return
+				}
+				row, err := read(frozen[index])
+				if err != nil {
+					failures[lane] = ErrFixtures
+					cancel()
+					return
+				}
+				rows[index] = row
+			}
+		})
+	}
+	// Preserve every caller's complete-pass fence: no inventory result,
+	// closing observation or effect may escape an unfinished catalog reader.
+	readers.Wait()
+	if ctx.Err() != nil {
+		return nil, ErrFixtures
+	}
+	for _, err := range failures {
+		if err != nil {
 			return nil, ErrFixtures
 		}
-		rows = append(rows, row)
 	}
 	sortFixtureWorlds(rows)
 	return rows, nil
@@ -351,6 +407,7 @@ func (f *fixtureLedger) accountPhaseTraced(ctx context.Context, o *installobserv
 }
 
 func (f *fixtureLedger) accountPhaseWithAccounts(ctx context.Context, o *installobserve.Observation, floor fixturePhaseBaseline, now time.Time, accounts *phaseServiceAccounts) (fixturePhaseBaseline, [fixtureMaxSlots]runtime.Object, error) {
+	floorDiagnostic := beginPhaseFloorDiagnostic(ctx)
 	var fixtures [fixtureMaxSlots]runtime.Object
 	zero := fixturePhaseBaseline{}
 	if f == nil || o == nil || o.Journal() == nil || !o.Journal().MatchesJournalBytes(f.document.Journal) || o.Journal().ResourceVersion() != f.document.JournalResourceVersion {
@@ -364,6 +421,7 @@ func (f *fixtureLedger) accountPhaseWithAccounts(ctx context.Context, o *install
 	}
 	if floor.validate(o.Journal().Anchor().Namespace) != nil || !fixtureAccountsRecipeMatches(f.document, &floor) || (f.document.Recipe == fixtureRecipeV3) != (accounts != nil) {
 		traceAdmissionPhase(ctx, admissionPhaseRowFloor, -1)
+		floorDiagnostic.record(phaseFloorInput, 0, 0)
 		return zero, fixtures, ErrFixtures
 	}
 	addresses := map[installstate.Key]int{}
@@ -460,8 +518,13 @@ func (f *fixtureLedger) accountPhaseWithAccounts(ctx context.Context, o *install
 		phase.Leaders = append(phase.Leaders, leader)
 	}
 	sortFixtureWorlds(phase.Rows)
-	if phase.validate(o.Journal().Anchor().Namespace) != nil || !samePhaseBaseline(floor, phase) {
+	if validationErr := phase.validate(o.Journal().Anchor().Namespace); validationErr != nil || !samePhaseBaseline(floor, phase) {
 		traceAdmissionPhase(ctx, admissionPhaseRowFloor, -1)
+		if validationErr != nil {
+			floorDiagnostic.record(phaseFloorCandidate, 0, 0)
+		} else {
+			floorDiagnostic.difference(floor, phase)
+		}
 		return zero, fixtures, ErrFixtures
 	}
 	return phase, fixtures, nil

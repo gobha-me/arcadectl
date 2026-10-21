@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -26,6 +27,9 @@ import (
 )
 
 type actorFixture struct {
+	// Synthetic HTTP hooks share mutable fixture objects. Serialize those
+	// responses; separate transport-level tests exercise real reader overlap.
+	mu                                   sync.Mutex
 	admission                            *ClusterAdmission
 	request                              LifecycleCheck
 	v                                    *lifecycleFixture
@@ -34,6 +38,20 @@ type actorFixture struct {
 	denial                               map[string]any
 	afterReview, afterProbe              func()
 	fixtureHandler                       func(http.ResponseWriter, *http.Request) bool
+}
+
+// A cancelled client request can finish before its server handler. Mutating
+// tests use the SAME lock as response encoding, including restoration/hooks.
+// Callbacks already running inside the handler must not reacquire this lock.
+func (f *actorFixture) withState(edit func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	edit()
+}
+
+func (f *actorFixture) reviewCounts() (admin, actor, probes int) {
+	f.withState(func() { admin, actor, probes = f.adminReviews, f.actorReviews, f.probes })
+	return
 }
 
 // Uses the actual closed HTTP factory and original sealed inventory. Responses
@@ -81,6 +99,8 @@ func newActorFixtureAtCheckpointPlans(t *testing.T, v *lifecycleFixture, s *inst
 	}
 	f := &actorFixture{v: v}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		if r.Header.Get("Authorization") != "Bearer FAKE-ADMIN-CANARY" {
 			t.Error("frozen administrator authentication changed")
@@ -194,13 +214,14 @@ func newActorFixtureAtCheckpointPlans(t *testing.T, v *lifecycleFixture, s *inst
 func TestActorFactoryRequiresExplicitRightsOriginalAccessAndStableWitnesses(t *testing.T) {
 	f := newActorFixture(t)
 	ctx := context.Background()
-	if actors, err := f.admission.newActors(ctx, f.request, existingScopedImpersonation); err != nil || len(actors.clients) != 3 || f.adminReviews != 3 {
+	adminCount := func() int { admin, _, _ := f.reviewCounts(); return admin }
+	if actors, err := f.admission.newActors(ctx, f.request, existingScopedImpersonation); err != nil || len(actors.clients) != 3 || adminCount() != 3 {
 		t.Fatal("original actor factory refused", err)
 	}
-	before := f.adminReviews
+	before := adminCount()
 	access := f.admission.prerequisites.access
 	access.direct = false
-	if _, err := f.admission.newActors(ctx, f.request, existingScopedImpersonation); err != ErrInvalid || f.adminReviews != before {
+	if _, err := f.admission.newActors(ctx, f.request, existingScopedImpersonation); err != ErrInvalid || adminCount() != before {
 		t.Fatal("environment-routed access used for actor derivation")
 	}
 	access.direct = true
@@ -209,40 +230,47 @@ func TestActorFactoryRequiresExplicitRightsOriginalAccessAndStableWitnesses(t *t
 			t.Fatal("implicit or unreviewed identity selection")
 		}
 	}
-	if f.adminReviews != before {
+	if adminCount() != before {
 		t.Fatal("invalid mode reached wire")
 	}
-	f.denyAdmin = true
+	f.withState(func() { f.denyAdmin = true })
 	if _, err := f.admission.newActors(ctx, f.request, existingScopedImpersonation); err != ErrAdmission {
 		t.Fatal("missing existing impersonation right accepted")
 	}
-	f.denyAdmin = false
+	f.withState(func() { f.denyAdmin = false })
 	for _, kind := range []string{"ServiceAccount", "Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding"} {
 		var key installstate.Key
-		for k := range f.v.f.access.objects {
-			if k.Kind == kind {
-				key = k
-				break
+		var original *unstructured.Unstructured
+		f.withState(func() {
+			for k := range f.v.f.access.objects {
+				if k.Kind == kind {
+					key = k
+					break
+				}
 			}
-		}
-		original := f.v.f.access.objects[key].DeepCopy()
+			original = f.v.f.access.objects[key].DeepCopy()
+		})
 		for _, change := range []string{"missing", "uid", "spec"} {
 			t.Run(kind+"/"+change, func(t *testing.T) {
 				object := original.DeepCopy()
-				f.v.f.access.objects[key] = object
-				switch change {
-				case "missing":
-					delete(f.v.f.access.objects, key)
-				case "uid":
-					object.SetUID("foreign-uid")
-				case "spec":
-					object.SetLabels(map[string]string{"foreign": "true"})
-				}
-				before := f.adminReviews
-				if _, err := f.admission.newActors(ctx, f.request, existingScopedImpersonation); err != ErrAdmission || f.adminReviews != before {
+				f.withState(func() {
+					f.v.f.access.objects[key] = object
+					switch change {
+					case "missing":
+						delete(f.v.f.access.objects, key)
+					case "uid":
+						object.SetUID("foreign-uid")
+					case "spec":
+						object.SetLabels(map[string]string{"foreign": "true"})
+					}
+				})
+				before := adminCount()
+				_, err := f.admission.newActors(ctx, f.request, existingScopedImpersonation)
+				after := adminCount()
+				f.withState(func() { f.v.f.access.objects[key] = original.DeepCopy() })
+				if err != ErrAdmission || after != before {
 					t.Fatal("foreign access adopted or used")
 				}
-				f.v.f.access.objects[key] = original.DeepCopy()
 			})
 		}
 	}
@@ -266,13 +294,19 @@ func TestActorFactoryRequiresExplicitRightsOriginalAccessAndStableWitnesses(t *t
 	}
 	f.admission.prerequisites.access.frozen = base
 	key := installstate.Key{APIVersion: "v1", Kind: "ServiceAccount", Namespace: f.request.Target.Namespace(), Name: ordinaryControllerActor.account()}
-	original := f.v.f.access.objects[key].DeepCopy()
-	f.afterReview = func() { f.v.f.access.objects[key].SetResourceVersion("999") }
-	if _, err := f.admission.newActors(ctx, f.request, existingScopedImpersonation); err != ErrAdmission {
+	var original *unstructured.Unstructured
+	f.withState(func() {
+		original = f.v.f.access.objects[key].DeepCopy()
+		f.afterReview = func() { f.v.f.access.objects[key].SetResourceVersion("999") }
+	})
+	_, err := f.admission.newActors(ctx, f.request, existingScopedImpersonation)
+	f.withState(func() {
+		f.afterReview = nil
+		f.v.f.access.objects[key] = original
+	})
+	if err != ErrAdmission {
 		t.Fatal("identity drift during construction accepted")
 	}
-	f.afterReview = nil
-	f.v.f.access.objects[key] = original
 }
 
 func TestActorDirectRoutingIsExplicitAndNativeCapable(t *testing.T) {
@@ -330,16 +364,17 @@ func TestActorProbeChecksOwnPermissionAndBracketsAccessAndPolicy(t *testing.T) {
 		_, err := actors.probe(context.Background(), ordinaryControllerActor, probeUpdateOperation, o, "", "", "")
 		return err
 	}
-	if err := probe(); err != nil || f.actorReviews != 1 || f.probes != 1 {
+	actorCount := func() int { _, actor, _ := f.reviewCounts(); return actor }
+	probeCount := func() int { _, _, probes := f.reviewCounts(); return probes }
+	if err := probe(); err != nil || actorCount() != 1 || probeCount() != 1 {
 		t.Fatal("own operation authorization/probe refused", err)
 	}
-	f.denyActor = true
-	before := f.probes
-	if probe() != ErrAdmission || f.probes != before {
+	f.withState(func() { f.denyActor = true })
+	before := probeCount()
+	if probe() != ErrAdmission || probeCount() != before {
 		t.Fatal("administrator rights substituted for actor rights")
 	}
-	f.denyActor = false
-	f.forbiddenProbe = true
+	f.withState(func() { f.denyActor, f.forbiddenProbe = false, true })
 	policy, binding, message := "", "", ""
 	for name, b := range actors.policies.bindings {
 		p := actors.policies.policies[b.Spec.PolicyName]
@@ -349,25 +384,26 @@ func TestActorProbeChecksOwnPermissionAndBracketsAccessAndPolicy(t *testing.T) {
 	if _, err := actors.probe(context.Background(), ordinaryControllerActor, probeUpdateOperation, o, policy, binding, message); err != ErrAdmission || strings.Contains(err.Error(), "CANARY") {
 		t.Fatal("RBAC denial became policy evidence or leaked detail")
 	}
-	f.forbiddenProbe = false
+	f.withState(func() { f.forbiddenProbe = false })
 	_, plural, _ := probePath(resourceKeyFromObject(o))
-	f.denial, err = expectedProbeDenial(resourceKeyFromObject(o), plural, policy, binding, message)
+	denial, err := expectedProbeDenial(resourceKeyFromObject(o), plural, policy, binding, message)
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.withState(func() { f.denial = denial })
 	if result, err := actors.probe(context.Background(), ordinaryControllerActor, probeUpdateOperation, o, policy, binding, message); err != nil || result != nil {
 		t.Fatal("original signed denial refused", err)
 	}
-	f.denial = nil
-	before = f.actorReviews
+	f.withState(func() { f.denial = nil })
+	before = actorCount()
 	for _, triple := range [][3]string{{"foreign", binding, message}, {policy, "foreign", message}, {policy, binding, "unsigned"}, {"", binding, message}, {policy, "", message}, {policy, binding, ""}} {
-		if _, err := actors.probe(context.Background(), ordinaryControllerActor, probeUpdateOperation, o, triple[0], triple[1], triple[2]); err != ErrInvalid || f.actorReviews != before {
+		if _, err := actors.probe(context.Background(), ordinaryControllerActor, probeUpdateOperation, o, triple[0], triple[1], triple[2]); err != ErrInvalid || actorCount() != before {
 			t.Fatal("unsigned denial evidence reached wire")
 		}
 	}
 	for name, b := range actors.policies.bindings {
 		if b.Spec.PolicyName != policy {
-			if _, err := actors.probe(context.Background(), ordinaryControllerActor, probeUpdateOperation, o, policy, name, message); err != ErrInvalid || f.actorReviews != before {
+			if _, err := actors.probe(context.Background(), ordinaryControllerActor, probeUpdateOperation, o, policy, name, message); err != ErrInvalid || actorCount() != before {
 				t.Fatal("mismatched original policy/binding reached wire")
 			}
 			break
@@ -377,28 +413,37 @@ func TestActorProbeChecksOwnPermissionAndBracketsAccessAndPolicy(t *testing.T) {
 		for _, edge := range []string{"before", "review", "probe"} {
 			t.Run(kind+"/"+edge, func(t *testing.T) {
 				var key installstate.Key
-				for k := range f.v.f.access.objects {
-					if k.Kind == kind {
-						key = k
-						break
+				var original *unstructured.Unstructured
+				f.withState(func() {
+					for k := range f.v.f.access.objects {
+						if k.Kind == kind {
+							key = k
+							break
+						}
 					}
-				}
-				original := f.v.f.access.objects[key].DeepCopy()
+					original = f.v.f.access.objects[key].DeepCopy()
+				})
 				change := func() { f.v.f.access.objects[key].SetResourceVersion("999") }
-				switch edge {
-				case "before":
-					change()
-				case "review":
-					f.afterReview = change
-				case "probe":
-					f.afterProbe = change
-				}
-				before := f.probes
-				if probe() != ErrAdmission || edge != "probe" && f.probes != before {
+				f.withState(func() {
+					switch edge {
+					case "before":
+						change()
+					case "review":
+						f.afterReview = change
+					case "probe":
+						f.afterProbe = change
+					}
+				})
+				before := probeCount()
+				probeErr := probe()
+				after := probeCount()
+				f.withState(func() {
+					f.afterReview, f.afterProbe = nil, nil
+					f.v.f.access.objects[key] = original
+				})
+				if probeErr != ErrAdmission || edge != "probe" && after != before {
 					t.Fatal("drift permitted actor probe or accepted evidence")
 				}
-				f.afterReview, f.afterProbe = nil, nil
-				f.v.f.access.objects[key] = original
 			})
 		}
 	}

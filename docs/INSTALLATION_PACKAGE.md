@@ -202,9 +202,30 @@ fence, QPS policy or deadline is removed or relaxed. The installer now requires
 existing LIST permission for these two cluster-scoped kinds; named GET-only
 credentials fail closed. Operator RBAC is unchanged.
 
-Neither schedule is an atomic snapshot or continuous authorization guarantee,
+The admission actor-access catalog, runtime policy/binding configuration and
+remaining non-Secret public inventory also use at most eight fixed lanes of
+their existing named GETs. Complete eligible keys and recorded mixed-package
+templates, including CRD comparison targets, are frozen before launch. Every
+member retains its individual whole-object checks; successful passes keep the
+same request routes and counts. Workers own separate result slots, cancel on
+refusal and all join before result assembly, the next pass or a closing fence.
+No new LIST, permission, cache authority, probe omission or deadline is added.
+This scheduling change is not a claim that the full native lifecycle fits its
+budget; the exact candidate still requires that hosted proof.
+
+None of these schedules is an atomic snapshot or continuous authorization guarantee,
 nor do synthetic concurrency tests establish a native speedup or signed-lifecycle
 certification. Every observed failure refuses the complete proof.
+
+An opt-in phase-floor diagnostic records only closed category/kind labels and
+membership, identity, RV, whole-row hash and other-change flags from the exact
+refused accounting comparison. It distinguishes an invalid input floor/recipe,
+invalid candidate and changed Rows/Accounts/leader evidence without retaining
+objects, addresses, UIDs, RV values, hashes or provider errors. A hash change
+does not identify spec versus status or which observation is newer. Accounting
+copies Public from the floor; its diagnostic does not claim a fresh public GET.
+Each accounting invocation and outer/checkpoint boundary resets the recorder.
+No reads, retries, normalization, floor advancement or acceptance rules change.
 
 Named public GET replies may reuse only the strict JSON conversion of identical
 complete response bytes. Every request still reaches the cluster, and status,

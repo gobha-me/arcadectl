@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gobha-me/arcadectl/internal/installrender"
@@ -175,21 +176,60 @@ func (a *ClusterAdmission) actorAccessWitness(ctx context.Context, request Lifec
 	if _, err := p.permissions(request); err != nil {
 		return nil, ErrAdmission
 	}
-	witness := map[installstate.Key]admissionIdentity{}
+	var frozen []admissionOriginalRead
+	seen := map[installstate.Key]bool{}
 	for _, resource := range request.Target.ResourceMetadata() {
 		key := installstate.Key{APIVersion: resource.APIVersion, Kind: resource.Kind, Namespace: resource.Namespace, Name: resource.Name}
 		if !accessRetirementKey(key) {
 			continue
 		}
 		entry, template := p.engine.inventory(d, key)
-		if entry == nil || template == nil {
+		if entry == nil || template == nil || seen[key] {
 			return nil, ErrAdmission
 		}
-		live, err := p.access.Get(ctx, key)
-		if err != nil || template.MatchLive(live, entry.UID) != nil {
+		seen[key] = true
+		frozen = append(frozen, admissionOriginalRead{resource: *entry, template: template})
+	}
+	if len(frozen) == 0 || len(frozen) > installstate.MaxResources {
+		return nil, ErrAdmission
+	}
+	observed := make([]admissionIdentity, len(frozen))
+	var failures [admissionReadLanes]error
+	readCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var readers sync.WaitGroup
+	for lane := range admissionReadLanes {
+		readers.Go(func() {
+			for index := lane; index < len(frozen); index += admissionReadLanes {
+				if readCtx.Err() != nil {
+					failures[lane] = ErrAdmission
+					return
+				}
+				entry := frozen[index]
+				live, err := p.access.Get(readCtx, entry.resource.Key)
+				if err != nil || live == nil || entry.template.MatchLive(live, entry.resource.UID) != nil || readCtx.Err() != nil {
+					failures[lane] = ErrAdmission
+					cancel()
+					return
+				}
+				observed[index] = admissionIdentity{entry.resource.UID, live.GetResourceVersion(), entry.template.Hash()}
+			}
+		})
+	}
+	// Refusal still joins every sibling/body before a subsequent witness or
+	// authorization probe can begin. Only this caller assembles shared maps.
+	readers.Wait()
+	if ctx.Err() != nil {
+		return nil, ErrAdmission
+	}
+	for _, err := range failures {
+		if err != nil {
 			return nil, ErrAdmission
 		}
-		witness[key] = admissionIdentity{entry.UID, live.GetResourceVersion(), template.Hash()}
+	}
+	witness := map[installstate.Key]admissionIdentity{}
+	for index, entry := range frozen {
+		witness[entry.resource.Key] = observed[index]
 	}
 	for _, actor := range []admissionActor{ordinaryControllerActor, destroyControllerActor, destroyAdministratorActor} {
 		key := installstate.Key{APIVersion: "v1", Kind: "ServiceAccount", Namespace: d.Namespace, Name: actor.account()}

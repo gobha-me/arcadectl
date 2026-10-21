@@ -10,6 +10,7 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/gobha-me/arcadectl/internal/installstate"
@@ -174,40 +175,106 @@ func (a *ClusterAdmission) configured(ctx context.Context, request LifecycleChec
 	}
 	d := request.Snapshot.Document()
 	witness := &admissionConfiguration{anchor: request.Snapshot.Anchor(), objects: map[installstate.Key]admissionIdentity{}, policies: map[string]*admissionv1.ValidatingAdmissionPolicy{}, bindings: map[string]*admissionv1.ValidatingAdmissionPolicyBinding{}}
+	var frozen []admissionOriginalRead
+	seen := map[installstate.Key]bool{}
+	var policyCount, bindingCount int
 	for _, resource := range request.Target.ResourceMetadata() {
 		key := installstate.Key{APIVersion: resource.APIVersion, Kind: resource.Kind, Namespace: resource.Namespace, Name: resource.Name}
 		if key.Kind != "ValidatingAdmissionPolicy" && key.Kind != "ValidatingAdmissionPolicyBinding" {
 			continue
 		}
 		entry, template := p.engine.inventory(d, key)
-		if entry == nil || template == nil || !entry.Retained || key.Namespace != "" {
+		if entry == nil || template == nil || !entry.Retained || key.Namespace != "" || seen[key] {
 			return nil, ErrAdmission
 		}
-		live, err := p.access.Get(ctx, key)
-		if err != nil {
-			return nil, ErrAdmission
-		}
-		observed, err := template.MatchLiveAdmissionObject(live, entry.UID)
-		if err != nil {
-			return nil, ErrAdmission
-		}
-		// Inventory may legitimately be mixed active/target during upgrade.
-		// Only that recorded signed template is authority, never target-only
-		// shape comparison or labels/name-based adoption of a replacement.
+		seen[key] = true
 		if key.Kind == "ValidatingAdmissionPolicy" {
-			policy, ok := observed.(*admissionv1.ValidatingAdmissionPolicy)
-			if !ok || !healthyAdmissionPolicy(policy) || witness.policies[key.Name] != nil {
-				return nil, ErrAdmission
-			}
-			witness.policies[key.Name] = policy.DeepCopy()
+			policyCount++
 		} else {
-			binding, ok := observed.(*admissionv1.ValidatingAdmissionPolicyBinding)
-			if !ok || witness.bindings[key.Name] != nil {
+			bindingCount++
+		}
+		frozen = append(frozen, admissionOriginalRead{resource: *entry, template: template})
+	}
+	if policyCount != 6 || bindingCount != 6 {
+		return nil, ErrAdmission
+	}
+	type configuredObservation struct {
+		identity admissionIdentity
+		policy   *admissionv1.ValidatingAdmissionPolicy
+		binding  *admissionv1.ValidatingAdmissionPolicyBinding
+	}
+	observed := make([]configuredObservation, len(frozen))
+	var failures [admissionReadLanes]error
+	readCtx, cancelReads := context.WithCancel(ctx)
+	defer cancelReads()
+	var readers sync.WaitGroup
+	for lane := range admissionReadLanes {
+		readers.Go(func() {
+			for index := lane; index < len(frozen); index += admissionReadLanes {
+				if readCtx.Err() != nil {
+					failures[lane] = ErrAdmission
+					return
+				}
+				entry := frozen[index]
+				live, err := p.access.Get(readCtx, entry.resource.Key)
+				if err != nil || live == nil || readCtx.Err() != nil {
+					failures[lane] = ErrAdmission
+					cancelReads()
+					return
+				}
+				matched, err := entry.template.MatchLiveAdmissionObject(live, entry.resource.UID)
+				if err != nil {
+					failures[lane] = ErrAdmission
+					cancelReads()
+					return
+				}
+				// Mixed upgrades match the recorded signed template, never only
+				// the target shape. Each worker owns all of this result slot.
+				result := configuredObservation{identity: admissionIdentity{UID: entry.resource.UID, ResourceVersion: live.GetResourceVersion(), TemplateSHA256: entry.template.Hash()}}
+				if entry.resource.Key.Kind == "ValidatingAdmissionPolicy" {
+					policy, ok := matched.(*admissionv1.ValidatingAdmissionPolicy)
+					if !ok || !healthyAdmissionPolicy(policy) {
+						failures[lane] = ErrAdmission
+						cancelReads()
+						return
+					}
+					result.policy = policy.DeepCopy()
+				} else {
+					binding, ok := matched.(*admissionv1.ValidatingAdmissionPolicyBinding)
+					if !ok {
+						failures[lane] = ErrAdmission
+						cancelReads()
+						return
+					}
+					result.binding = binding.DeepCopy()
+				}
+				observed[index] = result
+			}
+		})
+	}
+	readers.Wait()
+	if ctx.Err() != nil {
+		return nil, ErrAdmission
+	}
+	for _, err := range failures {
+		if err != nil {
+			return nil, ErrAdmission
+		}
+	}
+	for index, entry := range frozen {
+		key, result := entry.resource.Key, observed[index]
+		if result.policy != nil {
+			if witness.policies[key.Name] != nil {
 				return nil, ErrAdmission
 			}
-			witness.bindings[key.Name] = binding.DeepCopy()
+			witness.policies[key.Name] = result.policy
+		} else {
+			if result.binding == nil || witness.bindings[key.Name] != nil {
+				return nil, ErrAdmission
+			}
+			witness.bindings[key.Name] = result.binding
 		}
-		witness.objects[key] = admissionIdentity{UID: entry.UID, ResourceVersion: live.GetResourceVersion(), TemplateSHA256: template.Hash()}
+		witness.objects[key] = result.identity
 	}
 	if len(witness.policies) != 6 || len(witness.bindings) != 6 || len(witness.objects) != 12 {
 		return nil, ErrAdmission
