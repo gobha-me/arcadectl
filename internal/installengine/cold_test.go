@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -169,7 +170,10 @@ func TestColdBoundProviderBracketsWorldPolicyAndJournalIdentity(t *testing.T) {
 			policyReads := 0
 			currentNS := ns.DeepCopy()
 			policyChanged := false
+			var mu sync.Mutex
 			access := proofServer(t, func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				defer mu.Unlock()
 				if scenario == "phase-delayed-policy" {
 					if _, _, err := v.f.engine.files.Read(fixtureLedgerName(s), fixtureLedgerMaxBytes); !errors.Is(err, privatefs.ErrNotFound) {
 						t.Error("initial-phase convergence created a fixture WAL before complete proof")

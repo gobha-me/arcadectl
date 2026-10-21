@@ -234,12 +234,19 @@ func TestRequestPipelinePublicInventoryKeepsFreshContractsRowsAndPhase(t *testin
 		t.Run(mode, func(t *testing.T) {
 			h := newPhase(t)
 			f, ledger := h.f, h.f.wire.ledger
+			var refusedServiceReplies atomic.Int32
 			if mode == "contract-refusal" {
 				mutated := false
+				refusedPath := ""
 				for key, object := range f.actor.v.f.access.objects {
 					if key.Kind == "Service" {
 						if unstructured.SetNestedField(object.Object, "ExternalName", "spec", "type") != nil {
 							t.Fatal("same-identity contract drift unavailable")
+						}
+						var err error
+						refusedPath, err = resourcePath(key, false)
+						if err != nil {
+							t.Fatal("signed Service address unavailable")
 						}
 						mutated = true
 						break
@@ -247,6 +254,14 @@ func TestRequestPipelinePublicInventoryKeepsFreshContractsRowsAndPhase(t *testin
 				}
 				if !mutated {
 					t.Fatal("signed Service control missing")
+				}
+				base := f.actor.fixtureHandler
+				f.actor.fixtureHandler = func(w http.ResponseWriter, r *http.Request) bool {
+					handled := base(w, r)
+					if handled && r.Method == http.MethodGet && r.URL.Path == refusedPath {
+						refusedServiceReplies.Add(1)
+					}
+					return handled
 				}
 			}
 			before := bytes.Clone(ledger.body)
@@ -264,14 +279,17 @@ func TestRequestPipelinePublicInventoryKeepsFreshContractsRowsAndPhase(t *testin
 				t.Fatal("inventory observation changed fresh rows, refusal, original evidence or effects")
 			}
 			metrics := &costs.pipeline.metrics[scope]
-			if metrics[pipelineInventory].calls.Load() != 1 || metrics[pipelineContract].calls.Load() == 0 || metrics[pipelineClientDo].calls.Load() != metrics[pipelineContract].calls.Load() {
+			if metrics[pipelineInventory].calls.Load() != 1 || metrics[pipelineContract].calls.Load() == 0 || metrics[pipelineClientDo].calls.Load() < metrics[pipelineContract].calls.Load() {
 				t.Fatal("inventory, actual reads or contract hooks missing from their phase")
 			}
 			if mode == "contract-refusal" {
-				if observedErr != ErrFixtures || observed != nil || metrics[pipelineRow].calls.Load()+1 != metrics[pipelineContract].calls.Load() {
+				// The designated bad Service must actually answer once per
+				// invocation and fail exactly one contract, never yield a row.
+				// Other already-started GETs may be cancelled before validation.
+				if observedErr != ErrFixtures || observed != nil || refusedServiceReplies.Load() != 2 || metrics[pipelineRow].calls.Load()+1 != metrics[pipelineContract].calls.Load() {
 					t.Fatal("failed whole contract was accepted or counted as a completed row")
 				}
-			} else if observedErr != nil || len(observed) == 0 || metrics[pipelineRow].calls.Load() != uint64(len(observed)) || metrics[pipelineContract].calls.Load() != uint64(len(observed)) {
+			} else if observedErr != nil || len(observed) == 0 || metrics[pipelineRow].calls.Load() != uint64(len(observed)) || metrics[pipelineContract].calls.Load() != uint64(len(observed)) || metrics[pipelineClientDo].calls.Load() != uint64(len(observed)) {
 				t.Fatal("whole validated public rows lost their individual observation")
 			}
 			for other := requestPipelineScope(0); other < pipelineScopes; other++ {

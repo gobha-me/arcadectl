@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -26,6 +27,9 @@ import (
 )
 
 type actorFixture struct {
+	// Synthetic HTTP hooks share mutable fixture objects. Serialize those
+	// responses; separate transport-level tests exercise real reader overlap.
+	mu                                   sync.Mutex
 	admission                            *ClusterAdmission
 	request                              LifecycleCheck
 	v                                    *lifecycleFixture
@@ -81,6 +85,8 @@ func newActorFixtureAtCheckpointPlans(t *testing.T, v *lifecycleFixture, s *inst
 	}
 	f := &actorFixture{v: v}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		if r.Header.Get("Authorization") != "Bearer FAKE-ADMIN-CANARY" {
 			t.Error("frozen administrator authentication changed")

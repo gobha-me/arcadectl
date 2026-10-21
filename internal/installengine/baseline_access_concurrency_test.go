@@ -231,6 +231,13 @@ func testBaselineEightReadLaneRefusal(t *testing.T, access *HTTPAccess, paths [8
 
 func testBaselineReadLaneRefusal(t *testing.T, access *HTTPAccess, paths [][]string, mode string, refused int, openingCloses int32, invoke func(context.Context) error) {
 	t.Helper()
+	testNamedReadLaneRefusal(t, access, paths, mode, refused, openingCloses, ErrSecurityBaseline, invoke)
+}
+
+// Preserve the same independent cancellation/body-close oracle for each closed
+// public reader, including its own unchanged fixed error and opening fences.
+func testNamedReadLaneRefusal(t *testing.T, access *HTTPAccess, paths [][]string, mode string, refused int, openingCloses int32, expectedError error, invoke func(context.Context) error) {
+	t.Helper()
 	entered, canceled, exited := make([]chan struct{}, len(paths)), make([]chan struct{}, len(paths)), make([]chan struct{}, len(paths))
 	for lane := range paths {
 		if len(paths[lane]) == 0 {
@@ -354,7 +361,7 @@ func testBaselineReadLaneRefusal(t *testing.T, access *HTTPAccess, paths [][]str
 	select {
 	case err := <-done:
 		joined = true
-		if err != ErrSecurityBaseline {
+		if err != expectedError {
 			t.Fatal("eight-lane refusal changed its fixed public error")
 		}
 	case <-time.After(2 * time.Second):

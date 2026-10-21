@@ -202,7 +202,18 @@ fence, QPS policy or deadline is removed or relaxed. The installer now requires
 existing LIST permission for these two cluster-scoped kinds; named GET-only
 credentials fail closed. Operator RBAC is unchanged.
 
-Neither schedule is an atomic snapshot or continuous authorization guarantee,
+The admission actor-access catalog, runtime policy/binding configuration and
+remaining non-Secret public inventory also use at most eight fixed lanes of
+their existing named GETs. Complete eligible keys and recorded mixed-package
+templates, including CRD comparison targets, are frozen before launch. Every
+member retains its individual whole-object checks; successful passes keep the
+same request routes and counts. Workers own separate result slots, cancel on
+refusal and all join before result assembly, the next pass or a closing fence.
+No new LIST, permission, cache authority, probe omission or deadline is added.
+This scheduling change is not a claim that the full native lifecycle fits its
+budget; the exact candidate still requires that hosted proof.
+
+None of these schedules is an atomic snapshot or continuous authorization guarantee,
 nor do synthetic concurrency tests establish a native speedup or signed-lifecycle
 certification. Every observed failure refuses the complete proof.
 
