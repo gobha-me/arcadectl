@@ -217,6 +217,16 @@ None of these schedules is an atomic snapshot or continuous authorization guaran
 nor do synthetic concurrency tests establish a native speedup or signed-lifecycle
 certification. Every observed failure refuses the complete proof.
 
+An opt-in phase-floor diagnostic records only closed category/kind labels and
+membership, identity, RV, whole-row hash and other-change flags from the exact
+refused accounting comparison. It distinguishes an invalid input floor/recipe,
+invalid candidate and changed Rows/Accounts/leader evidence without retaining
+objects, addresses, UIDs, RV values, hashes or provider errors. A hash change
+does not identify spec versus status or which observation is newer. Accounting
+copies Public from the floor; its diagnostic does not claim a fresh public GET.
+Each accounting invocation and outer/checkpoint boundary resets the recorder.
+No reads, retries, normalization, floor advancement or acceptance rules change.
+
 Named public GET replies may reuse only the strict JSON conversion of identical
 complete response bytes. Every request still reaches the cluster, and status,
 content type, complete body read, size/depth/node limits and original envelope

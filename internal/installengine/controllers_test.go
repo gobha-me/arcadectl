@@ -93,7 +93,17 @@ func controllerProofAccess(t *testing.T, ns *corev1.Namespace, objects map[insta
 
 func controllerProofAccessWithRequests(t *testing.T, ns *corev1.Namespace, objects map[installstate.Key]*unstructured.Unstructured, lists map[string]runtime.Object, onObservation func(int), fault string, beforeRequest func(http.ResponseWriter, *http.Request) bool) (*HTTPAccess, func() int) {
 	t.Helper()
-	var mutex sync.Mutex
+	return controllerProofAccessWithStateLock(t, ns, objects, lists, onObservation, fault, beforeRequest, &sync.Mutex{})
+}
+
+// Client cancellation joins the client workers, not the fake HTTP server's
+// handlers. Mutating tests share this lock so restoration cannot race a handler
+// that is still encoding an earlier, now-cancelled request.
+func controllerProofAccessWithStateLock(t *testing.T, ns *corev1.Namespace, objects map[installstate.Key]*unstructured.Unstructured, lists map[string]runtime.Object, onObservation func(int), fault string, beforeRequest func(http.ResponseWriter, *http.Request) bool, mutex *sync.Mutex) (*HTTPAccess, func() int) {
+	t.Helper()
+	if mutex == nil {
+		t.Fatal("fixture state lock unavailable")
+	}
 	observations := 0
 	access := quiescenceServer(t, func(w http.ResponseWriter, request *http.Request) {
 		mutex.Lock()

@@ -16,6 +16,7 @@ type admissionTrace struct {
 	position      atomic.Uint32
 	phase         atomic.Uint32
 	typedMetadata atomic.Pointer[typedMetadataDiagnostic]
+	phaseFloor    atomic.Pointer[phaseFloorDiagnostic]
 }
 type admissionStep uint8
 
@@ -103,6 +104,7 @@ func traceAdmission(ctx context.Context, step admissionStep, index int) {
 		// One atomic snapshot avoids pairing a stage with another stage's index.
 		trace.phase.Store(0)
 		trace.typedMetadata.Store(nil)
+		trace.phaseFloor.Store(nil)
 		trace.position.Store(uint32(step)<<8 | uint32(index+1))
 	}
 }
@@ -411,6 +413,7 @@ func traceAdmissionPhase(ctx context.Context, step admissionPhaseStep, slot int)
 	if trace, ok := ctx.Value(admissionTraceKey{}).(*admissionTrace); ok && trace != nil {
 		if step == admissionPhaseOriginal {
 			trace.typedMetadata.Store(nil)
+			trace.phaseFloor.Store(nil)
 		}
 		trace.phase.Store(uint32(step)<<8 | uint32(slot+1))
 	}

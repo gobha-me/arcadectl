@@ -300,6 +300,9 @@ func runMutation(ctx context.Context, o options, stdout, stderr io.Writer) (code
 			if metadata := diagnostic.TypedMetadataSnapshot(); metadata != "" {
 				_, _ = fmt.Fprintf(stderr, "installation diagnostic typed-metadata %s\n", metadata)
 			}
+			if floor := diagnostic.PhaseFloorSnapshot(); floor != "" {
+				_, _ = fmt.Fprintf(stderr, "installation diagnostic phase-floor %s\n", floor)
+			}
 			if preparation := diagnostic.AcknowledgedDeleteSnapshot(); preparation != "" {
 				_, _ = fmt.Fprintf(stderr, "installation diagnostic acknowledged-delete %s\n", preparation)
 			}

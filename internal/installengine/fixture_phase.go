@@ -407,6 +407,7 @@ func (f *fixtureLedger) accountPhaseTraced(ctx context.Context, o *installobserv
 }
 
 func (f *fixtureLedger) accountPhaseWithAccounts(ctx context.Context, o *installobserve.Observation, floor fixturePhaseBaseline, now time.Time, accounts *phaseServiceAccounts) (fixturePhaseBaseline, [fixtureMaxSlots]runtime.Object, error) {
+	floorDiagnostic := beginPhaseFloorDiagnostic(ctx)
 	var fixtures [fixtureMaxSlots]runtime.Object
 	zero := fixturePhaseBaseline{}
 	if f == nil || o == nil || o.Journal() == nil || !o.Journal().MatchesJournalBytes(f.document.Journal) || o.Journal().ResourceVersion() != f.document.JournalResourceVersion {
@@ -420,6 +421,7 @@ func (f *fixtureLedger) accountPhaseWithAccounts(ctx context.Context, o *install
 	}
 	if floor.validate(o.Journal().Anchor().Namespace) != nil || !fixtureAccountsRecipeMatches(f.document, &floor) || (f.document.Recipe == fixtureRecipeV3) != (accounts != nil) {
 		traceAdmissionPhase(ctx, admissionPhaseRowFloor, -1)
+		floorDiagnostic.record(phaseFloorInput, 0, 0)
 		return zero, fixtures, ErrFixtures
 	}
 	addresses := map[installstate.Key]int{}
@@ -516,8 +518,13 @@ func (f *fixtureLedger) accountPhaseWithAccounts(ctx context.Context, o *install
 		phase.Leaders = append(phase.Leaders, leader)
 	}
 	sortFixtureWorlds(phase.Rows)
-	if phase.validate(o.Journal().Anchor().Namespace) != nil || !samePhaseBaseline(floor, phase) {
+	if validationErr := phase.validate(o.Journal().Anchor().Namespace); validationErr != nil || !samePhaseBaseline(floor, phase) {
 		traceAdmissionPhase(ctx, admissionPhaseRowFloor, -1)
+		if validationErr != nil {
+			floorDiagnostic.record(phaseFloorCandidate, 0, 0)
+		} else {
+			floorDiagnostic.difference(floor, phase)
+		}
 		return zero, fixtures, ErrFixtures
 	}
 	return phase, fixtures, nil

@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -122,7 +123,8 @@ func TestAdmissionInitialPhaseConvergenceBeforeWALForPartialAndFullFamilies(t *t
 			ready := pods.Items[0].DeepCopy()
 			pods.Items[0].Status.Phase = corev1.PodPending
 			walChecks := 0
-			access, observations := controllerProofAccessWithRequests(t, ns, objects, lists, func(n int) {
+			var fixtureState sync.Mutex
+			access, observations := controllerProofAccessWithStateLock(t, ns, objects, lists, func(n int) {
 				if n == 2 {
 					pods.Items[0] = *ready.DeepCopy()
 					pods.Items[0].ResourceVersion = "11"
@@ -139,7 +141,7 @@ func TestAdmissionInitialPhaseConvergenceBeforeWALForPartialAndFullFamilies(t *t
 					t.Error("startup/election wait created fixture WAL before complete proof")
 				}
 				return false
-			})
+			}, &fixtureState)
 			access = convergenceDirectAccess(t, access)
 			store, err := installstate.New(access.Namespaces(), plan)
 			if err != nil {
@@ -180,7 +182,10 @@ func TestAdmissionInitialPhaseConvergenceBeforeWALForPartialAndFullFamilies(t *t
 				_, publicErr := a.phasePublicInventory(t.Context(), request)
 				t.Log("ready control public inventory", publicErr)
 			}
-			if err != nil || initial == nil || len(initial.baseline.Leaders) != familyCount || observations() < 4 || walChecks == 0 || time.Since(start) < 2*time.Second {
+			fixtureState.Lock()
+			observedWALChecks := walChecks
+			fixtureState.Unlock()
+			if err != nil || initial == nil || len(initial.baseline.Leaders) != familyCount || observations() < 4 || observedWALChecks == 0 || time.Since(start) < 2*time.Second {
 				t.Fatal("complete pre-WAL original startup/election convergence failed", err, observations())
 			}
 			fresh, err := store.Load(t.Context(), s.Anchor())
@@ -199,6 +204,7 @@ func TestAdmissionInitialPhaseConvergenceBeforeWALForPartialAndFullFamilies(t *t
 				traceAdmission(traceCtx, admissionInitialPhase, -1)
 				var restore func()
 				want := "initial-whole-rows"
+				fixtureState.Lock()
 				if fault == "configured" {
 					want = "configured"
 					for key, object := range objects {
@@ -214,11 +220,14 @@ func TestAdmissionInitialPhaseConvergenceBeforeWALForPartialAndFullFamilies(t *t
 					pods.Items[0].Status.Phase = corev1.PodPending
 					restore = func() { pods.Items[0] = *original }
 				}
+				fixtureState.Unlock()
 				if restore == nil {
 					t.Fatal("initial proof diagnostic fault unavailable")
 				}
 				result, proofErr := a.captureInitialPhase(traceCtx, request)
+				fixtureState.Lock()
 				restore()
+				fixtureState.Unlock()
 				phase, slot := trace.phaseSnapshot()
 				if result != nil || proofErr != ErrAdmission || phase != want || slot != -1 {
 					t.Fatal("initial proof refusal lost its closed same-attempt diagnostic", fault, phase, slot)
@@ -236,14 +245,17 @@ func TestAdmissionInitialPhaseConvergenceBeforeWALForPartialAndFullFamilies(t *t
 			// both partial/full families, and unchanged original identity after
 			// renewal. No fixture WAL or mutation is allowed by this observation.
 			probeNow := time.Now().UTC().Truncate(time.Microsecond)
+			fixtureState.Lock()
 			for index := range leases.Items {
 				lease := &leases.Items[index]
 				lease.CreationTimestamp = metav1.NewTime(probeNow.Add(-2 * time.Second).Truncate(time.Second))
 				acquire := metav1.NewMicroTime(lease.CreationTimestamp.Add(-time.Second))
 				lease.Spec.AcquireTime = &acquire
 			}
+			fixtureState.Unlock()
 			var accepted *initialAdmissionPhase
 			for pass := range 2 {
+				fixtureState.Lock()
 				for index := range leases.Items {
 					lease := &leases.Items[index]
 					lease.ResourceVersion = []string{"102", "103"}[pass]
@@ -252,6 +264,7 @@ func TestAdmissionInitialPhaseConvergenceBeforeWALForPartialAndFullFamilies(t *t
 					managed := metav1.NewTime(probeNow.Add(-time.Second).Truncate(time.Second))
 					lease.ManagedFields[0].Time = &managed
 				}
+				fixtureState.Unlock()
 				observed, proofErr := a.captureInitialPhase(t.Context(), request)
 				if proofErr != nil || observed == nil || len(observed.baseline.Leaders) != familyCount || accepted != nil && !samePhaseBaseline(accepted.baseline, observed.baseline) {
 					t.Fatal("original client-acquired-before-server-created Lease refused complete initial proof", pass, proofErr)

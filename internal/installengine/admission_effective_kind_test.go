@@ -86,7 +86,7 @@ func proveKindAdmissionMatrix(t *testing.T, recipe string) {
 					if matrixErr != nil {
 						stage, index := trace.snapshot()
 						phase, slot := trace.phaseSnapshot()
-						t.Fatalf("full matrix driver refused: diagnostic stage=%s index=%d phase=%s slot=%d typed-metadata=%q", stage, index, phase, slot, trace.typedMetadataSnapshot())
+						t.Fatalf("full matrix driver refused: diagnostic stage=%s index=%d phase=%s slot=%d typed-metadata=%q phase-floor=%q", stage, index, phase, slot, trace.typedMetadataSnapshot(), trace.phaseFloorSnapshot())
 					}
 					retirement, err := engine.readFixtureRetirement(snapshot.Anchor())
 					if err != nil || retirement.record.State != fixtureRetired {
