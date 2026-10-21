@@ -11,6 +11,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"io"
 	"math/big"
@@ -50,7 +51,8 @@ func apiFixture(t *testing.T) (options, adminauth.Credential, *x509.CertPool) {
 	}
 	certificatePEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	config := options{
-		listen: "127.0.0.1:0", healthListen: "127.0.0.1:0", verifierFile: filepath.Join(directory, "auth.json"),
+		namespace: adminauth.CredentialNamespace,
+		listen:    "127.0.0.1:0", healthListen: "127.0.0.1:0", verifierFile: filepath.Join(directory, "auth.json"),
 		certificateFile: filepath.Join(directory, "tls.crt"), keyFile: filepath.Join(directory, "tls.key"),
 	}
 	for path, contents := range map[string][]byte{
@@ -178,7 +180,7 @@ func TestConfigurationHasNoInsecureOrInlineTokenOption(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{
-		{"--token=SECRET-CANARY"}, {"--insecure"}, {"--namespace=other"}, {"--tls-key-file="},
+		{"--token=SECRET-CANARY"}, {"--insecure"}, {"--namespace=UpperCase"}, {"--namespace="}, {"--namespace=../other"}, {"--tls-key-file="},
 		{"--listen=:8443", "--health-listen=:8443"}, {"SECRET-CANARY"},
 	} {
 		if _, err := parseOptions(args); err == nil {
@@ -190,6 +192,38 @@ func TestConfigurationHasNoInsecureOrInlineTokenOption(t *testing.T) {
 	_, _, _, err := newServers(config, io.Discard)
 	if err == nil || strings.Contains(err.Error(), "SECRET-CANARY") {
 		t.Fatal("TLS startup error not fail-closed/redacted")
+	}
+}
+
+func TestTrustedInstallationNamespaceIsNotRequestSelected(t *testing.T) {
+	defaults, err := parseOptions(nil)
+	if err != nil || defaults.namespace != adminauth.CredentialNamespace {
+		t.Fatal("default installation namespace drift")
+	}
+	selected, err := parseOptions([]string{"--namespace=arcadectl-isolated"})
+	if err != nil || selected.namespace != "arcadectl-isolated" {
+		t.Fatal("trusted namespace configuration rejected")
+	}
+	config, credential, _ := apiFixture(t)
+	config.namespace = selected.namespace
+	api, _, _, err := newServers(config, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/v1/auth/self", nil)
+	request.Header.Set("Authorization", "Bearer "+credential.Token)
+	request.Header.Set("X-Arcadectl-Namespace", "foreign-namespace")
+	response := httptest.NewRecorder()
+	api.Handler.ServeHTTP(response, request)
+	var self struct {
+		Namespace string `json:"namespace"`
+	}
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &self) != nil || self.Namespace != selected.namespace {
+		t.Fatal("request selected another installation namespace")
+	}
+	config.namespace = ""
+	if _, _, _, err := newServers(config, io.Discard); err == nil {
+		t.Fatal("empty configured namespace accepted")
 	}
 }
 

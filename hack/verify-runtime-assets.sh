@@ -40,7 +40,7 @@ done
 grep -Fq 'ARCADECTL_LIFECYCLE_SUITE=recovery' "$repository_root/hack/test-kind-recovery.sh"
 grep -Fq 'golang:1.26.0-alpine3.23@sha256:d4c4845f5d60c6a974c6000ce58ae079328d03ab7f721a0734277e69905473e5' "$controller_dockerfile"
 grep -Fq 'restic/restic@sha256:39d9072fb5651c80d75c7a811612eb60b4c06b32ffe87c2e9f3c7222e1797e76' "$controller_dockerfile"
-grep -Fq 'ENV GOTOOLCHAIN=local GOMAXPROCS=2 GOFLAGS="-mod=readonly -p=2"' "$controller_dockerfile"
+grep -Fq 'ENV GOTOOLCHAIN=local GOMAXPROCS=2 GOMEMLIMIT=1GiB GOFLAGS="-mod=readonly -p=2"' "$controller_dockerfile"
 grep -Fq 'go build -trimpath -ldflags="-s -w -buildid=" -o /out/arcadectl-backup-worker ./cmd/arcadectl-backup-worker' "$controller_dockerfile"
 grep -Fq 'go build -trimpath -ldflags="-s -w -buildid=" -o /out/arcadectl-restore-worker ./cmd/arcadectl-restore-worker' "$controller_dockerfile"
 grep -Fq 'go build -trimpath -ldflags="-s -w -buildid=" -o /out/arcadectl-backup-authorizer ./cmd/arcadectl-backup-authorizer' "$controller_dockerfile"

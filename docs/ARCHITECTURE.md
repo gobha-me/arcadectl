@@ -11,7 +11,7 @@ single-game or single-tenant domain assumption.
 
 ## Components
 
-The planned runtime contains three binaries in one Go module:
+The runtime contains three binaries in one Go module:
 
 1. `arcadectl`, a CLI that calls the authenticated API.
 2. `arcadectl-api`, the validation, authorization, and operation boundary.
@@ -42,8 +42,11 @@ gate only after the admitted executable shape exactly matches the stored Job
 template. Separate namespace-bound, fail-closed admission policies protect
 backup and restore workers. Restore preflight has repository-only authority;
 populate can mount only candidates, after a cold target fence and exact-claim
-authorization. The authenticated API and CLI remain planned rather than
-implemented.
+authorization. The authenticated API and CLI implement the single-admin
+control plane; hosted multi-user identity and the browser UI remain deferred.
+The future UI uses the same server-side API validation and authorization, not
+direct operator or Kubernetes access. See [ADMIN_API.md](ADMIN_API.md) and
+[CLI.md](CLI.md).
 
 ## Game adapter contract
 

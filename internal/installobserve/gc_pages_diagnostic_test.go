@@ -1,0 +1,200 @@
+// Copyright 2026 gobha-me
+// SPDX-License-Identifier: Apache-2.0
+
+package installobserve
+
+import (
+	"context"
+	"encoding/json"
+	"reflect"
+	"strings"
+	"testing"
+
+	coordinationv1 "k8s.io/api/coordination/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+)
+
+func TestWholeLeasePagesDiagnosticPreservesReadsBudgetGraphAndTarget(t *testing.T) {
+	for _, fault := range []string{"", "late-denial", "page-rv", "unknown-field", "row-identity", "row-owner", "cancelled", "expired"} {
+		t.Run(fault, func(t *testing.T) {
+			h := newGCHTTPFixture(t, "lease-last")
+			h.wholeFault = fault
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if fault == "cancelled" {
+				cancel()
+			} else if fault == "expired" {
+				var expire context.CancelFunc
+				ctx, expire = context.WithTimeout(t.Context(), 0)
+				defer expire()
+			}
+			plain, recorded := &coordinationv1.LeaseList{}, &coordinationv1.LeaseList{}
+			first := collection{"coordination.k8s.io/v1", "Lease", "leases", true, plain}
+			second := collection{"coordination.k8s.io/v1", "Lease", "leases", true, recorded}
+			firstGraph := newOwnerGraph(h.g.observer, nil, []collection{first})
+			secondGraph := newOwnerGraph(h.g.observer, nil, []collection{second})
+			firstBudget, secondBudget := maxCollectionBytes, maxCollectionBytes
+			firstErr := h.g.observer.collectList(ctx, first, firstGraph, &firstBudget)
+			firstReads, firstLists := h.wholeReads, h.lists
+			calls, reason := 0, pagesRefusalUnknown
+			secondErr := h.g.observer.collectListWithPagesDiagnostic(ctx, second, secondGraph, &secondBudget, func(value pagesRefusalReason) {
+				calls++
+				reason = value
+				h.g.recordPagesRefusal(value, ctx, t.Context())
+			})
+			if firstErr != secondErr || firstBudget != secondBudget || !reflect.DeepEqual(plain, recorded) || !reflect.DeepEqual(firstGraph, secondGraph) || h.wholeReads-firstReads != firstReads || h.lists-firstLists != firstLists {
+				t.Fatal("diagnostic altered requests, error, budget, graph or typed target")
+			}
+			wantCalls, wantReason, wantReads := 0, pagesRefusalUnknown, 2
+			wantSnapshot := "reason=unknown inner=unknown caller=unknown"
+			switch fault {
+			case "late-denial":
+				wantCalls, wantReason = 1, pagesRefusalFetch
+				wantSnapshot = "reason=fetch-unclassified inner=active caller=active"
+			case "page-rv":
+				wantCalls, wantReason = 1, pagesRefusalIdentity
+				wantSnapshot = "reason=identity inner=active caller=active"
+			case "cancelled", "expired":
+				wantCalls, wantReason, wantReads = 1, pagesRefusalContext, 0
+				wantSnapshot = "reason=context inner=cancelled caller=active"
+				if fault == "expired" {
+					wantSnapshot = "reason=context inner=deadline caller=active"
+				}
+			}
+			if calls != wantCalls || reason != wantReason || firstReads != wantReads || (firstErr == nil) != (fault == "") {
+				t.Fatal("callback or original refusal/read semantics changed", calls, firstReads)
+			}
+			if fault == "" && (firstBudget >= maxCollectionBytes || len(recorded.Items) != 129 || len(secondGraph.nodes) != 129) {
+				t.Fatal("successful full original collection was not preserved")
+			}
+			cancel() // a later cancellation must not rewrite refusal-time states
+			if h.g.DiagnosticPagesRefusal() != wantSnapshot {
+				t.Fatal("refusal snapshot changed after cancellation", h.g.DiagnosticPagesRefusal())
+			}
+		})
+	}
+}
+
+func TestGCPagesDiagnosticClosedStatesAndRefusalTimeSnapshot(t *testing.T) {
+	g := &GCReader{}
+	unknown := "reason=unknown inner=unknown caller=unknown"
+	if g.DiagnosticPagesRefusal() != unknown || (*GCReader)(nil).DiagnosticPagesRefusal() != unknown {
+		t.Fatal("absent diagnostics invented a refusal")
+	}
+	for reason := pagesRefusalContext; reason <= pagesRefusalPages; reason++ {
+		for inner := uint32(0); inner <= 3; inner++ {
+			for caller := uint32(0); caller <= 3; caller++ {
+				g.pagesDiagnostic.Store(uint32(reason) | inner<<8 | caller<<16)
+				want := "reason=" + pagesReasonLabel(reason) + " inner=" + pagesContextLabel(inner) + " caller=" + pagesContextLabel(caller)
+				if g.DiagnosticPagesRefusal() != want {
+					t.Fatal("finite state changed")
+				}
+			}
+		}
+	}
+	for _, value := range []uint32{0, 9, 255, 1 << 24, uint32(pagesRefusalFetch) | 4<<8, uint32(pagesRefusalFetch) | 4<<16} {
+		g.pagesDiagnostic.Store(value)
+		if g.DiagnosticPagesRefusal() != unknown {
+			t.Fatal("corrupt state exposed")
+		}
+	}
+	active := t.Context()
+	cancelled, cancel := context.WithCancel(active)
+	cancel()
+	expired, expire := context.WithTimeout(active, 0)
+	defer expire()
+	for _, tc := range []struct {
+		inner, caller context.Context
+		want          string
+	}{
+		{active, active, "inner=active caller=active"},
+		{cancelled, active, "inner=cancelled caller=active"},
+		{expired, active, "inner=deadline caller=active"},
+		{expired, expired, "inner=deadline caller=deadline"},
+		{cancelled, cancelled, "inner=cancelled caller=cancelled"},
+		{nil, nil, "inner=unknown caller=unknown"},
+	} {
+		g.recordPagesRefusal(pagesRefusalFetch, tc.inner, tc.caller)
+		if g.DiagnosticPagesRefusal() != "reason=fetch-unclassified "+tc.want {
+			t.Fatal("context state lost")
+		}
+	}
+	inner, finish := context.WithCancel(active)
+	g.recordPagesRefusal(pagesRefusalFetch, inner, active)
+	finish()
+	if g.DiagnosticPagesRefusal() != "reason=fetch-unclassified inner=active caller=active" {
+		t.Fatal("getter substituted deferred cancellation")
+	}
+	g.Collect(nil, nil)
+	if g.DiagnosticPagesRefusal() != unknown {
+		t.Fatal("invalid attempt retained previous refusal")
+	}
+}
+
+func TestGCPagesDiagnosticActualFetchRefusalAndSuccessReset(t *testing.T) {
+	h := newGCHTTPFixture(t, "denied")
+	discovery, err := h.g.Discover(t.Context(), h.f.anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation, err := h.g.Collect(t.Context(), discovery)
+	if observation != nil || err != ErrRead || h.g.DiagnosticStage() != "metadata-pages" || h.lists != 1 {
+		t.Fatal("actual fetch refusal changed requests/results", err, h.lists)
+	}
+	if got := h.g.DiagnosticPagesRefusal(); got != "reason=fetch-unclassified inner=active caller=active" || strings.Contains(got, "PRIVATE-GC-CANARY") {
+		t.Fatal("post-return diagnostic exposed error or deferred cancellation", got)
+	}
+	h.fault = ""
+	if observation, err = h.g.Collect(t.Context(), discovery); err != nil || observation == nil {
+		t.Fatal("successful complete collection changed", err)
+	}
+	if h.g.DiagnosticPagesRefusal() != "reason=unknown inner=unknown caller=unknown" {
+		t.Fatal("success retained old refusal")
+	}
+}
+
+func TestPagesDiagnosticBudgetChargingAndCancellationUnchanged(t *testing.T) {
+	page := &metav1.PartialObjectMetadataList{ListMeta: metav1.ListMeta{ResourceVersion: "rv"}}
+	body, err := json.Marshal(page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, size := range []int{-1, 0, len(body) - 1, len(body), len(body) + 1} {
+		budget, calls := size, 0
+		items, rv, err, reason := boundedPagesDiagnostic(t.Context(), func(_ context.Context, opts metav1.ListOptions) (runtime.Object, error) {
+			calls++
+			if opts != (metav1.ListOptions{Limit: pageLimit}) {
+				t.Fatal("request options changed")
+			}
+			return page, nil
+		}, &budget)
+		if calls != 1 {
+			t.Fatal("extra fetch")
+		}
+		if size < len(body) {
+			if items != nil || rv != "" || err != ErrRead || reason != pagesRefusalBytes || budget != size {
+				t.Fatal("failed bytes charged or evidence retained")
+			}
+		} else if err != nil || rv != "rv" || len(items) != 0 || reason != pagesRefusalUnknown || budget != size-len(body) {
+			t.Fatal("successful budget/result changed")
+		}
+	}
+	// Identity refusal still charges marshalled bytes before validating RV.
+	page.ResourceVersion = ""
+	body, _ = json.Marshal(page)
+	budget := maxCollectionBytes
+	_, _, err, reason := boundedPagesDiagnostic(t.Context(), func(context.Context, metav1.ListOptions) (runtime.Object, error) { return page, nil }, &budget)
+	if err != ErrRead || reason != pagesRefusalIdentity || budget != maxCollectionBytes-len(body) {
+		t.Fatal("validation moved before charging")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, _, err, reason = boundedPagesDiagnostic(ctx, func(context.Context, metav1.ListOptions) (runtime.Object, error) {
+		t.Fatal("cancelled request issued")
+		return nil, nil
+	}, &budget)
+	if err != ErrRead || reason != pagesRefusalContext {
+		t.Fatal("cancellation diagnostic changed refusal")
+	}
+}

@@ -1,0 +1,98 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: arcadectl-destroy-worker-gate
+  labels:
+    app.kubernetes.io/name: arcadectl-destroy-controller
+    app.kubernetes.io/part-of: arcadectl
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    resourceRules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      operations: ["CREATE", "UPDATE"]
+      resources: ["pods", "pods/ephemeralcontainers", "pods/resize"]
+      scope: Namespaced
+  variables:
+  - name: isDestroyWorker
+    expression: >-
+      (has(object.metadata.labels) &&
+       'app.kubernetes.io/managed-by' in object.metadata.labels &&
+       'app.kubernetes.io/name' in object.metadata.labels &&
+       object.metadata.labels['app.kubernetes.io/managed-by'] == 'arcadectl' &&
+       object.metadata.labels['app.kubernetes.io/name'] == 'destroy-worker') ||
+      (has(object.metadata.ownerReferences) &&
+       object.metadata.ownerReferences.exists(owner,
+         owner.apiVersion == 'batch/v1' && owner.kind == 'Job' &&
+         owner.name.startsWith('destroy-'))) ||
+      object.spec.serviceAccountName.startsWith('destroy-') ||
+      (oldObject != null && (
+        (has(oldObject.metadata.labels) &&
+         'app.kubernetes.io/managed-by' in oldObject.metadata.labels &&
+         'app.kubernetes.io/name' in oldObject.metadata.labels &&
+         oldObject.metadata.labels['app.kubernetes.io/managed-by'] == 'arcadectl' &&
+         oldObject.metadata.labels['app.kubernetes.io/name'] == 'destroy-worker') ||
+        (has(oldObject.metadata.ownerReferences) &&
+         oldObject.metadata.ownerReferences.exists(owner,
+           owner.apiVersion == 'batch/v1' && owner.kind == 'Job' &&
+           owner.name.startsWith('destroy-'))) ||
+        oldObject.spec.serviceAccountName.startsWith('destroy-')))
+  - name: newAuthorization
+    expression: >-
+      has(object.metadata.annotations) &&
+      'arcade.gobha.me/destroy-pod-authorized' in object.metadata.annotations
+        ? object.metadata.annotations['arcade.gobha.me/destroy-pod-authorized'] : ''
+  - name: oldAuthorization
+    expression: >-
+      oldObject != null && has(oldObject.metadata.annotations) &&
+      'arcade.gobha.me/destroy-pod-authorized' in oldObject.metadata.annotations
+        ? oldObject.metadata.annotations['arcade.gobha.me/destroy-pod-authorized'] : ''
+  validations:
+  - expression: >-
+      !variables.isDestroyWorker || !has(request.subResource) || request.subResource == ''
+    message: Arcadectl destroy worker Pod subresources are not mutable.
+  - expression: >-
+      !variables.isDestroyWorker || request.operation != 'CREATE' ||
+      (has(object.spec.schedulingGates) && size(object.spec.schedulingGates) == 1 &&
+       object.spec.schedulingGates[0].name == 'arcade.gobha.me/destroy-authorized' &&
+       variables.newAuthorization == '' &&
+       (!has(object.spec.nodeName) || object.spec.nodeName == ''))
+    message: Arcadectl destroy worker Pods must enter admission with exactly one execution gate and no authorization marker.
+  - expression: >-
+      !variables.isDestroyWorker || request.operation != 'UPDATE' ||
+      (object.metadata.labels == oldObject.metadata.labels &&
+       object.metadata.ownerReferences == oldObject.metadata.ownerReferences &&
+       object.spec.containers == oldObject.spec.containers &&
+       has(object.spec.initContainers) == has(oldObject.spec.initContainers) &&
+       (!has(object.spec.initContainers) || object.spec.initContainers == oldObject.spec.initContainers) &&
+       has(object.spec.volumes) == has(oldObject.spec.volumes) &&
+       (!has(object.spec.volumes) || object.spec.volumes == oldObject.spec.volumes) &&
+       object.spec.serviceAccountName == oldObject.spec.serviceAccountName &&
+       has(object.spec.automountServiceAccountToken) == has(oldObject.spec.automountServiceAccountToken) &&
+       (!has(object.spec.automountServiceAccountToken) ||
+        object.spec.automountServiceAccountToken == oldObject.spec.automountServiceAccountToken) &&
+       has(object.spec.activeDeadlineSeconds) == has(oldObject.spec.activeDeadlineSeconds) &&
+       (!has(object.spec.activeDeadlineSeconds) || object.spec.activeDeadlineSeconds == oldObject.spec.activeDeadlineSeconds) &&
+       has(object.spec.tolerations) == has(oldObject.spec.tolerations) &&
+       (!has(object.spec.tolerations) || object.spec.tolerations == oldObject.spec.tolerations) &&
+       has(object.spec.nodeSelector) == has(oldObject.spec.nodeSelector) &&
+       (!has(object.spec.nodeSelector) || object.spec.nodeSelector == oldObject.spec.nodeSelector) &&
+       has(object.spec.affinity) == has(oldObject.spec.affinity) &&
+       (!has(object.spec.affinity) || object.spec.affinity == oldObject.spec.affinity))
+    message: Arcadectl destroy worker executable fields are immutable while the scheduling gate is removed.
+  - expression: >-
+      !variables.isDestroyWorker || request.operation != 'UPDATE' ||
+      (has(object.spec.schedulingGates) == has(oldObject.spec.schedulingGates) &&
+       (!has(object.spec.schedulingGates) || object.spec.schedulingGates == oldObject.spec.schedulingGates) &&
+       variables.newAuthorization == variables.oldAuthorization) ||
+      (request.userInfo.username == 'system:serviceaccount:arcadectl-system:arcadectl-destroy-controller' &&
+       has(oldObject.spec.schedulingGates) && size(oldObject.spec.schedulingGates) == 1 &&
+       oldObject.spec.schedulingGates[0].name == 'arcade.gobha.me/destroy-authorized' &&
+       !has(object.spec.schedulingGates) && variables.oldAuthorization == '' &&
+       variables.newAuthorization == object.metadata.uid)
+    message: Only the dedicated Arcadectl destroy controller may authorize the exact destroy worker Pod.

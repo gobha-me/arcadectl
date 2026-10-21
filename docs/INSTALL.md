@@ -1,5 +1,10 @@
 # Install and uninstall
 
+The new offline signed-package tooling and its current development limits are
+documented in [Installation package development](INSTALLATION_PACKAGE.md).
+The evaluation workflow below remains separate from the integrated installer
+being developed in issue #27.
+
 This installation is for an isolated cluster evaluation. It installs separate
 ordinary and destroy controllers that watch only `arcadectl-system`. Creating the namespace and the
 cluster-scoped Arcadectl CRDs and admission policies require
