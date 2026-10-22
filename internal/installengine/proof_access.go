@@ -96,6 +96,28 @@ func (a *HTTPAccess) proofRequest(ctx context.Context, method, path string, body
 	if err != nil || len(raw) == 0 || len(raw) > 1024*1024 || !utf8.Valid(raw) || !boundedJSON(raw) {
 		return nil, ErrRead
 	}
+	// Keep every fresh HTTP, size, UTF-8 and JSON guard above. Only conversion
+	// of an identical complete body can be reused, never a live observation.
+	// Strict unmarshalling merges omitted fields into prefilled outputs; those
+	// callers must retain the original decoder instead of replacing their value.
+	if target, ok := out.(*metav1.APIResourceList); ok && target != nil && reflect.DeepEqual(*target, metav1.APIResourceList{}) && method == http.MethodGet && body == nil {
+		gv := strings.TrimPrefix(path, "/apis/")
+		if path == "/api/v1" {
+			gv = "v1"
+		}
+		if fixed, e := discoveryPath(gv); e == nil && fixed == path {
+			result, fields, e := a.discoveryReplies.decode(gv, raw)
+			if e != nil {
+				return nil, e
+			}
+			*target = *result
+			return fields, nil
+		}
+	}
+	return strictProofReply(raw, out)
+}
+
+func strictProofReply(raw []byte, out any) (map[string]any, error) {
 	strictErrors, err := strictjson.UnmarshalStrict(raw, out)
 	if err != nil || len(strictErrors) != 0 {
 		return nil, ErrRead
@@ -180,6 +202,12 @@ func (a *HTTPAccess) discover(ctx context.Context, gv string) (*metav1.APIResour
 	if err != nil {
 		return nil, err
 	}
+	accepted := false
+	defer func() {
+		if !accepted && a != nil {
+			a.discoveryReplies.clear(gv)
+		}
+	}()
 	var result metav1.APIResourceList
 	fields, err := a.proofRequest(ctx, http.MethodGet, path, nil, &result)
 	if err != nil || result.Kind != "APIResourceList" || result.GroupVersion != gv || len(result.APIResources) == 0 || len(result.APIResources) > 2048 {
@@ -223,6 +251,7 @@ func (a *HTTPAccess) discover(ctx context.Context, gv string) (*metav1.APIResour
 			verbs[verb] = true
 		}
 	}
+	accepted = true
 	return result.DeepCopy(), nil
 }
 

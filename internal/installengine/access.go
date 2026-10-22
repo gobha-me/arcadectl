@@ -72,6 +72,9 @@ type HTTPAccess struct {
 	// Pure decoding of complete fresh named public GET replies only. Never a
 	// cached observation, permission, identity, health or mutation result.
 	publicReplies *publicReplyMemo
+	// Pure conversion of identical, freshly fetched fixed discovery replies.
+	// Independent per constructor; never an authorization or discovery verdict.
+	discoveryReplies *discoveryReplyMemo
 	// Per-parent zeroed scratch for eligible fresh public GET bodies only.
 	responseBodies *publicBodyBuffers
 }
@@ -245,7 +248,7 @@ func newHTTPAccessWithPool(config *rest.Config, direct bool, inherited http.Roun
 		return nil, ErrInvalid
 	}
 	h.CheckRedirect = func(*http.Request, []*http.Request) error { return ErrRead }
-	a := &HTTPAccess{client: h, base: u, native: native, frozen: frozen, direct: direct, pool: pool, publicReplies: &publicReplyMemo{}, responseBodies: &publicBodyBuffers{}}
+	a := &HTTPAccess{client: h, base: u, native: native, frozen: frozen, direct: direct, pool: pool, publicReplies: &publicReplyMemo{}, discoveryReplies: &discoveryReplyMemo{}, responseBodies: &publicBodyBuffers{}}
 	if frozen.RateLimiter == nil && frozen.QPS == 0 && frozen.Burst == 0 {
 		a.readLimiter = &sdkWaitDiagnosticLimiter{RateLimiter: flowcontrol.NewTokenBucketRateLimiter(installerReadQPS, installerReadBurst)}
 	}
