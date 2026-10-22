@@ -1,0 +1,41 @@
+name: Installer performance lab
+
+on:
+  push:
+    branches: [perf/installer-ci-runtime]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installer-performance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  descriptor-membership:
+    name: Fresh authorization catalog controls and lookup measurements
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 1GiB
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify fresh request ownership and complete catalog refusals
+        run: go test -race -tags=kindinstall -p 1 -timeout=10m -v ./internal/installengine -run '^(TestBaselineDenied.*|TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate)$' -count=1
+      - name: Compare indexed and original linear lookup on identical catalogs
+        run: go test -p 1 -timeout=2m ./internal/installengine -run '^$' -bench '^BenchmarkBaselineDeniedDescriptorMembership$' -benchmem -benchtime=250ms -count=3
+      - name: Vet the changed engine and its test harness
+        run: go vet -tags=kindinstall -p 1 ./internal/installengine
+
+# This bounded, cluster-free experiment does not replace any required CI job
+# or certify lifecycle speedup. The complete native lifecycle remains in CI.

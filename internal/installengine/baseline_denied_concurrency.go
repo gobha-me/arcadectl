@@ -8,7 +8,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/gobha-me/arcadectl/internal/installrender"
 	authv1 "k8s.io/api/authorization/v1"
 )
 
@@ -22,7 +21,7 @@ const baselineReviewLanesPerActor = 4
 // All eight lanes JOIN before the caller's unchanged original, executable,
 // actor and rule closes, and before another catalog pass opens.
 func baselineDeniedReviews(ctx context.Context, scope *baselineDeniedScope, clients map[admissionActor]*HTTPAccess) error {
-	if ctx == nil || ctx.Err() != nil || scope == nil || !installrender.ValidNamespace(scope.namespace) || len(scope.rows) != 2 || len(clients) != 2 {
+	if ctx == nil || ctx.Err() != nil || !scope.valid() || len(clients) != 2 {
 		return ErrSecurityBaseline
 	}
 	actors := [2]admissionActor{ordinaryControllerActor, destroyControllerActor}
