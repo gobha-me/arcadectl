@@ -6,6 +6,8 @@ package installengine
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"net/http"
 	"testing"
 	"time"
 
@@ -137,13 +139,16 @@ func TestFixtureV3LateFinalAccountMutationRefused(t *testing.T) {
 				for slot := range f.document.Entries {
 					h.f.objects[slot] = fixtureResultExample(t, f, slot, fixtureStableResult, created)
 				}
+				before, identity := bytes.Clone(f.body), f.identity
 				trace := &admissionTrace{}
 				mutated := false
-				h.afterPublicGet = func(_ int) {
+				var floorBefore []byte
+				mutate := func() {
 					phase, _ := trace.phaseSnapshot()
 					if mutated || phase != boundary {
 						return
 					}
+					floorBefore, _ = json.Marshal(f.phaseFloor)
 					mutated = true
 					if kind == "fixture" {
 						h.f.objects[11].SetResourceVersion("999")
@@ -151,12 +156,46 @@ func TestFixtureV3LateFinalAccountMutationRefused(t *testing.T) {
 						h.extra[0].SetResourceVersion("999")
 					}
 				}
+				// configured has two opening Namespace GETs, two joined runtime
+				// LISTs, then two closing Namespace GETs. Inject AFTER its fourth
+				// Namespace reply, not a named public GET that no longer exists at
+				// this stage. The final account collection must still refuse it.
+				base := h.f.actor.fixtureHandler
+				namespaceReads, runtimeLists := 0, 0
+				h.f.actor.fixtureHandler = func(w http.ResponseWriter, r *http.Request) bool {
+					handled := base(w, r)
+					phase, _ := trace.phaseSnapshot()
+					if phase == "final-configured" && r.Method == http.MethodGet {
+						if testRuntimeConfigurationRequest(r) {
+							runtimeLists++
+						}
+						if r.URL.Path == "/api/v1/namespaces/"+h.f.actor.request.Snapshot.Anchor().Namespace {
+							namespaceReads++
+							if boundary == "final-configured" && namespaceReads == 4 {
+								if runtimeLists != 2 {
+									t.Error("injection preceded both complete runtime LISTs")
+								}
+								mutate()
+							}
+						}
+					}
+					return handled
+				}
+				h.afterPublicGet = func(_ int) {
+					if boundary == "final-public" {
+						mutate()
+					}
+				}
 				observation, err := h.f.wire.observePhase(context.WithValue(t.Context(), admissionTraceKey{}, trace))
-				if !mutated {
+				if !mutated || namespaceReads != 4 || runtimeLists != 2 || bytes.Equal(floorBefore, []byte("null")) {
 					t.Fatal("late account control did not reach final boundary")
 				}
 				if err != ErrFixtures || observation != nil {
 					t.Fatal("late final account mutation escaped complete observation")
+				}
+				floorAfter, _ := json.Marshal(f.phaseFloor)
+				if !bytes.Equal(floorBefore, floorAfter) || !bytes.Equal(before, f.body) || identity != f.identity || h.f.creates != 0 || h.f.deletes != 0 || h.f.seeds != 0 || h.f.previews != 0 || f.behaviorCompletion != nil || f.ackSlot != -1 || f.effectSlot != -1 {
+					t.Fatal("late refusal changed accepted floor, WAL or effect capabilities")
 				}
 			})
 		}
