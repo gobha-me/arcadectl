@@ -55,7 +55,7 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Verify complete passes, original closures and local durability with race detection
-        run: go test -race -tags=kindinstall -p 1 -timeout=15m -v ./internal/installengine -run '^TestFixturePhase(ReadBarrier.*|NamedScan.*|ReadPass.*|PublicOriginalDrift.*|FinalActorRead.*|OriginalWarmRenewal.*|WarmRenewalCompletedFloor.*)$' -count=1
+        run: go test -race -tags=kindinstall -p 1 -timeout=15m -v ./internal/installengine -run '^(TestFixturePhase(ReadBarrier.*|NamedScan.*|ReadPass.*|PublicOriginalDrift.*|FinalActorRead.*|OriginalWarmRenewal.*|WarmRenewalCompletedFloor.*)|TestFixtureV3.*)$' -count=1
 
   native-configuration:
     name: Native v3 cold matrix (${{ matrix.revision }})
