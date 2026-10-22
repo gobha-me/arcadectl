@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -135,7 +136,26 @@ func TestBaselineMetadataWholeProvider(t *testing.T) {
 			reads, reviews := map[installstate.Key]int{}, map[installstate.Key]int{}
 			var active, changed bool
 			var namespaceReads, mutations int
+			pinFault := mode == "create-partial-pass-failure" || mode == "create-second-pass-failure"
+			pinPass := 1
+			if mode == "create-second-pass-failure" {
+				pinPass = 2
+			}
+			pinAcquired := make(chan struct{})
+			var pinFaultGets atomic.Int32
+			pinFaultArmed := false
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// The refusal must occur AFTER the pending CREATE reader owns
+				// its receipt, not merely win an early-cancellation race. Wait
+				// outside mu so its sibling can finish acquiring that ownership.
+				if pinFault && r.Method == http.MethodGet && paths[r.URL.Path] == (installstate.Key{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "Role", Namespace: d.Namespace, Name: "arcadectl-destroy-admin"}) && int(pinFaultGets.Add(1)) == pinPass {
+					select {
+					case <-pinAcquired:
+					case <-r.Context().Done():
+						w.WriteHeader(http.StatusServiceUnavailable)
+						return
+					}
+				}
 				mu.Lock()
 				defer mu.Unlock()
 				w.Header().Set("Content-Type", "application/json")
@@ -239,6 +259,15 @@ func TestBaselineMetadataWholeProvider(t *testing.T) {
 					return
 				}
 				reads[selected]++
+				// Literal lane7 reaches Service15 only AFTER Service7's
+				// classifier acquired its independent protected receipt pin.
+				if pinFault && selected.Kind == "Service" && selected.Name == "arcadectl-destroy-admin" && reads[selected] == pinPass {
+					if testBaselineReceiptDescriptors(t, "create-"+d.Pending.CreateNonce+".json") != pinPass {
+						t.Error("partial-pass refusal did not retain its acquired receipt owners")
+					}
+					pinFaultArmed = true
+					close(pinAcquired)
+				}
 				if selected.Kind == "Role" && selected.Name == "arcadectl-destroy-admin" && (mode == "create-partial-pass-failure" || mode == "create-second-pass-failure" && reads[selected] == 2) {
 					changed = true
 					w.WriteHeader(http.StatusInternalServerError)
@@ -334,7 +363,8 @@ func TestBaselineMetadataWholeProvider(t *testing.T) {
 			mu.Lock()
 			active = true
 			mu.Unlock()
-			ctx := t.Context()
+			ctx, stop := context.WithTimeout(t.Context(), 10*time.Second)
+			defer stop()
 			if mode == "cancelled" {
 				var cancel context.CancelFunc
 				ctx, cancel = context.WithCancel(ctx)
@@ -366,6 +396,9 @@ func TestBaselineMetadataWholeProvider(t *testing.T) {
 			}
 			mu.Lock()
 			defer mu.Unlock()
+			if pinFault && !pinFaultArmed {
+				t.Fatal("partial-pass receipt cleanup was never exercised after acquisition")
+			}
 			if mutations != 0 || guard.calls.Load() != 0 || !bytes.Equal(snapshot.Bytes(), f.snapshot.Bytes()) {
 				t.Fatal("metadata collector mutated, recursed or changed original journal")
 			}

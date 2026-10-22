@@ -6,6 +6,7 @@ package installengine
 import (
 	"context"
 	"reflect"
+	"sync"
 	"time"
 
 	"github.com/gobha-me/arcadectl/internal/installstate"
@@ -99,13 +100,15 @@ func (c *ClusterSecurityBaseline) originalMetadataPass(ctx context.Context, snap
 		return nil, ErrSecurityBaseline
 	}
 	d := snapshot.Document()
-	observed := &baselineMetadata{snapshot: snapshot, objects: make(map[installstate.Key]*baselineOriginalObject, 16)}
-	transferred := false
-	defer func() {
-		if !transferred {
-			observed.release()
-		}
-	}()
+	// Discovery is private to this pass and frozen before workers launch. It
+	// carries no authorization verdict: EACH row still validates that discovery
+	// and performs its own fresh named administrator review before its exact GET.
+	type metadataRead struct {
+		key        installstate.Key
+		permission proofPermission
+		discovery  *metav1.APIResourceList
+	}
+	var frozen []metadataRead
 	discoveries := map[string]*metav1.APIResourceList{}
 	for _, key := range baselineMetadataKeys(d.Namespace) {
 		permission, err := publicPermission(key, "get")
@@ -117,10 +120,29 @@ func (c *ClusterSecurityBaseline) originalMetadataPass(ctx context.Context, snap
 			discovery, err = c.access.discover(ctx, key.APIVersion)
 			discoveries[key.APIVersion] = discovery
 		}
-		if err != nil || discovery == nil || !discoveredPermission(discovery, permission) || c.access.authorize(ctx, permission.spec) != nil {
+		if err != nil || discovery == nil {
 			return nil, ErrSecurityBaseline
 		}
-		live, err := c.access.Get(ctx, key)
+		frozen = append(frozen, metadataRead{key, permission, discovery})
+	}
+	results := make([]*baselineOriginalObject, len(frozen))
+	transferred := false
+	defer func() {
+		if !transferred {
+			// Run only after ALL workers join. A successful Pending CREATE row
+			// owns its independent receipt even when a sibling later refuses.
+			for _, object := range results {
+				object.release()
+			}
+		}
+	}()
+	readCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	read := func(row metadataRead) (*baselineOriginalObject, error) {
+		if !discoveredPermission(row.discovery, row.permission) || c.access.authorize(readCtx, row.permission.spec) != nil {
+			return nil, ErrSecurityBaseline
+		}
+		live, err := c.access.Get(readCtx, row.key)
 		if err != nil {
 			if !apierrors.IsNotFound(err) {
 				return nil, ErrSecurityBaseline
@@ -129,11 +151,41 @@ func (c *ClusterSecurityBaseline) originalMetadataPass(ctx context.Context, snap
 		} else if live == nil {
 			return nil, ErrSecurityBaseline
 		}
-		original, err := c.engine.originalBaselineObject(d, key, live)
+		return c.engine.originalBaselineObject(d, row.key, live)
+	}
+	var failures [baselineReadLanes]error
+	var readers sync.WaitGroup
+	for lane := range baselineReadLanes {
+		readers.Go(func() {
+			for index := lane; index < len(frozen); index += baselineReadLanes {
+				if readCtx.Err() != nil {
+					failures[lane] = ErrSecurityBaseline
+					return
+				}
+				object, err := read(frozen[index])
+				results[index] = object // own any acquired receipt through join
+				if err != nil || readCtx.Err() != nil {
+					failures[lane] = ErrSecurityBaseline
+					cancel()
+					return
+				}
+			}
+		})
+	}
+	// No partial map, receipt release, next pass or closing remote fence may
+	// outrun a sibling authorization/GET/body/classifier operation.
+	readers.Wait()
+	if ctx.Err() != nil {
+		return nil, ErrSecurityBaseline
+	}
+	for _, err := range failures {
 		if err != nil {
 			return nil, ErrSecurityBaseline
 		}
-		observed.objects[key] = original
+	}
+	observed := &baselineMetadata{snapshot: snapshot, objects: make(map[installstate.Key]*baselineOriginalObject, len(frozen))}
+	for index, row := range frozen {
+		observed.objects[row.key] = results[index]
 	}
 	if _, err := lifecycle.original(ctx, snapshot); err != nil || ctx.Err() != nil {
 		return nil, ErrSecurityBaseline
