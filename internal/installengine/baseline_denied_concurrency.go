@@ -12,9 +12,15 @@ import (
 	authv1 "k8s.io/api/authorization/v1"
 )
 
-// Private catalog component, not runtime authority. Each fixed actor's frozen
-// catalog stays serial. Both lanes JOIN before the caller's unchanged original,
-// executable, actor and rule closes, and before another catalog pass opens.
+// Four fixed read-only lanes per original actor; never parallelize complete
+// witnesses, passes or probes. Two actors therefore open at most eight SSARs,
+// including response-body consumption, without multiplying other collectors.
+const baselineReviewLanesPerActor = 4
+
+// Private catalog component, not runtime authority. Rows are independent
+// nonpersistent evaluations, not a transaction or continuously absent grants.
+// All eight lanes JOIN before the caller's unchanged original, executable,
+// actor and rule closes, and before another catalog pass opens.
 func baselineDeniedReviews(ctx context.Context, scope *baselineDeniedScope, clients map[admissionActor]*HTTPAccess) error {
 	if ctx == nil || ctx.Err() != nil || scope == nil || !installrender.ValidNamespace(scope.namespace) || len(scope.rows) != 2 || len(clients) != 2 {
 		return ErrSecurityBaseline
@@ -38,15 +44,17 @@ func baselineDeniedReviews(ctx context.Context, scope *baselineDeniedScope, clie
 	var refused atomic.Bool
 	for i, client := range frozen {
 		rows := scope.rows[actors[i]]
-		group.Go(func() {
-			for _, row := range rows {
-				if reviews.Err() != nil || client.authorizationDecision(reviews, authv1.SelfSubjectAccessReviewSpec{ResourceAttributes: row.attributes()}, false) != nil {
-					refused.Store(true)
-					cancel()
-					return
+		for lane := range baselineReviewLanesPerActor {
+			group.Go(func() {
+				for index := lane; index < len(rows); index += baselineReviewLanesPerActor {
+					if reviews.Err() != nil || client.authorizationDecision(reviews, authv1.SelfSubjectAccessReviewSpec{ResourceAttributes: rows[index].attributes()}, false) != nil {
+						refused.Store(true)
+						cancel()
+						return
+					}
 				}
-			}
-		})
+			})
+		}
 	}
 	group.Wait()
 	if refused.Load() || ctx.Err() != nil {

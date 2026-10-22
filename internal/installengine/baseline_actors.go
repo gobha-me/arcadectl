@@ -202,30 +202,32 @@ func (actors *baselineActors) verifyContainment(ctx context.Context) error {
 	var clients [2]*HTTPAccess
 	for i, actor := range [2]admissionActor{ordinaryControllerActor, destroyControllerActor} {
 		client := actors.clients[actor]
-		if client == nil || client.actor == nil || client.actor.actor != actor || client.actor.namespace != actors.snapshot.Anchor().Namespace || client.actor.purpose != baselineAdmissionPurpose {
+		if client == nil || client.client == nil || client.base == nil || client.actor == nil || client.actor.actor != actor || client.actor.namespace != actors.snapshot.Anchor().Namespace || client.actor.username != "system:serviceaccount:"+actors.snapshot.Anchor().Namespace+":"+actor.account() || client.actor.purpose != baselineAdmissionPurpose || client.actor.deniedScope != nil {
 			return ErrSecurityBaseline
 		}
 		clients[i] = client
 	}
-	// Both fixed actors are validated before starting either lane. Keep every
-	// per-actor catalog serial; only the two independent catalogs overlap.
-	// Cancel a refused sibling, but JOIN both before returning or allowing the
-	// caller's closing witnesses/dry-run. No result is cached or retried.
+	// Both fixed actors are validated before starting any row. Only independent
+	// nonpersistent SSARs overlap: four fixed lanes per actor, eight in total.
+	// Keep the exact-operation review before this ENTIRE catalog and JOIN every
+	// row before closing witnesses/dry-run. No result is cached or retried.
 	permissions := baselineAuthorizationContainmentPermissions(actors.snapshot.Anchor().Namespace)
 	reviews, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var group sync.WaitGroup
 	var refused atomic.Bool
 	for _, client := range clients {
-		group.Go(func() {
-			for _, permission := range permissions {
-				if reviews.Err() != nil || client.authorizationDecision(reviews, permission, false) != nil {
-					refused.Store(true)
-					cancel()
-					return
+		for lane := range baselineReviewLanesPerActor {
+			group.Go(func() {
+				for index := lane; index < len(permissions); index += baselineReviewLanesPerActor {
+					if reviews.Err() != nil || client.authorizationDecision(reviews, permissions[index], false) != nil {
+						refused.Store(true)
+						cancel()
+						return
+					}
 				}
-			}
-		})
+			})
+		}
 	}
 	group.Wait()
 	if refused.Load() || ctx.Err() != nil {
