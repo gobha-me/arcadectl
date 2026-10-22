@@ -16,7 +16,8 @@ ENV GOTOOLCHAIN=local GOMAXPROCS=2 GOMEMLIMIT=1GiB GOFLAGS="-mod=readonly -p=2"
 
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+COPY hack/download-go-modules.sh /src/download-go-modules.sh
+RUN /bin/sh /src/download-go-modules.sh
 COPY api ./api
 COPY cmd ./cmd
 COPY internal ./internal

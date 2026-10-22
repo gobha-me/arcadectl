@@ -16,7 +16,27 @@ readonly materializer="$repository_root/internal/platform/kube/materialize.sh"
 readonly lifecycle_harness="$repository_root/hack/test-kind-lifecycle.sh"
 readonly factorio_harness="$repository_root/hack/test-kind-factorio.sh"
 readonly diagnostic_redaction="$repository_root/hack/redact-diagnostics.sed"
+readonly module_download="$repository_root/hack/download-go-modules.sh"
+readonly module_download_test="$repository_root/hack/test-download-go-modules.sh"
 
+sh -n "$module_download"
+bash -n "$module_download_test"
+bash "$module_download_test"
+grep -Fxq '!hack/download-go-modules.sh' "$repository_root/.dockerignore"
+for dependency_dockerfile in "$controller_dockerfile" "$api_dockerfile"; do
+  grep -Fxq 'COPY hack/download-go-modules.sh /src/download-go-modules.sh' "$dependency_dockerfile"
+  grep -Fxq 'RUN /bin/sh /src/download-go-modules.sh' "$dependency_dockerfile"
+  if ! awk '
+    /^FROM / { builder = ($NF == "build" && $(NF - 1) == "AS") }
+    /^COPY hack\/download-go-modules[.]sh / { copies++; if (!builder) exit 1 }
+    /^RUN \/bin\/sh \/src\/download-go-modules[.]sh$/ { runs++; if (!builder) exit 1 }
+    /^RUN go mod download$/ { exit 1 }
+    END { if (copies != 1 || runs != 1) exit 1 }
+  ' "$dependency_dockerfile"; then
+    echo "Dependency-download retries must remain exclusively in the builder stage" >&2
+    exit 1
+  fi
+done
 bash -n "$factorio_entrypoint"
 bash -n "$factorio_readiness"
 sh -n "$materializer"
