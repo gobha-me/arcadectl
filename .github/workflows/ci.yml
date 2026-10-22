@@ -271,12 +271,16 @@ jobs:
 
   install-engine-race:
     name: Installer engine race shard ${{ matrix.shard }}
-    needs: [installer-diagnostics]
+    # Let native foundations finish before the bulk worker burst. Failure is
+    # ordering-only here: every independent tree still runs unless cancelled.
+    needs: [installer-diagnostics, kind-install-gc, kind-install-admission, kind-install-admission-v3,
+            kind-install-auth, kind-install-baseline, kind-install-precontroller]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
+      max-parallel: 4
       matrix:
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
                 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
@@ -298,7 +302,8 @@ jobs:
 
   envtest:
     name: API-server lifecycle transitions ${{ matrix.part }}
-    needs: [installer-diagnostics]
+    needs: [installer-diagnostics, kind-install-gc, kind-install-admission, kind-install-admission-v3,
+            kind-install-auth, kind-install-baseline, kind-install-precontroller]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     # The full tagged engine union exceeds one 30m package process. Partition
@@ -306,6 +311,7 @@ jobs:
     timeout-minutes: 45
     strategy:
       fail-fast: false
+      max-parallel: 4
       matrix:
         part: [base-packages, "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31"]
     env:

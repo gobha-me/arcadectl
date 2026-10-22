@@ -20,6 +20,12 @@ func diagnosticOrderingOnly(needs []string, condition string, tolerate any) bool
 	return slices.Equal(needs, []string{"installer-diagnostics"}) && condition == "${{ !cancelled() }}" && tolerate == nil
 }
 
+// Bulk matrices wait for the SAME closed foundation set as the signed binary,
+// but failed foundations must not skip their independent whole-tree coverage.
+func bulkFoundationOrderingOnly(needs []string, condition string, tolerate any) bool {
+	return slices.Equal(needs, []string{"installer-diagnostics", "kind-install-gc", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-install-baseline", "kind-install-precontroller"}) && condition == "${{ !cancelled() }}" && tolerate == nil
+}
+
 func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	body, err := os.ReadFile("../../.github/workflows/ci.yml")
 	if err != nil {
@@ -35,8 +41,9 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 			TimeoutMinutes  int               `yaml:"timeout-minutes"`
 			Env             map[string]string `yaml:"env"`
 			Strategy        struct {
-				FailFast *bool `yaml:"fail-fast"`
-				Matrix   struct {
+				FailFast    *bool `yaml:"fail-fast"`
+				MaxParallel int   `yaml:"max-parallel"`
+				Matrix      struct {
 					Shard   []int    `yaml:"shard"`
 					Part    []string `yaml:"part"`
 					Profile []int    `yaml:"profile"`
@@ -86,10 +93,46 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	if t.Failed() {
 		t.FailNow()
 	}
-	for _, name := range []string{"kind-install-baseline", "kind-install-gc", "kind-install-precontroller", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-api", "kind-recovery", "install-engine-race", "envtest", "kind-lifecycle", "go-policy-checks"} {
+	for _, name := range []string{"kind-install-baseline", "kind-install-gc", "kind-install-precontroller", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-api", "kind-recovery", "kind-lifecycle", "go-policy-checks"} {
 		job := workflow.Jobs[name]
 		if !diagnosticOrderingOnly(job.Needs, job.If, job.ContinueOnError) {
 			t.Fatalf("CI job %s competes with early diagnostics or skips independent coverage after their failure", name)
+		}
+	}
+	for _, name := range []string{"install-engine-race", "envtest"} {
+		job := workflow.Jobs[name]
+		if !bulkFoundationOrderingOnly(job.Needs, job.If, job.ContinueOnError) {
+			t.Fatal("bulk matrix bypasses foundations or skips independent coverage on failure", name)
+		}
+	}
+	// Literal independent oracle, not copied from the binary job's mutable DAG.
+	bulkNeeds := []string{"installer-diagnostics", "kind-install-gc", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-install-baseline", "kind-install-precontroller"}
+	if !bulkFoundationOrderingOnly(bulkNeeds, "${{ !cancelled() }}", nil) {
+		t.Fatal("bulk ordering-only positive control refused")
+	}
+	for index := range bulkNeeds {
+		if bulkFoundationOrderingOnly(slices.Delete(slices.Clone(bulkNeeds), index, index+1), "${{ !cancelled() }}", nil) {
+			t.Fatal("bulk ordering accepted an omitted foundation", index)
+		}
+	}
+	for _, extra := range []string{"unrelated", "installer-diagnostics", "install-engine-race", "envtest", "kind-install-binary", "go-and-policy"} {
+		if bulkFoundationOrderingOnly(append(slices.Clone(bulkNeeds), extra), "${{ !cancelled() }}", nil) {
+			t.Fatal("bulk ordering accepted an extra, duplicate, self or sibling dependency", extra)
+		}
+	}
+	reordered := slices.Clone(bulkNeeds)
+	reordered[0], reordered[1] = reordered[1], reordered[0]
+	if bulkFoundationOrderingOnly(reordered, "${{ !cancelled() }}", nil) || bulkFoundationOrderingOnly(nil, "${{ !cancelled() }}", nil) {
+		t.Fatal("bulk ordering accepted a substituted or missing dependency list")
+	}
+	for _, condition := range []string{"", "${{ success() }}", "${{ always() }}", "${{ failure() }}"} {
+		if bulkFoundationOrderingOnly(bulkNeeds, condition, nil) {
+			t.Fatal("bulk ordering accepted a skip/bypass condition", condition)
+		}
+	}
+	for _, tolerate := range []any{true, "${{ true }}"} {
+		if bulkFoundationOrderingOnly(bulkNeeds, "${{ !cancelled() }}", tolerate) {
+			t.Fatal("bulk ordering tolerated failure")
 		}
 	}
 	if !diagnosticOrderingOnly([]string{"installer-diagnostics"}, "${{ !cancelled() }}", nil) {
@@ -123,7 +166,7 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	if !slices.Equal(races.Strategy.Matrix.Shard, wantShards) || len(races.Strategy.Matrix.Exclude) != 0 {
 		t.Fatal("compiled race test partitions omitted from CI")
 	}
-	if races.TimeoutMinutes != 30 || races.Strategy.FailFast == nil || *races.Strategy.FailFast || races.Env["GOMAXPROCS"] != "2" || races.Env["GOMEMLIMIT"] != "1GiB" {
+	if races.TimeoutMinutes != 30 || races.Strategy.FailFast == nil || *races.Strategy.FailFast || races.Strategy.MaxParallel != 4 || races.Env["GOMAXPROCS"] != "2" || races.Env["GOMEMLIMIT"] != "1GiB" {
 		t.Fatal("race workers changed their bounded budgets or cancelled sibling coverage")
 	}
 	raceRun := false
@@ -245,7 +288,7 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 	for i := range 32 {
 		wantEnvtestParts = append(wantEnvtestParts, strconv.Itoa(i))
 	}
-	if !slices.Equal(envtest.Strategy.Matrix.Part, wantEnvtestParts) || len(envtest.Strategy.Matrix.Exclude) != 0 || len(envtest.Strategy.Matrix.Shard) != 0 || len(envtest.Strategy.Matrix.Mode) != 0 || len(envtest.Strategy.Matrix.Profile) != 0 || envtest.Strategy.FailFast == nil || *envtest.Strategy.FailFast {
+	if !slices.Equal(envtest.Strategy.Matrix.Part, wantEnvtestParts) || len(envtest.Strategy.Matrix.Exclude) != 0 || len(envtest.Strategy.Matrix.Shard) != 0 || len(envtest.Strategy.Matrix.Mode) != 0 || len(envtest.Strategy.Matrix.Profile) != 0 || envtest.Strategy.FailFast == nil || *envtest.Strategy.FailFast || envtest.Strategy.MaxParallel != 4 {
 		t.Fatal("complete compiled envtest partition matrix omitted or sibling coverage cancelled")
 	}
 	wantEnvtestRun := "make test-envtest-part ENVTEST_PART='${{ matrix.part }}'"
