@@ -23,6 +23,9 @@
 # wrappers keep120 pending CI calibration. No test or native deadline changes.
 # Eight-lane authorization controls retain10 as an initial placement estimate,
 # including the new prelaunch tree; it is not a measured execution bound.
+# Runtime configuration-list whole-tree race PASS: 65a0bba/run39772740031,
+# changed-original members547.10s and strict bounded snapshots109.02s. Apply the
+# same15%+5-second rule above; these estimates change placement, not budgets.
 FuzzForwardFrameGuard 10
 TestAcknowledgedDeleteCancellationKeepsOriginalIntent 565
 TestAcknowledgedDeleteDiagnosticActualEarlyRefusals 10
@@ -80,9 +83,9 @@ TestAdmissionApplyingRecordedAPIConvergesBeforeSealing 20
 TestAdmissionConfigurationListsCancelAndJoinEveryReader 60
 TestAdmissionConfigurationListsFreezeEveryTemplateBeforeReads 10
 TestAdmissionConfigurationListsKeepMembershipAndClosingJoin 10
-TestAdmissionConfigurationListsRejectEveryChangedOriginalMember 480
+TestAdmissionConfigurationListsRejectEveryChangedOriginalMember 635
 TestAdmissionConfigurationListsRejectUnboundPurposeActorAndRoutes 10
-TestAdmissionConfigurationListsRequireCompleteStrictBoundedSnapshots 120
+TestAdmissionConfigurationListsRequireCompleteStrictBoundedSnapshots 135
 TestAdmissionConfigurationRequiresEveryOriginalSignedHealthyPolicy 165
 TestAdmissionControllerExecutionDoesNotInventScheduledReadiness 10
 TestAdmissionControllerFamiliesAllowOriginalAbsenceNotAdoption 10
