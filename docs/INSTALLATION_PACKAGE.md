@@ -525,6 +525,13 @@ phase floor advances. This private read boundary grants no effect, recovery,
 retirement or reusable authorization; unbound GC and Lease observations keep
 their full intermediate remote guards. These repeated observations are not an
 atomic namespace snapshot or a continuous authorization guarantee.
+The initial witness also opens the first pass, and a completed pass's closing
+witness opens the next. A final witness closes the final configuration, public
+inventory and (for V3) account observations. Redundant outer remote witnesses
+within these read-only intervals are coalesced; each replaced boundary retains
+the same three explicit local pin/durability/WAL checks. Warm renewal guards
+and unbound observations are unchanged; no successful witness is cached for a
+later phase or an effect.
 
 Within a warm pass, an original ready controller's Lease can renew between its
 metadata and whole-object LISTs. Only a complete forward-resource-version-only

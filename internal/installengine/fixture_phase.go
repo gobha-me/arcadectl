@@ -207,10 +207,16 @@ func (w *fixtureWire) observePhaseLocked(ctx context.Context) (*fixturePhaseObse
 	reads := &fixturePhaseRead{wire: w, body: body, identity: identity}
 	current := func() bool { return reads.current(ctx) == nil }
 	local := func() bool { return reads.local(ctx, w) == nil }
+	// Remove only the repeated remote witness inside this serialized read-only
+	// interval. Preserve ALL three explicit local checks of reads.current,
+	// including the middle fresh durability/WAL check and short-circuit order.
+	localBarrier := func() bool {
+		return reads.local(ctx, w) == nil && w.localCurrent() == nil && reads.local(ctx, w) == nil
+	}
 	a, request := w.actors.admission, w.actors.request
 	traceAdmissionPhase(ctx, admissionPhaseConfigured, -1)
 	before, err := a.configured(ctx, request)
-	if err != nil || !current() {
+	if err != nil || !localBarrier() {
 		return nil, ErrFixtures
 	}
 	floor := *worlds.Phase
@@ -227,7 +233,7 @@ func (w *fixtureWire) observePhaseLocked(ctx context.Context) (*fixturePhaseObse
 		// this closed GET/LIST-only interval every old boundary still checks
 		// pinned durable local evidence; no observation is accepted early.
 		traceAdmissionPhase(ctx, admissionPhaseOpening, -1)
-		if !current() {
+		if !localBarrier() {
 			return nil, ErrFixtures
 		}
 		traceAdmissionPhase(ctx, admissionPhaseTyped, -1)
@@ -316,7 +322,13 @@ func (w *fixtureWire) observePhaseLocked(ctx context.Context) (*fixturePhaseObse
 		}
 		traceAdmissionPhase(ctx, admissionPhasePublicAfter, -1)
 		publicAfter, err := a.phasePublicInventory(ctx, request)
-		if err != nil || !reflect.DeepEqual(phase.Public, publicAfter) || !current() {
+		// V3 closes remotely after its account collection below. V1/V2 have
+		// no such collection, so this remains their full remote pass closure.
+		closePublic := current
+		if accounts != nil {
+			closePublic = localBarrier
+		}
+		if err != nil || !reflect.DeepEqual(phase.Public, publicAfter) || !closePublic() {
 			return nil, ErrFixtures
 		}
 		if accounts != nil {
@@ -356,12 +368,16 @@ func (w *fixtureWire) observePhaseLocked(ctx context.Context) (*fixturePhaseObse
 	}
 	traceAdmissionPhase(ctx, admissionPhaseFinalConfigured, -1)
 	after, err := a.configured(ctx, request)
-	if err != nil || !sameAdmissionConfiguration(before, after) || !current() {
+	if err != nil || !sameAdmissionConfiguration(before, after) || !localBarrier() {
 		return nil, ErrFixtures
 	}
 	traceAdmissionPhase(ctx, admissionPhaseFinalPublic, -1)
 	publicAfter, err := a.phasePublicInventory(ctx, request)
-	if err != nil || !reflect.DeepEqual(accepted.phase.Public, publicAfter) || !current() {
+	closePublic := current
+	if acceptedAccounts != nil {
+		closePublic = localBarrier
+	}
+	if err != nil || !reflect.DeepEqual(accepted.phase.Public, publicAfter) || !closePublic() {
 		return nil, ErrFixtures
 	}
 	if acceptedAccounts != nil {
