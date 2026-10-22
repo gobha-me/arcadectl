@@ -16,6 +16,7 @@ import (
 	"github.com/gobha-me/arcadectl/internal/installstate"
 	admissionv1 "k8s.io/api/admissionregistration/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -177,6 +178,7 @@ func (a *ClusterAdmission) configured(ctx context.Context, request LifecycleChec
 	witness := &admissionConfiguration{anchor: request.Snapshot.Anchor(), objects: map[installstate.Key]admissionIdentity{}, policies: map[string]*admissionv1.ValidatingAdmissionPolicy{}, bindings: map[string]*admissionv1.ValidatingAdmissionPolicyBinding{}}
 	var frozen []admissionOriginalRead
 	seen := map[installstate.Key]bool{}
+	expected := [2]map[installstate.Key]bool{{}, {}}
 	var policyCount, bindingCount int
 	for _, resource := range request.Target.ResourceMetadata() {
 		key := installstate.Key{APIVersion: resource.APIVersion, Kind: resource.Kind, Namespace: resource.Namespace, Name: resource.Name}
@@ -190,68 +192,33 @@ func (a *ClusterAdmission) configured(ctx context.Context, request LifecycleChec
 		seen[key] = true
 		if key.Kind == "ValidatingAdmissionPolicy" {
 			policyCount++
+			expected[0][key] = true
 		} else {
 			bindingCount++
+			expected[1][key] = true
 		}
 		frozen = append(frozen, admissionOriginalRead{resource: *entry, template: template})
 	}
 	if policyCount != 6 || bindingCount != 6 {
 		return nil, ErrAdmission
 	}
-	type configuredObservation struct {
-		identity admissionIdentity
-		policy   *admissionv1.ValidatingAdmissionPolicy
-		binding  *admissionv1.ValidatingAdmissionPolicyBinding
-	}
-	observed := make([]configuredObservation, len(frozen))
-	var failures [admissionReadLanes]error
+	var collections [2]map[installstate.Key]*unstructured.Unstructured
+	var failures [2]error
 	readCtx, cancelReads := context.WithCancel(ctx)
 	defer cancelReads()
 	var readers sync.WaitGroup
-	for lane := range admissionReadLanes {
+	for group, kind := range []string{"ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding"} {
 		readers.Go(func() {
-			for index := lane; index < len(frozen); index += admissionReadLanes {
-				if readCtx.Err() != nil {
-					failures[lane] = ErrAdmission
-					return
-				}
-				entry := frozen[index]
-				live, err := p.access.Get(readCtx, entry.resource.Key)
-				if err != nil || live == nil || readCtx.Err() != nil {
-					failures[lane] = ErrAdmission
-					cancelReads()
-					return
-				}
-				matched, err := entry.template.MatchLiveAdmissionObject(live, entry.resource.UID)
-				if err != nil {
-					failures[lane] = ErrAdmission
-					cancelReads()
-					return
-				}
-				// Mixed upgrades match the recorded signed template, never only
-				// the target shape. Each worker owns all of this result slot.
-				result := configuredObservation{identity: admissionIdentity{UID: entry.resource.UID, ResourceVersion: live.GetResourceVersion(), TemplateSHA256: entry.template.Hash()}}
-				if entry.resource.Key.Kind == "ValidatingAdmissionPolicy" {
-					policy, ok := matched.(*admissionv1.ValidatingAdmissionPolicy)
-					if !ok || !healthyAdmissionPolicy(policy) {
-						failures[lane] = ErrAdmission
-						cancelReads()
-						return
-					}
-					result.policy = policy.DeepCopy()
-				} else {
-					binding, ok := matched.(*admissionv1.ValidatingAdmissionPolicyBinding)
-					if !ok {
-						failures[lane] = ErrAdmission
-						cancelReads()
-						return
-					}
-					result.binding = binding.DeepCopy()
-				}
-				observed[index] = result
+			var err error
+			collections[group], err = p.access.listRuntimeConfiguration(readCtx, kind, expected[group])
+			if err != nil {
+				failures[group] = ErrAdmission
+				cancelReads()
 			}
 		})
 	}
+	// Join both complete snapshots, including canceled body readers, before
+	// validation, original closure or any subsequent behavioral/effect boundary.
 	readers.Wait()
 	if ctx.Err() != nil {
 		return nil, ErrAdmission
@@ -261,20 +228,32 @@ func (a *ClusterAdmission) configured(ctx context.Context, request LifecycleChec
 			return nil, ErrAdmission
 		}
 	}
-	for index, entry := range frozen {
-		key, result := entry.resource.Key, observed[index]
-		if result.policy != nil {
-			if witness.policies[key.Name] != nil {
-				return nil, ErrAdmission
-			}
-			witness.policies[key.Name] = result.policy
-		} else {
-			if result.binding == nil || witness.bindings[key.Name] != nil {
-				return nil, ErrAdmission
-			}
-			witness.bindings[key.Name] = result.binding
+	for _, entry := range frozen {
+		key, group := entry.resource.Key, 0
+		if key.Kind == "ValidatingAdmissionPolicyBinding" {
+			group = 1
 		}
-		witness.objects[key] = result.identity
+		live := collections[group][key]
+		matched, err := entry.template.MatchLiveAdmissionObject(live, entry.resource.UID)
+		if err != nil {
+			return nil, ErrAdmission
+		}
+		// Recorded mixed active/target templates remain authority; the LIST
+		// selector and collection RV confer no original identity or health.
+		if group == 0 {
+			policy, ok := matched.(*admissionv1.ValidatingAdmissionPolicy)
+			if !ok || !healthyAdmissionPolicy(policy) || witness.policies[key.Name] != nil {
+				return nil, ErrAdmission
+			}
+			witness.policies[key.Name] = policy.DeepCopy()
+		} else {
+			binding, ok := matched.(*admissionv1.ValidatingAdmissionPolicyBinding)
+			if !ok || witness.bindings[key.Name] != nil {
+				return nil, ErrAdmission
+			}
+			witness.bindings[key.Name] = binding.DeepCopy()
+		}
+		witness.objects[key] = admissionIdentity{UID: entry.resource.UID, ResourceVersion: live.GetResourceVersion(), TemplateSHA256: entry.template.Hash()}
 	}
 	if len(witness.policies) != 6 || len(witness.bindings) != 6 || len(witness.objects) != 12 {
 		return nil, ErrAdmission

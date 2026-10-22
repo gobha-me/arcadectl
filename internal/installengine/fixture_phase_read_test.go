@@ -68,7 +68,7 @@ func TestFixturePhaseReadPassKeepsCompleteCollectionsAndNativeRefusals(t *testin
 						return true
 					}
 				}
-				if r.Method == http.MethodGet && r.URL.Query().Get("limit") == "128" {
+				if r.Method == http.MethodGet && r.URL.Query().Get("limit") == "128" && !testRuntimeConfigurationRequest(r) {
 					if strings.Contains(r.Header.Get("Accept"), "PartialObjectMetadataList") {
 						metadata[r.URL.Path]++
 						if fault == "metadata-forbidden" && h.gets != 0 {

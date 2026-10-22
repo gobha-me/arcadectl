@@ -26,6 +26,30 @@ type baselineDeniedDescriptor struct{ group, version, resource, subresource, nam
 type baselineDeniedScope struct {
 	namespace string
 	rows      map[admissionActor][]baselineDeniedDescriptor
+	index     map[admissionActor]map[baselineDeniedDescriptor]int
+}
+
+// valid checks the complete private row/index bijection before clients are
+// constructed and before either actor launches. Neither structure is mutated
+// after publication; the index is finite descriptor membership, never a cached
+// authorization verdict. Keep this linear check outside the per-request path.
+func (s *baselineDeniedScope) valid() bool {
+	if s == nil || !installrender.ValidNamespace(s.namespace) || len(s.rows) != 2 || len(s.index) != 2 {
+		return false
+	}
+	for _, actor := range []admissionActor{ordinaryControllerActor, destroyControllerActor} {
+		rows, index := s.rows[actor], s.index[actor]
+		if len(rows) == 0 || len(index) != len(rows) {
+			return false
+		}
+		for slot, row := range rows {
+			actual, ok := index[row]
+			if !ok || actual != slot || row.namespace != "" && row.namespace != s.namespace {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (r baselineDeniedDescriptor) attributes() *authv1.ResourceAttributes {
@@ -39,12 +63,10 @@ func (s *baselineDeniedScope) allows(identity actorWireIdentity, a *authv1.Resou
 		return false
 	}
 	row := baselineDeniedDescriptor{a.Group, a.Version, a.Resource, a.Subresource, a.Namespace, a.Name, a.Verb}
-	for _, allowed := range s.rows[identity.actor] {
-		if row == allowed {
-			return true
-		}
-	}
-	return false
+	rows, index := s.rows[identity.actor], s.index[identity.actor]
+	slot, ok := index[row]
+	return len(s.rows) == 2 && len(s.index) == 2 && len(rows) != 0 && len(index) == len(rows) &&
+		ok && slot >= 0 && slot < len(rows) && rows[slot] == row && (row.namespace == "" || row.namespace == s.namespace)
 }
 
 // Called only after the closed provider has proved original access and complete
@@ -167,7 +189,7 @@ func (e *Engine) baselineDeniedCatalog(d installstate.Document, access map[insta
 			}
 		}
 	}
-	scope := &baselineDeniedScope{namespace: ns, rows: map[admissionActor][]baselineDeniedDescriptor{}}
+	scope := &baselineDeniedScope{namespace: ns, rows: map[admissionActor][]baselineDeniedDescriptor{}, index: map[admissionActor]map[baselineDeniedDescriptor]int{}}
 	for _, actor := range []admissionActor{ordinaryControllerActor, destroyControllerActor} {
 		rows := map[baselineDeniedDescriptor]bool{}
 		add := func(group, resource, subresource, namespace, name string, verbs ...string) {
@@ -265,6 +287,13 @@ func (e *Engine) baselineDeniedCatalog(d installstate.Document, access map[insta
 			a, b := scope.rows[actor][i], scope.rows[actor][j]
 			return strings.Join([]string{a.group, a.version, a.resource, a.subresource, a.namespace, a.name, a.verb}, "\x00") < strings.Join([]string{b.group, b.version, b.resource, b.subresource, b.namespace, b.name, b.verb}, "\x00")
 		})
+		scope.index[actor] = make(map[baselineDeniedDescriptor]int, len(scope.rows[actor]))
+		for slot, row := range scope.rows[actor] {
+			scope.index[actor][row] = slot
+		}
+	}
+	if !scope.valid() {
+		return nil, ErrSecurityBaseline
 	}
 	return scope, nil
 }
@@ -283,7 +312,7 @@ func baselineProxyAliases(name string, ports []string) map[string]bool {
 // A separate SSAR-only client purpose. Historical mutation clients and the
 // caller-facing purpose constructor cannot select or extend this scope.
 func (a *HTTPAccess) baselineDeniedClient(actor admissionActor, scope *baselineDeniedScope) (*HTTPAccess, error) {
-	if scope == nil || len(scope.rows[actor]) == 0 {
+	if !scope.valid() || actor != ordinaryControllerActor && actor != destroyControllerActor {
 		return nil, ErrInvalid
 	}
 	return a.frozenActorClient(actor, scope.namespace, baselineDeniedReviewPurpose, scope)

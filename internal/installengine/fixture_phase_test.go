@@ -99,6 +99,9 @@ func fixturePhaseFactoryFromWireFactory(t *testing.T, newPreview func(*testing.T
 		add("arcade.gobha.me/v1alpha1", "GameDestroy", "gamedestroys/status", true)
 		f.actor.fixtureHandler = func(w http.ResponseWriter, r *http.Request) bool {
 			ns := f.actor.request.Snapshot.Anchor().Namespace
+			if testRuntimeConfigurationList(t, w, r, f.actor.v.f.access.objects) {
+				return true // configuration is not a typed/GC inventory pass
+			}
 			if r.Method == http.MethodGet && r.URL.Path == "/api/v1/namespaces/"+ns {
 				n, err := f.actor.v.f.access.client.CoreV1().Namespaces().Get(r.Context(), ns, metav1.GetOptions{})
 				if err != nil {

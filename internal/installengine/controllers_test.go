@@ -112,6 +112,9 @@ func controllerProofAccessWithStateLock(t *testing.T, ns *corev1.Namespace, obje
 		if beforeRequest != nil && beforeRequest(w, request) {
 			return
 		}
+		if testRuntimeConfigurationList(t, w, request, objects) {
+			return
+		}
 		if request.Method != http.MethodGet {
 			t.Error("readiness proof attempted mutation")
 		}

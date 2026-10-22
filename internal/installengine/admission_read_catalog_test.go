@@ -90,7 +90,7 @@ func testAdmissionReadCatalog(t *testing.T, kind string) (*actorFixture, [8][]st
 }
 
 func TestAdmissionNamedCatalogEightLanesPreserveWholeMembershipAndClosingJoin(t *testing.T) {
-	for _, kind := range []string{"access", "configuration", "public"} {
+	for _, kind := range []string{"access", "public"} {
 		t.Run(kind, func(t *testing.T) {
 			f, paths, opening, _, invoke := testAdmissionReadCatalog(t, kind)
 			var entered, release [8]chan struct{}
@@ -190,9 +190,6 @@ func TestAdmissionNamedCatalogEightLanesPreserveWholeMembershipAndClosingJoin(t 
 				t.Fatal("released catalog readers failed to join")
 			}
 			wantFences := opening
-			if kind == "configuration" {
-				wantFences += 2
-			}
 			if active.Load() != 0 || blocked.Load() != 0 || maximum.Load() != 8 || fences.Load() != wantFences {
 				t.Fatal("catalog changed lane bound, reader join or original fences")
 			}
@@ -206,7 +203,7 @@ func TestAdmissionNamedCatalogEightLanesPreserveWholeMembershipAndClosingJoin(t 
 }
 
 func TestAdmissionNamedCatalogEightLanesCancelAndJoinEverySibling(t *testing.T) {
-	for _, kind := range []string{"access", "configuration", "public"} {
+	for _, kind := range []string{"access", "public"} {
 		for _, mode := range []string{"request", "body"} {
 			for refused := range 8 {
 				t.Run(kind+"/"+mode+"/"+strconv.Itoa(refused), func(t *testing.T) {
@@ -219,7 +216,7 @@ func TestAdmissionNamedCatalogEightLanesCancelAndJoinEverySibling(t *testing.T) 
 }
 
 func TestAdmissionNamedCatalogEightLanesCallerCancellationJoinsEveryReader(t *testing.T) {
-	for _, kind := range []string{"access", "configuration", "public"} {
+	for _, kind := range []string{"access", "public"} {
 		t.Run(kind, func(t *testing.T) {
 			f, paths, opening, expectedError, invoke := testAdmissionReadCatalog(t, kind)
 			testNamedReadLaneRefusal(t, f.admission.prerequisites.access, paths[:], "caller", -1, opening, expectedError, invoke)
@@ -228,7 +225,7 @@ func TestAdmissionNamedCatalogEightLanesCallerCancellationJoinsEveryReader(t *te
 }
 
 func TestAdmissionNamedCatalogFreezesEveryTemplateBeforeReads(t *testing.T) {
-	for _, kind := range []string{"access", "configuration", "public"} {
+	for _, kind := range []string{"access", "public"} {
 		t.Run(kind, func(t *testing.T) {
 			f, paths, _, expectedError, invoke := testAdmissionReadCatalog(t, kind)
 			selected := paths[7][len(paths[7])-1]

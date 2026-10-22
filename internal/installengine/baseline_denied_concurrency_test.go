@@ -6,7 +6,6 @@ package installengine
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -72,14 +71,15 @@ func testDeniedLaneClients(t *testing.T, server *httptest.Server, scope *baselin
 	return clients
 }
 
-func TestBaselineDeniedTwoLanesKeepLiteralCatalogAndOrder(t *testing.T) {
+func TestBaselineDeniedEightLanesKeepLiteralCatalog(t *testing.T) {
 	scope, literal := testDeniedLaneScope(t)
-	entered := make(chan admissionActor, 2)
+	entered := make(chan admissionActor, 8)
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	var active, maximum atomic.Int32
 	var mu sync.Mutex
-	seen := map[admissionActor]int{}
+	seen := map[admissionActor]map[int]int{}
+	last := map[admissionActor][4]int{}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		actor := admissionActor(255)
 		for _, candidate := range []admissionActor{ordinaryControllerActor, destroyControllerActor} {
@@ -93,16 +93,34 @@ func TestBaselineDeniedTwoLanesKeepLiteralCatalogAndOrder(t *testing.T) {
 			w.WriteHeader(500)
 			return
 		}
+		row := -1
+		for index, attributes := range literal[actor] {
+			if reflect.DeepEqual(*review.Spec.ResourceAttributes, attributes) {
+				row = index
+				break
+			}
+		}
 		mu.Lock()
-		ordinal := seen[actor]
-		seen[actor]++
+		if seen[actor] == nil {
+			seen[actor] = map[int]int{}
+			last[actor] = [4]int{-4, -3, -2, -1}
+		}
+		seen[actor][row]++
+		count := seen[actor][row]
+		ordered := false
+		if row >= 0 {
+			indices := last[actor]
+			ordered = row == indices[row%4]+4
+			indices[row%4] = row
+			last[actor] = indices
+		}
 		mu.Unlock()
-		if ordinal >= len(literal[actor]) || !reflect.DeepEqual(*review.Spec.ResourceAttributes, literal[actor][ordinal]) {
-			t.Error("denied lane omitted, repeated or reordered a literal row")
+		if row < 0 || count != 1 || !ordered {
+			t.Error("denied lane repeated, escaped or reordered its literal row")
 			w.WriteHeader(500)
 			return
 		}
-		if ordinal == 0 {
+		if row < 4 {
 			entered <- actor
 			select {
 			case <-release:
@@ -134,23 +152,23 @@ func TestBaselineDeniedTwoLanesKeepLiteralCatalogAndOrder(t *testing.T) {
 			}
 		}
 	}()
-	first := admissionActor(255)
-	for range 2 {
+	started := map[admissionActor]int{}
+	for range 8 {
 		select {
 		case <-done:
 			joined = true
 			t.Fatal("valid private catalogs refused before both lanes opened")
 		case actor := <-entered:
-			if actor == first {
-				t.Fatal("one actor opened both lanes")
+			started[actor]++
+			if started[actor] > 4 {
+				t.Fatal("one actor exceeded four fixed lanes")
 			}
-			first = actor
 		case <-ctx.Done():
 			t.Fatal("denied catalogs remained serial")
 		}
 	}
-	if maximum.Load() != 2 {
-		t.Fatal("denied catalog did not open exactly two flights")
+	if maximum.Load() != 8 || started[ordinaryControllerActor] != 4 || started[destroyControllerActor] != 4 {
+		t.Fatal("denied catalog did not open four fixed flights per actor")
 	}
 	releaseOnce.Do(func() { close(release) })
 	select {
@@ -162,172 +180,93 @@ func TestBaselineDeniedTwoLanesKeepLiteralCatalogAndOrder(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("denied catalogs did not join")
 	}
-	if active.Load() != 0 || maximum.Load() != 2 {
+	if active.Load() != 0 || maximum.Load() != 8 {
 		t.Fatal("denied catalog exceeded lane bound or left a body unclosed")
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	for actor, rows := range literal {
-		if seen[actor] != len(rows) {
+		if len(seen[actor]) != len(rows) {
 			t.Fatal("denied catalog lost literal rows")
 		}
 	}
 }
 
-func TestBaselineDeniedTwoLanesRejectInvalidClientsBeforeLaunch(t *testing.T) {
+func TestBaselineDeniedEightLanesRejectInvalidClientsBeforeLaunch(t *testing.T) {
 	scope, _ := testDeniedLaneScope(t)
 	var requests atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests.Add(1); w.WriteHeader(500) }))
 	defer server.Close()
 	original := testDeniedLaneClients(t, server, scope)
-	for _, mode := range []string{"nil-client", "nil-http", "nil-base", "nil-actor", "actor", "namespace", "username", "purpose", "scope", "empty-rows", "missing-client", "extra-client", "nil-context", "cancelled-context", "nil-scope", "invalid-namespace"} {
-		t.Run(mode, func(t *testing.T) {
-			clients := map[admissionActor]*HTTPAccess{}
-			for actor, client := range original {
-				copyClient := *client
-				identity := *client.actor
-				copyClient.actor = &identity
-				clients[actor] = &copyClient
-			}
-			client := clients[destroyControllerActor]
-			ctx := t.Context()
-			selected := scope
-			rows := scope.rows[destroyControllerActor]
-			namespace := scope.namespace
-			defer func() { scope.rows[destroyControllerActor] = rows; scope.namespace = namespace }()
-			switch mode {
-			case "nil-client":
-				clients[destroyControllerActor] = nil
-			case "nil-http":
-				client.client = nil
-			case "nil-base":
-				client.base = nil
-			case "nil-actor":
-				client.actor = nil
-			case "actor":
-				client.actor.actor = ordinaryControllerActor
-			case "namespace":
-				client.actor.namespace = "foreign"
-			case "username":
-				client.actor.username = "PRIVATE-CANARY"
-			case "purpose":
-				client.actor.purpose = baselineAdmissionPurpose
-			case "scope":
-				copyScope := *scope
-				client.actor.deniedScope = &copyScope
-			case "empty-rows":
-				scope.rows[destroyControllerActor] = nil
-			case "missing-client":
-				delete(clients, destroyControllerActor)
-			case "extra-client":
-				clients[destroyAdministratorActor] = client
-			case "nil-context":
-				ctx = nil
-			case "cancelled-context":
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithCancel(ctx)
-				cancel()
-			case "nil-scope":
-				selected = nil
-			case "invalid-namespace":
-				scope.namespace = "PRIVATE-CANARY"
-			}
-			if baselineDeniedReviews(ctx, selected, clients) != ErrSecurityBaseline || requests.Load() != 0 {
-				t.Fatal("unfrozen sibling reached wire or changed refusal")
+	for _, broken := range []admissionActor{ordinaryControllerActor, destroyControllerActor} {
+		t.Run(broken.account(), func(t *testing.T) {
+			for _, mode := range []string{"nil-client", "nil-http", "nil-base", "nil-actor", "actor", "namespace", "username", "purpose", "scope", "empty-rows", "missing-client", "extra-client", "nil-context", "cancelled-context", "nil-scope", "invalid-namespace"} {
+				t.Run(mode, func(t *testing.T) {
+					clients := map[admissionActor]*HTTPAccess{}
+					for actor, client := range original {
+						copyClient := *client
+						identity := *client.actor
+						copyClient.actor = &identity
+						clients[actor] = &copyClient
+					}
+					client := clients[broken]
+					ctx := t.Context()
+					selected := scope
+					rows := scope.rows[broken]
+					namespace := scope.namespace
+					defer func() { scope.rows[broken] = rows; scope.namespace = namespace }()
+					switch mode {
+					case "nil-client":
+						clients[broken] = nil
+					case "nil-http":
+						client.client = nil
+					case "nil-base":
+						client.base = nil
+					case "nil-actor":
+						client.actor = nil
+					case "actor":
+						client.actor.actor = destroyAdministratorActor
+					case "namespace":
+						client.actor.namespace = "foreign"
+					case "username":
+						client.actor.username = "PRIVATE-CANARY"
+					case "purpose":
+						client.actor.purpose = baselineAdmissionPurpose
+					case "scope":
+						copyScope := *scope
+						client.actor.deniedScope = &copyScope
+					case "empty-rows":
+						scope.rows[broken] = nil
+					case "missing-client":
+						delete(clients, broken)
+					case "extra-client":
+						clients[destroyAdministratorActor] = client
+					case "nil-context":
+						ctx = nil
+					case "cancelled-context":
+						var cancel context.CancelFunc
+						ctx, cancel = context.WithCancel(ctx)
+						cancel()
+					case "nil-scope":
+						selected = nil
+					case "invalid-namespace":
+						scope.namespace = "PRIVATE-CANARY"
+					}
+					if baselineDeniedReviews(ctx, selected, clients) != ErrSecurityBaseline || requests.Load() != 0 {
+						t.Fatal("unfrozen sibling reached wire or changed refusal")
+					}
+				})
 			}
 		})
 	}
 }
 
-func TestBaselineDeniedTwoLanesCancelAndJoinRefusedSibling(t *testing.T) {
-	scope, literal := testDeniedLaneScope(t)
-	started, canceled, exited, release := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
-	var releaseOnce sync.Once
-	var ordinary, destroy, active, maximum atomic.Int32
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var review authv1.SelfSubjectAccessReview
-		if ordinary.Add(1) != 1 || r.Header.Get("Impersonate-User") != "system:serviceaccount:"+scope.namespace+":arcadectl-controller" || json.NewDecoder(r.Body).Decode(&review) != nil || review.Spec.ResourceAttributes == nil || !reflect.DeepEqual(*review.Spec.ResourceAttributes, literal[ordinaryControllerActor][0]) {
-			t.Error("refusal changed first literal ordinary review")
-			w.WriteHeader(500)
-			return
+func TestBaselineDeniedEightLanesCancelAndJoinRefusedSiblings(t *testing.T) {
+	testBaselineReviewRefusalJoins(t, func(t *testing.T, server *httptest.Server) (map[admissionActor]*HTTPAccess, func(context.Context) error) {
+		scope, _ := testDeniedLaneScope(t)
+		clients := testDeniedLaneClients(t, server, scope)
+		return clients, func(ctx context.Context) error {
+			return baselineDeniedReviews(ctx, scope, clients)
 		}
-		select {
-		case <-started:
-		case <-r.Context().Done():
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		review.Status.Allowed = true
-		_ = json.NewEncoder(w).Encode(review)
-	}))
-	t.Cleanup(server.Close)
-	clients := testDeniedLaneClients(t, server, scope)
-	client := clients[destroyControllerActor]
-	copyClient := *client.client
-	copyClient.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		if destroy.Add(1) != 1 {
-			t.Error("refused sibling replayed request")
-			return nil, errors.New("PRIVATE-CANARY")
-		}
-		close(started)
-		defer close(exited)
-		<-r.Context().Done()
-		close(canceled)
-		<-release
-		return nil, errors.New("PRIVATE-CANARY")
 	})
-	client.client = &copyClient
-	for _, c := range clients {
-		testContainmentTrackFlights(c, &active, &maximum)
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	done := make(chan error, 1)
-	go func() { done <- baselineDeniedReviews(ctx, scope, clients) }()
-	joined := false
-	defer func() {
-		cancel()
-		releaseOnce.Do(func() { close(release) })
-		if !joined {
-			select {
-			case <-done:
-			case <-time.After(2 * time.Second):
-				t.Error("refused lane leaked invocation")
-			}
-		}
-	}()
-	select {
-	case <-done:
-		joined = true
-		t.Fatal("valid private clients refused before cancellation control")
-	case <-canceled:
-	case <-ctx.Done():
-		t.Fatal("prohibited grant did not cancel sibling")
-	}
-	if ctx.Err() != nil || active.Load() != 1 || maximum.Load() != 2 {
-		t.Fatal("caller context canceled or flights exceeded bound")
-	}
-	select {
-	case <-done:
-		joined = true
-		t.Fatal("refusal returned before canceled sibling joined")
-	case <-time.After(200 * time.Millisecond):
-	}
-	releaseOnce.Do(func() { close(release) })
-	select {
-	case err := <-done:
-		joined = true
-		if err != ErrSecurityBaseline {
-			t.Fatal("joined refusal changed error")
-		}
-	case <-ctx.Done():
-		t.Fatal("released sibling did not join")
-	}
-	select {
-	case <-exited:
-	default:
-		t.Fatal("return outran sibling exit")
-	}
-	if ctx.Err() != nil || ordinary.Load() != 1 || destroy.Load() != 1 || active.Load() != 0 {
-		t.Fatal("joined refusal changed caller context, replayed or leaked flight")
-	}
 }

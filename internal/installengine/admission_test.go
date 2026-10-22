@@ -159,6 +159,9 @@ func TestAdmissionConfigurationRequiresEveryOriginalSignedHealthyPolicy(t *testi
 					}
 					return
 				}
+				if testRuntimeConfigurationList(t, w, r, v.f.access.objects) {
+					return
+				}
 				if r.Method != "GET" || r.URL.RawQuery != "" {
 					t.Error("configuration check mutated or cached")
 				}

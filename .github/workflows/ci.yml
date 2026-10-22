@@ -34,6 +34,10 @@ jobs:
         run: go test -race -p 1 -timeout=5m ./cmd/arcadectl-installer -count=1
       - name: Test pure diagnostic controls without a cluster
         run: go test -race -tags=kindinstall -p 1 -timeout=5m ./internal/installengine -run '^(TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate|TestEnvtestPartitionsCompleteCompiledUnion|TestEnvtestPartitionsRefuseInvalidInputs|TestEnvtestPartitionsAllPartsAndFailures|TestInstallerBinaryProgressCapture|TestInstallerBinaryRequestPipelineCapture|TestInstallerBinaryParentContext|TestLifecycleCostsBoundedCommandAndInvocationIsolation|TestLifecycleCostsConcurrentRefusalsAndCancellation)$' -count=1
+      - name: Test fresh discovery and bounded authorization ownership and refusals
+        run: go test -race -p 1 -timeout=5m -v ./internal/installengine -run '^(TestDiscoveryReplyMemo.*|TestProofDiscovery.*|TestBaselineContainment.*|TestBaselineDenied(EightLanes|Index).*)$' -count=1
+      - name: Measure pure conversion and descriptor membership costs
+        run: go test -p 1 -timeout=2m ./internal/installengine -run '^$' -bench '^(BenchmarkDiscoveryReplyConversion|BenchmarkBaselineDeniedDescriptorMembership)$' -benchmem -benchtime=250ms -count=1
       - name: Measure complete synthetic installer wrappers without raw profile artifacts
         run: |
           go test -race -p 1 -timeout=1m ./hack/profile-installer-wrappers -count=1
@@ -267,12 +271,16 @@ jobs:
 
   install-engine-race:
     name: Installer engine race shard ${{ matrix.shard }}
-    needs: [installer-diagnostics]
+    # Let native foundations finish before the bulk worker burst. Failure is
+    # ordering-only here: every independent tree still runs unless cancelled.
+    needs: [installer-diagnostics, kind-install-gc, kind-install-admission, kind-install-admission-v3,
+            kind-install-auth, kind-install-baseline, kind-install-precontroller]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
+      max-parallel: 4
       matrix:
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
                 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
@@ -294,7 +302,8 @@ jobs:
 
   envtest:
     name: API-server lifecycle transitions ${{ matrix.part }}
-    needs: [installer-diagnostics]
+    needs: [installer-diagnostics, kind-install-gc, kind-install-admission, kind-install-admission-v3,
+            kind-install-auth, kind-install-baseline, kind-install-precontroller]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     # The full tagged engine union exceeds one 30m package process. Partition
@@ -302,6 +311,7 @@ jobs:
     timeout-minutes: 45
     strategy:
       fail-fast: false
+      max-parallel: 4
       matrix:
         part: [base-packages, "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31"]
     env:
@@ -320,47 +330,18 @@ jobs:
       - name: Test API-server lifecycle transitions
         run: make test-envtest-part ENVTEST_PART='${{ matrix.part }}'
 
-  go-and-policy:
-    name: Go and policy
-    needs: [installer-diagnostics, install-engine-race, kind-install-admission, kind-install-admission-v3,
-            kind-install-binary, kind-install-baseline, kind-install-gc,
-            kind-install-precontroller, kind-install-auth, kind-api, kind-recovery, envtest]
-    # Do not turn failed/cancelled dependencies into a skipped passing gate.
-    # Whole-workflow cancellation can cancel this gate too; it is never green.
-    if: ${{ always() }}
+  go-policy-checks:
+    name: Go and policy checks
+    # These checks consume no native job artifacts. Run them alongside native
+    # proofs, including after diagnostic failure, not after the long lifecycle.
+    needs: [installer-diagnostics]
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       GOMAXPROCS: "2"
       GOMEMLIMIT: 1GiB
     steps:
-      - name: Require every installer race, full admission and signed binary profile
-        env:
-          INSTALLER_DIAGNOSTICS_RESULT: ${{ needs.installer-diagnostics.result }}
-          ENGINE_RACE_RESULT: ${{ needs.install-engine-race.result }}
-          INSTALL_ADMISSION_RESULT: ${{ needs.kind-install-admission.result }}
-          INSTALL_BINARY_RESULT: ${{ needs.kind-install-binary.result }}
-          INSTALL_BASELINE_RESULT: ${{ needs.kind-install-baseline.result }}
-          INSTALL_GC_RESULT: ${{ needs.kind-install-gc.result }}
-          INSTALL_ADMISSION_V3_RESULT: ${{ needs.kind-install-admission-v3.result }}
-          INSTALL_PRECONTROLLER_RESULT: ${{ needs.kind-install-precontroller.result }}
-          INSTALL_AUTH_RESULT: ${{ needs.kind-install-auth.result }}
-          API_RESULT: ${{ needs.kind-api.result }}
-          RECOVERY_RESULT: ${{ needs.kind-recovery.result }}
-          ENVTEST_RESULT: ${{ needs.envtest.result }}
-        run: |
-          test "$INSTALLER_DIAGNOSTICS_RESULT" = success
-          test "$ENGINE_RACE_RESULT" = success
-          test "$INSTALL_ADMISSION_RESULT" = success
-          test "$INSTALL_BINARY_RESULT" = success
-          test "$INSTALL_BASELINE_RESULT" = success
-          test "$INSTALL_GC_RESULT" = success
-          test "$INSTALL_ADMISSION_V3_RESULT" = success
-          test "$INSTALL_PRECONTROLLER_RESULT" = success
-          test "$INSTALL_AUTH_RESULT" = success
-          test "$API_RESULT" = success
-          test "$RECOVERY_RESULT" = success
-          test "$ENVTEST_RESULT" = success
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -417,6 +398,57 @@ jobs:
           test "$(docker image inspect --format '{{.Config.User}}' arcadectl-api:ci-first)" = '65532:65532'
           test "$(docker image inspect --format '{{json .Config.Entrypoint}}' arcadectl-api:ci-first)" = '["/arcadectl-api"]'
           test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' arcadectl-api:ci-first)" = "$(git rev-parse HEAD)"
+
+  go-and-policy:
+    name: Go and policy
+    needs: [installer-diagnostics, install-engine-race, kind-install-admission, kind-install-admission-v3,
+            kind-install-binary, kind-install-baseline, kind-install-gc,
+            kind-install-precontroller, kind-install-auth, kind-api, kind-recovery, envtest,
+            kind-lifecycle, go-policy-checks]
+    # Do not turn failed/cancelled dependencies into a skipped passing gate.
+    # Whole-workflow cancellation can cancel this gate too; it is never green.
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 1GiB
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Require every foundation, lifecycle and Go/policy proof
+        env:
+          INSTALLER_DIAGNOSTICS_RESULT: ${{ needs.installer-diagnostics.result }}
+          ENGINE_RACE_RESULT: ${{ needs.install-engine-race.result }}
+          INSTALL_ADMISSION_RESULT: ${{ needs.kind-install-admission.result }}
+          INSTALL_BINARY_RESULT: ${{ needs.kind-install-binary.result }}
+          INSTALL_BASELINE_RESULT: ${{ needs.kind-install-baseline.result }}
+          INSTALL_GC_RESULT: ${{ needs.kind-install-gc.result }}
+          INSTALL_ADMISSION_V3_RESULT: ${{ needs.kind-install-admission-v3.result }}
+          INSTALL_PRECONTROLLER_RESULT: ${{ needs.kind-install-precontroller.result }}
+          INSTALL_AUTH_RESULT: ${{ needs.kind-install-auth.result }}
+          API_RESULT: ${{ needs.kind-api.result }}
+          RECOVERY_RESULT: ${{ needs.kind-recovery.result }}
+          ENVTEST_RESULT: ${{ needs.envtest.result }}
+          LIFECYCLE_RESULT: ${{ needs.kind-lifecycle.result }}
+          GO_POLICY_CHECKS_RESULT: ${{ needs.go-policy-checks.result }}
+        run: |
+          test "$INSTALLER_DIAGNOSTICS_RESULT" = success
+          test "$ENGINE_RACE_RESULT" = success
+          test "$INSTALL_ADMISSION_RESULT" = success
+          test "$INSTALL_BINARY_RESULT" = success
+          test "$INSTALL_BASELINE_RESULT" = success
+          test "$INSTALL_GC_RESULT" = success
+          test "$INSTALL_ADMISSION_V3_RESULT" = success
+          test "$INSTALL_PRECONTROLLER_RESULT" = success
+          test "$INSTALL_AUTH_RESULT" = success
+          test "$API_RESULT" = success
+          test "$RECOVERY_RESULT" = success
+          test "$ENVTEST_RESULT" = success
+          test "$LIFECYCLE_RESULT" = success
+          test "$GO_POLICY_CHECKS_RESULT" = success
 
   kind-lifecycle:
     name: Kind lifecycle
