@@ -71,15 +71,15 @@ func testDeniedLaneClients(t *testing.T, server *httptest.Server, scope *baselin
 	return clients
 }
 
-func TestBaselineDeniedEightLanesKeepLiteralCatalog(t *testing.T) {
+func TestBaselineDeniedSixteenLanesKeepLiteralCatalog(t *testing.T) {
 	scope, literal := testDeniedLaneScope(t)
-	entered := make(chan admissionActor, 8)
+	entered := make(chan admissionActor, 16)
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	var active, maximum atomic.Int32
 	var mu sync.Mutex
 	seen := map[admissionActor]map[int]int{}
-	last := map[admissionActor][4]int{}
+	last := map[admissionActor][8]int{}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		actor := admissionActor(255)
 		for _, candidate := range []admissionActor{ordinaryControllerActor, destroyControllerActor} {
@@ -103,15 +103,15 @@ func TestBaselineDeniedEightLanesKeepLiteralCatalog(t *testing.T) {
 		mu.Lock()
 		if seen[actor] == nil {
 			seen[actor] = map[int]int{}
-			last[actor] = [4]int{-4, -3, -2, -1}
+			last[actor] = [8]int{-8, -7, -6, -5, -4, -3, -2, -1}
 		}
 		seen[actor][row]++
 		count := seen[actor][row]
 		ordered := false
 		if row >= 0 {
 			indices := last[actor]
-			ordered = row == indices[row%4]+4
-			indices[row%4] = row
+			ordered = row == indices[row%8]+8
+			indices[row%8] = row
 			last[actor] = indices
 		}
 		mu.Unlock()
@@ -120,7 +120,7 @@ func TestBaselineDeniedEightLanesKeepLiteralCatalog(t *testing.T) {
 			w.WriteHeader(500)
 			return
 		}
-		if row < 4 {
+		if row < 8 {
 			entered <- actor
 			select {
 			case <-release:
@@ -153,22 +153,22 @@ func TestBaselineDeniedEightLanesKeepLiteralCatalog(t *testing.T) {
 		}
 	}()
 	started := map[admissionActor]int{}
-	for range 8 {
+	for range 16 {
 		select {
 		case <-done:
 			joined = true
 			t.Fatal("valid private catalogs refused before both lanes opened")
 		case actor := <-entered:
 			started[actor]++
-			if started[actor] > 4 {
-				t.Fatal("one actor exceeded four fixed lanes")
+			if started[actor] > 8 {
+				t.Fatal("one actor exceeded eight fixed lanes")
 			}
 		case <-ctx.Done():
 			t.Fatal("denied catalogs remained serial")
 		}
 	}
-	if maximum.Load() != 8 || started[ordinaryControllerActor] != 4 || started[destroyControllerActor] != 4 {
-		t.Fatal("denied catalog did not open four fixed flights per actor")
+	if maximum.Load() != 16 || started[ordinaryControllerActor] != 8 || started[destroyControllerActor] != 8 {
+		t.Fatal("denied catalog did not open eight fixed flights per actor")
 	}
 	releaseOnce.Do(func() { close(release) })
 	select {
@@ -180,7 +180,7 @@ func TestBaselineDeniedEightLanesKeepLiteralCatalog(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("denied catalogs did not join")
 	}
-	if active.Load() != 0 || maximum.Load() != 8 {
+	if active.Load() != 0 || maximum.Load() != 16 {
 		t.Fatal("denied catalog exceeded lane bound or left a body unclosed")
 	}
 	mu.Lock()
@@ -192,7 +192,7 @@ func TestBaselineDeniedEightLanesKeepLiteralCatalog(t *testing.T) {
 	}
 }
 
-func TestBaselineDeniedEightLanesRejectInvalidClientsBeforeLaunch(t *testing.T) {
+func TestBaselineDeniedSixteenLanesRejectInvalidClientsBeforeLaunch(t *testing.T) {
 	scope, _ := testDeniedLaneScope(t)
 	var requests atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests.Add(1); w.WriteHeader(500) }))
@@ -261,8 +261,8 @@ func TestBaselineDeniedEightLanesRejectInvalidClientsBeforeLaunch(t *testing.T) 
 	}
 }
 
-func TestBaselineDeniedEightLanesCancelAndJoinRefusedSiblings(t *testing.T) {
-	testBaselineReviewRefusalJoins(t, func(t *testing.T, server *httptest.Server) (map[admissionActor]*HTTPAccess, func(context.Context) error) {
+func TestBaselineDeniedSixteenLanesCancelAndJoinRefusedSiblings(t *testing.T) {
+	testBaselineReviewRefusalJoins(t, 16, func(t *testing.T, server *httptest.Server) (map[admissionActor]*HTTPAccess, func(context.Context) error) {
 		scope, _ := testDeniedLaneScope(t)
 		clients := testDeniedLaneClients(t, server, scope)
 		return clients, func(ctx context.Context) error {

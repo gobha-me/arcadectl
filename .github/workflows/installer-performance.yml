@@ -40,7 +40,7 @@ jobs:
           set -euo pipefail
           controls_shard='${{ matrix.shard }}'
           [[ "$controls_shard" =~ ^[0-5]$ ]] || exit 2
-          controls_pattern='^(TestBaselineDenied.*|TestBaselineConfigurationLists.*|TestAdmissionConfiguration.*|TestAdmissionNamedCatalog.*|TestBootstrapAdmissionClosedProviderBracketsWholeObservationAndProbes|TestLifecycleConvergenceAdmissionWaitsForOriginalPolicyStatus|TestColdBoundProviderBracketsWorldPolicyAndJournalIdentity|TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe|TestActivationEpoch.*|TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate)$'
+          controls_pattern='^(TestBaselineDenied.*|TestBaselineContainment.*|TestBaselineConfigurationLists.*|TestAdmissionConfiguration.*|TestAdmissionNamedCatalog.*|TestBootstrapAdmissionClosedProviderBracketsWholeObservationAndProbes|TestLifecycleConvergenceAdmissionWaitsForOriginalPolicyStatus|TestColdBoundProviderBracketsWorldPolicyAndJournalIdentity|TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe|TestActivationEpoch.*|TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate)$'
           controls_listing=$(go test -race -tags=kindinstall -p 1 -list "$controls_pattern" ./internal/installengine)
           mapfile -t controls_all < <(printf '%s\n' "$controls_listing" | awk '/^Test[^[:space:]]*$/' | LC_ALL=C sort)
           if [[ ${#controls_all[@]} -eq 0 ]]; then
@@ -103,30 +103,51 @@ jobs:
       - name: Verify complete passes, original closures and local durability with race detection
         run: go test -race -tags=kindinstall -p 1 -timeout=15m -v ./internal/installengine -run '^(TestFixturePhase(ReadBarrier.*|NamedScan.*|ReadPass.*|PublicOriginalDrift.*|FinalActorRead.*|OriginalWarmRenewal.*|WarmRenewalCompletedFloor.*)|TestFixtureV3.*)$' -count=1
 
-  native-configuration:
-    name: Native v3 cold matrix (${{ matrix.revision }})
+  native-denied-catalog:
+    name: Same-runner native baseline runtime pilot
     needs: [descriptor-measurements, phase-barriers]
     runs-on: ubuntu-24.04
-    timeout-minutes: 50
-    strategy:
-      fail-fast: false
-      matrix:
-        revision: [before, candidate]
+    timeout-minutes: 90
     env:
       GOMAXPROCS: "2"
       GOMEMLIMIT: 1GiB
     steps:
-      - name: Check out exact comparison revision
+      - name: Check out unchanged baseline
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ matrix.revision == 'before' && '5e3347840153a2d9ad2fccf9571cce36bbe0b49c' || github.sha }}
+          ref: 9cc61f3a7478b65e0986566f5191cbd520637045
+          persist-credentials: false
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
-      - name: Run the complete unmodified native matrix on an owned disposable cluster
-        run: make test-kind-install-admission-v3 INSTALL_ADMISSION_PROFILE=137 INSTALL_ADMISSION_MODE=cold
+      # The standalone v3 admission matrix does not call the complete runtime
+      # baseline provider. This existing production-composition test does:
+      # ensureSecrets -> VerifyRetained -> current -> baseline Verify -> the
+      # full behavior proof, including both complete denied-catalog passes.
+      # Each invocation owns and cleans its own bounded disposable Kind cluster.
+      - name: Run unchanged native baseline runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 9cc61f3a7478b65e0986566f5191cbd520637045
+          /usr/bin/time -f 'native-baseline-before elapsed-seconds=%e user-seconds=%U system-seconds=%S max-rss-kib=%M exit=%x' make test-kind-install-precontroller INSTALL_PRECONTROLLER_PROFILE=137
+      - name: Check out exact candidate on the same runner
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Run candidate native baseline runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = '${{ github.sha }}'
+          git merge-base --is-ancestor 9cc61f3a7478b65e0986566f5191cbd520637045 HEAD
+          /usr/bin/time -f 'native-baseline-candidate elapsed-seconds=%e user-seconds=%U system-seconds=%S max-rss-kib=%M exit=%x' make test-kind-install-precontroller INSTALL_PRECONTROLLER_PROFILE=137
 
-# This bounded experiment does not replace any required CI job or certify
-# whole-lifecycle speedup. The complete signed lifecycle remains in CI.
+# This ordered same-runner pilot retains build/cache/order effects; a positive
+# result requires a reversed-order repeat before a speedup recommendation.
+# It does not replace any required CI job, exercise the complete signed binary
+# lifecycle, or certify whole-CI speedup. All required CI remains unchanged.

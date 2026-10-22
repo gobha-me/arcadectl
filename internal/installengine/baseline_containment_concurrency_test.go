@@ -251,7 +251,7 @@ func TestBaselineContainmentEightLanesRejectInvalidClientsBeforeLaunch(t *testin
 }
 
 func TestBaselineContainmentRefusalCancelsAndJoinsAllLanes(t *testing.T) {
-	testBaselineReviewRefusalJoins(t, func(t *testing.T, server *httptest.Server) (map[admissionActor]*HTTPAccess, func(context.Context) error) {
+	testBaselineReviewRefusalJoins(t, 8, func(t *testing.T, server *httptest.Server) (map[admissionActor]*HTTPAccess, func(context.Context) error) {
 		f := newFixture(t, false)
 		config := serverConfig(server)
 		config.BearerToken = "FAKE-REVIEW-JOIN"
@@ -297,8 +297,11 @@ func (*testBaselineReviewBlockedBody) Close() error { return nil }
 // Transport/body lifetime control only. Genuine TLS actor credentials, exact
 // request captures and every literal row are checked by the complete catalogs
 // above and in the denied-catalog test, not inferred from these hostile bodies.
-func testBaselineReviewRefusalJoins(t *testing.T, makeClients func(*testing.T, *httptest.Server) (map[admissionActor]*HTTPAccess, func(context.Context) error)) {
+func testBaselineReviewRefusalJoins(t *testing.T, flights int, makeClients func(*testing.T, *httptest.Server) (map[admissionActor]*HTTPAccess, func(context.Context) error)) {
 	t.Helper()
+	if flights != 8 && flights != 16 {
+		t.Fatal("refusal control requires an independently declared finite flight bound")
+	}
 	for _, mode := range []string{"grant", "missing-result", "evaluation-error", "wrong-spec", "parent-canceled"} {
 		t.Run(mode, func(t *testing.T) {
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -324,7 +327,7 @@ func testBaselineReviewRefusalJoins(t *testing.T, makeClients func(*testing.T, *
 			}))
 			t.Cleanup(server.Close)
 			clients, invoke := makeClients(t, server)
-			entered, canceled := make(chan struct{}, 8), make(chan struct{}, 8)
+			entered, canceled := make(chan struct{}, flights), make(chan struct{}, flights)
 			refuse, release := make(chan struct{}), make(chan struct{})
 			var releaseOnce sync.Once
 			var active, maximum, requests atomic.Int32
@@ -336,7 +339,7 @@ func testBaselineReviewRefusalJoins(t *testing.T, makeClients func(*testing.T, *
 					requests.Add(1)
 					first := ordinal.Add(1) == 1
 					// One ordinary request supplies the actual refused HTTPS
-					// reply; seven other complete response bodies stay blocked.
+					// reply; every other complete response body stays blocked.
 					if actor == ordinaryControllerActor && first {
 						entered <- struct{}{}
 						select {
@@ -369,22 +372,22 @@ func testBaselineReviewRefusalJoins(t *testing.T, makeClients func(*testing.T, *
 					}
 				}
 			}()
-			for range 8 {
+			for range flights {
 				select {
 				case <-entered:
 				case err := <-done:
 					joined = true
 					t.Fatal("catalog refused before all controlled readers started", err)
 				case <-ctx.Done():
-					t.Fatal("catalog failed to overlap eight fixed readers")
+					t.Fatal("catalog failed to overlap its declared fixed readers")
 				}
 			}
-			if active.Load() != 8 || maximum.Load() != 8 || requests.Load() != 8 {
+			if active.Load() != int32(flights) || maximum.Load() != int32(flights) || requests.Load() != int32(flights) {
 				t.Fatal("catalog changed its fixed request/body concurrency")
 			}
-			wantCanceled := 7
+			wantCanceled := flights - 1
 			if mode == "parent-canceled" {
-				wantCanceled = 8
+				wantCanceled = flights
 				cancel()
 			} else {
 				close(refuse)
@@ -417,7 +420,7 @@ func testBaselineReviewRefusalJoins(t *testing.T, makeClients func(*testing.T, *
 			case <-time.After(3 * time.Second):
 				t.Fatal("released response bodies did not join")
 			}
-			if active.Load() != 0 || maximum.Load() != 8 || requests.Load() != 8 || mode != "parent-canceled" && ctx.Err() != nil {
+			if active.Load() != 0 || maximum.Load() != int32(flights) || requests.Load() != int32(flights) || mode != "parent-canceled" && ctx.Err() != nil {
 				t.Fatal("joined refusal replayed requests, leaked bodies or changed caller context")
 			}
 		})
