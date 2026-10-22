@@ -554,7 +554,7 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 		}
 		if r.Method == http.MethodGet {
 			if activation != nil {
-				if activation.onRead != nil {
+				if activation.onRead != nil && !testRuntimeConfigurationRequest(r) {
 					activation.onRead(r.URL.Path, objects)
 				}
 				if r.URL.Path == "/apis/discovery.k8s.io/v1/namespaces/"+d.Namespace+"/endpointslices" {

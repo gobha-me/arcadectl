@@ -381,6 +381,23 @@ func TestLifecycleConvergenceAdmissionWaitsForOriginalPolicyStatus(t *testing.T)
 			}
 			var policyReads atomic.Int32
 			access := convergenceDirectAccess(t, proofServer(t, func(w http.ResponseWriter, r *http.Request) {
+				if testRuntimeConfigurationRequest(r) {
+					selected := make(map[installstate.Key]*unstructured.Unstructured, len(v.f.access.objects))
+					for key, object := range v.f.access.objects {
+						selected[key] = object.DeepCopy()
+					}
+					if r.URL.Path == "/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicies" {
+						n := policyReads.Add(1)
+						if mode == "delayed-typechecking" && n == 1 {
+							unstructured.RemoveNestedField(selected[firstPolicy].Object, "status", "typeChecking")
+						} else if mode == "foreign-policy" {
+							selected[firstPolicy].SetUID("foreign-policy")
+						}
+					}
+					if testRuntimeConfigurationList(t, w, r, selected) {
+						return
+					}
+				}
 				if r.Method != http.MethodGet || r.URL.RawQuery != "" {
 					t.Error("policy convergence attempted an effect or filtered read")
 				}
@@ -400,14 +417,6 @@ func TestLifecycleConvergenceAdmissionWaitsForOriginalPolicyStatus(t *testing.T)
 						continue
 					}
 					copy := object.DeepCopy()
-					if key == firstPolicy {
-						n := policyReads.Add(1)
-						if mode == "delayed-typechecking" && n == 1 {
-							unstructured.RemoveNestedField(copy.Object, "status", "typeChecking")
-						} else if mode == "foreign-policy" {
-							copy.SetUID("foreign-policy")
-						}
-					}
 					_ = json.NewEncoder(w).Encode(copy.Object)
 					return
 				}

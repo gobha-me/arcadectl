@@ -759,7 +759,7 @@ func testBaselinePrerequisiteCompleteDiscovery(t *testing.T, scenario string) {
 		}
 		if r.URL.Query().Has("labelSelector") {
 			selected := objects
-			if r.URL.Path == "/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicies" {
+			if !testRuntimeConfigurationRequest(r) && r.URL.Path == "/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicies" {
 				if creates == 1 && !postCreateProof {
 					postCreateProof, quietReads = true, ackReads
 					if scenario == "effect-crd-late-policy" {

@@ -132,8 +132,8 @@ func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 						return
 					}
 					if testBaselineConfigurationList(t, w, r, objects) {
-						closingConfiguration := mode == "closing-config-access-rv" && catalogReviews == 2*len(catalog) ||
-							mode == "late-closing-config-access-rv" && probes.Load() == 1 && catalogReviews == 6*len(catalog)
+						closingConfiguration := !testRuntimeConfigurationRequest(r) && (mode == "closing-config-access-rv" && catalogReviews == 2*len(catalog) ||
+							mode == "late-closing-config-access-rv" && probes.Load() == 1 && catalogReviews == 6*len(catalog))
 						if closingConfiguration {
 							closingReads++
 							// Both kind replies in BOTH complete passes must be

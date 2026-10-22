@@ -434,6 +434,9 @@ func resourceKeyFromObject(object *unstructured.Unstructured) installstate.Key {
 }
 
 func serveBootstrapObservationFixture(t *testing.T, w http.ResponseWriter, r *http.Request, v *lifecycleFixture, namespace *corev1.Namespace, runtimePresent bool) bool {
+	if testRuntimeConfigurationList(t, w, r, v.f.access.objects) {
+		return true
+	}
 	t.Helper()
 	for _, gv := range proofGroups {
 		path := "/apis/" + gv

@@ -202,14 +202,32 @@ fence, QPS policy or deadline is removed or relaxed. The installer now requires
 existing LIST permission for these two cluster-scoped kinds; named GET-only
 credentials fail closed. Operator RBAC is unchanged.
 
-The admission actor-access catalog, runtime policy/binding configuration and
-remaining non-Secret public inventory also use at most eight fixed lanes of
-their existing named GETs. Complete eligible keys and recorded mixed-package
+Runtime policy/binding configuration now also joins two fresh fixed-kind LISTs,
+using the fixed part-of label and both ordinary/destroy-controller name labels
+only as transport filters. Its independently frozen signed runtime catalog must
+still contain exactly six policies and six bindings. Recorded mixed-package
+templates, original UID/RV, fresh policy health and binding relationships remain
+mandatory; each original opening/closing fence and every caller's complete pass
+remains. It shares the strict pagination/response limits above, not baseline
+membership or observations. Non-direct parent observers remain supported for
+runtime configuration; baseline still requires its frozen direct parent. Actor
+clients cannot use either collection path.
+
+Strict parsing and finite collection bounds intentionally fail closed on
+malformed or oversized foreign matching installations too. This is an
+availability tradeoff versus named GETs, not permission to select or retain
+foreign membership. Pagination can require more than two requests. Fewer
+requests are not proof of lower CPU/allocation cost or a faster native journey.
+
+The admission actor-access catalog and remaining non-Secret public inventory
+still use at most eight fixed lanes of their existing named GETs. Complete
+eligible keys and recorded mixed-package
 templates, including CRD comparison targets, are frozen before launch. Every
 member retains its individual whole-object checks; successful passes keep the
 same request routes and counts. Workers own separate result slots, cancel on
 refusal and all join before result assembly, the next pass or a closing fence.
-No new LIST, permission, cache authority, probe omission or deadline is added.
+No access/public-inventory LIST, new permission, cache authority, probe omission
+or deadline relaxation is added.
 This scheduling change is not a claim that the full native lifecycle fits its
 budget; the exact candidate still requires that hosted proof.
 

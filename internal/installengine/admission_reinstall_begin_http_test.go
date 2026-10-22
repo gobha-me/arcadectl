@@ -312,7 +312,7 @@ func testAdmissionReinstallActualBeginHTTPS(t *testing.T, scenario string) {
 			// Filtered configuration transport is not a cold inventory pass.
 			// Count the original members encoded on this page, not HTTP calls,
 			// so the final 24 configured + 12 retired-core row fence is intact.
-			if lists["Pod"] == 12 {
+			if !testRuntimeConfigurationRequest(r) && lists["Pod"] == 12 {
 				kind := "ValidatingAdmissionPolicy"
 				if r.URL.Path == "/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicybindings" {
 					kind = "ValidatingAdmissionPolicyBinding"

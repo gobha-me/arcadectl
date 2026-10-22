@@ -192,6 +192,33 @@ func TestColdBoundProviderBracketsWorldPolicyAndJournalIdentity(t *testing.T) {
 				if r.Method != http.MethodGet {
 					t.Error("cold provider mutated cluster")
 				}
+				if testRuntimeConfigurationRequest(r) {
+					selected := make(map[installstate.Key]*unstructured.Unstructured, len(v.f.access.objects))
+					for key, object := range v.f.access.objects {
+						copy := object.DeepCopy()
+						if r.URL.Path == "/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicies" && key.Kind == "ValidatingAdmissionPolicy" {
+							// Preserve the original-member convergence counter; the
+							// transport now returns six policies in one fresh reply.
+							if scenario == "phase-delayed-policy" {
+								policyReads++
+								if policyReads == 1 {
+									unstructured.RemoveNestedField(copy.Object, "status", "typeChecking")
+								}
+							}
+							if observations >= 2 && scenario == "policy-rv" {
+								copy.SetResourceVersion("changed")
+								policyChanged = true
+							}
+						}
+						selected[key] = copy
+					}
+					if observations >= 2 && scenario == "journal-rv" {
+						currentNS.ResourceVersion = "changed"
+					}
+					if testRuntimeConfigurationList(t, w, r, selected) {
+						return
+					}
+				}
 				for _, collection := range proofCollections {
 					if r.URL.Path != "/apis/"+collection.gv {
 						continue
@@ -350,12 +377,6 @@ func TestColdBoundProviderBracketsWorldPolicyAndJournalIdentity(t *testing.T) {
 						continue
 					}
 					copy := o.DeepCopy()
-					if scenario == "phase-delayed-policy" && key.Kind == "ValidatingAdmissionPolicy" {
-						policyReads++
-						if policyReads == 1 {
-							unstructured.RemoveNestedField(copy.Object, "status", "typeChecking")
-						}
-					}
 					if strings.Contains(r.Header.Get("Accept"), "as=PartialObjectMetadata;") {
 						_ = json.NewEncoder(w).Encode(metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: "meta.k8s.io/v1", Kind: "PartialObjectMetadata"}, ObjectMeta: metav1.ObjectMeta{Name: copy.GetName(), Namespace: copy.GetNamespace(), UID: copy.GetUID(), ResourceVersion: copy.GetResourceVersion(), Generation: copy.GetGeneration(), OwnerReferences: copy.GetOwnerReferences()}})
 						return

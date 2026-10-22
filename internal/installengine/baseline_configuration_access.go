@@ -22,6 +22,14 @@ const (
 	baselineConfigurationMaxBytes    = 4 * 1024 * 1024
 	baselineConfigurationMaxContinue = 2048
 	baselineConfigurationSelector    = "app.kubernetes.io/part-of=arcadectl,arcade.gobha.me/security-baseline=" + installbaseline.Version
+	runtimeConfigurationSelector     = "app.kubernetes.io/part-of=arcadectl,app.kubernetes.io/name in (arcadectl-controller,arcadectl-destroy-controller)"
+)
+
+type configurationListPurpose uint8
+
+const (
+	baselineConfigurationList configurationListPurpose = iota + 1
+	runtimeConfigurationList
 )
 
 // This is NOT a general LIST interface. Only the frozen installer parent may
@@ -31,7 +39,36 @@ const (
 // one stable collection RV per kind. Foreign matching installations are parsed
 // transiently but their object bodies are neither retained nor memoized.
 func (a *HTTPAccess) listBaselineConfiguration(ctx context.Context, kind string, expected map[installstate.Key]bool) (map[installstate.Key]*unstructured.Unstructured, error) {
-	if ctx == nil || a == nil || a.actor != nil || !a.actorCompatible() || len(expected) != installbaseline.ResourceCount/2 {
+	return a.listConfiguration(ctx, kind, expected, baselineConfigurationList)
+}
+
+// Runtime configuration remains usable by a non-direct parent observer. Full
+// lifecycle/actor construction independently enforces its stronger routing
+// contract. Neither wrapper grants actor clients a generic collection route.
+func (a *HTTPAccess) listRuntimeConfiguration(ctx context.Context, kind string, expected map[installstate.Key]bool) (map[installstate.Key]*unstructured.Unstructured, error) {
+	return a.listConfiguration(ctx, kind, expected, runtimeConfigurationList)
+}
+
+func (a *HTTPAccess) listConfiguration(ctx context.Context, kind string, expected map[installstate.Key]bool, purpose configurationListPurpose) (map[installstate.Key]*unstructured.Unstructured, error) {
+	if ctx == nil || a == nil || a.actor != nil {
+		return nil, ErrInvalid
+	}
+	selector := ""
+	expectedCount := 0
+	switch purpose {
+	case baselineConfigurationList:
+		if !a.actorCompatible() {
+			return nil, ErrInvalid
+		}
+		selector = baselineConfigurationSelector
+		expectedCount = installbaseline.ResourceCount / 2
+	case runtimeConfigurationList:
+		selector = runtimeConfigurationSelector
+		expectedCount = 6
+	default:
+		return nil, ErrInvalid
+	}
+	if len(expected) != expectedCount {
 		return nil, ErrInvalid
 	}
 	plural := ""
@@ -58,7 +95,7 @@ func (a *HTTPAccess) listBaselineConfiguration(ctx context.Context, kind string,
 		if ctx.Err() != nil {
 			return nil, ErrRead
 		}
-		query := url.Values{"limit": {strconv.Itoa(baselineConfigurationPageLimit)}, "labelSelector": {baselineConfigurationSelector}}
+		query := url.Values{"limit": {strconv.Itoa(baselineConfigurationPageLimit)}, "labelSelector": {selector}}
 		if continuation != "" {
 			query.Set("continue", continuation)
 		}

@@ -17,9 +17,14 @@ import (
 
 	"github.com/gobha-me/arcadectl/internal/installstate"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 func testBaselineListFixture(t *testing.T, kind string, serve func(http.ResponseWriter, *http.Request, map[string]any, int)) (*HTTPAccess, map[installstate.Key]bool, *atomic.Int32) {
+	return testConfigurationListFixture(t, kind, baselineConfigurationList, serve)
+}
+
+func testConfigurationListFixture(t *testing.T, kind string, purpose configurationListPurpose, serve func(http.ResponseWriter, *http.Request, map[string]any, int)) (*HTTPAccess, map[installstate.Key]bool, *atomic.Int32) {
 	t.Helper()
 	f := newBaselineFixture(t)
 	completeBaselineFixture(t, f)
@@ -37,6 +42,25 @@ func testBaselineListFixture(t *testing.T, kind string, serve func(http.Response
 		}
 		items = append(items, object.Object)
 	}
+	selector := "app.kubernetes.io/part-of=arcadectl,arcade.gobha.me/security-baseline=privileged-identity-v1"
+	if purpose == runtimeConfigurationList {
+		selector = "app.kubernetes.io/part-of=arcadectl,app.kubernetes.io/name in (arcadectl-controller,arcadectl-destroy-controller)"
+		expected, items = map[installstate.Key]bool{}, []any{}
+		for _, resource := range f.plan.Resources() {
+			object := resource.Object.DeepCopy()
+			if object.GetKind() != kind {
+				continue
+			}
+			object.SetUID(types.UID("runtime-" + object.GetName()))
+			object.SetResourceVersion("1")
+			object.SetGeneration(1)
+			if kind == "ValidatingAdmissionPolicy" {
+				object.Object["status"] = map[string]any{"observedGeneration": int64(1), "typeChecking": map[string]any{}}
+			}
+			expected[resourceKeyFromObject(object)] = true
+			items = append(items, object.Object)
+		}
+	}
 	page := map[string]any{"apiVersion": "admissionregistration.k8s.io/v1", "kind": kind + "List", "metadata": map[string]any{"resourceVersion": "snapshot"}, "items": items}
 	requests := &atomic.Int32{}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -45,7 +69,7 @@ func testBaselineListFixture(t *testing.T, kind string, serve func(http.Response
 		if kind == "ValidatingAdmissionPolicyBinding" {
 			plural = "validatingadmissionpolicybindings"
 		}
-		valid := r.Method == http.MethodGet && r.URL.Path == "/apis/admissionregistration.k8s.io/v1/"+plural && r.Header.Get("Impersonate-User") == "" && q.Get("limit") == "128" && q.Get("labelSelector") == "app.kubernetes.io/part-of=arcadectl,arcade.gobha.me/security-baseline=privileged-identity-v1"
+		valid := r.Method == http.MethodGet && r.URL.Path == "/apis/admissionregistration.k8s.io/v1/"+plural && r.Header.Get("Impersonate-User") == "" && q.Get("limit") == "128" && q.Get("labelSelector") == selector
 		for key, values := range q {
 			if len(values) != 1 || key != "limit" && key != "labelSelector" && key != "continue" {
 				valid = false
@@ -68,11 +92,20 @@ func testBaselineListFixture(t *testing.T, kind string, serve func(http.Response
 }
 
 func TestBaselineConfigurationListsRequireCompleteStrictBoundedSnapshots(t *testing.T) {
+	testConfigurationListsRequireCompleteStrictBoundedSnapshots(t, baselineConfigurationList)
+}
+
+func TestAdmissionConfigurationListsRequireCompleteStrictBoundedSnapshots(t *testing.T) {
+	testConfigurationListsRequireCompleteStrictBoundedSnapshots(t, runtimeConfigurationList)
+}
+
+func testConfigurationListsRequireCompleteStrictBoundedSnapshots(t *testing.T, purpose configurationListPurpose) {
+	t.Helper()
 	cases := []string{"healthy", "native-items", "partial-kind", "partial-version", "null-kind", "null-version", "empty-kind", "empty-version", "pages", "drain-after-found", "foreign", "foreign-cannot-fill-missing", "missing", "duplicate-name", "duplicate-uid", "wrong-kind", "wrong-version", "namespace", "missing-uid", "missing-rv", "wrong-list", "unknown-list", "unknown-member", "case-aliased", "null-list", "null-metadata", "null-items", "null-item", "null-rv", "null-continue", "null-remaining", "negative-remaining", "final-remaining", "empty-rv", "large-rv", "rv-change", "repeat", "cycle", "pages-bound", "items-bound", "bytes-bound", "large-continue", "expired", "withdrawn", "oversize", "duplicate-json", "malformed", "trailing", "depth", "tokens"}
 	for _, kind := range []string{"ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding"} {
 		for _, mode := range cases {
 			t.Run(kind+"/"+mode, func(t *testing.T) {
-				access, expected, requests := testBaselineListFixture(t, kind, func(w http.ResponseWriter, r *http.Request, page map[string]any, call int) {
+				access, expected, requests := testConfigurationListFixture(t, kind, purpose, func(w http.ResponseWriter, r *http.Request, page map[string]any, call int) {
 					metadata := page["metadata"].(map[string]any)
 					items := page["items"].([]any)
 					first := items[0].(map[string]any)
@@ -225,7 +258,7 @@ func TestBaselineConfigurationListsRequireCompleteStrictBoundedSnapshots(t *test
 						_, _ = io.WriteString(w, "{}")
 					}
 				})
-				result, err := access.listBaselineConfiguration(t.Context(), kind, expected)
+				result, err := access.listConfiguration(t.Context(), kind, expected, purpose)
 				healthy := mode == "healthy" || mode == "native-items" || mode == "pages" || mode == "drain-after-found" || mode == "foreign"
 				if healthy {
 					if err != nil || len(result) != 6 {
@@ -258,14 +291,47 @@ func TestBaselineConfigurationListsRequireCompleteStrictBoundedSnapshots(t *test
 }
 
 func TestBaselineConfigurationListsRejectEveryChangedOriginalMember(t *testing.T) {
+	testConfigurationListsRejectEveryChangedOriginalMember(t, false)
+}
+
+func TestAdmissionConfigurationListsRejectEveryChangedOriginalMember(t *testing.T) {
+	testConfigurationListsRejectEveryChangedOriginalMember(t, true)
+}
+
+func testConfigurationListsRejectEveryChangedOriginalMember(t *testing.T, runtime bool) {
+	t.Helper()
 	for group, kind := range []string{"ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding"} {
 		for member := range 6 {
 			for _, mode := range []string{"missing", "replacement", "same-uid-rv", "shape", "null-spec", "unknown-spec", "deleting", "misrouted", "foreign-name"} {
 				t.Run(kind+"/"+strconv.Itoa(member)+"/"+mode, func(t *testing.T) {
-					configuration, snapshot, paths := testConfiguredReadLanes(t)
-					next := configuration.access.client.Transport
+					var access *HTTPAccess
+					var verify func() error
+					var paths [2][]string
+					expectedError := ErrSecurityBaseline
+					if runtime {
+						f, _, _, _, _ := testAdmissionReadCatalog(t, "configuration")
+						access = f.admission.prerequisites.access
+						paths = [2][]string{admissionConfigurationTestPaths[0], admissionConfigurationTestPaths[1]}
+						expectedError = ErrAdmission
+						verify = func() error {
+							before, err := f.admission.configured(t.Context(), f.request)
+							if err != nil {
+								return err
+							}
+							closing, err := f.admission.configured(t.Context(), f.request)
+							if err != nil || !sameAdmissionConfiguration(before, closing) {
+								return ErrAdmission
+							}
+							return nil
+						}
+					} else {
+						configuration, snapshot, baselinePaths := testConfiguredReadLanes(t)
+						access, paths = configuration.access, baselinePaths
+						verify = func() error { return configuration.VerifyConfigured(t.Context(), snapshot) }
+					}
+					next := access.client.Transport
 					var changed atomic.Bool
-					configuration.access.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+					access.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 						response, err := next.RoundTrip(r)
 						if err != nil || r.URL.Path != paths[group][0] {
 							return response, err
@@ -316,7 +382,7 @@ func TestBaselineConfigurationListsRejectEveryChangedOriginalMember(t *testing.T
 						copy.ContentLength = int64(len(body))
 						return &copy, nil
 					})
-					if err := configuration.VerifyConfigured(t.Context(), snapshot); err != ErrSecurityBaseline || !changed.Load() {
+					if err := verify(); err != expectedError || !changed.Load() {
 						t.Fatal("changed original member became configuration authority")
 					}
 				})
