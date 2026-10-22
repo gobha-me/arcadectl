@@ -20,10 +20,18 @@ func diagnosticOrderingOnly(needs []string, condition string, tolerate any) bool
 	return slices.Equal(needs, []string{"installer-diagnostics"}) && condition == "${{ !cancelled() }}" && tolerate == nil
 }
 
-// Bulk matrices wait for the SAME closed foundation set as the signed binary,
-// but failed foundations must not skip their independent whole-tree coverage.
+// Bulk matrices wait for their closed native foundation set, but failed
+// foundations must not skip their independent whole-tree coverage. The long
+// signed-binary jobs are independent and become eligible after diagnostics.
 func bulkFoundationOrderingOnly(needs []string, condition string, tolerate any) bool {
 	return slices.Equal(needs, []string{"installer-diagnostics", "kind-install-gc", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-install-baseline", "kind-install-precontroller"}) && condition == "${{ !cancelled() }}" && tolerate == nil
+}
+
+// Unlike the ordering-only bulk barrier, diagnostics must actually succeed
+// before spending the signed lifecycle budget. No custom condition or failure
+// tolerance may bypass the default GitHub needs-success behavior.
+func binaryDiagnosticsPrerequisite(needs []string, condition string, tolerate any) bool {
+	return slices.Equal(needs, []string{"installer-diagnostics"}) && condition == "" && tolerate == nil
 }
 
 func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
@@ -105,7 +113,7 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 			t.Fatal("bulk matrix bypasses foundations or skips independent coverage on failure", name)
 		}
 	}
-	// Literal independent oracle, not copied from the binary job's mutable DAG.
+	// Literal independent oracle, not copied from another job's mutable DAG.
 	bulkNeeds := []string{"installer-diagnostics", "kind-install-gc", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-install-baseline", "kind-install-precontroller"}
 	if !bulkFoundationOrderingOnly(bulkNeeds, "${{ !cancelled() }}", nil) {
 		t.Fatal("bulk ordering-only positive control refused")
@@ -334,8 +342,31 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 		t.Fatal("genuine pre-controller profile or required dependency omitted")
 	}
 	binary := workflow.Jobs["kind-install-binary"]
-	if binary.If != "" || !slices.Equal(binary.Needs, []string{"installer-diagnostics", "kind-install-gc", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-install-baseline", "kind-install-precontroller"}) {
-		t.Fatal("long signed lifecycle proofs bypass native foundations or override fail-closed scheduling")
+	if !binaryDiagnosticsPrerequisite(binary.Needs, binary.If, binary.ContinueOnError) {
+		t.Fatal("long signed lifecycle proofs delay independent work or bypass successful diagnostics")
+	}
+	if !binaryDiagnosticsPrerequisite([]string{"installer-diagnostics"}, "", nil) {
+		t.Fatal("binary diagnostics-success positive control refused")
+	}
+	for _, needs := range [][]string{nil, {}, {"kind-install-gc"}, {"installer-diagnostics", "installer-diagnostics"}, {"installer-diagnostics", "kind-install-binary"}, {"installer-diagnostics", "go-and-policy"}} {
+		if binaryDiagnosticsPrerequisite(needs, "", nil) {
+			t.Fatal("binary scheduling accepted missing, substituted, duplicate or cyclic prerequisites")
+		}
+	}
+	for _, foundation := range bulkNeeds[1:] {
+		if binaryDiagnosticsPrerequisite([]string{"installer-diagnostics", foundation}, "", nil) {
+			t.Fatal("binary scheduling delayed independent lifecycle work behind a native foundation", foundation)
+		}
+	}
+	for _, condition := range []string{"${{ !cancelled() }}", "${{ always() }}", "${{ failure() }}", "${{ success() }}"} {
+		if binaryDiagnosticsPrerequisite([]string{"installer-diagnostics"}, condition, nil) {
+			t.Fatal("binary scheduling accepted a custom diagnostic scheduling condition", condition)
+		}
+	}
+	for _, tolerate := range []any{false, true, "${{ true }}"} {
+		if binaryDiagnosticsPrerequisite([]string{"installer-diagnostics"}, "", tolerate) {
+			t.Fatal("binary scheduling accepted a failure-tolerance override")
+		}
 	}
 	for _, required := range []struct {
 		name    string

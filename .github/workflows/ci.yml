@@ -112,10 +112,10 @@ jobs:
 
   kind-install-binary:
     name: Kind signed installer binary ${{ matrix.profile }} ${{ matrix.mode }}
-    # Spend the long lifecycle budget only after its native foundations pass.
-    # Skipped binary proofs still fail the always-running required aggregate.
-    needs: [installer-diagnostics, kind-install-gc, kind-install-admission, kind-install-admission-v3,
-            kind-install-auth, kind-install-baseline, kind-install-precontroller]
+    # Start the longest independent proofs once diagnostics pass. Each job
+    # builds its own artifacts; all native foundations remain mandatory in the
+    # final aggregate. Earlier eligibility does not guarantee runner capacity.
+    needs: [installer-diagnostics]
     runs-on: ubuntu-24.04
     timeout-minutes: 350
     strategy:
