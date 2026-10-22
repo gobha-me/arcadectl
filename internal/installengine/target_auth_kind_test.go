@@ -232,6 +232,7 @@ func targetKindFixtureImagesWithOwnedNode(t *testing.T, nodeImage string, withCo
 	}
 	// Bound only this owned fixture, never shared Docker daemon resources.
 	public("", "docker", "update", "--memory", "3g", "--memory-swap", "3g", "--cpus", "2", "--pids-limit", "2048", nodeID)
+	observeKindCPUFixture(t, nodeID, name)
 	public("", "docker", "pull", targetKindRegistry)
 	registryArmed = true
 	registryID = public("", "docker", "run", "--detach", "--pull=never", "--restart=no", "--memory", "128m", "--memory-swap", "128m", "--cpus", "0.5", "--pids-limit", "128", "--publish", "127.0.0.1::5000", "--name", registry,
