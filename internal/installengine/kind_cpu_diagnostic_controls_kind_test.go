@@ -5,6 +5,7 @@ package installengine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"math"
 	"net/http"
@@ -21,6 +22,12 @@ func (f kindCPUFakeTransport) RoundTrip(r *http.Request) (*http.Response, error)
 type kindCPUClosedBody struct {
 	io.Reader
 	closed *int
+}
+
+type kindCPUFailedReader struct{}
+
+func (kindCPUFailedReader) Read([]byte) (int, error) {
+	return 0, errors.New("private-provider-read /var/run/private")
 }
 
 func (b kindCPUClosedBody) Close() error {
@@ -66,7 +73,7 @@ func kindCPUControlClient(t *testing.T, inspect, stats string, status int, closi
 				t.Fatal("inspect query changed")
 			}
 		case "/v1.47/containers/" + kindCPUControlID + "/stats":
-			if r.URL.RawQuery != "stream=false&one-shot=true" {
+			if r.URL.RawQuery != "stream=false&one-shot=false" {
 				t.Fatal("stats query changed")
 			}
 			body = stats
@@ -90,6 +97,9 @@ func TestKindCPUResourceDiagnosticActivation(t *testing.T) {
 		enabled, err := kindCPUEnabled(row.value, row.present)
 		if enabled != row.enabled || (err != nil) != row.refused {
 			t.Fatal("activation contract changed")
+		}
+		if err != nil {
+			kindCPUControlRefusal(t, err, kindCPUActivation, 0)
 		}
 	}
 	// Calls no diagnostic I/O even when identity would be invalid if activated.
@@ -122,6 +132,7 @@ func TestKindCPUResourceDiagnosticOwnershipAndNumericRefusals(t *testing.T) {
 		{"running", strings.Replace(inspect, `"Running":true`, `"Running":false`, 1), stats},
 		{"epoch", strings.Replace(inspect, "2026-10-22T00:00:00Z", "bad-private-epoch", 1), stats},
 		{"stats-id", inspect, strings.Replace(stats, kindCPUControlID, "foreign-private-id", 1)},
+		{"stats-id-omitted", inspect, strings.Replace(stats, `"id":"`+kindCPUControlID+`",`, "", 1)},
 		{"read", inspect, strings.Replace(stats, "2026-10-22T00:00:01Z", "bad-private-read", 1)},
 		{"duplicate", inspect, strings.Replace(stats, `"online_cpus":8`, `"online_cpus":8,"online_cpus":8`, 1)},
 		{"malformed", inspect, `{`},
@@ -142,16 +153,25 @@ func TestKindCPUResourceDiagnosticOwnershipAndNumericRefusals(t *testing.T) {
 			rows = append(rows, struct{ name, inspect, stats string }{field.key + "-" + bad, inspect, strings.Replace(stats, `"`+field.key+`":`+field.value, `"`+field.key+`":`+bad, 1)})
 		}
 	}
-	for _, bad := range []string{`0`, `4294967296`, `null`} {
+	for _, bad := range []string{`4294967296`, `null`, `"0"`, `-1`, `0.5`} {
 		rows = append(rows, struct{ name, inspect, stats string }{"online-" + bad, inspect, strings.Replace(stats, `"online_cpus":8`, `"online_cpus":`+bad, 1)})
 	}
 	rows = append(rows, struct{ name, inspect, stats string }{"periods", inspect, strings.Replace(stats, `"throttled_periods":3`, `"throttled_periods":11`, 1)})
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			client, calls, closed := kindCPUControlClient(t, row.inspect, row.stats, http.StatusOK)
-			if _, err := kindCPUObserve(client, kindCPUControlID, kindCPUControlCluster, kindCPUControlHost); err != errKindCPU {
+			_, err := kindCPUObserve(client, kindCPUControlID, kindCPUControlCluster, kindCPUControlHost)
+			if !errors.Is(err, errKindCPU) {
 				t.Fatal("invalid observation accepted or provider error exposed")
 			}
+			expected := kindCPUStatsNumbers
+			if row.name == "stats-id-omitted" {
+				expected = kindCPUStatsID
+			}
+			if stage, ok := map[string]uint16{"id": kindCPUIdentity, "name": kindCPUIdentity, "label": kindCPUIdentity, "running": kindCPUIdentity, "epoch": kindCPUEpoch, "stats-id": kindCPUStatsID, "read": kindCPUStatsRead, "duplicate": kindCPUJSONFailure, "malformed": kindCPUJSONFailure, "utf8": kindCPUJSONFailure, "body-limit": kindCPUSize, "NanoCpus": kindCPUNanoLimit, "Memory": kindCPUMemoryLimit, "MemorySwap": kindCPUSwapLimit, "PidsLimit": kindCPUPIDsLimit}[row.name]; ok {
+				expected = stage
+			}
+			kindCPUControlRefusal(t, err, expected, 0)
 			if *calls != *closed || *calls < 1 || *calls > 3 {
 				t.Fatal("refusal leaked a response or made extra calls")
 			}
@@ -192,18 +212,25 @@ func TestKindCPUResourceDiagnosticClosingInspectRefusals(t *testing.T) {
 				hostRead = true
 				return kindCPUControlHost()
 			})
-			if err != errKindCPU || *calls != 3 || *closed != 3 || hostRead {
+			if !errors.Is(err, errKindCPU) || *calls != 3 || *closed != 3 || hostRead {
 				t.Fatal("closing identity/caps change accepted or snapshot not joined")
 			}
+			expected := kindCPUIdentity
+			if stage, ok := map[string]uint16{"restart-count": kindCPUClosingDrift, "restart-epoch": kindCPUClosingDrift, "cpu": kindCPUNanoLimit, "memory": kindCPUMemoryLimit, "swap": kindCPUSwapLimit, "pids": kindCPUPIDsLimit}[row.name]; ok {
+				expected = stage
+			}
+			kindCPUControlRefusal(t, err, expected, 0)
 		})
 	}
 }
 
 func TestKindCPUResourceDiagnosticHTTPRefusals(t *testing.T) {
 	client, calls, closed := kindCPUControlClient(t, "private-provider-error", "", http.StatusForbidden)
-	if _, err := kindCPUObserve(client, kindCPUControlID, kindCPUControlCluster, kindCPUControlHost); err != errKindCPU || *calls != 1 || *closed != 1 {
+	_, err := kindCPUObserve(client, kindCPUControlID, kindCPUControlCluster, kindCPUControlHost)
+	if !errors.Is(err, errKindCPU) || *calls != 1 || *closed != 1 {
 		t.Fatal("HTTP refusal not bounded and sanitized")
 	}
+	kindCPUControlRefusal(t, err, kindCPUHTTPStatus, 403)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	client = &http.Client{Transport: kindCPUFakeTransport(func(r *http.Request) (*http.Response, error) {
@@ -212,7 +239,7 @@ func TestKindCPUResourceDiagnosticHTTPRefusals(t *testing.T) {
 		}
 		return nil, errKindCPU
 	})}
-	if _, err := kindCPUJSON(ctx, client, kindCPUControlID+"/json"); err != errKindCPU {
+	if _, err := kindCPUJSON(ctx, client, kindCPUControlID+"/json"); !errors.Is(err, errKindCPU) {
 		t.Fatal("canceled request accepted")
 	}
 }
@@ -241,7 +268,7 @@ func TestKindCPUResourceDiagnosticMonotonicityAndPrivacy(t *testing.T) {
 	if json.Unmarshal(encoded, &fields) != nil {
 		t.Fatal("summary not JSON")
 	}
-	keys := []string{"status", "nano_cpus", "memory_bytes", "memory_swap_total_bytes", "pids", "docker_online_cpus", "host_runtime_cpus_not_available_capacity", "parent_sampling_elapsed_lower_ns", "parent_sampling_elapsed_upper_ns", "docker_read_timestamp_delta_ns_clock_dependent", "before", "after", "delta", "host_total_delta_ticks", "host_idle_delta_ticks", "host_iowait_delta_ticks"}
+	keys := []string{"status", "refusal_stage", "http_status", "nano_cpus", "memory_bytes", "memory_swap_total_bytes", "pids", "docker_online_cpus", "host_runtime_cpus_not_available_capacity", "parent_sampling_elapsed_lower_ns", "parent_sampling_elapsed_upper_ns", "docker_read_timestamp_delta_ns_clock_dependent", "before", "after", "delta", "host_total_delta_ticks", "host_idle_delta_ticks", "host_iowait_delta_ticks"}
 	if len(fields) != len(keys) {
 		t.Fatal("summary vocabulary widened")
 	}
@@ -276,7 +303,7 @@ func TestKindCPUResourceDiagnosticMonotonicityAndPrivacy(t *testing.T) {
 			changed := b
 			mutate(&changed)
 			refused, err := kindCPUCompare(a, changed)
-			if err != errKindCPU || refused != (kindCPUSummary{Status: "refused"}) {
+			if !errors.Is(err, errKindCPU) || refused != (kindCPUSummary{Status: "refused", RefusalStage: kindCPUComparison}) {
 				t.Fatal("invalid sample became partial positive evidence")
 			}
 		})
@@ -291,8 +318,97 @@ func TestKindCPUResourceDiagnosticHostProcBounds(t *testing.T) {
 		}
 	}
 	for _, input := range []string{"cpu0 1 2 3 4 5 6 7 8", "cpu 1 2 3", "cpu -1 2 3 4 5 6 7 8", "cpu +1 2 3 4 5 6 7 8", "cpu 1.0 2 3 4 5 6 7 8", "cpu 18446744073709551615 2 3 4 5 6 7 8", strings.Repeat(" ", 4097)} {
-		if _, err := kindCPUProc(input); err != errKindCPU {
+		_, err := kindCPUProc(input)
+		if !errors.Is(err, errKindCPU) {
 			t.Fatal("malformed or overflowing host statistic accepted")
 		}
+		kindCPUControlRefusal(t, err, kindCPUHostFailure, 0)
+	}
+}
+
+func kindCPUControlRefusal(t *testing.T, err error, stage, status uint16) {
+	t.Helper()
+	if !errors.Is(err, errKindCPU) || err.Error() != "Kind CPU diagnostic unavailable" {
+		t.Fatal("refusal error contract widened")
+	}
+	result := kindCPURefused(err)
+	if result != (kindCPUSummary{Status: "refused", RefusalStage: stage, HTTPStatus: status}) {
+		t.Fatal("refusal code changed or numeric evidence leaked")
+	}
+	encoded, _ := json.Marshal(result)
+	for _, forbidden := range []string{kindCPUControlID, kindCPUControlCluster, "private-provider", "/containers", "/var/run"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatal("refusal exposed private data")
+		}
+	}
+}
+
+func TestKindCPUResourceDiagnosticRefusalStages(t *testing.T) {
+	stages := []uint16{kindCPUActivation, kindCPUDaemon, kindCPUTransport, kindCPUHTTPStatus, kindCPURead, kindCPUSize, kindCPUJSONFailure, kindCPUIdentity, kindCPUNanoLimit, kindCPUMemoryLimit, kindCPUSwapLimit, kindCPUPIDsLimit, kindCPUEpoch, kindCPUStatsID, kindCPUStatsRead, kindCPUStatsNumbers, kindCPUClosingDrift, kindCPUHostFailure, kindCPUComparison}
+	for index, stage := range stages {
+		if stage != uint16(index+1) {
+			t.Fatal("closed refusal stage numbering changed")
+		}
+		kindCPUControlRefusal(t, kindCPUFailure(stage), stage, 0)
+	}
+	for _, row := range []struct{ stage, status, expectedStage, expectedStatus uint16 }{
+		{0, 500, 19, 0}, {20, 500, 19, 0}, {4, 99, 4, 0}, {4, 100, 4, 100}, {4, 599, 4, 599}, {4, 600, 4, 0}, {8, 403, 8, 0},
+	} {
+		kindCPUControlRefusal(t, kindCPURefusal{stage: row.stage, status: row.status}, row.expectedStage, row.expectedStatus)
+	}
+	// Even an unclassified provider error cannot enter the closed output.
+	if kindCPURefused(errors.New("private-provider-id /var/run/private")) != (kindCPUSummary{Status: "refused", RefusalStage: 19}) {
+		t.Fatal("unclassified error leaked")
+	}
+	client := &http.Client{Transport: kindCPUFakeTransport(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("private-provider-id /var/run/private")
+	})}
+	_, err := kindCPUJSON(context.Background(), client, kindCPUControlID+"/json")
+	kindCPUControlRefusal(t, err, kindCPUTransport, 0)
+	closed := 0
+	client.Transport = kindCPUFakeTransport(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: kindCPUClosedBody{Reader: kindCPUFailedReader{}, closed: &closed}}, nil
+	})
+	_, err = kindCPUJSON(context.Background(), client, kindCPUControlID+"/json")
+	kindCPUControlRefusal(t, err, kindCPURead, 0)
+	if closed != 1 {
+		t.Fatal("read refusal did not close response")
+	}
+	client, calls, bodies := kindCPUControlClient(t, kindCPUControlInspect(), kindCPUControlStats(), http.StatusOK)
+	_, err = kindCPUObserve(client, kindCPUControlID, kindCPUControlCluster, func() ([8]uint64, int, error) {
+		return [8]uint64{}, 0, errors.New("private-provider-host /proc/private")
+	})
+	kindCPUControlRefusal(t, err, kindCPUHostFailure, 0)
+	if *calls != 3 || *bodies != 3 {
+		t.Fatal("host refusal did not join snapshot")
+	}
+}
+
+func TestKindCPUResourceDiagnosticOptionalOnlineCPU(t *testing.T) {
+	for _, row := range []struct{ name, stats string }{
+		{"omitted", strings.Replace(kindCPUControlStats(), `"online_cpus":8,`, "", 1)},
+		{"zero", strings.Replace(kindCPUControlStats(), `"online_cpus":8`, `"online_cpus":0`, 1)},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			client, calls, closed := kindCPUControlClient(t, kindCPUControlInspect(), row.stats, http.StatusOK)
+			for i := 0; i < 2; i++ {
+				snapshot, err := kindCPUObserve(client, kindCPUControlID, kindCPUControlCluster, kindCPUControlHost)
+				if err != nil || snapshot.online != 0 || snapshot.counters.UsageNS != 100 {
+					t.Fatal("valid unavailable online CPU observation refused")
+				}
+			}
+			if *calls != 6 || *closed != 6 {
+				t.Fatal("optional field changed snapshot request bounds")
+			}
+			a, b := kindCPUControlPair()
+			a.online, b.online = 0, 0
+			result, err := kindCPUCompare(a, b)
+			if err != nil || result.Status != "observed" || result.OnlineCPUs != 0 {
+				t.Fatal("unavailable online CPUs substituted or refused")
+			}
+			b.online = 8
+			_, err = kindCPUCompare(a, b)
+			kindCPUControlRefusal(t, err, kindCPUComparison, 0)
+		})
 	}
 }
