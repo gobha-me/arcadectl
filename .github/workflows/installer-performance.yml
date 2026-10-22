@@ -14,9 +14,13 @@ concurrency:
 
 jobs:
   descriptor-membership:
-    name: Fresh authorization catalog controls and lookup measurements
+    name: Fresh authorization catalog controls (${{ matrix.shard }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
     env:
       GOMAXPROCS: "2"
       GOMEMLIMIT: 1GiB
@@ -31,7 +35,49 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Verify fresh request ownership and complete catalog refusals
-        run: go test -race -tags=kindinstall -p 1 -timeout=20m -v ./internal/installengine -run '^(TestBaselineDenied.*|TestBaselineConfigurationLists.*|TestAdmissionConfiguration.*|TestAdmissionNamedCatalog.*|TestBootstrapAdmissionClosedProviderBracketsWholeObservationAndProbes|TestLifecycleConvergenceAdmissionWaitsForOriginalPolicyStatus|TestColdBoundProviderBracketsWorldPolicyAndJournalIdentity|TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe|TestActivationEpoch.*|TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate)$' -count=1
+        shell: bash
+        run: |
+          set -euo pipefail
+          controls_shard='${{ matrix.shard }}'
+          [[ "$controls_shard" =~ ^[0-5]$ ]] || exit 2
+          controls_pattern='^(TestBaselineDenied.*|TestBaselineConfigurationLists.*|TestAdmissionConfiguration.*|TestAdmissionNamedCatalog.*|TestBootstrapAdmissionClosedProviderBracketsWholeObservationAndProbes|TestLifecycleConvergenceAdmissionWaitsForOriginalPolicyStatus|TestColdBoundProviderBracketsWorldPolicyAndJournalIdentity|TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe|TestActivationEpoch.*|TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate)$'
+          controls_listing=$(go test -race -tags=kindinstall -p 1 -list "$controls_pattern" ./internal/installengine)
+          mapfile -t controls_all < <(printf '%s\n' "$controls_listing" | awk '/^Test[^[:space:]]*$/' | LC_ALL=C sort)
+          if [[ ${#controls_all[@]} -eq 0 ]]; then
+            echo 'No compiled control roots selected; refusing an empty lab gate.' >&2
+            exit 1
+          fi
+          mapfile -t controls_selected < <(printf '%s\n' "${controls_all[@]}" | awk -v shard="$controls_shard" '(NR - 1) % 6 == shard')
+          if [[ ${#controls_selected[@]} -eq 0 ]]; then
+            echo 'No control roots assigned to this shard; refusing an empty lab gate.' >&2
+            exit 1
+          fi
+          printf 'Installer performance controls shard %s/6: %s of %s compiled selected roots\n' "$controls_shard" "${#controls_selected[@]}" "${#controls_all[@]}"
+          printf 'Selected: %s\n' "${controls_selected[@]}"
+          controls_union=''
+          for controls_name in "${controls_selected[@]}"; do
+            controls_union+="${controls_union:+|}^${controls_name}$"
+          done
+          go test -race -tags=kindinstall -p 1 -failfast -timeout=15m -v ./internal/installengine -run "$controls_union" -count=1
+
+  descriptor-measurements:
+    name: Fresh catalog measurements and vet
+    needs: [descriptor-membership]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 1GiB
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
       - name: Compare complete configuration and descriptor membership costs
         run: go test -p 1 -timeout=3m ./internal/installengine -run '^$' -bench '^(BenchmarkBaselineDeniedDescriptorMembership|BenchmarkAdmissionConfiguration.*)$' -benchmem -benchtime=250ms -count=3
       - name: Vet the changed engine and its test harness
@@ -59,7 +105,7 @@ jobs:
 
   native-configuration:
     name: Native v3 cold matrix (${{ matrix.revision }})
-    needs: [descriptor-membership, phase-barriers]
+    needs: [descriptor-measurements, phase-barriers]
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     strategy:
