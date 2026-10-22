@@ -107,13 +107,13 @@ func TestKindCPUResourceDiagnosticActivation(t *testing.T) {
 	if os.Unsetenv("ARCADECTL_KIND_CPU_DIAGNOSTICS") != nil {
 		t.Fatal("control environment unavailable")
 	}
-	observeKindCPUFixture(t, "invalid", "invalid")
+	observeKindCPUFixture(t, "invalid", "invalid", 2000000000)
 }
 
 func TestKindCPUResourceDiagnosticOwnedReadBounds(t *testing.T) {
 	client, calls, closed := kindCPUControlClient(t, kindCPUControlInspect(), kindCPUControlStats(), http.StatusOK)
 	for i := 0; i < 2; i++ {
-		s, err := kindCPUObserve(client, kindCPUControlID, kindCPUControlCluster, kindCPUControlHost)
+		s, err := kindCPUObserve(client, kindCPUControlID, kindCPUControlCluster, 2000000000, kindCPUControlHost)
 		if err != nil || s.online != 8 || s.counters.UsageNS != 100 || s.cores != 8 {
 			t.Fatal("owned numeric snapshot refused")
 		}
@@ -160,7 +160,7 @@ func TestKindCPUResourceDiagnosticOwnershipAndNumericRefusals(t *testing.T) {
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			client, calls, closed := kindCPUControlClient(t, row.inspect, row.stats, http.StatusOK)
-			_, err := kindCPUObserve(client, kindCPUControlID, kindCPUControlCluster, kindCPUControlHost)
+			_, err := kindCPUObserve(client, kindCPUControlID, kindCPUControlCluster, 2000000000, kindCPUControlHost)
 			if !errors.Is(err, errKindCPU) {
 				t.Fatal("invalid observation accepted or provider error exposed")
 			}
@@ -208,7 +208,7 @@ func TestKindCPUResourceDiagnosticClosingInspectRefusals(t *testing.T) {
 				return original.RoundTrip(r)
 			})
 			hostRead := false
-			_, err := kindCPUObserve(client, kindCPUControlID, kindCPUControlCluster, func() ([8]uint64, int, error) {
+			_, err := kindCPUObserve(client, kindCPUControlID, kindCPUControlCluster, 2000000000, func() ([8]uint64, int, error) {
 				hostRead = true
 				return kindCPUControlHost()
 			})
@@ -226,7 +226,7 @@ func TestKindCPUResourceDiagnosticClosingInspectRefusals(t *testing.T) {
 
 func TestKindCPUResourceDiagnosticHTTPRefusals(t *testing.T) {
 	client, calls, closed := kindCPUControlClient(t, "private-provider-error", "", http.StatusForbidden)
-	_, err := kindCPUObserve(client, kindCPUControlID, kindCPUControlCluster, kindCPUControlHost)
+	_, err := kindCPUObserve(client, kindCPUControlID, kindCPUControlCluster, 2000000000, kindCPUControlHost)
 	if !errors.Is(err, errKindCPU) || *calls != 1 || *closed != 1 {
 		t.Fatal("HTTP refusal not bounded and sanitized")
 	}
@@ -246,7 +246,7 @@ func TestKindCPUResourceDiagnosticHTTPRefusals(t *testing.T) {
 
 func kindCPUControlPair() (kindCPUSnapshot, kindCPUSnapshot) {
 	start := time.Now()
-	a := kindCPUSnapshot{start: start, end: start.Add(time.Millisecond), read: start, epoch: "private-epoch", online: 8, cores: 8,
+	a := kindCPUSnapshot{start: start, end: start.Add(time.Millisecond), read: start, epoch: "private-epoch", online: 8, cores: 8, nanoCPUs: 2000000000,
 		counters: kindCPUCounters{UsageNS: 100, Periods: 10, ThrottledPeriods: 3, ThrottledNS: 50}, host: [8]uint64{10, 2, 3, 40, 5, 6, 7, 8}}
 	b := a
 	b.start, b.end, b.read = start.Add(time.Second), start.Add(time.Second+time.Millisecond), start.Add(time.Second)
@@ -375,7 +375,7 @@ func TestKindCPUResourceDiagnosticRefusalStages(t *testing.T) {
 		t.Fatal("read refusal did not close response")
 	}
 	client, calls, bodies := kindCPUControlClient(t, kindCPUControlInspect(), kindCPUControlStats(), http.StatusOK)
-	_, err = kindCPUObserve(client, kindCPUControlID, kindCPUControlCluster, func() ([8]uint64, int, error) {
+	_, err = kindCPUObserve(client, kindCPUControlID, kindCPUControlCluster, 2000000000, func() ([8]uint64, int, error) {
 		return [8]uint64{}, 0, errors.New("private-provider-host /proc/private")
 	})
 	kindCPUControlRefusal(t, err, kindCPUHostFailure, 0)
@@ -392,7 +392,7 @@ func TestKindCPUResourceDiagnosticOptionalOnlineCPU(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			client, calls, closed := kindCPUControlClient(t, kindCPUControlInspect(), row.stats, http.StatusOK)
 			for i := 0; i < 2; i++ {
-				snapshot, err := kindCPUObserve(client, kindCPUControlID, kindCPUControlCluster, kindCPUControlHost)
+				snapshot, err := kindCPUObserve(client, kindCPUControlID, kindCPUControlCluster, 2000000000, kindCPUControlHost)
 				if err != nil || snapshot.online != 0 || snapshot.counters.UsageNS != 100 {
 					t.Fatal("valid unavailable online CPU observation refused")
 				}
@@ -410,5 +410,87 @@ func TestKindCPUResourceDiagnosticOptionalOnlineCPU(t *testing.T) {
 			_, err = kindCPUCompare(a, b)
 			kindCPUControlRefusal(t, err, kindCPUComparison, 0)
 		})
+	}
+}
+
+func TestKindCPUResourceDiagnosticQuota(t *testing.T) {
+	for _, row := range []struct {
+		value             string
+		present           bool
+		diagnostic        string
+		diagnosticPresent bool
+		quota             string
+		nanoCPUs          uint64
+	}{
+		{"", false, "", false, "2", 2000000000},
+		{"", false, "1", true, "2", 2000000000},
+		{"2", true, "1", true, "2", 2000000000},
+		{"3", true, "1", true, "3", 3000000000},
+	} {
+		quota, nanoCPUs, err := kindCPUQuota(row.value, row.present, row.diagnostic, row.diagnosticPresent)
+		if err != nil || quota != row.quota || nanoCPUs != row.nanoCPUs {
+			t.Fatal("closed quota selection changed")
+		}
+	}
+	for _, value := range []string{"", "1", "4", "02", "+2", "2.0", " 2", "3 ", "-1", "max"} {
+		quota, nanoCPUs, err := kindCPUQuota(value, true, "1", true)
+		kindCPUControlRefusal(t, err, kindCPUActivation, 0)
+		if quota != "" || nanoCPUs != 0 {
+			t.Fatal("invalid quota returned a resource override")
+		}
+	}
+	for _, row := range []struct {
+		value   string
+		present bool
+	}{{"", false}, {"", true}, {"0", true}, {"true", true}} {
+		_, _, err := kindCPUQuota("3", true, row.value, row.present)
+		kindCPUControlRefusal(t, err, kindCPUActivation, 0)
+	}
+	for _, row := range []struct {
+		quota    string
+		nanoCPUs uint64
+	}{{"2", 2000000000}, {"3", 3000000000}} {
+		t.Run(row.quota, func(t *testing.T) {
+			t.Setenv("ARCADECTL_KIND_CPU_DIAGNOSTICS", "1")
+			t.Setenv("ARCADECTL_KIND_CPU_QUOTA", row.quota)
+			quota, nanoCPUs := kindCPUFixtureQuota(t)
+			if quota != row.quota || nanoCPUs != row.nanoCPUs {
+				t.Fatal("fixture quota did not preserve immutable selection")
+			}
+			inspect := strings.Replace(kindCPUControlInspect(), `"NanoCpus":2000000000`, `"NanoCpus":`+row.quota+`000000000`, 1)
+			client, calls, closed := kindCPUControlClient(t, inspect, kindCPUControlStats(), http.StatusOK)
+			for i := 0; i < 2; i++ {
+				snapshot, err := kindCPUObserve(client, kindCPUControlID, kindCPUControlCluster, nanoCPUs, kindCPUControlHost)
+				if err != nil || snapshot.nanoCPUs != nanoCPUs {
+					t.Fatal("matching selected quota refused or replaced")
+				}
+			}
+			if *calls != 6 || *closed != 6 {
+				t.Fatal("quota changed snapshot read bounds")
+			}
+			a, b := kindCPUControlPair()
+			a.nanoCPUs, b.nanoCPUs = nanoCPUs, nanoCPUs
+			result, err := kindCPUCompare(a, b)
+			if err != nil || result.NanoCPUs != nanoCPUs {
+				t.Fatal("summary did not emit validated selected quota")
+			}
+			b.nanoCPUs = 5000000000 - nanoCPUs
+			_, err = kindCPUCompare(a, b)
+			kindCPUControlRefusal(t, err, kindCPUComparison, 0)
+			otherQuota := uint64(5000000000) - nanoCPUs
+			client, calls, closed = kindCPUControlClient(t, inspect, kindCPUControlStats(), http.StatusOK)
+			_, err = kindCPUObserve(client, kindCPUControlID, kindCPUControlCluster, otherQuota, kindCPUControlHost)
+			kindCPUControlRefusal(t, err, kindCPUNanoLimit, 0)
+			if *calls != 1 || *closed != 1 {
+				t.Fatal("mismatched quota made extra reads")
+			}
+		})
+	}
+	// A forged expectation cannot expand the closed two/three-CPU experiment.
+	client, calls, closed := kindCPUControlClient(t, kindCPUControlInspect(), kindCPUControlStats(), http.StatusOK)
+	_, err := kindCPUObserve(client, kindCPUControlID, kindCPUControlCluster, 4000000000, kindCPUControlHost)
+	kindCPUControlRefusal(t, err, kindCPUNanoLimit, 0)
+	if *calls != 0 || *closed != 0 {
+		t.Fatal("invalid expectation reached Docker")
 	}
 }

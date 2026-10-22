@@ -84,6 +84,7 @@ type kindCPUSnapshot struct {
 	read       time.Time
 	epoch      string
 	restarts   uint64
+	nanoCPUs   uint64
 	online     uint64
 	counters   kindCPUCounters
 	host       [8]uint64
@@ -123,7 +124,39 @@ func kindCPUEnabled(value string, present bool) (bool, error) {
 	return true, nil
 }
 
-func observeKindCPUFixture(t *testing.T, id, cluster string) {
+// The only test-only quota choices are two and three CPUs. A supplied quota
+// requires explicit diagnostics; no other resource setting is configurable.
+func kindCPUQuota(value string, present bool, diagnostic string, diagnosticPresent bool) (string, uint64, error) {
+	if !present {
+		return "2", 2000000000, nil
+	}
+	if !diagnosticPresent || diagnostic != "1" {
+		return "", 0, kindCPUFailure(kindCPUActivation)
+	}
+	switch value {
+	case "2":
+		return "2", 2000000000, nil
+	case "3":
+		return "3", 3000000000, nil
+	default:
+		return "", 0, kindCPUFailure(kindCPUActivation)
+	}
+}
+
+func kindCPUFixtureQuota(t *testing.T) (string, uint64) {
+	t.Helper()
+	value, present := os.LookupEnv("ARCADECTL_KIND_CPU_QUOTA")
+	diagnostic, diagnosticPresent := os.LookupEnv("ARCADECTL_KIND_CPU_DIAGNOSTICS")
+	quota, nanoCPUs, err := kindCPUQuota(value, present, diagnostic, diagnosticPresent)
+	if err != nil {
+		encoded, _ := json.Marshal(kindCPURefused(err))
+		t.Logf("Kind CPU diagnostic: %s", encoded)
+		t.Fatal(errKindCPU.Error())
+	}
+	return quota, nanoCPUs
+}
+
+func observeKindCPUFixture(t *testing.T, id, cluster string, expectedNanoCPUs uint64) {
 	t.Helper()
 	enabled, err := kindCPUEnabled(os.LookupEnv("ARCADECTL_KIND_CPU_DIAGNOSTICS"))
 	if !enabled && err == nil {
@@ -166,7 +199,7 @@ func observeKindCPUFixture(t *testing.T, id, cluster string) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", "/var/run/docker.sock")
 	}}
 	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return errKindCPU }}
-	before, err := kindCPUObserve(client, id, cluster, kindCPUHost)
+	before, err := kindCPUObserve(client, id, cluster, expectedNanoCPUs, kindCPUHost)
 	if err != nil {
 		transport.CloseIdleConnections()
 		emit(kindCPUSummary{}, err)
@@ -177,7 +210,7 @@ func observeKindCPUFixture(t *testing.T, id, cluster string) {
 	// The fixture's test context may already be canceled during Cleanup.
 	t.Cleanup(func() {
 		defer transport.CloseIdleConnections()
-		after, failure := kindCPUObserve(client, id, cluster, kindCPUHost)
+		after, failure := kindCPUObserve(client, id, cluster, expectedNanoCPUs, kindCPUHost)
 		result := kindCPUSummary{Status: "refused"}
 		if failure == nil {
 			result, failure = kindCPUCompare(before, after)
@@ -238,40 +271,44 @@ func kindCPUNumber(value any) (uint64, bool) {
 	return uint64(n), ok && n >= 0
 }
 
-func kindCPUInspect(ctx context.Context, client *http.Client, id, cluster string) (string, uint64, error) {
+func kindCPUInspect(ctx context.Context, client *http.Client, id, cluster string, expectedNanoCPUs uint64) (string, uint64, uint64, error) {
+	if expectedNanoCPUs != 2000000000 && expectedNanoCPUs != 3000000000 {
+		return "", 0, 0, kindCPUFailure(kindCPUNanoLimit)
+	}
 	inspect, err := kindCPUJSON(ctx, client, id+"/json")
 	if err != nil {
-		return "", 0, err
+		return "", 0, 0, err
 	}
 	if kindCPUField(inspect, "Id") != id || kindCPUField(inspect, "Name") != "/"+cluster+"-control-plane" || kindCPUField(inspect, "Config", "Labels", "io.x-k8s.kind.cluster") != cluster || kindCPUField(inspect, "State", "Running") != true {
-		return "", 0, kindCPUFailure(kindCPUIdentity)
+		return "", 0, 0, kindCPUFailure(kindCPUIdentity)
 	}
 	for _, cap := range []struct {
 		key      string
 		expected uint64
 		stage    uint16
 	}{
-		{"NanoCpus", 2000000000, kindCPUNanoLimit}, {"Memory", 3221225472, kindCPUMemoryLimit}, {"MemorySwap", 3221225472, kindCPUSwapLimit}, {"PidsLimit", 2048, kindCPUPIDsLimit},
+		{"NanoCpus", expectedNanoCPUs, kindCPUNanoLimit}, {"Memory", 3221225472, kindCPUMemoryLimit}, {"MemorySwap", 3221225472, kindCPUSwapLimit}, {"PidsLimit", 2048, kindCPUPIDsLimit},
 	} {
 		if value, ok := kindCPUNumber(kindCPUField(inspect, "HostConfig", cap.key)); !ok || value != cap.expected {
-			return "", 0, kindCPUFailure(cap.stage)
+			return "", 0, 0, kindCPUFailure(cap.stage)
 		}
 	}
 	epoch, _ := kindCPUField(inspect, "State", "StartedAt").(string)
 	started, err := time.Parse(time.RFC3339Nano, epoch)
 	restarts, ok := kindCPUNumber(inspect["RestartCount"])
 	if err != nil || started.IsZero() || !ok {
-		return "", 0, kindCPUFailure(kindCPUEpoch)
+		return "", 0, 0, kindCPUFailure(kindCPUEpoch)
 	}
-	return epoch, restarts, nil
+	nanoCPUs, _ := kindCPUNumber(kindCPUField(inspect, "HostConfig", "NanoCpus"))
+	return epoch, restarts, nanoCPUs, nil
 }
 
-func kindCPUObserve(client *http.Client, id, cluster string, host func() ([8]uint64, int, error)) (kindCPUSnapshot, error) {
+func kindCPUObserve(client *http.Client, id, cluster string, expectedNanoCPUs uint64, host func() ([8]uint64, int, error)) (kindCPUSnapshot, error) {
 	s := kindCPUSnapshot{start: time.Now()}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var err error
-	s.epoch, s.restarts, err = kindCPUInspect(ctx, client, id, cluster)
+	s.epoch, s.restarts, s.nanoCPUs, err = kindCPUInspect(ctx, client, id, cluster, expectedNanoCPUs)
 	if err != nil {
 		return s, err
 	}
@@ -322,11 +359,11 @@ func kindCPUObserve(client *http.Client, id, cluster string, host func() ([8]uin
 	}
 	// A restart or resource/ownership change during stats must not turn a newer
 	// counter value into evidence for the opening incarnation or resource caps.
-	closingEpoch, closingRestarts, err := kindCPUInspect(ctx, client, id, cluster)
+	closingEpoch, closingRestarts, closingNanoCPUs, err := kindCPUInspect(ctx, client, id, cluster, expectedNanoCPUs)
 	if err != nil {
 		return s, err
 	}
-	if closingEpoch != s.epoch || closingRestarts != s.restarts {
+	if closingEpoch != s.epoch || closingRestarts != s.restarts || closingNanoCPUs != s.nanoCPUs {
 		return s, kindCPUFailure(kindCPUClosingDrift)
 	}
 	s.host, s.cores, err = host()
@@ -376,6 +413,9 @@ func kindCPUCompare(a, b kindCPUSnapshot) (kindCPUSummary, error) {
 	refused := kindCPURefused(failure)
 	lower, upper := b.start.Sub(a.end), b.end.Sub(a.start)
 	readDelta := b.read.Sub(a.read)
+	if (a.nanoCPUs != 2000000000 && a.nanoCPUs != 3000000000) || a.nanoCPUs != b.nanoCPUs {
+		return refused, failure
+	}
 	if a.start.After(a.end) || b.start.After(b.end) || a.end.Sub(a.start) > 5*time.Second || b.end.Sub(b.start) > 5*time.Second || lower <= 0 || upper < lower || upper == time.Duration(math.MaxInt64) || readDelta <= 0 || readDelta == time.Duration(math.MaxInt64) || a.epoch == "" || a.epoch != b.epoch || a.restarts != b.restarts || a.online != b.online || a.cores <= 0 || a.cores != b.cores {
 		return refused, failure
 	}
@@ -407,7 +447,7 @@ func kindCPUCompare(a, b kindCPUSnapshot) (kindCPUSummary, error) {
 	if hostTotal == 0 {
 		return refused, failure
 	}
-	return kindCPUSummary{Status: "observed", NanoCPUs: 2000000000, MemoryBytes: 3221225472, MemorySwapTotalBytes: 3221225472, PIDs: 2048,
+	return kindCPUSummary{Status: "observed", NanoCPUs: a.nanoCPUs, MemoryBytes: 3221225472, MemorySwapTotalBytes: 3221225472, PIDs: 2048,
 		OnlineCPUs: a.online, RuntimeCPUs: a.cores, ParentElapsedLowerNS: int64(lower), ParentElapsedUpperNS: int64(upper), DockerReadDeltaNS: int64(readDelta), Before: a.counters, After: b.counters, Delta: delta,
 		HostTotalDeltaTicks: hostTotal, HostIdleDeltaTicks: b.host[3] - a.host[3], HostIOWaitDeltaTicks: b.host[4] - a.host[4]}, nil
 }

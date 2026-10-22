@@ -1,4 +1,4 @@
-name: Kind CPU resource diagnostic
+name: Kind CPU quota comparison
 
 on:
   workflow_dispatch:
@@ -12,9 +12,10 @@ concurrency:
 
 jobs:
   native-cpu-diagnostic:
-    name: Native Kind CPU resource diagnostics
+    name: Native Kind CPU quota comparison
     runs-on: ubuntu-24.04
-    timeout-minutes: 50
+    # Four serial legs retain their unchanged 35-minute Go budgets.
+    timeout-minutes: 150
     env:
       GOMAXPROCS: "2"
       GOMEMLIMIT: 1GiB
@@ -37,24 +38,32 @@ jobs:
           diagnostic_pattern='^TestKindCPUResourceDiagnostic'
           diagnostic_listing=$(go test -race -tags=kindinstall -p 1 -list "$diagnostic_pattern" ./internal/installengine)
           mapfile -t diagnostic_roots < <(printf '%s\n' "$diagnostic_listing" | awk '/^Test[^[:space:]]*$/' | LC_ALL=C sort)
-          if [[ ${#diagnostic_roots[@]} -eq 0 ]]; then
-            echo 'No compiled CPU diagnostic controls; refusing an empty gate.' >&2
+          if [[ ${#diagnostic_roots[@]} -ne 10 ]]; then
+            echo 'Expected ten compiled CPU diagnostic controls; refusing an incomplete gate.' >&2
             exit 1
           fi
           printf 'CPU diagnostic control roots: %s\n' "${diagnostic_roots[@]}"
           go test -race -tags=kindinstall -p 1 -timeout=5m -v ./internal/installengine -run "$diagnostic_pattern" -count=1
-      - name: Measure unchanged native baseline on its owned two-CPU node
+      - name: Compare unchanged native baseline on owned two- and three-CPU nodes
         env:
           ARCADECTL_KIND_CPU_DIAGNOSTICS: "1"
         shell: bash
         run: |
           set -euo pipefail
-          /usr/bin/time -f 'kind-cpu-native elapsed-seconds=%e user-seconds=%U system-seconds=%S max-rss-kib=%M exit=%x' make test-kind-install-precontroller INSTALL_PRECONTROLLER_PROFILE=137
+          for arc_cpu_pair in 1:2 2:3 3:3 4:2; do
+            IFS=: read -r arc_cpu_arm arc_cpu_quota <<< "$arc_cpu_pair"
+            export ARCADECTL_KIND_CPU_QUOTA="$arc_cpu_quota"
+            printf 'kind-cpu-arm index=%s quota=%s begin\n' "$arc_cpu_arm" "$arc_cpu_quota"
+            /usr/bin/time -f "kind-cpu-arm index=$arc_cpu_arm quota=$arc_cpu_quota elapsed-seconds=%e user-seconds=%U system-seconds=%S max-rss-kib=%M exit=%x" make test-kind-install-precontroller INSTALL_PRECONTROLLER_PROFILE=137
+          done
 
 # Experiment only: no required CI family, proof, command, profile, timeout or
-# cadence is replaced. The existing node stays at 2 CPUs, 3 GiB memory/swap and
-# 2048 PIDs; registry limits are unchanged. Only exact-owned-node read-only
-# counters and host numeric CPU totals are observed. No raw profile artifact,
+# cadence is replaced. Four serial legs on one runner compare only the owned
+# node's 2-versus-3 CPU quota, in both orders. Its 3 GiB memory/swap, 2048 PIDs,
+# registry limits and every proof remain unchanged. Default CI stays at 2 CPUs.
+# Build/cache/order effects remain; this is not full signed-CI speedup proof.
+# Only exact-owned-node read-only counters and host numeric CPU totals are
+# observed. No raw profile artifact,
 # extra runner type, paid capacity or Captain deployment is introduced.
 # Whole-fixture counters and overlapping throttling time are not exclusive
 # proof-phase attribution, lost wall time or causal speedup evidence.
