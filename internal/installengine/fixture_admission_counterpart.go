@@ -59,15 +59,39 @@ func fixtureCounterpartNotFound(response *http.Response, key installstate.Key) b
 // constructor. Full phase LIST/GC observations bracket these named reads in the
 // driver; neither a GET alone nor matching generated metadata can confer a bit.
 func (w *fixtureWire) counterpartAbsentLocked(ctx context.Context, number fixtureAdmissionCase, phase *fixturePhaseObservation) error {
+	return w.counterpartAbsentWithCaseLocked(ctx, number, phase, nil)
+}
+
+func (w *fixtureWire) counterpartAbsentCaseLocked(ctx context.Context, number fixtureAdmissionCase, phase *fixturePhaseObservation, scope *admissionCaseScope) error {
+	if scope == nil {
+		return ErrFixtures
+	}
+	return w.counterpartAbsentWithCaseLocked(ctx, number, phase, scope)
+}
+
+func (w *fixtureWire) counterpartAbsentWithCaseLocked(ctx context.Context, number fixtureAdmissionCase, phase *fixturePhaseObservation, scope *admissionCaseScope) (err error) {
+	complete := false
+	if scope != nil {
+		if scope.begin(ctx) != nil {
+			return ErrFixtures
+		}
+		defer scope.finishLease(&err, &complete)
+		if w != scope.wire || number != scope.number || phase != scope.before {
+			return ErrFixtures
+		}
+	}
 	r, err := w.admissionRequest(number, phase)
-	if err != nil || r.slot != -1 || r.operation != probeCreateOperation || w.current(ctx) != nil {
+	if scope != nil && (r.object == nil || !reflect.DeepEqual(r.object.Object, scope.probe.object.Object)) {
+		return ErrFixtures
+	}
+	if err != nil || r.slot != -1 || r.operation != probeCreateOperation || w.currentCaseBoundary(ctx, scope) != nil {
 		return ErrFixtures
 	}
 	key := fixtureObjectKey(r.object)
 	permission, err := fixturePermission(key, "get")
 	parent := w.actors.admission.prerequisites.access
 	discovery, discoveryErr := parent.discover(ctx, key.APIVersion)
-	if err != nil || discoveryErr != nil || !discoveredPermission(discovery, permission) || parent.authorize(ctx, permission.spec) != nil || w.current(ctx) != nil {
+	if err != nil || discoveryErr != nil || !discoveredPermission(discovery, permission) || parent.authorize(ctx, permission.spec) != nil || w.currentCaseBoundary(ctx, scope) != nil {
 		return ErrFixtures
 	}
 	a := w.clients[0]
@@ -103,8 +127,9 @@ func (w *fixtureWire) counterpartAbsentLocked(ctx context.Context, number fixtur
 	if response != nil && response.Body != nil {
 		_ = response.Body.Close()
 	}
-	if requestErr != nil || !capture.success || !capture.notFound || capture.result != nil || w.current(ctx) != nil {
+	if requestErr != nil || !capture.success || !capture.notFound || capture.result != nil || w.currentCaseBoundary(ctx, scope) != nil {
 		return ErrFixtures
 	}
+	complete = true
 	return nil
 }

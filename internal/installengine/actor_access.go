@@ -259,8 +259,38 @@ func (actors *admissionActors) verify(ctx context.Context) error {
 // effects. The complete provider must additionally own fixtures, validate whole
 // accepted shapes and prove cleanup; this primitive alone proves none of those.
 func (actors *admissionActors) probe(ctx context.Context, actor admissionActor, operation admissionProbeOperation, object *unstructured.Unstructured, policy, binding, validation string) (*unstructured.Unstructured, error) {
+	return actors.probeWithCase(ctx, actor, operation, object, policy, binding, validation, nil)
+}
+
+func (actors *admissionActors) probeCase(ctx context.Context, actor admissionActor, operation admissionProbeOperation, object *unstructured.Unstructured, policy, binding, validation string, scope *admissionCaseScope) (*unstructured.Unstructured, error) {
+	if scope == nil {
+		return nil, ErrFixtures
+	}
+	return actors.probeWithCase(ctx, actor, operation, object, policy, binding, validation, scope)
+}
+
+func (actors *admissionActors) probeWithCase(ctx context.Context, actor admissionActor, operation admissionProbeOperation, object *unstructured.Unstructured, policy, binding, validation string, scope *admissionCaseScope) (result *unstructured.Unstructured, err error) {
+	complete := false
+	if scope != nil {
+		if scope.begin(ctx) != nil {
+			return nil, ErrFixtures
+		}
+		defer func() {
+			scope.finishLease(&err, &complete)
+			if err != nil {
+				result = nil
+			}
+		}()
+		if actors != scope.actors {
+			return nil, ErrFixtures
+		}
+	}
 	if actors == nil || ctx == nil || object == nil {
 		return nil, ErrInvalid
+	}
+	object = object.DeepCopy()
+	if scope != nil && !scope.matchesProbe(actor, operation, object, policy, binding, validation) {
+		return nil, ErrFixtures
 	}
 	access := actors.clients[actor]
 	if access == nil || access.actor == nil || !actors.allowsDenial(policy, binding, validation) {
@@ -272,17 +302,18 @@ func (actors *admissionActors) probe(ctx context.Context, actor admissionActor, 
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	if actors.verify(ctx) != nil {
+	if actors.verifyCaseBoundary(ctx, scope) != nil {
 		return nil, ErrAdmission
 	}
 	permission, err := actorPermission(key, operation)
-	if err != nil || access.authorize(ctx, permission.spec) != nil || actors.verify(ctx) != nil {
+	if err != nil || access.authorize(ctx, permission.spec) != nil || actors.verifyCaseBoundary(ctx, scope) != nil {
 		return nil, ErrAdmission
 	}
-	result, err := access.probeOperation(ctx, operation, object, policy, binding, validation)
-	if err != nil || actors.verify(ctx) != nil {
+	result, err = access.probeOperation(ctx, operation, object, policy, binding, validation)
+	if err != nil || actors.verifyCaseBoundary(ctx, scope) != nil {
 		return nil, ErrAdmission
 	}
+	complete = true
 	return result, nil
 }
 

@@ -84,8 +84,12 @@ func (d *fixtureAdmissionDriver) sealLocked() (fixtureDriverSeal, error) {
 }
 
 func (d *fixtureAdmissionDriver) unchangedLocked(ctx context.Context, seal fixtureDriverSeal) error {
+	return d.unchangedWithCaseLocked(ctx, seal, nil)
+}
+
+func (d *fixtureAdmissionDriver) unchangedWithCaseLocked(ctx context.Context, seal fixtureDriverSeal, scope *admissionCaseScope) error {
 	w, f := d.wire, d.wire.ledger
-	if !w.phaseReadable() || f.identity != seal.identity || f.document.Revision != seal.revision || !bytes.Equal(f.body, seal.body) || f.worldIdentity == nil || *f.worldIdentity != seal.worldID || w.current(ctx) != nil {
+	if !w.phaseReadable() || f.identity != seal.identity || f.document.Revision != seal.revision || !bytes.Equal(f.body, seal.body) || f.worldIdentity == nil || *f.worldIdentity != seal.worldID || w.currentCaseBoundary(ctx, scope) != nil {
 		return ErrFixtures
 	}
 	s := w.actors.request.Snapshot
@@ -117,8 +121,9 @@ func (d *fixtureAdmissionDriver) run(ctx context.Context) (err error) {
 	f := d.wire.ledger
 	f.wireMu.Lock()
 	defer f.wireMu.Unlock()
+	runComplete := false
 	defer func() {
-		if err != nil {
+		if !runComplete {
 			d.failed = true
 			f.behaviorCompletion = nil
 		}
@@ -151,7 +156,9 @@ func (d *fixtureAdmissionDriver) run(ctx context.Context) (err error) {
 		}
 	}
 	traceAdmission(ctx, admissionFinish, -1)
-	return d.finishLocked(ctx)
+	err = d.finishLocked(ctx)
+	runComplete = err == nil
+	return err
 }
 
 func (d *fixtureAdmissionDriver) createOriginalsLocked(ctx context.Context) error {
@@ -256,9 +263,13 @@ func fixtureAdmissionOriginalSettled(f *fixtureLedger, slot int, observation *fi
 }
 
 func (d *fixtureAdmissionDriver) runCaseLocked(ctx context.Context, number fixtureAdmissionCase) (err error) {
+	caseComplete := false
 	defer func() {
-		if err != nil {
+		if !caseComplete {
 			d.failed = true
+			if d.wire != nil && d.wire.ledger != nil {
+				d.wire.ledger.behaviorCompletion = nil
+			}
 		}
 	}()
 	w, f := d.wire, d.wire.ledger
@@ -284,8 +295,35 @@ func (d *fixtureAdmissionDriver) runCaseLocked(ctx context.Context, number fixtu
 	if err != nil {
 		return err
 	}
-	if r.slot == -1 && w.counterpartAbsentLocked(ctx, number, before) != nil {
+	if r.object == nil {
 		return ErrFixtures
+	}
+	r.object = r.object.DeepCopy()
+	caseCtx := ctx
+	var scope *admissionCaseScope
+	// Entire seed/marker-numbered cases stay on their original full path.
+	if number != 39 && number != 45 {
+		caseCtx, scope, err = newAdmissionCaseScope(ctx, d, number, seal, before)
+		if err != nil {
+			return ErrFixtures
+		}
+		defer func() {
+			if !caseComplete {
+				scope.refuse()
+			}
+			_ = scope.close()
+		}()
+	}
+	if r.slot == -1 {
+		var absentErr error
+		if scope == nil {
+			absentErr = w.counterpartAbsentLocked(ctx, number, before)
+		} else {
+			absentErr = w.counterpartAbsentCaseLocked(caseCtx, number, before, scope)
+		}
+		if absentErr != nil {
+			return ErrFixtures
+		}
 	}
 	traceAdmission(ctx, admissionCaseAuthorization, int(number))
 	key := fixtureObjectKey(r.object)
@@ -303,12 +341,19 @@ func (d *fixtureAdmissionDriver) runCaseLocked(ctx context.Context, number fixtu
 		permission.spec.ResourceAttributes.Subresource = "resize"
 	}
 	parent := w.actors.admission.prerequisites.access
-	discovery, discoveryErr := parent.discover(ctx, key.APIVersion)
+	discovery, discoveryErr := parent.discover(caseCtx, key.APIVersion)
 	authorizer := parent
 	if r.actor != 0 {
 		authorizer = w.actors.clients[r.actor]
 	}
-	if discoveryErr != nil || !discoveredPermission(discovery, permission) || authorizer == nil || authorizer.authorize(ctx, permission.spec) != nil || d.unchangedLocked(ctx, seal) != nil {
+	if discoveryErr != nil || !discoveredPermission(discovery, permission) || authorizer == nil || authorizer.authorize(caseCtx, permission.spec) != nil {
+		return ErrFixtures
+	}
+	if scope == nil {
+		if d.unchangedLocked(ctx, seal) != nil {
+			return ErrFixtures
+		}
+	} else if d.unchangedCaseLocked(caseCtx, seal, scope) != nil {
 		return ErrFixtures
 	}
 	binding, message := "", ""
@@ -335,9 +380,17 @@ func (d *fixtureAdmissionDriver) runCaseLocked(ctx context.Context, number fixtu
 	var replyErr error
 	traceAdmission(ctx, admissionCaseProbe, int(number))
 	if r.actor == 0 {
-		reply, replyErr = parent.probeOperation(ctx, r.operation, r.object, r.policy, binding, message)
+		if scope == nil {
+			reply, replyErr = parent.probeOperation(ctx, r.operation, r.object, r.policy, binding, message)
+		} else {
+			reply, replyErr = w.probeParentCase(caseCtx, r.operation, r.object, r.policy, binding, message, scope)
+		}
 	} else {
-		reply, replyErr = w.actors.probe(ctx, r.actor, r.operation, r.object, r.policy, binding, message)
+		if scope == nil {
+			reply, replyErr = w.actors.probe(ctx, r.actor, r.operation, r.object, r.policy, binding, message)
+		} else {
+			reply, replyErr = w.actors.probeCase(caseCtx, r.actor, r.operation, r.object, r.policy, binding, message, scope)
+		}
 	}
 	// Do not short-circuit this observation or named absence read on send
 	// errors. Neither a partial proof nor transport success grants a case bit.
@@ -345,10 +398,22 @@ func (d *fixtureAdmissionDriver) runCaseLocked(ctx context.Context, number fixtu
 	after, phaseErr := w.observePhaseLocked(ctx)
 	counterpartErr := error(nil)
 	if r.slot == -1 {
-		counterpartErr = w.counterpartAbsentLocked(ctx, number, before)
+		if scope != nil && replyErr == nil && phaseErr == nil {
+			counterpartErr = w.counterpartAbsentCaseLocked(caseCtx, number, before, scope)
+		} else {
+			// Read-only mandatory closure after a failed probe, never a retry
+			// or a fallback capable of rescuing the failed case.
+			counterpartErr = w.counterpartAbsentLocked(ctx, number, before)
+		}
 	}
 	observed := time.Now().UTC()
-	if phaseErr != nil || !fixtureSameObservation(before, after) || counterpartErr != nil || d.unchangedLocked(ctx, seal) != nil || replyErr != nil {
+	var scopeErr error
+	if scope != nil {
+		scopeErr = scope.close()
+	}
+	// Revoke/join before this full remote guard and the eventual case bit.
+	finalErr := d.unchangedLocked(ctx, seal)
+	if phaseErr != nil || !fixtureSameObservation(before, after) || counterpartErr != nil || scopeErr != nil || finalErr != nil || replyErr != nil {
 		if replyErr != nil {
 			// Prefer the known probe refusal AFTER mandatory post-observations.
 			// This is a diagnostic stage, not the sole cause or last read.
@@ -367,6 +432,7 @@ func (d *fixtureAdmissionDriver) runCaseLocked(ctx context.Context, number fixtu
 	d.previous = after
 	d.completed |= uint64(1) << number
 	d.next++
+	caseComplete = true
 	return nil
 }
 
