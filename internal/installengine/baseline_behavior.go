@@ -98,6 +98,15 @@ func (b *baselineBehavior) prove(ctx context.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 	defer cancel()
+	if ctx.Value(baselineProbeSuiteKey{}) != nil || b.actors.verify(ctx) != nil {
+		return ErrSecurityBaseline
+	}
+	closingContext := ctx
+	ctx, suite, err := newBaselineProbeSuite(ctx, b.actors)
+	if err != nil {
+		return ErrSecurityBaseline
+	}
+	defer suite.close()
 	traceBaselineBoundary(ctx, baselineBoundaryDeniedOpening)
 	if b.actors.verifyDeniedBehavior(ctx, b) != nil {
 		return ErrSecurityBaseline
@@ -122,7 +131,7 @@ func (b *baselineBehavior) prove(ctx context.Context) error {
 		}
 		start := time.Now().UTC()
 		traceBaselineBoundary(ctx, baselineBoundaryProducerWire)
-		reply, err := b.actors.probe(ctx, row.actor, probeCreateOperation, positive, "", "", "")
+		reply, err := b.probe(ctx, row.actor, probeCreateOperation, positive, "", "", "")
 		end := time.Now().UTC()
 		if err != nil {
 			return ErrSecurityBaseline
@@ -231,7 +240,16 @@ func (b *baselineBehavior) prove(ctx context.Context) error {
 		}
 	}
 	traceBaselineBoundary(ctx, baselineBoundaryClosing)
-	return b.close(ctx)
+	if suite.close() != nil || b.close(closingContext) != nil || b.actors.verify(closingContext) != nil {
+		return ErrSecurityBaseline
+	}
+	// The final global fence performs remote reads after close's local receipt
+	// checks. Hold and confirm those SAME opening descriptors through this last
+	// window too; replacing a receipt cannot become proof success.
+	if c.engine.confirmBaselineParentReceipts(b.actors.snapshot.Document(), b.parents) != nil || c.engine.confirmBaselineMetadataReceipts(b.metadata) != nil || closingContext.Err() != nil {
+		return ErrSecurityBaseline
+	}
+	return nil
 }
 
 func baselineObjectKey(object *unstructured.Unstructured) installstate.Key {
@@ -246,7 +264,7 @@ func (b *baselineBehavior) denial(ctx context.Context, actor admissionActor, ope
 	if b.readExactDiagnostic(ctx, key, original, baselineFailureDenialBefore) != nil {
 		return ErrSecurityBaseline
 	}
-	reply, err := b.actors.probe(ctx, actor, operation, candidate, policy, policy, installbaseline.DenialMessage)
+	reply, err := b.probe(ctx, actor, operation, candidate, policy, policy, installbaseline.DenialMessage)
 	if err != nil || reply != nil {
 		traceBaselineFailure(ctx, baselineFailureDenialProbe, key.Kind, 0)
 		return ErrSecurityBaseline

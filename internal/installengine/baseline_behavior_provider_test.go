@@ -203,6 +203,12 @@ func testBaselineBehaviorWholeProviderWithActivation(t *testing.T, scenario stri
 }
 
 func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string, protocol func(*Engine, *installstate.Snapshot, *ClusterSecurityBaseline, func() int) error, activation *baselineBehaviorActivationFixture, effect *baselineBehaviorEffectFixture, fences ...*testDeniedCompositionFence) {
+	testBaselineBehaviorWholeProviderSuite(t, scenario, protocol, activation, effect, nil, fences...)
+}
+
+// A test-only fault seam around the unchanged complete provider responder.
+// Nil preserves every original scenario and independent request oracle.
+func testBaselineBehaviorWholeProviderSuite(t *testing.T, scenario string, protocol func(*Engine, *installstate.Snapshot, *ClusterSecurityBaseline, func() int) error, activation *baselineBehaviorActivationFixture, effect *baselineBehaviorEffectFixture, suite *testBaselineProbeSuiteFault, fences ...*testDeniedCompositionFence) {
 	t.Helper()
 	runtime := strings.HasPrefix(scenario, "runtime-")
 	mode := strings.TrimPrefix(scenario, "runtime-")
@@ -212,6 +218,9 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 	complete := strings.HasPrefix(mode, "complete-")
 	precontroller := mode == "precontroller"
 	positive := mode == "healthy" || mode == "pending-service" || mode == "pending-parent" || complete || closeOrder || precontroller
+	if suite != nil {
+		positive = false // Each opt-in fault must reach a real full-provider refusal.
+	}
 	pendingService := mode == "pending-service" || mode == "final-receipt-replacement" || mode == "final-close-order-service"
 	pendingParent := mode == "pending-parent" || mode == "final-parent-receipt-replacement" || mode == "final-close-order-parent"
 	if mode == "complete-upgrade" || mode == "complete-rollback" {
@@ -436,6 +445,9 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 	if effect != nil {
 		effect.namespace = ns
 	}
+	if suite != nil {
+		suite.prepare(t, objects, ns)
+	}
 	// Independent literal resources, not production catalog derivation.
 	resources := [][3]string{{"v1", "Pod", "pods"}, {"batch/v1", "Job", "jobs"}, {"apps/v1", "Deployment", "deployments"}, {"apps/v1", "ReplicaSet", "replicasets"}, {"apps/v1", "StatefulSet", "statefulsets"}, {"apps/v1", "DaemonSet", "daemonsets"}, {"v1", "ReplicationController", "replicationcontrollers"}, {"batch/v1", "CronJob", "cronjobs"}, {"v1", "ServiceAccount", "serviceaccounts"}, {"v1", "Service", "services"}, {"rbac.authorization.k8s.io/v1", "Role", "roles"}, {"rbac.authorization.k8s.io/v1", "RoleBinding", "rolebindings"}}
 	objectPaths := map[string]installstate.Key{}
@@ -475,6 +487,9 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 		mu.Lock()
 		defer mu.Unlock()
 		requests++
+		if suite != nil {
+			suite.before(t, r, objects, probes, rules, f.engine.files, d)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		user := r.Header.Get("Impersonate-User")
 		actor := strings.TrimPrefix(user, "system:serviceaccount:"+d.Namespace+":")
@@ -965,7 +980,10 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 	if persistent != 0 || guard.calls.Load() != 0 || !bytes.Equal(snapshot.Bytes(), f.snapshot.Bytes()) {
 		t.Fatal("behavior driver persisted, recursed or changed sealed journal")
 	}
-	if !positive && !injected {
+	if suite != nil {
+		suite.assert(t, objects, ns, probes, persistent)
+	}
+	if !positive && !injected && suite == nil {
 		t.Fatal("intended whole-driver fault was never reached")
 	}
 	if strings.HasPrefix(mode, "pod-denial-") {
@@ -1017,7 +1035,10 @@ func testBaselineBehaviorWholeProviderComposition(t *testing.T, scenario string,
 	if positive && (probes != wantProbes || positives != wantPositives || podProbes != wantPodProbes || rules["arcadectl-controller"] != wantRules || rules["arcadectl-destroy-controller"] != wantRules) {
 		t.Fatal("healthy driver omitted finite behavioral rows or closing rule passes")
 	}
-	if positive {
+	if suite != nil && (positives != 3 || podProbes != 6) {
+		t.Fatal("suite final refusal omitted positive producers or either actor's Pod rows")
+	}
+	if positive || suite != nil {
 		want := map[string]int{"arcadectl-controller/POST/Job": 9, "arcadectl-destroy-controller/POST/Job": 9, "arcadectl-controller/POST/Deployment": 9,
 			"arcadectl-controller/POST/ServiceAccount": 4, "arcadectl-destroy-controller/POST/ServiceAccount": 4, "arcadectl-controller/POST/Role": 4, "arcadectl-destroy-controller/POST/Role": 4,
 			"arcadectl-controller/POST/RoleBinding": 4, "arcadectl-destroy-controller/POST/RoleBinding": 4, "arcadectl-controller/POST/Service": 4,
