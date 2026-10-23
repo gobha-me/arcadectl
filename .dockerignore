@@ -1,6 +1,7 @@
 **
 !go.mod
 !go.sum
+!hack/download-go-modules.sh
 !api/**
 !cmd/**
 !internal/**
