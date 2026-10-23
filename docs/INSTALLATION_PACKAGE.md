@@ -442,7 +442,7 @@ TLS input refusal. API-server ownership is not controller-manager typechecking
 health or full effective enforcement. Explicit legacy enrollment and full signed
 lifecycle certification remain mandatory; these changes do not certify deployment.
 
-Within one live behavioral proof, complete original access/configuration
+Within one live baseline behavioral proof, complete original access/configuration
 UID/resource-version/template witnesses bracket the suite rather than every
 individual nonpersistent dry-run. This changes refusal timing: fixed probes may
 be sent before the suite rejects configuration drift. It does not permit a
@@ -464,6 +464,26 @@ or proof against arbitrary external authorizer changes. No success is reused
 across Verify calls, lifecycle Steps, intent/effect boundaries, recovery,
 retirement, or process restart. Existing persistent-write gates and complete
 PR/main lifecycle CI remain unchanged.
+
+The separate admission matrix can scope original access/configuration witnesses
+to one fixed nonpersistent case. Both complete phase observations and the first
+and final full unchanged checks remain. Every fixed case request, exact-operation
+authorization, discovery check, whole-result validation, original Namespace and
+journal check, and protected WAL/world identity check remains mandatory. The
+destruction-seed and retained-marker cases keep their entire full path. Setup,
+GC and leader renewals, persistent effects, cleanup, retirement and recovery do
+not use this scope.
+
+This changes refusal timing within that case: fixed nonpersistent requests may
+precede closing refusal of access/configuration drift. It grants no persistent
+operation and makes no atomic cross-resource lock claim. The private scope is
+bound to the original driver, wire, case, snapshot and sealed local files;
+copies, overlap, cancellation and refusal cannot transfer or revive it. It is
+revoked and joined before the final full check and case publication. Probe
+errors still require the full post-phase observation and applicable counterpart
+read using the parent context; those reads cannot rescue the failed case.
+Standalone callers retain full witnesses, and no scope crosses cases,
+invocations, lifecycle effects, recovery or restart.
 
 Add `--api-ca ABS_PATH`; for initial
 installation also supply `--api-certificate ABS_PATH --api-key ABS_PATH`.
