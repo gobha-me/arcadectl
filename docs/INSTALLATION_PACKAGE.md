@@ -442,6 +442,29 @@ TLS input refusal. API-server ownership is not controller-manager typechecking
 health or full effective enforcement. Explicit legacy enrollment and full signed
 lifecycle certification remain mandatory; these changes do not certify deployment.
 
+Within one live behavioral proof, complete original access/configuration
+UID/resource-version/template witnesses bracket the suite rather than every
+individual nonpersistent dry-run. This changes refusal timing: fixed probes may
+be sent before the suite rejects configuration drift. It does not permit a
+persistent operation on that rejected proof. Every probe retains fresh version
+and discovery checks, exact-operation authorization immediately followed by
+the complete joined two-actor containment catalog before sending, and a fresh
+complete containment catalog afterward. All behavioral cases, target
+before/after observations, negative-permission catalogs and original
+world/journal/receipt fences remain mandatory.
+
+The private serial probe scope belongs to only that invocation, is poisoned by
+refusal/cancellation/concurrent use, and is revoked and joined before the full
+closing proof. Standalone probes keep their full per-probe witnesses. Final
+fresh access/configuration verification and local receipt-identity confirmation
+must succeed before returning proof success; native persisted edit-and-restore
+changes resource version, and delete-and-recreate changes UID. These are paired
+fresh observations of the witnessed objects, not an atomic cross-resource lock
+or proof against arbitrary external authorizer changes. No success is reused
+across Verify calls, lifecycle Steps, intent/effect boundaries, recovery,
+retirement, or process restart. Existing persistent-write gates and complete
+PR/main lifecycle CI remain unchanged.
+
 Add `--api-ca ABS_PATH`; for initial
 installation also supply `--api-certificate ABS_PATH --api-key ABS_PATH`.
 `install`, `upgrade` and `rollback` require `--target-package ABS_PATH`, which
