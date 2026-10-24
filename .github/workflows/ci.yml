@@ -47,7 +47,7 @@ jobs:
           go test -race -p 1 -timeout=1m ./hack/profile-installer-wrappers -count=1
           go run -p 1 ./hack/profile-installer-wrappers '${{ github.event.pull_request.head.sha || github.sha }}'
       - name: Vet the CLI and tagged diagnostic harness
-        run: go vet -tags=kindinstall -p 1 ./cmd/arcadectl-installer ./internal/installengine
+        run: go vet -tags=kindinstall -p 1 ./cmd/arcadectl-installer ./internal/installengine ./internal/installobserve
 
   kind-install-baseline:
     name: Kind installation security baseline ${{ matrix.profile }}

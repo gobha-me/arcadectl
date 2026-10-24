@@ -276,7 +276,7 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 		"go test -race -p 1 -timeout=5m ./internal/installobserve -run '^TestCollectionDiagnostic.*$' -count=1\ngo test -race -p 1 -timeout=5m ./internal/installengine -run '^(TestFixtureTypedCollectionDiagnostic.*|TestFixtureObservationDiagnostic.*|TestFixtureAdmissionSettle.*)$' -count=1\n",
 		"go test -p 1 -timeout=2m ./internal/installengine -run '^$' -bench '^(BenchmarkDiscoveryReplyConversion|BenchmarkBaselineDeniedDescriptorMembership)$' -benchmem -benchtime=250ms -count=1",
 		"go test -race -p 1 -timeout=1m ./hack/profile-installer-wrappers -count=1\ngo run -p 1 ./hack/profile-installer-wrappers '${{ github.event.pull_request.head.sha || github.sha }}'\n",
-		"go vet -tags=kindinstall -p 1 ./cmd/arcadectl-installer ./internal/installengine",
+		"go vet -tags=kindinstall -p 1 ./cmd/arcadectl-installer ./internal/installengine ./internal/installobserve",
 	}
 	if diagnostics.If != "" || diagnostics.ContinueOnError != nil || len(diagnostics.Needs) != 0 || diagnostics.TimeoutMinutes != 20 || diagnostics.Env["GOMAXPROCS"] != "2" || diagnostics.Env["GOMEMLIMIT"] != "1GiB" || !slices.Equal(diagnosticRuns, wantDiagnosticRuns) || !slices.Contains(gate.Needs, "installer-diagnostics") || len(diagnostics.Steps) != 9 {
 		t.Fatal("early CLI/diagnostic controls are missing, unbounded or gated behind native lifecycle")
