@@ -120,8 +120,17 @@ type baselineProbeDescriptor struct {
 }
 
 func (actors *baselineActors) verifyWithProbe(ctx context.Context, probe *baselineProbeDescriptor) error {
+	return actors.verifyProbeAuthority(ctx, probe, nil)
+}
+
+// Only a live, serial behavioral-suite lease may move global identity/config
+// witnesses out of an individual probe. Full verify callers never supply it.
+func (actors *baselineActors) verifyProbeAuthority(ctx context.Context, probe *baselineProbeDescriptor, suite *baselineProbeSuite) error {
 	traceBaselineProbeAuthority(ctx, probeAuthorityScope)
 	if actors == nil || actors.baseline == nil || ctx == nil || actors.snapshot == nil || len(actors.clients) != 2 {
+		return ErrSecurityBaseline
+	}
+	if suite != nil && !suite.current(ctx, actors) {
 		return ErrSecurityBaseline
 	}
 	var operationClient *HTTPAccess
@@ -146,15 +155,17 @@ func (actors *baselineActors) verifyWithProbe(ctx context.Context, probe *baseli
 	if plan == nil || c.access.checkVersion(ctx, plan.Profile()) != nil {
 		return ErrSecurityBaseline
 	}
-	traceBaselineProbeAuthority(ctx, probeAuthorityAccessOpening)
-	current, err := c.engine.baseline.runtimeAccessWitness(ctx, actors.snapshot)
-	if err != nil || !reflect.DeepEqual(current, actors.access) {
-		return ErrSecurityBaseline
-	}
-	traceBaselineProbeAuthority(ctx, probeAuthorityPoliciesOpening)
-	policies, err := c.configured(ctx, actors.snapshot)
-	if err != nil || !reflect.DeepEqual(policies, actors.policies) {
-		return ErrSecurityBaseline
+	if suite == nil {
+		traceBaselineProbeAuthority(ctx, probeAuthorityAccessOpening)
+		current, err := c.engine.baseline.runtimeAccessWitness(ctx, actors.snapshot)
+		if err != nil || !reflect.DeepEqual(current, actors.access) {
+			return ErrSecurityBaseline
+		}
+		traceBaselineProbeAuthority(ctx, probeAuthorityPoliciesOpening)
+		policies, err := c.configured(ctx, actors.snapshot)
+		if err != nil || !reflect.DeepEqual(policies, actors.policies) {
+			return ErrSecurityBaseline
+		}
 	}
 	// The exact operation must precede the entire containment catalog. A grant
 	// reached during this SSAR must refuse BEFORE any dry-run is sent, not only
@@ -171,22 +182,26 @@ func (actors *baselineActors) verifyWithProbe(ctx context.Context, probe *baseli
 	}
 	// A successful collection of reviews does not pin original identities.
 	// Repeat both independent witnesses across the entire two-actor catalog.
-	traceBaselineProbeAuthority(ctx, probeAuthorityAccessClosing)
-	current, err = c.engine.baseline.runtimeAccessWitness(ctx, actors.snapshot)
-	if err != nil || !reflect.DeepEqual(current, actors.access) {
-		return ErrSecurityBaseline
-	}
-	traceBaselineProbeAuthority(ctx, probeAuthorityPoliciesClosing)
-	policies, err = c.configured(ctx, actors.snapshot)
-	if err != nil || !reflect.DeepEqual(policies, actors.policies) {
-		return ErrSecurityBaseline
-	}
-	// Configuration performs additional remote reads. Close access again so
-	// replacement or withdrawal reached during that closing configuration
-	// cannot disappear between the witness sets and this return.
-	traceBaselineProbeAuthority(ctx, probeAuthorityAccessFinal)
-	current, err = c.engine.baseline.runtimeAccessWitness(ctx, actors.snapshot)
-	if err != nil || !reflect.DeepEqual(current, actors.access) {
+	if suite == nil {
+		traceBaselineProbeAuthority(ctx, probeAuthorityAccessClosing)
+		current, err := c.engine.baseline.runtimeAccessWitness(ctx, actors.snapshot)
+		if err != nil || !reflect.DeepEqual(current, actors.access) {
+			return ErrSecurityBaseline
+		}
+		traceBaselineProbeAuthority(ctx, probeAuthorityPoliciesClosing)
+		policies, err := c.configured(ctx, actors.snapshot)
+		if err != nil || !reflect.DeepEqual(policies, actors.policies) {
+			return ErrSecurityBaseline
+		}
+		// Configuration performs additional remote reads. Close access again so
+		// replacement or withdrawal reached during that closing configuration
+		// cannot disappear between the witness sets and this return.
+		traceBaselineProbeAuthority(ctx, probeAuthorityAccessFinal)
+		current, err = c.engine.baseline.runtimeAccessWitness(ctx, actors.snapshot)
+		if err != nil || !reflect.DeepEqual(current, actors.access) {
+			return ErrSecurityBaseline
+		}
+	} else if !suite.current(ctx, actors) {
 		return ErrSecurityBaseline
 	}
 	traceBaselineProbeAuthority(ctx, probeAuthorityComplete)
@@ -241,6 +256,25 @@ func (actors *baselineActors) verifyContainment(ctx context.Context) error {
 // runtime guard. Each request carries fresh actor permission and independent
 // denial of maintenance rights, with original access/configuration brackets.
 func (actors *baselineActors) probe(ctx context.Context, actor admissionActor, operation admissionProbeOperation, object *unstructured.Unstructured, policy, binding, message string) (*unstructured.Unstructured, error) {
+	return actors.probeWithSuite(ctx, actor, operation, object, policy, binding, message, nil)
+}
+
+func (actors *baselineActors) probeWithSuite(ctx context.Context, actor admissionActor, operation admissionProbeOperation, object *unstructured.Unstructured, policy, binding, message string, suite *baselineProbeSuite) (result *unstructured.Unstructured, err error) {
+	completed := false
+	if suite != nil {
+		if suite.begin(ctx, actors) != nil {
+			return nil, ErrSecurityBaseline
+		}
+		defer func() {
+			failure := err
+			if !completed && failure == nil {
+				failure = ErrSecurityBaseline // Panic/early exit cannot renew a lease.
+			}
+			if suite.finish(failure) != nil && err == nil {
+				result, err = nil, ErrSecurityBaseline
+			}
+		}()
+	}
 	if actors == nil || ctx == nil || object == nil || actors.baseline == nil || actors.baseline.access == nil || actors.snapshot == nil {
 		return nil, ErrInvalid
 	}
@@ -267,23 +301,27 @@ func (actors *baselineActors) probe(ctx context.Context, actor admissionActor, o
 	}
 	descriptor := &baselineProbeDescriptor{actor: actor, operation: operation, key: key}
 	phaseCtx, finish = baselineProbePhaseContext(ctx, baselineProbeOpening)
-	err = actors.verifyWithProbe(phaseCtx, descriptor)
+	err = actors.verifyProbeAuthority(phaseCtx, descriptor, suite)
 	finish()
 	if err != nil {
 		return nil, ErrSecurityBaseline
 	}
+	if suite != nil && !suite.current(ctx, actors) {
+		return nil, ErrSecurityBaseline
+	}
 	phaseCtx, finish = baselineProbePhaseContext(ctx, baselineProbeDryRun)
-	result, err := client.probeOperation(phaseCtx, operation, object, policy, binding, message)
+	result, err = client.probeOperation(phaseCtx, operation, object, policy, binding, message)
 	finish()
 	if err != nil {
 		return nil, ErrSecurityBaseline
 	}
 	phaseCtx, finish = baselineProbePhaseContext(ctx, baselineProbeClosing)
-	err = actors.verify(phaseCtx)
+	err = actors.verifyProbeAuthority(phaseCtx, nil, suite)
 	finish()
 	if err != nil {
 		return nil, ErrSecurityBaseline
 	}
 	completeBaselineProbeDiagnostic(ctx)
+	completed = true
 	return result, nil
 }

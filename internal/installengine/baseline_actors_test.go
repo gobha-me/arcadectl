@@ -30,6 +30,17 @@ import (
 // explicitly supplied by this fixture; no runtime guard or lifecycle success
 // is inferred from the fake replies.
 func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
+	testBaselineActorProbeAuthority(t, false)
+}
+
+// The same independent literal-row oracle also exercises the scoped actual
+// HTTP path. Standalone refusal timing above remains completely unchanged.
+func TestBaselineProbeSuiteRetainsExactOperationAndContainment(t *testing.T) {
+	testBaselineActorProbeAuthority(t, true)
+}
+
+func testBaselineActorProbeAuthority(t *testing.T, scoped bool) {
+	t.Helper()
 	modes := []string{"healthy", "admin-denied", "actor-maintenance-allowed", "actor-cel-maintenance-allowed", "actor-producer-allowed", "negative-review-missing", "actor-operation-denied", "access-replaced", "baseline-drift", "late-access-rv", "late-policy-rv", "review-access-rv", "review-policy-rv", "closing-config-access-rv", "wrong-denial"}
 	modes = append(modes, "two-lane-join-before-probe", "probe-discovery-denied", "late-closing-config-access-rv")
 	modes = append(modes, "operation-access-uid", "operation-access-rv", "operation-policy-rv", "operation-policy-shape", "operation-policy-status", "operation-journal", "operation-namespace-uid", "operation-review-missing", "operation-review-malformed", "operation-canceled", "candidate-mutated", "invalid-actor", "swapped-actor", "foreign-namespace", "unsupported-operation", "wrong-purpose")
@@ -53,9 +64,21 @@ func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 		}
 	}
 	for _, mode := range modes {
+		if scoped && !strings.HasPrefix(mode, "grant-") && !strings.HasPrefix(mode, "operation-grant-") {
+			switch mode {
+			case "healthy", "actor-operation-denied", "operation-review-missing", "operation-review-malformed", "operation-canceled", "candidate-mutated", "invalid-actor", "swapped-actor", "foreign-namespace", "unsupported-operation", "wrong-purpose", "probe-discovery-denied", "wrong-denial", "two-lane-join-before-probe":
+			default:
+				continue // Global identity drift is covered by whole-suite tests.
+			}
+		}
 		t.Run(mode, func(t *testing.T) {
 			probeContext, cancelProbe := context.WithCancel(t.Context())
 			defer cancelProbe()
+			if scoped {
+				var deadlineCancel context.CancelFunc
+				probeContext, deadlineCancel = context.WithTimeout(probeContext, 30*time.Second)
+				defer deadlineCancel()
+			}
 			f := seedBaselineAccessWitness(t)
 			objects := map[string]*unstructured.Unstructured{}
 			accountPath, policyPath := "", ""
@@ -336,6 +359,16 @@ func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 			if factoryRefuses {
 				return
 			}
+			runProbe := actors.probe
+			if scoped {
+				var suite *baselineProbeSuite
+				probeContext, suite, err = newBaselineProbeSuite(probeContext, actors)
+				if err != nil {
+					t.Fatal("verified component could not open its private test suite")
+				}
+				defer suite.close()
+				runProbe = (&baselineBehavior{actors: actors}).probe
+			}
 			// Independent table counts catch omitted producers and actors;
 			// testing only whichever rows production chooses is circular.
 			mu.Lock()
@@ -410,6 +443,11 @@ func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 				})
 				client.client = &copyClient
 				joinedCtx, joinedCancel := context.WithTimeout(probeContext, 5*time.Second)
+				if scoped {
+					// Suite entry must retain its owner's cancellation channel.
+					// Its earlier bounded deadline was installed before opening.
+					joinedCtx = probeContext
+				}
 				defer func() {
 					joinedCancel()
 					releaseOnce.Do(func() { close(release) })
@@ -420,7 +458,7 @@ func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 					}
 				}()
 				go func() {
-					_, err = actors.probe(joinedCtx, actor, operation, candidate, policy, policy, installbaseline.DenialMessage)
+					_, err = runProbe(joinedCtx, actor, operation, candidate, policy, policy, installbaseline.DenialMessage)
 					close(done)
 				}()
 				select {
@@ -444,7 +482,7 @@ func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 					t.Fatal("actual probe did not close and finish after catalog release")
 				}
 			} else {
-				_, err = actors.probe(probeContext, actor, operation, candidate, policy, policy, installbaseline.DenialMessage)
+				_, err = runProbe(probeContext, actor, operation, candidate, policy, policy, installbaseline.DenialMessage)
 			}
 			positive := mode == "healthy" || mode == "candidate-mutated" || mode == "two-lane-join-before-probe"
 			phase := "opening-authority"
@@ -493,6 +531,16 @@ func TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe(t *testing.T) {
 				t.Fatal("exact operation review omitted or repeated", operationReviews)
 			}
 			if positive {
+				// One fresh discovery, two fresh version GETs, one exact SSAR,
+				// 26 opening and 26 closing containment SSARs, one dry-run.
+				// Global access/configuration rereads belong to the whole suite,
+				// not to this scoped component. No HTTP result is cached.
+				if scoped && requests.Load()-beforeRequests != 57 {
+					t.Fatal("scoped probe omitted a fresh request or repeated global witnesses")
+				}
+				if mode == "healthy" {
+					t.Logf("fresh probe requests: scoped=%t total=%d", scoped, requests.Load()-beforeRequests)
+				}
 				for user, rows := range before {
 					for row, count := range rows {
 						if seen[user][row] != count+2 {
