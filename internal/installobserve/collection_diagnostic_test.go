@@ -15,6 +15,30 @@ import (
 	clienttesting "k8s.io/client-go/testing"
 )
 
+func TestCollectionDiagnosticInvalidEligibilityKeepsCallerAndClients(t *testing.T) {
+	f := newFixture(t)
+	for _, fault := range []string{"nil-observer", "wrong-namespace"} {
+		t.Run(fault, func(t *testing.T) {
+			observer, anchor := f.o, f.anchor
+			if fault == "nil-observer" {
+				observer = nil
+			} else {
+				anchor.Namespace = "other"
+			}
+			beforeCore, beforeDynamic, beforeMetadata := len(f.core.Actions()), len(f.dynamic.Actions()), len(f.metadata.Actions())
+			ctx, diagnostic := WithCollectionDiagnostic(t.Context())
+			observation, err := observer.Collect(ctx, anchor)
+			want := "stage=eligibility collection=unknown reason=invalid pages=unknown inner=active caller=active"
+			if observation != nil || err != ErrInvalid || diagnostic.Snapshot() != want || ctx.Err() != nil {
+				t.Fatal("invalid eligibility changed error or caller state", err, diagnostic.Snapshot())
+			}
+			if len(f.core.Actions()) != beforeCore || len(f.dynamic.Actions()) != beforeDynamic || len(f.metadata.Actions()) != beforeMetadata {
+				t.Fatal("invalid eligibility reached a cluster client")
+			}
+		})
+	}
+}
+
 func TestCollectionDiagnosticActualRefusalsKeepEvidenceClosed(t *testing.T) {
 	for _, fault := range []string{"healthy", "typed-list", "identity", "decode", "owner-invalid-name", "owner", "journal"} {
 		t.Run(fault, func(t *testing.T) {

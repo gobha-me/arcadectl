@@ -257,18 +257,16 @@ func collections(s *installsafety.Snapshot) []collection {
 func (o *Observer) Collect(ctx context.Context, anchor installstate.Anchor) (result *Observation, resultErr error) {
 	ctx, diagnostic := beginCollectionDiagnostic(ctx)
 	caller := ctx
-	var cancel context.CancelFunc
-	defer func() {
-		diagnostic.finish(ctx, caller, resultErr)
-		if cancel != nil {
-			cancel()
-		}
-	}()
 	traceCollection(ctx, collectionEligibility, "")
 	if o == nil || o.journal == nil || !o.plan.IsTrusted() || anchor.Namespace != o.plan.Namespace() {
+		diagnostic.finish(ctx, caller, ErrInvalid)
 		return nil, ErrInvalid
 	}
-	ctx, cancel = context.WithTimeout(ctx, observationTimeout)
+	ctx, cancel := context.WithTimeout(ctx, observationTimeout)
+	defer cancel()
+	// Defers run in reverse order: sample before cancelling the child. Keep
+	// cancellation separate so it also runs if diagnostic sampling unwinds.
+	defer func() { diagnostic.finish(ctx, caller, resultErr) }()
 	// The library returns fixed diagnostics rather than delegating arbitrary
 	// cluster payloads/errors to a caller's verbose contextual client-go logger.
 	// Metadata transport sanitation additionally protects the response boundary
