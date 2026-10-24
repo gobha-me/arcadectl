@@ -22,7 +22,26 @@ type fixturePhaseRead struct {
 }
 
 func (b *fixturePhaseRead) local(ctx context.Context, w *fixtureWire) error {
-	if b == nil || ctx == nil || ctx.Err() != nil || w == nil || b.wire != w || !w.phaseReadable() || w.ledger.identity != b.identity || !bytes.Equal(w.ledger.body, b.body) || w.localCurrent() != nil {
+	reason := uint32(0)
+	// Preserve the original short-circuit order and every existing check.
+	switch {
+	case b == nil:
+		reason = 4
+	case ctx == nil || ctx.Err() != nil:
+		reason = 3
+	case w == nil || b.wire != w:
+		reason = 4
+	case !w.phaseReadable():
+		reason = 5
+	case w.ledger.identity != b.identity:
+		reason = 6
+	case !bytes.Equal(w.ledger.body, b.body):
+		reason = 7
+	case w.localCurrent() != nil:
+		reason = 8
+	}
+	if reason != 0 {
+		traceTypedCollection(ctx, typedCollectionLocalClosing, reason)
 		return ErrFixtures
 	}
 	return nil

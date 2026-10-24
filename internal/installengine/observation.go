@@ -19,7 +19,9 @@ import (
 // cluster and frozen static identity used for effects. A complete observation
 // is not coldness, detached storage, runtime absence or admission behavior.
 // Those obligations must be checked separately by the closed checkpoint.
-func (p *ClusterPrerequisites) observe(ctx context.Context, request LifecycleCheck) (*installobserve.Observation, error) {
+func (p *ClusterPrerequisites) observe(ctx context.Context, request LifecycleCheck) (result *installobserve.Observation, resultErr error) {
+	defer func() { finishTypedCollection(ctx, resultErr != nil || result == nil) }()
+	traceTypedCollection(ctx, typedCollectionEligibility, 0)
 	if p == nil || p.engine == nil || p.access == nil || p.engine.access != p.access || p.access.frozen == nil || ctx == nil || request.Snapshot == nil {
 		return nil, ErrInvalid
 	}
@@ -33,19 +35,27 @@ func (p *ClusterPrerequisites) observe(ctx context.Context, request LifecycleChe
 // Namespace/journal and complete owner-graph collection remain identical for
 // mutating-operation observation and completed-retirement read-only evidence.
 func (p *ClusterPrerequisites) collectOriginalObservation(ctx context.Context, request LifecycleCheck) (*installobserve.Observation, error) {
+	traceTypedCollection(ctx, typedCollectionOriginalOpening, 0)
 	if p == nil || p.engine == nil || p.access == nil || p.engine.access != p.access || p.access.frozen == nil || ctx == nil || request.Snapshot == nil || p.original(ctx, request.Snapshot) != nil {
 		return nil, ErrPrerequisites
 	}
+	traceTypedCollection(ctx, typedCollectionConstructor, 0)
 	observer, err := installobserve.New(p.access.readConfig(), p.engine.journal, request.Target)
 	if err != nil {
 		return nil, ErrPrerequisites
 	}
+	traceTypedCollection(ctx, typedCollectionObserve, 0)
 	observation, err := observer.Collect(ctx, request.Snapshot.Anchor())
 	if err != nil || observation == nil || observation.Journal() == nil {
 		return nil, ErrPrerequisites
 	}
 	journal := observation.Journal()
-	if journal.Anchor() != request.Snapshot.Anchor() || journal.ResourceVersion() != request.Snapshot.ResourceVersion() || !bytes.Equal(journal.Bytes(), request.Snapshot.Bytes()) || p.original(ctx, request.Snapshot) != nil {
+	traceTypedCollection(ctx, typedCollectionJournalMatch, 0)
+	if journal.Anchor() != request.Snapshot.Anchor() || journal.ResourceVersion() != request.Snapshot.ResourceVersion() || !bytes.Equal(journal.Bytes(), request.Snapshot.Bytes()) {
+		return nil, ErrPrerequisites
+	}
+	traceTypedCollection(ctx, typedCollectionOriginalClosing, 0)
+	if p.original(ctx, request.Snapshot) != nil {
 		return nil, ErrPrerequisites
 	}
 	return observation, nil

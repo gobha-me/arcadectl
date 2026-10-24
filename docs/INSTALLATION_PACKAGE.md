@@ -245,6 +245,18 @@ copies Public from the floor; its diagnostic does not claim a fresh public GET.
 Each accounting invocation and outer/checkpoint boundary resets the recorder.
 No reads, retries, normalization, floor advancement or acceptance rules change.
 
+Checkpoint refusals can also report fixed `typed-collection` and
+`admission-settle` diagnostics from the same attempt. The typed record separates
+original-journal checks, observer construction, complete collection and the
+following local evidence fence. Its observer fields identify only reviewed
+collection kinds, refusal categories and context states; no resource names,
+credentials, response bodies or provider errors are retained. Settling records
+its attempt count, elapsed nanoseconds, child state and immediate caller state
+before cancellation. An active CLI parent alone does not rule out a shorter
+child deadline. These records do not explain an earlier uncaptured refusal or
+authorize a retry. The 90-second settlement and five-minute observation bounds,
+request order and complete evidence requirements remain unchanged.
+
 Named public GET replies may reuse only the strict JSON conversion of identical
 complete response bytes. Every request still reaches the cluster, and status,
 content type, complete body read, size/depth/node limits and original envelope

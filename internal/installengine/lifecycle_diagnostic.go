@@ -33,6 +33,8 @@ type LifecycleDiagnostic struct {
 	gcPages                atomic.Pointer[gcPagesDiagnostic]
 	ackPreparation         atomic.Uint32
 	ackObservation         atomic.Uint32
+	typedCollection        atomic.Pointer[typedCollectionDiagnostic]
+	admissionSettle        atomic.Pointer[admissionSettleDiagnostic]
 }
 
 // WithLifecycleDiagnostic creates a fresh opaque recorder, superseding any
@@ -98,6 +100,8 @@ func traceLifecycleCheckpoint(ctx context.Context, kind Checkpoint, state lifecy
 			diagnostic.gcPages.Store(nil)
 			diagnostic.ackPreparation.Store(0)
 			diagnostic.ackObservation.Store(0)
+			diagnostic.typedCollection.Store(nil)
+			diagnostic.admissionSettle.Store(nil)
 		}
 		diagnostic.checkpoint.Store(uint32(kind)<<8 | uint32(state))
 	}

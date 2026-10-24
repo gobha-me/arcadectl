@@ -237,10 +237,16 @@ func (w *fixtureWire) observePhaseLocked(ctx context.Context) (*fixturePhaseObse
 			return nil, ErrFixtures
 		}
 		traceAdmissionPhase(ctx, admissionPhaseTyped, -1)
-		o, err := a.prerequisites.observe(ctx, request)
-		if err != nil || !local() {
+		typedCtx := beginTypedCollectionDiagnostic(ctx)
+		o, err := a.prerequisites.observe(typedCtx, request)
+		if err != nil {
 			return nil, ErrFixtures
 		}
+		traceTypedCollection(typedCtx, typedCollectionLocalClosing, 0)
+		if reads.local(typedCtx, w) != nil {
+			return nil, ErrFixtures
+		}
+		traceTypedCollection(typedCtx, typedCollectionComplete, 2)
 		traceAdmissionPhase(ctx, admissionPhaseRows, -1)
 		var accounts *phaseServiceAccounts
 		if f.document.Recipe == fixtureRecipeV3 {
