@@ -254,22 +254,33 @@ func collections(s *installsafety.Snapshot) []collection {
 // Collect discards the entire observation on any missing page, ambiguous owner,
 // or journal change. It never retries a failed/expired list or returns partial
 // evidence. Neither selectors nor ResourceVersion=0 (cache reads) are used.
-func (o *Observer) Collect(ctx context.Context, anchor installstate.Anchor) (*Observation, error) {
+func (o *Observer) Collect(ctx context.Context, anchor installstate.Anchor) (result *Observation, resultErr error) {
+	ctx, diagnostic := beginCollectionDiagnostic(ctx)
+	caller := ctx
+	var cancel context.CancelFunc
+	defer func() {
+		diagnostic.finish(ctx, caller, resultErr)
+		if cancel != nil {
+			cancel()
+		}
+	}()
+	traceCollection(ctx, collectionEligibility, "")
 	if o == nil || o.journal == nil || !o.plan.IsTrusted() || anchor.Namespace != o.plan.Namespace() {
 		return nil, ErrInvalid
 	}
-	ctx, cancel := context.WithTimeout(ctx, observationTimeout)
-	defer cancel()
+	ctx, cancel = context.WithTimeout(ctx, observationTimeout)
 	// The library returns fixed diagnostics rather than delegating arbitrary
 	// cluster payloads/errors to a caller's verbose contextual client-go logger.
 	// Metadata transport sanitation additionally protects the response boundary
 	// even when a client ignores contextual logging.
 	ctx = logr.NewContext(ctx, logr.Discard())
+	traceCollection(ctx, collectionJournalOpening, "")
 	before, err := o.journal.Load(ctx, anchor)
 	if err != nil || before.Anchor() != anchor {
 		return nil, ErrOwnership
 	}
 	doc := before.Document()
+	traceCollection(ctx, collectionPlan, "")
 	if doc.ProfileID != o.plan.Profile().ID || !slices.Contains([]string{doc.ActivePackage, doc.TargetPackage, doc.PreviousPackage}, o.plan.Digest()) {
 		return nil, ErrOwnership
 	}
@@ -283,26 +294,32 @@ func (o *Observer) Collect(ctx context.Context, anchor installstate.Anchor) (*Ob
 			return nil, err
 		}
 	}
+	traceCollection(ctx, collectionOwners, "")
 	owners, err := graph.collect(ctx)
 	if err != nil {
 		return nil, err
 	}
 	snapshot.Owners = owners
+	traceCollection(ctx, collectionJournalClosing, "")
 	after, err := o.journal.Load(ctx, anchor)
 	if err != nil || after.Anchor() != anchor || after.ResourceVersion() != before.ResourceVersion() || !reflect.DeepEqual(before.Document(), after.Document()) {
 		return nil, ErrConcurrent
 	}
+	traceCollection(ctx, collectionComplete, "")
 	return &Observation{snapshot: snapshot, journal: after, runtime: runtimeSnapshot}, nil
 }
 
 func (o *Observer) collectList(ctx context.Context, c collection, graph *ownerGraph, budget *int) error {
-	return o.collectListWithPagesDiagnostic(ctx, c, graph, budget, nil)
+	return o.collectListWithPagesDiagnostic(ctx, c, graph, budget, func(reason pagesRefusalReason) {
+		traceCollectionPages(ctx, reason)
+	})
 }
 
 // The optional recorder observes only a failed pages attempt, before any
 // caller's deferred cancellation. It grants no read, retry or acceptance.
 // Later row/conversion failures deliberately remain unclassified here.
 func (o *Observer) collectListWithPagesDiagnostic(ctx context.Context, c collection, graph *ownerGraph, budget *int, record func(pagesRefusalReason)) error {
+	traceCollection(ctx, collectionPages, c.kind)
 	gv, _ := schema.ParseGroupVersion(c.gv)
 	gvr := gv.WithResource(c.resource)
 	items, rv, err, reason := boundedPagesDiagnostic(ctx, func(ctx context.Context, opts metav1.ListOptions) (runtime.Object, error) {
@@ -328,12 +345,14 @@ func (o *Observer) collectListWithPagesDiagnostic(ctx context.Context, c collect
 	converted := make([]runtime.Object, 0, len(items))
 	seen := map[string]bool{}
 	for _, item := range items {
+		traceCollection(ctx, collectionIdentity, c.kind)
 		m, err := meta.Accessor(item)
 		if err != nil || !validIdentity(m.GetResourceVersion()) || !validIdentity(string(m.GetUID())) || m.GetName() == "" || seen[m.GetName()] || c.namespaced && m.GetNamespace() != o.plan.Namespace() || !c.namespaced && m.GetNamespace() != "" {
 			return ErrRead
 		}
 		seen[m.GetName()] = true
 		key := installstate.Key{APIVersion: c.gv, Kind: c.kind, Namespace: m.GetNamespace(), Name: m.GetName()}
+		traceCollection(ctx, collectionOwnerSeed, c.kind)
 		if err := graph.seed(key, m); err != nil {
 			return err
 		}
@@ -341,12 +360,14 @@ func (o *Observer) collectListWithPagesDiagnostic(ctx context.Context, c collect
 			converted = append(converted, &metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: "meta.k8s.io/v1", Kind: "PartialObjectMetadata"}, ObjectMeta: publicMetadata(m)})
 			continue
 		}
+		traceCollection(ctx, collectionShape, c.kind)
 		u, ok := item.(*unstructured.Unstructured)
 		if !ok || u.GetAPIVersion() != c.gv || u.GetKind() != c.kind {
 			return ErrRead
 		}
 		converted = append(converted, u)
 	}
+	traceCollection(ctx, collectionDecode, c.kind)
 	if c.kind == "Secret" {
 		if err := meta.SetList(c.target, converted); err != nil {
 			return ErrRead
@@ -363,6 +384,7 @@ func (o *Observer) collectListWithPagesDiagnostic(ctx context.Context, c collect
 			return ErrRead
 		}
 	}
+	traceCollection(ctx, collectionEnvelope, c.kind)
 	listMeta, err := meta.ListAccessor(c.target)
 	if err != nil {
 		return ErrRead
