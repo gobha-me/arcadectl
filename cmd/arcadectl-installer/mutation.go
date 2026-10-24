@@ -291,6 +291,12 @@ func runMutation(ctx context.Context, o options, stdout, stderr io.Writer) (code
 			_, _ = fmt.Fprintf(stderr, "installation diagnostic progress %s\n", diagnostic.Snapshot())
 			_, _ = fmt.Fprintf(stderr, "installation diagnostic context status=%s\n", mutationContextStatus(ctx))
 			_, _ = fmt.Fprintf(stderr, "installation diagnostic boundary %s\n", diagnostic.BoundarySnapshot())
+			if typed := diagnostic.TypedCollectionSnapshot(); typed != "" {
+				_, _ = fmt.Fprintf(stderr, "installation diagnostic typed-collection %s\n", typed)
+			}
+			if settle := diagnostic.AdmissionSettleSnapshot(); settle != "" {
+				_, _ = fmt.Fprintf(stderr, "installation diagnostic admission-settle %s\n", settle)
+			}
 			if probe := diagnostic.BaselineProbeSnapshot(); probe != "" {
 				_, _ = fmt.Fprintf(stderr, "installation diagnostic baseline-probe %s\n", probe)
 			}

@@ -221,7 +221,7 @@ func (d *fixtureAdmissionDriver) createOriginalsLocked(ctx context.Context) erro
 		traceAdmission(ctx, admissionSetupSettle, slot)
 		// Observation-only convergence is bounded; no send is retried. The
 		// original sealed domain and all earlier fixtures remain byte-exact.
-		if wait.PollUntilContextTimeout(ctx, 200*time.Millisecond, 90*time.Second, true, func(ctx context.Context) (bool, error) {
+		if pollFixtureAdmissionSettle(ctx, func(ctx context.Context) (bool, error) {
 			fresh, err := w.observePhaseLocked(ctx)
 			if err != nil {
 				return false, nil
@@ -246,6 +246,25 @@ func (d *fixtureAdmissionDriver) createOriginalsLocked(ctx context.Context) erro
 	}
 	d.previous = before
 	return nil
+}
+
+// Equivalent to PollUntilContextTimeout with the same interval, timeout and
+// immediate first observation. Owning the child lets diagnostics sample its
+// actual return state BEFORE our deferred cancellation, without retaining it.
+func pollFixtureAdmissionSettle(ctx context.Context, condition wait.ConditionWithContextFunc) (err error) {
+	child, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	finish := beginAdmissionSettleDiagnostic(ctx)
+	started := time.Now()
+	var attempts uint32
+	completed := false
+	defer func() { finish(attempts, time.Since(started), child, ctx, completed && err == nil) }()
+	err = wait.PollUntilContextCancel(child, 200*time.Millisecond, true, func(ctx context.Context) (bool, error) {
+		attempts++
+		return condition(ctx)
+	})
+	completed = true
+	return err
 }
 
 func fixtureAdmissionOriginalSettled(f *fixtureLedger, slot int, observation *fixturePhaseObservation, observed time.Time) bool {

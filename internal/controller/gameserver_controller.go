@@ -821,9 +821,25 @@ func (r *GameServerReconciler) reconcileDeployment(ctx context.Context, server *
 	if err := r.Patch(ctx, updated, client.Apply, client.FieldOwner("arcadectl-controller"), client.ForceOwnership); err != nil {
 		return nil, fmt.Errorf("apply game workload %s: %w", key, err)
 	}
+	// The manager cache may still hold the previous ready generation after
+	// Apply. Never borrow that readiness for the current GameServer settings.
 	actual := &appsv1.Deployment{}
-	if err := r.Get(ctx, key, actual); err != nil {
+	if err := r.runtimeReader().Get(ctx, key, actual); err != nil {
 		return nil, fmt.Errorf("read applied game workload %s: %w", key, err)
+	}
+	if existing.UID == "" || updated.UID != existing.UID || actual.UID != existing.UID {
+		return nil, fmt.Errorf("applied game workload %s changed identity", key)
+	}
+	if err := requireControlledBy(actual, desired.OwnerReferences[0]); err != nil {
+		return nil, fmt.Errorf("refuse applied game workload %s: %w", key, err)
+	}
+	if !actual.DeletionTimestamp.IsZero() {
+		return nil, errRuntimeDraining
+	}
+	// Status may advance resourceVersion after the acknowledgement. A different
+	// spec generation must be reconciled again before it can establish Ready.
+	if updated.Generation <= 0 || actual.Generation != updated.Generation {
+		return nil, fmt.Errorf("applied game workload %s changed generation", key)
 	}
 	return actual, nil
 }

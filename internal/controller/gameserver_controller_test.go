@@ -21,12 +21,14 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/uuid"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -1216,7 +1218,7 @@ func newTestReconciler(t *testing.T, objects ...client.Object) (*GameServerRecon
 	kubeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(&arcadev1alpha1.GameServer{}, &appsv1.Deployment{}, &corev1.Service{}, &corev1.PersistentVolumeClaim{}).
-		WithInterceptorFuncs(interceptor.Funcs{Patch: applyPatchAsUpdate}).
+		WithInterceptorFuncs(interceptor.Funcs{Create: createWithDeploymentMetadata, Patch: applyPatchAsUpdate}).
 		WithObjects(objects...).
 		Build()
 	reconciler := &GameServerReconciler{
@@ -1295,6 +1297,21 @@ func (c fixedCatalog) Get(string) (game.Definition, error) {
 	return c.definition.Clone(), nil
 }
 
+// The fake API does not assign Deployment UID/generation. Model those native
+// response fields for controller-created workloads, without normalizing seeded
+// objects or changing the fake behavior of any other resource kind.
+func createWithDeploymentMetadata(ctx context.Context, kubeClient client.WithWatch, object client.Object, options ...client.CreateOption) error {
+	if deployment, ok := object.(*appsv1.Deployment); ok {
+		if deployment.UID == "" {
+			deployment.UID = uuid.NewUUID()
+		}
+		if deployment.Generation == 0 {
+			deployment.Generation = 1
+		}
+	}
+	return kubeClient.Create(ctx, object, options...)
+}
+
 // applyPatchAsUpdate supplies the fake client behavior it intentionally lacks
 // for server-side apply. API-server apply semantics are covered by the later
 // isolated-cluster suite; these tests exercise reconciliation decisions.
@@ -1307,6 +1324,20 @@ func applyPatchAsUpdate(ctx context.Context, kubeClient client.WithWatch, object
 		return err
 	}
 	object.SetResourceVersion(existing.GetResourceVersion())
+	if deployment, ok := object.(*appsv1.Deployment); ok {
+		previous := existing.(*appsv1.Deployment)
+		if deployment.UID != "" && deployment.UID != previous.UID {
+			return errors.New("fake Deployment Apply UID precondition failed")
+		}
+		deployment.UID = previous.UID
+		deployment.Generation = previous.Generation
+		// Model only the native UID/generation contract needed by these
+		// reconciliation tests, not the full admission/defaulting API. Native
+		// Deployment annotations, unlike labels, also advance generation.
+		if !apiequality.Semantic.DeepEqual(deployment.Spec, previous.Spec) || !apiequality.Semantic.DeepEqual(deployment.Annotations, previous.Annotations) {
+			deployment.Generation++
+		}
+	}
 	return kubeClient.Update(ctx, object)
 }
 
