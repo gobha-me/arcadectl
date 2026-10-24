@@ -16,7 +16,7 @@ import (
 )
 
 func TestCollectionDiagnosticActualRefusalsKeepEvidenceClosed(t *testing.T) {
-	for _, fault := range []string{"healthy", "typed-list", "identity", "decode", "owner", "journal"} {
+	for _, fault := range []string{"healthy", "typed-list", "identity", "decode", "owner-invalid-name", "owner", "journal"} {
 		t.Run(fault, func(t *testing.T) {
 			f := newFixture(t)
 			want := "stage=complete collection=unknown reason=complete pages=unknown inner=active caller=active"
@@ -38,8 +38,12 @@ func TestCollectionDiagnosticActualRefusalsKeepEvidenceClosed(t *testing.T) {
 					want = "stage=list-decode collection=PersistentVolumeClaim reason=read pages=unknown inner=active caller=active"
 				}
 				wantErr = ErrRead
-			case "owner":
+			case "owner-invalid-name":
 				f.claim("world", owner("ConfigMap", "PRIVATE-canary"))
+				want = "stage=list-owner-seed collection=PersistentVolumeClaim reason=ownership pages=unknown inner=active caller=active"
+				wantErr = ErrOwnership
+			case "owner":
+				f.claim("world", owner("ConfigMap", "private-canary"))
 				want = "stage=owners collection=unknown reason=ownership pages=unknown inner=active caller=active"
 				wantErr = ErrOwnership
 			case "journal":
