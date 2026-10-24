@@ -44,7 +44,7 @@ test-kind-api:
 	GOMAXPROCS=2 GOMEMLIMIT=1GiB go test -tags=kindapi -p 1 -timeout=35m -v ./internal/install -run '^TestKind(AuthenticatedAdmin|APIRequestDiagnostic.*)$$' -count=1
 
 test-kind-install-auth:
-	GOMAXPROCS=2 GOMEMLIMIT=1GiB go test -tags=kindinstall -p 1 -timeout=48m -v ./internal/installengine -run '^TestKind(TargetAuthenticatedNativeKubelet|AdmissionFixturesWarmControllers)$$' -count=1
+	GOMAXPROCS=2 GOMEMLIMIT=1GiB go test -tags=kindinstall -p 1 -timeout=48m -v ./internal/installengine -run '^(TestKind(TargetAuthenticatedNativeKubelet|AdmissionFixturesWarmControllers)|TestWarmNativeLeaderClockDomainsRemainBounded)$$' -count=1
 
 # Each full production-provider run owns one disposable cluster. CI runs the
 # four closed profile/mode combinations on separate runners; local runs remain
