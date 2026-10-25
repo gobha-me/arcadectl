@@ -309,6 +309,9 @@ func runMutation(ctx context.Context, o options, stdout, stderr io.Writer) (code
 			if floor := diagnostic.PhaseFloorSnapshot(); floor != "" {
 				_, _ = fmt.Fprintf(stderr, "installation diagnostic phase-floor %s\n", floor)
 			}
+			if pod := diagnostic.PhaseFloorPodSnapshot(); pod != "" {
+				_, _ = fmt.Fprintf(stderr, "installation diagnostic phase-floor-pod %s\n", pod)
+			}
 			if preparation := diagnostic.AcknowledgedDeleteSnapshot(); preparation != "" {
 				_, _ = fmt.Fprintf(stderr, "installation diagnostic acknowledged-delete %s\n", preparation)
 			}
