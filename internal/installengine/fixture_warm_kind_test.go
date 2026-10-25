@@ -121,8 +121,19 @@ func proveKindWarmFixtureRecipe(t *testing.T, recipe string) {
 			}
 			baselineObservation, err := p.observe(ctx, request)
 			baseline, mapErr := warmNativeObjects(baselineObservation)
+			leaderRefusal := ""
 			if stage := warmInitialBaselineDiagnostic(err, mapErr, baseline,
-				func() error { return controllers.Verify(ctx, request) }, warmNativeLeaders, time.Now); stage != "" {
+				func() error { return controllers.Verify(ctx, request) },
+				func(original, fresh map[installstate.Key]*unstructured.Unstructured, observed time.Time) error {
+					leaderRefusal = warmNativeLeaderRefusal(original, fresh, observed)
+					if leaderRefusal != "" {
+						return ErrFixtures
+					}
+					return nil
+				}, time.Now); stage != "" {
+				if stage == "leaders" {
+					t.Logf("warm initial leader validation refused (reason=%s)", leaderRefusal)
+				}
 				t.Fatalf("warm complete original runtime/leadership baseline unavailable (stage=%s)", stage)
 			}
 			admission, err := NewClusterAdmission(engine, access)
@@ -924,6 +935,15 @@ func warmNativeBaseline(f *fixtureLedger, baseline, current map[installstate.Key
 // accept a data-operation lease. Both original leaders stay bound to original
 // signed runtime Pods. Every non-renewal public field remains byte-equivalent.
 func warmNativeLeaders(baseline, current map[installstate.Key]*unstructured.Unstructured, observed time.Time) error {
+	if warmNativeLeaderRefusal(baseline, current, observed) != "" {
+		return ErrFixtures
+	}
+	return nil
+}
+
+// A closed label from the same read-only validation; never retain identities,
+// field values or platform errors, or repeat reads/clock samples to diagnose it.
+func warmNativeLeaderRefusal(baseline, current map[installstate.Key]*unstructured.Unstructured, observed time.Time) string {
 	count := 0
 	for key, original := range baseline {
 		if key.Kind != "Lease" {
@@ -934,11 +954,14 @@ func warmNativeLeaders(baseline, current map[installstate.Key]*unstructured.Unst
 		if key.Name == "destroy-controller.arcade.gobha.me" {
 			account = "arcadectl-destroy-controller"
 		} else if key.Name != "controller.arcade.gobha.me" {
-			return ErrFixtures
+			return "election-name"
 		}
 		fresh := current[key]
-		if fresh == nil || !nativeFixtureUID(string(original.GetUID())) || fresh.GetUID() != original.GetUID() || !fixtureRV(original.GetResourceVersion()) || !fixtureRV(fresh.GetResourceVersion()) || len(original.GetLabels()) != 0 || len(original.GetAnnotations()) != 0 || len(original.GetOwnerReferences()) != 0 || len(original.GetFinalizers()) != 0 || original.GetDeletionTimestamp() != nil {
-			return ErrFixtures
+		if fresh == nil {
+			return "lease-missing"
+		}
+		if !nativeFixtureUID(string(original.GetUID())) || fresh.GetUID() != original.GetUID() || !fixtureRV(original.GetResourceVersion()) || !fixtureRV(fresh.GetResourceVersion()) || len(original.GetLabels()) != 0 || len(original.GetAnnotations()) != 0 || len(original.GetOwnerReferences()) != 0 || len(original.GetFinalizers()) != 0 || original.GetDeletionTimestamp() != nil {
+			return "lease-identity"
 		}
 		originalRV, _ := strconv.ParseUint(original.GetResourceVersion(), 10, 64)
 		freshRV, _ := strconv.ParseUint(fresh.GetResourceVersion(), 10, 64)
@@ -946,16 +969,20 @@ func warmNativeLeaders(baseline, current map[installstate.Key]*unstructured.Unst
 		acquire, acquireFound, acquireErr := unstructured.NestedString(original.Object, "spec", "acquireTime")
 		acquired, parseAcquireErr := time.Parse(time.RFC3339Nano, acquire)
 		transitions, transitionsFound, transitionsErr := unstructured.NestedInt64(original.Object, "spec", "leaseTransitions")
-		if freshRV < originalRV || created.IsZero() || created.Year() < 1 || created.Year() > 9999 || created.After(observed.Add(time.Second)) || !acquireFound || acquireErr != nil || parseAcquireErr != nil || acquired.IsZero() || acquire != acquired.UTC().Format("2006-01-02T15:04:05.000000Z") || acquired.Before(created) || !transitionsFound || transitionsErr != nil || transitions < 0 {
-			return ErrFixtures
+		// client-go samples acquisition before Lease GET/CREATE; the server's
+		// creation timestamp has no ordering relationship to that client clock.
+		// Match production capturePhaseLeader: bound acquisition intrinsically,
+		// and retain acquisition <= renewal below and immutable whole bodies.
+		if freshRV < originalRV || created.IsZero() || created.Year() < 1 || created.Year() > 9999 || created.After(observed.Add(time.Second)) || !acquireFound || acquireErr != nil || parseAcquireErr != nil || acquired.IsZero() || acquire != acquired.UTC().Format("2006-01-02T15:04:05.000000Z") || acquired.Year() < 1 || acquired.Year() > 9999 || !transitionsFound || transitionsErr != nil || transitions < 0 {
+			return "bookkeeping"
 		}
 		for _, field := range []string{"preferredHolder", "strategy"} {
 			if _, found, err := unstructured.NestedFieldNoCopy(original.Object, "spec", field); err != nil || found {
-				return ErrFixtures
+				return "coordinated-fields"
 			}
 		}
 		if _, found := original.Object["status"]; found {
-			return ErrFixtures
+			return "status"
 		}
 		holder, _, _ := unstructured.NestedString(original.Object, "spec", "holderIdentity")
 		matched := false
@@ -972,31 +999,43 @@ func warmNativeLeaders(baseline, current map[installstate.Key]*unstructured.Unst
 		after, _, _ := unstructured.NestedString(fresh.Object, "spec", "renewTime")
 		oldTime, oldErr := time.Parse(time.RFC3339Nano, before)
 		newTime, newErr := time.Parse(time.RFC3339Nano, after)
-		if !matched || duration != 15 || oldErr != nil || newErr != nil || oldTime.Before(acquired) || before != oldTime.UTC().Format("2006-01-02T15:04:05.000000Z") || after != newTime.UTC().Format("2006-01-02T15:04:05.000000Z") || newTime.Before(oldTime) || newTime.After(observed.Add(time.Second)) || observed.Sub(newTime) > 15*time.Second {
-			return ErrFixtures
+		if !matched {
+			return "holder"
+		}
+		if duration != 15 {
+			return "duration"
+		}
+		if oldErr != nil || newErr != nil || oldTime.Before(acquired) || before != oldTime.UTC().Format("2006-01-02T15:04:05.000000Z") || after != newTime.UTC().Format("2006-01-02T15:04:05.000000Z") || newTime.Before(oldTime) {
+			return "renewal-shape"
+		}
+		if newTime.After(observed.Add(time.Second)) {
+			return "renewal-future"
+		}
+		if observed.Sub(newTime) > 15*time.Second {
+			return "renewal-stale"
 		}
 		copy := original.DeepCopy()
 		copy.SetResourceVersion(fresh.GetResourceVersion())
 		if unstructured.SetNestedField(copy.Object, after, "spec", "renewTime") != nil {
-			return ErrFixtures
+			return "renewal-copy"
 		}
 		fields, updates := copy.GetManagedFields(), fresh.GetManagedFields()
 		if len(fields) != len(updates) {
-			return ErrFixtures
+			return "managed-count"
 		}
 		for i := range fields {
 			if fields[i].Time == nil || updates[i].Time == nil || updates[i].Time.Before(fields[i].Time) || updates[i].Time.Time.After(observed.Add(time.Second)) {
-				return ErrFixtures
+				return "managed-time"
 			}
 			fields[i].Time = updates[i].Time.DeepCopy()
 		}
 		copy.SetManagedFields(fields)
 		if !reflect.DeepEqual(copy.Object, fresh.Object) {
-			return ErrFixtures
+			return "whole-body"
 		}
 	}
 	if count != 2 {
-		return ErrFixtures
+		return "leader-count"
 	}
-	return nil
+	return ""
 }
