@@ -234,6 +234,14 @@ func (actors *baselineActors) verifyContainment(ctx context.Context) error {
 	for _, client := range clients {
 		for lane := range baselineReviewLanesPerActor {
 			group.Go(func() {
+				// Joining a Goexit worker does not prove it visited every row.
+				complete := false
+				defer func() {
+					if !complete {
+						refused.Store(true)
+						cancel()
+					}
+				}()
 				for index := lane; index < len(permissions); index += baselineReviewLanesPerActor {
 					if reviews.Err() != nil || client.authorizationDecision(reviews, permissions[index], false) != nil {
 						refused.Store(true)
@@ -241,6 +249,7 @@ func (actors *baselineActors) verifyContainment(ctx context.Context) error {
 						return
 					}
 				}
+				complete = true
 			})
 		}
 	}

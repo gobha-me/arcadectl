@@ -200,6 +200,14 @@ func (a *ClusterAdmission) actorAccessWitness(ctx context.Context, request Lifec
 	var readers sync.WaitGroup
 	for lane := range admissionReadLanes {
 		readers.Go(func() {
+			// Joining a Goexit worker does not prove it observed every identity.
+			complete := false
+			defer func() {
+				if !complete {
+					failures[lane] = ErrAdmission
+					cancel()
+				}
+			}()
 			for index := lane; index < len(frozen); index += admissionReadLanes {
 				if readCtx.Err() != nil {
 					failures[lane] = ErrAdmission
@@ -214,6 +222,7 @@ func (a *ClusterAdmission) actorAccessWitness(ctx context.Context, request Lifec
 				}
 				observed[index] = admissionIdentity{entry.resource.UID, live.GetResourceVersion(), entry.template.Hash()}
 			}
+			complete = true
 		})
 	}
 	// Refusal still joins every sibling/body before a subsequent witness or
