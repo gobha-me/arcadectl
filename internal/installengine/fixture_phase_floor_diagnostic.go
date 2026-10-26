@@ -235,13 +235,11 @@ func (d *LifecycleDiagnostic) PhaseFloorSnapshot() string {
 	return d.admission.phaseFloorSnapshot()
 }
 
-// PhaseFloorPodSnapshot describes only the same refused typed-row comparison.
-// It never changes the original whole-row/RV refusal or publishes a new floor.
-func (d *LifecycleDiagnostic) PhaseFloorPodSnapshot() string {
-	if d == nil {
+func (trace *admissionTrace) phaseFloorPodSnapshot() string {
+	if trace == nil {
 		return ""
 	}
-	recorder := d.admission.phaseFloor.Load()
+	recorder := trace.phaseFloor.Load()
 	if recorder == nil {
 		return ""
 	}
@@ -254,4 +252,13 @@ func (d *LifecycleDiagnostic) PhaseFloorPodSnapshot() string {
 		return "change=body-beyond-rv"
 	}
 	return ""
+}
+
+// PhaseFloorPodSnapshot describes only the same refused typed-row comparison.
+// It never changes the original whole-row/RV refusal or publishes a new floor.
+func (d *LifecycleDiagnostic) PhaseFloorPodSnapshot() string {
+	if d == nil {
+		return ""
+	}
+	return d.admission.phaseFloorPodSnapshot()
 }
