@@ -45,6 +45,14 @@ func baselineDeniedReviews(ctx context.Context, scope *baselineDeniedScope, clie
 		rows := scope.rows[actors[i]]
 		for lane := range baselineReviewLanesPerActor {
 			group.Go(func() {
+				// Joining a Goexit worker does not prove it visited every row.
+				complete := false
+				defer func() {
+					if !complete {
+						refused.Store(true)
+						cancel()
+					}
+				}()
 				for index := lane; index < len(rows); index += baselineReviewLanesPerActor {
 					if reviews.Err() != nil || client.authorizationDecision(reviews, authv1.SelfSubjectAccessReviewSpec{ResourceAttributes: rows[index].attributes()}, false) != nil {
 						refused.Store(true)
@@ -52,6 +60,7 @@ func baselineDeniedReviews(ctx context.Context, scope *baselineDeniedScope, clie
 						return
 					}
 				}
+				complete = true
 			})
 		}
 	}
