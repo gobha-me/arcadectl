@@ -8,12 +8,19 @@ import (
 	"fmt"
 	"reflect"
 	"sync/atomic"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // Only closed numeric labels survive the actual refused comparison. No row,
 // address, UID, RV, hash, context, callback or provider error is retained.
 // This diagnostic never validates, collects, retries or advances a floor.
-type phaseFloorDiagnostic struct{ value atomic.Uint32 }
+type phaseFloorDiagnostic struct {
+	value atomic.Uint32
+	pod   atomic.Uint32 // 0 absent, 1 unavailable, 2 RV only, 3 body beyond RV
+}
 
 const (
 	phaseFloorInput uint32 = iota + 1
@@ -63,6 +70,7 @@ func beginPhaseFloorDiagnostic(ctx context.Context) *phaseFloorDiagnostic {
 
 func (d *phaseFloorDiagnostic) record(category, kind, flags uint32) {
 	if d != nil && category > 0 && category < uint32(len(phaseFloorCategories)) && kind < uint32(len(phaseFloorKinds)) && flags&^phaseFloorFlags == 0 {
+		d.pod.Store(0)
 		d.value.Store(category | kind<<8 | flags<<16)
 	}
 }
@@ -156,6 +164,52 @@ func (d *phaseFloorDiagnostic) difference(before, after fixturePhaseBaseline) {
 	}
 }
 
+// Classify only the first row of an already-refused Rows/Pod comparison.
+// Both fingerprints use the same typed representation as the original floor.
+// This does not establish harmlessness, chronology or which body field changed.
+// Only a numeric category survives; no row or object is retained or authorized.
+func (d *phaseFloorDiagnostic) recordPodDifference(before, after fixturePhaseBaseline, observed map[types.UID]runtime.Object) {
+	if d == nil {
+		return
+	}
+	value := d.value.Load()
+	if value&255 != phaseFloorRows || value>>8&255 != phaseFloorKind("Pod") {
+		return
+	}
+	d.pod.Store(1)
+	for index := 0; index < len(before.Rows) && index < len(after.Rows); index++ {
+		original, fresh := before.Rows[index], after.Rows[index]
+		if original == fresh {
+			continue
+		}
+		if original.Key != fresh.Key || original.Key.APIVersion != "v1" || original.Key.Kind != "Pod" || original.UID != fresh.UID || original.ResourceVersion == fresh.ResourceVersion {
+			return
+		}
+		pod, ok := observed[fresh.UID].(*corev1.Pod)
+		if !ok || pod == nil || pod.Name != fresh.Key.Name || pod.Namespace != fresh.Key.Namespace || pod.UID != fresh.UID || pod.ResourceVersion != fresh.ResourceVersion || pod.APIVersion != "" && pod.APIVersion != "v1" || pod.Kind != "" && pod.Kind != "Pod" {
+			return
+		}
+		// phaseRow does not validate its arguments against object metadata.
+		// Bind the actual unmodified candidate before touching its private copy.
+		actual, err := phaseRow(fresh.Key, pod.UID, pod.ResourceVersion, pod)
+		if err != nil || actual != fresh {
+			return
+		}
+		copy := pod.DeepCopy()
+		copy.ResourceVersion = original.ResourceVersion
+		restored, err := phaseRow(original.Key, copy.UID, copy.ResourceVersion, copy)
+		if err != nil {
+			return
+		}
+		if restored == original {
+			d.pod.Store(2)
+		} else {
+			d.pod.Store(3)
+		}
+		return
+	}
+}
+
 func (trace *admissionTrace) phaseFloorSnapshot() string {
 	if trace == nil {
 		return ""
@@ -179,4 +233,32 @@ func (d *LifecycleDiagnostic) PhaseFloorSnapshot() string {
 		return ""
 	}
 	return d.admission.phaseFloorSnapshot()
+}
+
+func (trace *admissionTrace) phaseFloorPodSnapshot() string {
+	if trace == nil {
+		return ""
+	}
+	recorder := trace.phaseFloor.Load()
+	if recorder == nil {
+		return ""
+	}
+	switch recorder.pod.Load() {
+	case 1:
+		return "change=unavailable"
+	case 2:
+		return "change=rv-only"
+	case 3:
+		return "change=body-beyond-rv"
+	}
+	return ""
+}
+
+// PhaseFloorPodSnapshot describes only the same refused typed-row comparison.
+// It never changes the original whole-row/RV refusal or publishes a new floor.
+func (d *LifecycleDiagnostic) PhaseFloorPodSnapshot() string {
+	if d == nil {
+		return ""
+	}
+	return d.admission.phaseFloorPodSnapshot()
 }

@@ -8,6 +8,7 @@ package installengine
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -31,11 +32,20 @@ func TestKindAdmissionEffectiveV3WithBaseline(t *testing.T) {
 	proveKindAdmissionMatrix(t, fixtureRecipeV3)
 }
 
+// The actual native producer and its hermetic controls share this formatter.
+// Every value comes from the same trace; no provider body or error is formatted.
+func kindAdmissionMatrixFailureSummary(trace *admissionTrace) string {
+	stage, index := trace.snapshot()
+	phase, slot := trace.phaseSnapshot()
+	return fmt.Sprintf("diagnostic stage=%s index=%d phase=%s slot=%d typed-metadata=%q phase-floor=%q phase-floor-pod=%q", stage, index, phase, slot, trace.typedMetadataSnapshot(), trace.phaseFloorSnapshot(), trace.phaseFloorPodSnapshot())
+}
+
 func proveKindAdmissionMatrix(t *testing.T, recipe string) {
 	t.Helper()
 	if recipe != fixtureRecipeV2 && recipe != fixtureRecipeV3 {
 		t.Fatal("unknown fixed native matrix recipe")
 	}
+	testKindAdmissionMatrixFailureSummary(t)
 	for _, profile := range []struct{ id, node string }{{installrender.Profile135, targetKind135}, {installrender.Profile137, targetKind137}} {
 		t.Run(profile.id, func(t *testing.T) {
 			for _, mode := range []string{"cold", "warm"} {
@@ -84,9 +94,7 @@ func proveKindAdmissionMatrix(t *testing.T, recipe string) {
 						matrixErr = admission.VerifyEffective(traced, request)
 					}
 					if matrixErr != nil {
-						stage, index := trace.snapshot()
-						phase, slot := trace.phaseSnapshot()
-						t.Fatalf("full matrix driver refused: diagnostic stage=%s index=%d phase=%s slot=%d typed-metadata=%q phase-floor=%q", stage, index, phase, slot, trace.typedMetadataSnapshot(), trace.phaseFloorSnapshot())
+						t.Fatalf("full matrix driver refused: %s", kindAdmissionMatrixFailureSummary(trace))
 					}
 					retirement, err := engine.readFixtureRetirement(snapshot.Anchor())
 					if err != nil || retirement.record.State != fixtureRetired {

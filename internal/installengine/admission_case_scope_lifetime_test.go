@@ -608,26 +608,76 @@ func TestAdmissionCaseScopePanicPoisonsDriverAndRevokesLease(t *testing.T) {
 	p.assertCustody(t)
 }
 
+// Time only the Goexit unwind after its actual transport injection. The full
+// case opening still runs unchanged. Failure cancellation and join precede
+// return, so fixture cleanup cannot race an active worker. Successful callers
+// own cancellation and must keep that parent active through scope assertions.
+// A broken cancellation/join remains subject to the existing package deadline;
+// force-finishing a live scope would invalidate the lifetime evidence.
+func testAdmissionCaseGoexitWorker(ctx context.Context, injected <-chan struct{}, run func(context.Context) error, after func(time.Duration) <-chan time.Time) (bool, context.CancelFunc) {
+	workerCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	complete := false
+	defer func() {
+		if !complete {
+			cancel()
+			<-done
+		}
+	}()
+	go func() { defer close(done); _ = run(workerCtx) }()
+	select {
+	case <-injected:
+	case <-done:
+		// A fast Goexit may have closed both channels before this select.
+		select {
+		case <-injected:
+		default:
+			return false, cancel
+		}
+	case <-ctx.Done():
+		return false, cancel
+	}
+	select {
+	case <-done:
+		if ctx.Err() != nil {
+			return false, cancel
+		}
+		complete = true
+		return true, cancel
+	case <-after(5 * time.Second):
+		return false, cancel
+	case <-ctx.Done():
+		return false, cancel
+	}
+}
+
 func TestAdmissionCaseScopeGoexitPoisonsDriverAndReleasesLease(t *testing.T) {
 	p := testAdmissionCaseProtocolFixture(t, 17)
 	client := p.h.f.wire.actors.clients[destroyControllerActor]
 	original := client.client.Transport
 	var spent *admissionCaseScope
 	var sentCtx context.Context
+	injected := make(chan struct{})
 	client.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Query().Get("dryRun") == "All" {
 			spent, _ = r.Context().Value(admissionCaseScopeKey{}).(*admissionCaseScope)
 			sentCtx = r.Context()
+			close(injected)
 			runtime.Goexit()
 		}
 		return original.RoundTrip(r)
 	})
-	done := make(chan struct{})
-	go func() { defer close(done); _ = p.run(t.Context()) }()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
+	var workerCtx context.Context
+	complete, cancel := testAdmissionCaseGoexitWorker(t.Context(), injected, func(ctx context.Context) error {
+		workerCtx = ctx
+		return p.run(ctx)
+	}, time.After)
+	defer cancel()
+	if !complete {
 		t.Fatal("Goexit did not unwind the exact case and wire lock")
+	}
+	if workerCtx == nil || workerCtx.Err() != nil {
+		t.Fatal("Goexit worker parent cancelled before scope revocation checks")
 	}
 	if spent == nil || !p.d.failed || p.d.next != 17 || p.d.completed != (uint64(1)<<17)-1 || spent.begin(sentCtx) != ErrFixtures || spent.current(sentCtx) {
 		t.Fatal("Goexit retained a case bit, driver authority or helper lease")

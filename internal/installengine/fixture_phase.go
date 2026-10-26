@@ -546,6 +546,7 @@ func (f *fixtureLedger) accountPhaseWithAccounts(ctx context.Context, o *install
 			floorDiagnostic.record(phaseFloorCandidate, 0, 0)
 		} else {
 			floorDiagnostic.difference(floor, phase)
+			floorDiagnostic.recordPodDifference(floor, phase, observed)
 		}
 		return zero, fixtures, ErrFixtures
 	}
