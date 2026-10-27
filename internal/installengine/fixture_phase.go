@@ -256,7 +256,6 @@ func (w *fixtureWire) observePhaseLocked(ctx context.Context) (*fixturePhaseObse
 			}
 		}
 		phase, objects, err := f.accountPhaseWithAccounts(ctx, o, floor, time.Now().UTC(), accounts)
-		phaseGateFailed(ctx, phaseGateBaseline, err != nil)
 		if err == nil {
 			traceAdmissionPhase(ctx, admissionPhasePublicBefore, -1)
 			phase.Public, err = a.phasePublicInventory(ctx, request)
