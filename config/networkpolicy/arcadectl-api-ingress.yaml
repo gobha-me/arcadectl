@@ -1,0 +1,27 @@
+# Operator-applied cluster change: Infra Lead review required before applying.
+# From the repository root, after selecting the intended cluster context:
+#   kubectl apply -f config/networkpolicy/arcadectl-api-ingress.yaml
+# This is outside the installer's embedded assets and owned-object inventory.
+# No effect unless the CNI enforces NetworkPolicy. See docs/ADMIN_API.md.
+# No pod-network clients of 8443 are installed; administrators use authenticated
+# pods/portforward via kube-apiserver -> kubelet/CRI -> pod netns (not CNI ingress).
+# Kubelet probes use 8081; same-node traffic is exempt under standard NetworkPolicy.
+# Verify probe and host-network behavior with the actual CNI/host policies before
+# rollout. No broad 8081 allowance or guessed node CIDRs are needed here.
+# Other selecting policies are additive and may grant ingress despite this one.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: arcadectl-api-ingress
+  namespace: arcadectl-system
+  labels:
+    app.kubernetes.io/name: arcadectl-api
+    app.kubernetes.io/part-of: arcadectl
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: arcadectl-api
+  policyTypes:
+    - Ingress
+  ingress: []
