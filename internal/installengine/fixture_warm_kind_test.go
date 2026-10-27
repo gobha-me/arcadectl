@@ -196,26 +196,16 @@ func proveKindWarmFixtureRecipe(t *testing.T, recipe string) {
 			phaseRead := func(previous *fixturePhaseObservation, requireRenewal bool) *fixturePhaseObservation {
 				t.Helper()
 				var accepted *fixturePhaseObservation
-				var diagnostic warmPhaseReadDiagnostic
 				if wait.PollUntilContextTimeout(ctx, 200*time.Millisecond, 90*time.Second, true, func(ctx context.Context) (bool, error) {
-					diagnostic.attempts++
-					trace := &admissionTrace{}
-					fresh, err := wire.observePhase(context.WithValue(ctx, admissionTraceKey{}, trace))
+					fresh, err := wire.observePhase(ctx)
 					if err != nil {
-						diagnostic.record(trace.phaseGateSnapshot(), trace)
 						return false, nil
 					}
-					if len(fresh.phase.Leaders) != 2 {
-						diagnostic.record(phaseGateLeaders, trace)
-						return false, ErrFixtures
-					}
-					if !samePhaseBaseline(initial.baseline, fresh.phase) {
-						diagnostic.record(phaseGateBaseline, trace)
+					if len(fresh.phase.Leaders) != 2 || !samePhaseBaseline(initial.baseline, fresh.phase) {
 						return false, ErrFixtures
 					}
 					if previous != nil {
 						if !samePhaseBaseline(previous.phase, fresh.phase) {
-							diagnostic.record(phaseGateBaseline, trace)
 							return false, ErrFixtures
 						}
 						for index, leader := range fresh.phase.Leaders {
@@ -225,11 +215,9 @@ func proveKindWarmFixtureRecipe(t *testing.T, recipe string) {
 							oldRenew, oldRenewErr := time.Parse(time.RFC3339Nano, old.RenewTime)
 							freshRenew, freshRenewErr := time.Parse(time.RFC3339Nano, leader.RenewTime)
 							if oldErr != nil || freshErr != nil || oldRenewErr != nil || freshRenewErr != nil {
-								diagnostic.record(phaseGateLeaders, trace)
 								return false, ErrFixtures
 							}
 							if requireRenewal && (freshRV <= oldRV || !freshRenew.After(oldRenew)) {
-								diagnostic.record(phaseGateLeaders, trace)
 								return false, nil
 							}
 						}
@@ -238,7 +226,7 @@ func proveKindWarmFixtureRecipe(t *testing.T, recipe string) {
 					return true, nil
 				}) != nil || accepted == nil {
 					phaseUnproved = true
-					t.Fatalf("complete original phase did not converge with both renewing native leaders (%s)", diagnostic.String())
+					t.Fatal("complete original phase did not converge with both renewing native leaders")
 				}
 				return accepted
 			}
