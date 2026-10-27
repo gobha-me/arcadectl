@@ -58,7 +58,7 @@ for recovery_script in test-kind-recovery.sh kind-recovery-scenarios.sh kind-rec
   fi
 done
 grep -Fq 'ARCADECTL_LIFECYCLE_SUITE=recovery' "$repository_root/hack/test-kind-recovery.sh"
-grep -Fq 'golang:1.26.0-alpine3.23@sha256:d4c4845f5d60c6a974c6000ce58ae079328d03ab7f721a0734277e69905473e5' "$controller_dockerfile"
+grep -Fq 'golang:1.26.10-alpine3.23@sha256:34414731924cf2263160f0021f5cf6e1807382d85248f7cb419d4187b96d5e43' "$controller_dockerfile"
 grep -Fq 'restic/restic@sha256:39d9072fb5651c80d75c7a811612eb60b4c06b32ffe87c2e9f3c7222e1797e76' "$controller_dockerfile"
 grep -Fq 'ENV GOTOOLCHAIN=local GOMAXPROCS=2 GOMEMLIMIT=1GiB GOFLAGS="-mod=readonly -p=2"' "$controller_dockerfile"
 grep -Fq 'go build -trimpath -ldflags="-s -w -buildid=" -o /out/arcadectl-backup-worker ./cmd/arcadectl-backup-worker' "$controller_dockerfile"
@@ -82,7 +82,7 @@ grep -Fq 'USER 65532:65532' "$controller_dockerfile"
 grep -Fq 'ARG LIFECYCLE_TEST=false' "$controller_dockerfile"
 grep -Fq 'true) set -- -tags=lifecycletest' "$controller_dockerfile"
 grep -Fq 'arcade.gobha.me/source-dirty="$SOURCE_DIRTY"' "$controller_dockerfile"
-grep -Fq 'golang:1.26.0-alpine3.23@sha256:d4c4845f5d60c6a974c6000ce58ae079328d03ab7f721a0734277e69905473e5' "$api_dockerfile"
+grep -Fq 'golang:1.26.10-alpine3.23@sha256:34414731924cf2263160f0021f5cf6e1807382d85248f7cb419d4187b96d5e43' "$api_dockerfile"
 grep -Fq 'GOTOOLCHAIN=local GOMAXPROCS=2 GOMEMLIMIT=1GiB GOFLAGS="-mod=readonly -p=2"' "$api_dockerfile"
 grep -Fq 'go build -trimpath -ldflags="-s -w -buildid=" -o /rootfs/arcadectl-api ./cmd/arcadectl-api' "$api_dockerfile"
 grep -Fq 'cp LICENSE NOTICE /rootfs/licenses/' "$api_dockerfile"
