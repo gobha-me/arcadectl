@@ -294,7 +294,7 @@ func (f *fixtureLedger) readOriginalWorldsMode(pin, materialize bool) (fixtureWo
 		}
 	}
 	body, identity, err := f.engine.files.ReadEvidence(name, privatefs.MaxEvidenceFileBytes)
-	if err != nil || fixtureWorldDigest(body) != f.document.OriginalWorldsSHA256 || f.worldIdentity != nil && identity != *f.worldIdentity || f.engine.files.ConfirmEvidenceDurable(name, identity) != nil {
+	if err != nil || fixtureWorldDigest(body) != f.document.OriginalWorldsSHA256 || f.worldIdentity != nil && identity != *f.worldIdentity || f.engine.files.ConfirmEvidenceDurableComparing(name, identity, body) != nil {
 		return fixtureWorldsDocument{}, ErrFixtures
 	}
 	var d fixtureWorldsDocument
@@ -327,7 +327,7 @@ func (f *fixtureLedger) originalWorldsWALCurrent() error {
 		return ErrFixtures
 	}
 	body, identity := f.body, f.identity
-	if f.engine.files.MatchOriginal(f.name, fixtureLedgerMaxBytes, body, identity) != nil || f.engine.files.ConfirmDurable(f.name, identity) != nil {
+	if f.engine.files.MatchOriginal(f.name, fixtureLedgerMaxBytes, body, identity) != nil || f.engine.files.ConfirmDurableComparing(f.name, identity, body) != nil {
 		return ErrFixtures
 	}
 	return nil

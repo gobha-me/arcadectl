@@ -301,7 +301,7 @@ func (f *fixtureLedger) matchCurrentWorlds(name string) (handled bool, err error
 	if seal != f.document.OriginalWorldsSHA256 {
 		return false, nil
 	}
-	if f.engine.files.MatchEvidenceOriginal(name, privatefs.MaxEvidenceFileBytes, body, *f.worldIdentity) != nil || seal != f.document.OriginalWorldsSHA256 || f.engine.files.ConfirmEvidenceDurable(name, *f.worldIdentity) != nil {
+	if f.engine.files.MatchEvidenceOriginal(name, privatefs.MaxEvidenceFileBytes, body, *f.worldIdentity) != nil || seal != f.document.OriginalWorldsSHA256 || f.engine.files.ConfirmEvidenceDurableComparing(name, *f.worldIdentity, body) != nil {
 		return true, ErrFixtures
 	}
 	namespace, _, err := f.worldsJournalIdentityLocked()
