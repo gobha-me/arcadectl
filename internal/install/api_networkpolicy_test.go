@@ -107,10 +107,10 @@ func loadAPIEndpointContract(t *testing.T) apiEndpointContract {
 		t.Fatalf("unexpected api container ports: https=%s:%d health=%s:%d", httpsName, httpsPort, healthName, healthPort)
 	}
 
-	// Per Codex author notes (/config/projects/logs/arcadectl-codex-sec-netpol.md):
-	// - No in-cluster API client exists for 8443 (installer & tests use pods/portforward via CRI netns).
+	// Product invariant (see docs/ADMIN_API.md):
+	// - No in-cluster admin API client is installed for 8443 (installer & tests use pods/portforward via CRI netns).
 	// - Same-node kubelet probes on 8081 are exempt under standard NetworkPolicy.
-	// Therefore zero ingress ports are justified in the NetworkPolicy.
+	// Therefore no ingress rule or port is permitted in the NetworkPolicy (ingress: []).
 	return apiEndpointContract{
 		namespace:            deployment.Namespace,
 		deploymentSelector:   *deployment.Spec.Selector.DeepCopy(),
@@ -209,22 +209,23 @@ func validateAPINetworkPolicyManifest(raw []byte, contract apiEndpointContract) 
 		}
 	}
 
-	// PolicyTypes must include Ingress.
-	if !slices.Contains(policy.Spec.PolicyTypes, networkingv1.PolicyTypeIngress) {
-		problems = append(problems, fmt.Sprintf("policyTypes %v does not include Ingress", policy.Spec.PolicyTypes))
-	}
-	for _, pt := range policy.Spec.PolicyTypes {
-		if pt != networkingv1.PolicyTypeIngress && pt != networkingv1.PolicyTypeEgress {
-			problems = append(problems, fmt.Sprintf("unknown policyType %q", pt))
-		}
+	// Product invariant (see docs/ADMIN_API.md): policyTypes must be exactly [Ingress].
+	// Adding Egress without egress rules would deny all API egress (kube-apiserver, DNS).
+	if !slices.Equal(policy.Spec.PolicyTypes, []networkingv1.PolicyType{networkingv1.PolicyTypeIngress}) {
+		problems = append(problems, fmt.Sprintf("policyTypes must be exactly [Ingress], got %v (see docs/ADMIN_API.md)", policy.Spec.PolicyTypes))
 	}
 
-	// Require explicit ingress key in YAML spec so isolation does not rely on omitted field.
+	// Require explicit policyTypes and ingress keys in YAML spec so isolation does not rely on omitted fields.
 	specMap, ok := unstructuredObj.Object["spec"].(map[string]any)
 	if !ok {
 		problems = append(problems, "missing spec object")
-	} else if _, hasIngress := specMap["ingress"]; !hasIngress {
-		problems = append(problems, "spec.ingress must be explicitly present as []")
+	} else {
+		if _, hasPolicyTypes := specMap["policyTypes"]; !hasPolicyTypes {
+			problems = append(problems, "spec.policyTypes must be explicitly present")
+		}
+		if _, hasIngress := specMap["ingress"]; !hasIngress {
+			problems = append(problems, "spec.ingress must be explicitly present as []")
+		}
 	}
 
 	// Adversarial rule-by-rule inspection.
@@ -245,7 +246,7 @@ func validateAPINetworkPolicyManifest(raw []byte, contract apiEndpointContract) 
 	}
 
 	if len(policy.Spec.Ingress) != 0 && len(contract.justifiedIngressPort) == 0 {
-		problems = append(problems, fmt.Sprintf("ingress has %d rule(s), but Codex notes justify 0 ingress rules (ingress: [])", len(policy.Spec.Ingress)))
+		problems = append(problems, fmt.Sprintf("no ingress rule is permitted (got %d rule(s); spec.ingress must be []; see docs/ADMIN_API.md)", len(policy.Spec.Ingress)))
 	}
 
 	if len(problems) > 0 {
@@ -323,7 +324,7 @@ func validateIngressPort(ruleIndex, portIndex int, p networkingv1.NetworkPolicyP
 	}
 
 	if !contract.justifiedIngressPort[portKey] {
-		problems = append(problems, fmt.Sprintf("ingress[%d].ports[%d] port %q is not justified by Codex notes", ruleIndex, portIndex, portKey))
+		problems = append(problems, fmt.Sprintf("ingress[%d].ports[%d] port %q is not permitted (no ingress rule is permitted; see docs/ADMIN_API.md)", ruleIndex, portIndex, portKey))
 	}
 	return problems
 }
@@ -512,11 +513,39 @@ func TestAPINetworkPolicyAdversarialMutationsFailClosed(t *testing.T) {
 			wantErr: "podSelector.matchExpressions must be empty",
 		},
 		{
-			name: "policyTypes omits Ingress",
+			name: "policyTypes adds Egress ([Ingress, Egress])",
+			mutate: func(t *testing.T, base []byte) []byte {
+				return replaceMustChange(t, base, "  policyTypes:\n    - Ingress", "  policyTypes:\n    - Ingress\n    - Egress")
+			},
+			wantErr: "policyTypes must be exactly [Ingress], got [Ingress Egress]",
+		},
+		{
+			name: "policyTypes is [Egress]",
 			mutate: func(t *testing.T, base []byte) []byte {
 				return replaceMustChange(t, base, "  policyTypes:\n    - Ingress", "  policyTypes:\n    - Egress")
 			},
-			wantErr: "does not include Ingress",
+			wantErr: "policyTypes must be exactly [Ingress], got [Egress]",
+		},
+		{
+			name: "policyTypes is empty []",
+			mutate: func(t *testing.T, base []byte) []byte {
+				return replaceMustChange(t, base, "  policyTypes:\n    - Ingress", "  policyTypes: []")
+			},
+			wantErr: "policyTypes must be exactly [Ingress], got []",
+		},
+		{
+			name: "policyTypes has duplicate [Ingress, Ingress]",
+			mutate: func(t *testing.T, base []byte) []byte {
+				return replaceMustChange(t, base, "  policyTypes:\n    - Ingress", "  policyTypes:\n    - Ingress\n    - Ingress")
+			},
+			wantErr: "policyTypes must be exactly [Ingress], got [Ingress Ingress]",
+		},
+		{
+			name: "missing policyTypes",
+			mutate: func(t *testing.T, base []byte) []byte {
+				return replaceMustChange(t, base, "  policyTypes:\n    - Ingress\n", "")
+			},
+			wantErr: "policyTypes must be exactly [Ingress], got []",
 		},
 		{
 			name: "omitted ingress field",
@@ -524,6 +553,13 @@ func TestAPINetworkPolicyAdversarialMutationsFailClosed(t *testing.T) {
 				return replaceMustChange(t, base, "  ingress: []\n", "")
 			},
 			wantErr: "spec.ingress must be explicitly present as []",
+		},
+		{
+			name: "allow-all ingress rule - {}",
+			mutate: func(t *testing.T, base []byte) []byte {
+				return replaceMustChange(t, base, "  ingress: []", "  ingress:\n    - {}")
+			},
+			wantErr: "no ingress rule is permitted",
 		},
 		{
 			name: "rule allows 8443 with empty from",
@@ -614,7 +650,7 @@ func TestAPINetworkPolicyAdversarialMutationsFailClosed(t *testing.T) {
 			mutate: func(t *testing.T, base []byte) []byte {
 				return replaceMustChange(t, base, "  ingress: []", "  ingress:\n    - from:\n        - namespaceSelector:\n            matchLabels:\n              kubernetes.io/metadata.name: arcadectl-system\n          podSelector:\n            matchLabels:\n              app.kubernetes.io/name: arcadectl-controller\n      ports:\n        - protocol: TCP\n          port: 9090")
 			},
-			wantErr: "port \"9090\" is not justified by Codex notes",
+			wantErr: "port \"9090\" is not permitted",
 		},
 		{
 			name: "unknown YAML field rejected by strict decoder",
