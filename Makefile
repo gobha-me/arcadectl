@@ -2,9 +2,9 @@
 
 CANONICAL_CONTROLLER_IMAGE := ghcr.io/gobha-me/arcadectl-controller@sha256:0000000000000000000000000000000000000000000000000000000000000000
 
-# Ratchet mutant coverage to 90 once the adminauth adversarial tests land.
+# Require 90% efficacy and mutant coverage with adminauth adversarial tests.
 GREMLINS_EFFICACY := 90
-GREMLINS_MCOVER := 70
+GREMLINS_MCOVER := 90
 # Includes mutant compilation: warm coverage takes 61-100ms, while a mutant
 # invocation takes 330ms or more. See the issue #108 timeout investigation.
 GREMLINS_TIMEOUT_COEFFICIENT := 10
