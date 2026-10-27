@@ -4,6 +4,7 @@
 package installrender
 
 import (
+	"fmt"
 	"reflect"
 	"runtime"
 	"strings"
@@ -87,5 +88,30 @@ func TestResourceMetadataAllocationProfile(t *testing.T) {
 	p := mustCompile(t, false, "isolated-metadata", Profile135)
 	whole := testing.AllocsPerRun(3, func() { runtime.KeepAlive(p.Resources()) })
 	metadata := testing.AllocsPerRun(3, func() { runtime.KeepAlive(p.ResourceMetadata()) })
+	// Assertion edit (#99, A1): logging alone cannot catch metadata allocating
+	// as much as (or more than) defensive copies of the complete resources.
+	if err := checkResourceMetadataAllocationProfile(whole, metadata); err != nil {
+		t.Fatal(err)
+	}
 	t.Logf("allocations per complete read: whole objects=%.0f metadata=%.0f", whole, metadata)
+	for _, tc := range []struct {
+		name            string
+		whole, metadata float64
+	}{
+		{"equal-allocations", whole, whole},
+		{"inverted-allocations", metadata, whole},
+	} {
+		t.Run("rejects-"+tc.name, func(t *testing.T) {
+			if err := checkResourceMetadataAllocationProfile(tc.whole, tc.metadata); err == nil {
+				t.Fatal("allocation assertion accepted a regression")
+			}
+		})
+	}
+}
+
+func checkResourceMetadataAllocationProfile(whole, metadata float64) error {
+	if metadata >= whole {
+		return fmt.Errorf("metadata must allocate less than whole resources: whole=%g metadata=%g", whole, metadata)
+	}
+	return nil
 }
