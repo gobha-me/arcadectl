@@ -142,7 +142,14 @@ type testAdmissionCaseProtocol struct {
 // all55 completion, native serving or persistent setup is claimed.
 func testAdmissionCaseProtocolFixture(t *testing.T, number fixtureAdmissionCase) *testAdmissionCaseProtocol {
 	t.Helper()
-	h := unmarkedRecoveryPhaseFactory(t)(t)
+	return testAdmissionCaseProtocolFixtureOn(t, number, unmarkedRecoveryPhaseFactory(t)(t))
+}
+
+// testAdmissionCaseProtocolFixtureOn is the unchanged protocol fixture body over
+// a caller-supplied unmarked phase (adversarial #100: Upgrade/Rollback/Uninstall
+// transition phases reuse the identical real runCaseLocked boundary).
+func testAdmissionCaseProtocolFixtureOn(t *testing.T, number fixtureAdmissionCase, h *fixturePhaseTest) *testAdmissionCaseProtocol {
+	t.Helper()
 	f := h.f.wire.ledger
 	if number >= 39 {
 		if f.advance(fixtureSeedIntent(t, f)) != nil {

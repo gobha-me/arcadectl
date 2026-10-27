@@ -6,7 +6,6 @@ package installengine
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -222,24 +221,7 @@ func (p *ClusterPrerequisites) documentPermissionsWithBootstrap(d installstate.D
 	permissions = append(permissions, proofPermission{spec: authv1.SelfSubjectAccessReviewSpec{NonResourceAttributes: &authv1.NonResourceAttributes{Path: "/version", Verb: "get"}}})
 	// Deterministic bounded requests; no selectors, wildcard resources, patch,
 	// watch, deletecollection, impersonation, Secret updates or PVC deletes.
-	unique := map[string]proofPermission{}
-	for _, r := range permissions {
-		encoded, _ := json.Marshal(r.spec)
-		unique[string(encoded)] = r
-	}
-	keys := make([]string, 0, len(unique))
-	for key := range unique {
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
-	if len(keys) > 256 {
-		return nil, ErrInvalid
-	}
-	result := make([]proofPermission, 0, len(keys))
-	for _, key := range keys {
-		result = append(result, unique[key])
-	}
-	return result, nil
+	return uniqueProofPermissions(permissions)
 }
 
 // Extra baseline authority is derived solely from the sealed independent plan.
