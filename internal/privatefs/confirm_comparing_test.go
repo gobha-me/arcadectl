@@ -80,7 +80,7 @@ func TestConfirmComparingOriginalRefusalOracle(t *testing.T) {
 		for _, scenario := range []string{"stable", "empty", "wrong-operand", "oversize-operand", "wrong-identity", "missing", "replacement", "content", "growth", "shrink", "mode", "link", "file-sync", "dir-sync", "file-sync-drift", "dir-sync-drift", "file-sync-replacement", "dir-sync-replacement", "dir-mode"} {
 			t.Run(strings.Join([]string{map[bool]string{false: "ordinary", true: "evidence"}[evidence], scenario}, "/"), func(t *testing.T) {
 				run := func(candidate bool) error {
-					dir := filepath.Join(t.TempDir(), "private")
+					dir := filepath.Join(privateTemp(t), "private")
 					s, err := Open(dir, true)
 					if err != nil {
 						t.Fatal(err)
@@ -176,7 +176,7 @@ func TestConfirmComparingOriginalRefusalOracle(t *testing.T) {
 func TestConfirmComparingOwnedOperandAndExceptionalCleanup(t *testing.T) {
 	for _, mode := range []string{"mutate-input", "panic", "goexit"} {
 		t.Run(mode, func(t *testing.T) {
-			s, err := Open(filepath.Join(t.TempDir(), "private"), true)
+			s, err := Open(filepath.Join(privateTemp(t), "private"), true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -226,7 +226,7 @@ func TestConfirmComparingOwnedOperandAndExceptionalCleanup(t *testing.T) {
 
 func TestConfirmComparingScratchBoundariesIsolationAndClose(t *testing.T) {
 	open := func() *Store {
-		s, err := Open(filepath.Join(t.TempDir(), "private"), true)
+		s, err := Open(filepath.Join(privateTemp(t), "private"), true)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -291,7 +291,7 @@ func TestConfirmComparingScratchBoundariesIsolationAndClose(t *testing.T) {
 }
 
 func TestConfirmComparingScratchConcurrentSerializationAndClose(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "private"), true)
+	s, err := Open(filepath.Join(privateTemp(t), "private"), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +355,7 @@ func TestConfirmComparingOperandBoundsAndFirstReadPrecedence(t *testing.T) {
 		t.Fatal("nil store accepted")
 	}
 	for _, evidence := range []bool{false, true} {
-		s, err := Open(filepath.Join(t.TempDir(), "private"), true)
+		s, err := Open(filepath.Join(privateTemp(t), "private"), true)
 		if err != nil {
 			t.Fatal(err)
 		}
