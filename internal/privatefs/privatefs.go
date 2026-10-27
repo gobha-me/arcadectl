@@ -66,6 +66,9 @@ type Store struct {
 	// Lazy, bounded scratch for identity-only reads under mu. Every use wipes
 	// its bytes; this is never a saved digest, file witness or content cache.
 	confirmScratch []byte
+	// Fixed capacity only, never retained evidence: comparing confirmations
+	// overwrite the current operand and wipe all 32KiB before releasing mu.
+	comparisonScratch []byte
 }
 type Lock struct {
 	fd   int
@@ -147,6 +150,8 @@ func (s *Store) Close() error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	clear(s.comparisonScratch)
+	s.comparisonScratch = nil
 	if s.fd < 0 {
 		return nil
 	}
