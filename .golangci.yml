@@ -1,4 +1,9 @@
 # Wave 0 baseline for #96. Remove exclusions as findings are fixed.
+# Source anchors narrow exclusions to baselined line text (ignoring outer whitespace).
+# New findings on different line text are reported; byte-identical new lines in the
+# same file with the same finding remain masked because no line anchor is available.
+# Burn down the baseline or use issues.new-from-merge-base; the latter needs a CI
+# checkout change owned by the CI workstream.
 # See docs/golangci-ratchet.md for the inventory and maintenance procedure.
 version: "2"
 
@@ -17,1297 +22,1619 @@ linters:
     - unused
   exclusions:
     warn-unused: true
-    # Temporary baseline: 532 findings in 322 exact path/linter/text rules.
+    # Temporary baseline: 532 findings in 322 exact path/linter/text/source rules.
     # Original line:column positions are inventory hints, not match criteria.
     rules:
       # Baseline locations: 144:25
       - path: '^cmd/arcadectl-api/main\.go$'
         linters: [errcheck]
         text: '^Error return value of `apiListener\.Close` is not checked$'
+        source: '^\s*defer apiListener\.Close\(\)\s*$'
       # Baseline locations: 149:28
       - path: '^cmd/arcadectl-api/main\.go$'
         linters: [errcheck]
         text: '^Error return value of `healthListener\.Close` is not checked$'
+        source: '^\s*defer healthListener\.Close\(\)\s*$'
       # Baseline locations: 111:28, 137:22, 143:22
       - path: '^cmd/arcadectl-api/main_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `response\.Body\.Close` is not checked$'
+        source: '^\s*(?:defer response\.Body\.Close\(\)|response\.Body\.Close\(\))\s*$'
       # Baseline locations: 265:20
       - path: '^cmd/arcadectl-api/main_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `writer\.Close` is not checked$'
+        source: '^\s*defer writer\.Close\(\)\s*$'
       # Baseline locations: 236:27
       - path: '^cmd/arcadectl-conformance-server/main\.go$'
         linters: [errcheck]
         text: '^Error return value of `response\.Body\.Close` is not checked$'
+        source: '^\s*defer response\.Body\.Close\(\)\s*$'
       # Baseline locations: 104:19
       - path: '^cmd/arcadectl-installer/main\.go$'
         linters: [errcheck]
         text: '^Error return value of `files\.Close` is not checked$'
+        source: '^\s*defer files\.Close\(\)\s*$'
       # Baseline locations: 252:21
       - path: '^cmd/arcadectl-installer/mutation\.go$'
         linters: [errcheck]
         text: '^Error return value of `x\.files\.Close` is not checked$'
+        source: '^\s*defer x\.files\.Close\(\)\s*$'
       # Baseline locations: 153:22
       - path: '^cmd/arcadectl-installer/mutation_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `sentinel\.Close` is not checked$'
+        source: '^\s*defer sentinel\.Close\(\) // Retain the original inode, preventing identity recycling\.\s*$'
       # Baseline locations: 182:21
       - path: '^cmd/arcadectl-installer/mutation_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `x\.files\.Close` is not checked$'
+        source: '^\s*defer x\.files\.Close\(\)\s*$'
       # Baseline locations: 208:25
       - path: '^cmd/arcadectl-installer/mutation_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `other\.files\.Close` is not checked$'
+        source: '^\s*defer other\.files\.Close\(\)\s*$'
       # Baseline locations: 371:15, 505:15
       - path: '^hack/profile-installer-wrappers/main_linux\.go$'
         linters: [errcheck]
         text: '^Error return value of `f\.Close` is not checked$'
+        source: '^\s*defer f\.Close\(\)\s*$'
       # Baseline locations: 539:17
       - path: '^hack/profile-installer-wrappers/main_linux\.go$'
         linters: [errcheck]
         text: '^Error return value of `os\.Setenv` is not checked$'
+        source: '^\s*defer os\.Setenv\("TMPDIR", previousTmp\)\s*$'
       # Baseline locations: 190:15, 298:15
       - path: '^hack/profile-installer-wrappers/main_linux_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `r\.Close` is not checked$'
+        source: '^\s*defer r\.Close\(\)\s*$'
       # Baseline locations: 191:15, 299:15
       - path: '^hack/profile-installer-wrappers/main_linux_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `w\.Close` is not checked$'
+        source: '^\s*defer w\.Close\(\)\s*$'
       # Baseline locations: 216:15
       - path: '^hack/profile-installer-wrappers/main_linux_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `f\.Close` is not checked$'
+        source: '^\s*defer f\.Close\(\)\s*$'
       # Baseline locations: 360:20
       - path: '^hack/profile-installer-wrappers/main_linux_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `stdout\.Close` is not checked$'
+        source: '^\s*defer stdout\.Close\(\)\s*$'
       # Baseline locations: 127:18
       - path: '^internal/adminauth/verifier\.go$'
         linters: [errcheck]
         text: '^Error return value of `file\.Close` is not checked$'
+        source: '^\s*defer file\.Close\(\)\s*$'
       # Baseline locations: 453:27
       - path: '^internal/adminclient/client\.go$'
         linters: [errcheck]
         text: '^Error return value of `response\.Body\.Close` is not checked$'
+        source: '^\s*defer response\.Body\.Close\(\)\s*$'
       # Baseline locations: 128:18, 170:18
       - path: '^internal/adminclient/context\.go$'
         linters: [errcheck]
         text: '^Error return value of `lock\.Close` is not checked$'
+        source: '^\s*defer lock\.Close\(\)\s*$'
       # Baseline locations: 26:15, 110:15, 138:15
       - path: '^internal/adminclient/context_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `s\.Close` is not checked$'
+        source: '^\s*defer s\.Close\(\)\s*$'
       # Baseline locations: 75:15
       - path: '^internal/adminclient/context_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `a\.Close` is not checked$'
+        source: '^\s*defer a\.Close\(\)\s*$'
       # Baseline locations: 80:15
       - path: '^internal/adminclient/context_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `b\.Close` is not checked$'
+        source: '^\s*defer b\.Close\(\)\s*$'
       # Baseline locations: 146:18
       - path: '^internal/adminclient/context_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `lock\.Close` is not checked$'
+        source: '^\s*defer lock\.Close\(\)\s*$'
       # Baseline locations: 27:19
       - path: '^internal/admincredential/private_file\.go$'
         linters: [errcheck]
         text: '^Error return value of `store\.Close` is not checked$'
+        source: '^\s*defer store\.Close\(\)\s*$'
       # Baseline locations: 119:27
       - path: '^internal/admincredential/probe\.go$'
         linters: [errcheck]
         text: '^Error return value of `response\.Body\.Close` is not checked$'
+        source: '^\s*defer response\.Body\.Close\(\)\s*$'
       # Baseline locations: 40:20, 63:20, 75:20, 89:21
       - path: '^internal/cli/context\.go$'
         linters: [errcheck]
         text: '^Error return value of `store\.Close` is not checked$'
+        source: '^\s*defer store\.Close\(\)\s*$'
       # Baseline locations: 611:19
       - path: '^internal/cli/integration_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `files\.Close` is not checked$'
+        source: '^\s*defer files\.Close\(\)\s*$'
       # Baseline locations: 632:18
       - path: '^internal/cli/integration_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `lock\.Close` is not checked$'
+        source: '^\s*defer lock\.Close\(\)\s*$'
       # Baseline locations: 36:19, 231:22
       - path: '^internal/cli/operation\.go$'
         linters: [errcheck]
         text: '^Error return value of `store\.Close` is not checked$'
+        source: '^\s*defer store\.Close\(\)\s*$'
       # Baseline locations: 129:20
       - path: '^internal/cli/prompt_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `output\.Close` is not checked$'
+        source: '^\s*defer output\.Close\(\)\s*$'
       # Baseline locations: 52:19
       - path: '^internal/cli/resolve\.go$'
         linters: [errcheck]
         text: '^Error return value of `store\.Close` is not checked$'
+        source: '^\s*defer store\.Close\(\)\s*$'
       # Baseline locations: 138:19
       - path: '^internal/cli/root\.go$'
         linters: [errcheck]
         text: '^Error return value of `store\.Close` is not checked$'
+        source: '^\s*defer store\.Close\(\)\s*$'
       # Baseline locations: 53:22
       - path: '^internal/cli/settlement_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `store\.Close` is not checked$'
+        source: '^\s*defer store\.Close\(\)\s*$'
       # Baseline locations: 190:21
       - path: '^internal/cliattempt/attempt_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `lock\.Close` is not checked$'
+        source: '^\s*defer lock\.Close\(\)\s*$'
       # Baseline locations: 159:18, 254:18, 320:18
       - path: '^internal/cliattempt/store\.go$'
         linters: [errcheck]
         text: '^Error return value of `lock\.Close` is not checked$'
+        source: '^\s*defer lock\.Close\(\)\s*$'
       # Baseline locations: 416:34
       - path: '^internal/installcontract/crd_check_copy_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `template\.frozenCRDMatchLive` is not checked$'
+        source: '^\s*template\.frozenCRDMatchLive\(fixture\.live, fixture\.live\.GetUID\(\)\)\s*$'
       # Baseline locations: 418:25
       - path: '^internal/installcontract/crd_check_copy_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `template\.MatchLive` is not checked$'
+        source: '^\s*template\.MatchLive\(fixture\.live, fixture\.live\.GetUID\(\)\)\s*$'
       # Baseline locations: 473:27
       - path: '^internal/installengine/access\.go$'
         linters: [errcheck]
         text: '^Error return value of `response\.Body\.Close` is not checked$'
+        source: '^\s*defer response\.Body\.Close\(\)\s*$'
       # Baseline locations: 157:19
       - path: '^internal/installengine/activation_epoch_auth\.go$'
         linters: [errcheck]
         text: '^Error return value of `conn\.Close` is not checked$'
+        source: '^\s*defer conn\.Close\(\)\s*$'
       # Baseline locations: 335:19
       - path: '^internal/installengine/admission_case_scope_lifetime_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `scope\.close` is not checked$'
+        source: '^\s*defer scope\.close\(\)\s*$'
       # Baseline locations: 418:7
       - path: '^internal/installengine/admission_case_scope_lifetime_test\.go$'
         linters: [errcheck]
         text: '^Error return value is not checked$'
+        source: '^\s*case <-closed:\s*$'
       # Baseline locations: 67:9, 99:8, 108:7
       - path: '^internal/installengine/admission_configuration_lists_test\.go$'
         linters: [errcheck]
         text: '^Error return value is not checked$'
+        source: '^\s*case <-done:\s*$'
       # Baseline locations: 37:15
       - path: '^internal/installengine/admission_effective\.go$'
         linters: [errcheck]
         text: '^Error return value of `f\.close` is not checked$'
+        source: '^\s*defer f\.close\(\)\s*$'
       # Baseline locations: 261:20
       - path: '^internal/installengine/admission_phase_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `ledger\.close` is not checked$'
+        source: '^\s*defer ledger\.close\(\)\s*$'
       # Baseline locations: 111:11, 166:10, 177:9
       - path: '^internal/installengine/admission_read_catalog_test\.go$'
         linters: [errcheck]
         text: '^Error return value is not checked$'
+        source: '^\s*case <-done:\s*$'
       # Baseline locations: 260:23
       - path: '^internal/installengine/admission_reinstall_begin_http_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `files\.Close` is not checked$'
+        source: '^\s*defer files\.Close\(\)\s*$'
       # Baseline locations: 118:26
       - path: '^internal/installengine/admission_reinstall_bootstrap_secrets_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `files\.Close` is not checked$'
+        source: '^\s*defer files\.Close\(\)\s*$'
       # Baseline locations: 33:19
       - path: '^internal/installengine/admission_reinstall_secrets\.go$'
         linters: [errcheck]
         text: '^Error return value of `caPin\.Close` is not checked$'
+        source: '^\s*defer caPin\.Close\(\)\s*$'
       # Baseline locations: 194:17
       - path: '^internal/installengine/admission_retirement\.go$'
         linters: [errcheck]
         text: '^Error return value of `pin\.Close` is not checked$'
+        source: '^\s*defer pin\.Close\(\)\s*$'
       # Baseline locations: 279:20
       - path: '^internal/installengine/admission_serving_convergence_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `ledger\.close` is not checked$'
+        source: '^\s*defer ledger\.close\(\)\s*$'
       # Baseline locations: 106:9, 164:8, 175:7, 321:9, 331:8, 347:8, 355:7
       - path: '^internal/installengine/baseline_access_concurrency_test\.go$'
         linters: [errcheck]
         text: '^Error return value is not checked$'
+        source: '^\s*case <-done:\s*$'
       # Baseline locations: 369:22
       - path: '^internal/installengine/baseline_actors_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `suite\.close` is not checked$'
+        source: '^\s*defer suite\.close\(\)\s*$'
       # Baseline locations: 109:19
       - path: '^internal/installengine/baseline_behavior\.go$'
         linters: [errcheck]
         text: '^Error return value of `suite\.close` is not checked$'
+        source: '^\s*defer suite\.close\(\)\s*$'
       # Baseline locations: 339:32, 439:31, 481:30
       - path: '^internal/installengine/baseline_configuration_access_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `response\.Body\.Close` is not checked$'
+        source: '^\s*defer response\.Body\.Close\(\)\s*$'
       # Baseline locations: 112:9, 197:9, 208:8
       - path: '^internal/installengine/baseline_configuration_concurrency_test\.go$'
         linters: [errcheck]
         text: '^Error return value is not checked$'
+        source: '^\s*case <-done:\s*$'
       # Baseline locations: 267:30
       - path: '^internal/installengine/baseline_configuration_concurrency_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `response\.Body\.Close` is not checked$'
+        source: '^\s*defer response\.Body\.Close\(\)\s*$'
       # Baseline locations: 366:11, 405:9
       - path: '^internal/installengine/baseline_containment_concurrency_test\.go$'
         linters: [errcheck]
         text: '^Error return value is not checked$'
+        source: '^\s*case <-done:\s*$'
       # Baseline locations: 116:10, 132:10, 143:9
       - path: '^internal/installengine/baseline_denied_composition_fence_test\.go$'
         linters: [errcheck]
         text: '^Error return value is not checked$'
+        source: '^\s*case <-done:\s*$'
       # Baseline locations: 149:9, 158:8
       - path: '^internal/installengine/baseline_denied_concurrency_test\.go$'
         linters: [errcheck]
         text: '^Error return value is not checked$'
+        source: '^\s*case <-done:\s*$'
       # Baseline locations: 236:30
       - path: '^internal/installengine/baseline_effects\.go$'
         linters: [errcheck]
         text: '^Error return value of `originalReceipt\.Close` is not checked$'
+        source: '^\s*defer originalReceipt\.Close\(\)\s*$'
       # Baseline locations: 269:26
       - path: '^internal/installengine/baseline_effects\.go$'
         linters: [errcheck]
         text: '^Error return value of `ackReceipt\.Close` is not checked$'
+        source: '^\s*defer ackReceipt\.Close\(\)\s*$'
       # Baseline locations: 323:31
       - path: '^internal/installengine/baseline_effects\.go$'
         linters: [errcheck]
         text: '^Error return value of `observedReceipt\.Close` is not checked$'
+        source: '^\s*defer observedReceipt\.Close\(\)\s*$'
       # Baseline locations: 58:29
       - path: '^internal/installengine/baseline_enrollment\.go$'
         linters: [errcheck]
         text: '^Error return value of `pendingReceipt\.Close` is not checked$'
+        source: '^\s*defer pendingReceipt\.Close\(\)\s*$'
       # Baseline locations: 500:24, 536:23
       - path: '^internal/installengine/baseline_prerequisite_worlds_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `files\.Close` is not checked$'
+        source: '^\s*defer files\.Close\(\)\s*$'
       # Baseline locations: 64:22
       - path: '^internal/installengine/baseline_probe_suite_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `outer\.close` is not checked$'
+        source: '^\s*defer outer\.close\(\)\s*$'
       # Baseline locations: 124:22
       - path: '^internal/installengine/baseline_probe_suite_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `other\.close` is not checked$'
+        source: '^\s*defer other\.close\(\)\s*$'
       # Baseline locations: 200:7
       - path: '^internal/installengine/baseline_probe_suite_test\.go$'
         linters: [errcheck]
         text: '^Error return value is not checked$'
+        source: '^\s*case <-closed:\s*$'
       # Baseline locations: 169:9, 172:5, 196:8, 221:8
       - path: '^internal/installengine/baseline_worker_completion_test\.go$'
         linters: [errcheck]
         text: '^Error return value is not checked$'
+        source: '^\s*(?:case <-done:|<-done // Never tear down the fixture while its worker remains active\.)\s*$'
       # Baseline locations: 41:30
       - path: '^internal/installengine/fixture_admission_driver_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `response\.Body\.Close` is not checked$'
+        source: '^\s*defer response\.Body\.Close\(\)\s*$'
       # Baseline locations: 68:20, 149:22, 228:20
       - path: '^internal/installengine/fixture_admission_driver_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `ledger\.close` is not checked$'
+        source: '^\s*defer ledger\.close\(\)\s*$'
       # Baseline locations: 133:20
       - path: '^internal/installengine/fixture_admission_driver_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `loaded\.close` is not checked$'
+        source: '^\s*defer loaded\.close\(\)\s*$'
       # Baseline locations: 55:20, 154:20
       - path: '^internal/installengine/fixture_behavior_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `ledger\.close` is not checked$'
+        source: '^\s*defer ledger\.close\(\)\s*$'
       # Baseline locations: 221:20, 257:20
       - path: '^internal/installengine/fixture_behavior_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `loaded\.close` is not checked$'
+        source: '^\s*defer loaded\.close\(\)\s*$'
       # Baseline locations: 123:15, 223:15, 301:15
       - path: '^internal/installengine/fixture_decode_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `f\.close` is not checked$'
+        source: '^\s*defer f\.close\(\)\s*$'
       # Baseline locations: 26:22
       - path: '^internal/installengine/fixture_destroy_confirmation_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `ledger\.close` is not checked$'
+        source: '^\s*defer ledger\.close\(\)\s*$'
       # Baseline locations: 45:20, 119:20, 161:20, 289:22
       - path: '^internal/installengine/fixture_destroy_seed_ledger_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `ledger\.close` is not checked$'
+        source: '^\s*defer ledger\.close\(\)\s*$'
       # Baseline locations: 253:20
       - path: '^internal/installengine/fixture_destroy_seed_ledger_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `loaded\.close` is not checked$'
+        source: '^\s*defer loaded\.close\(\)\s*$'
       # Baseline locations: 28:22
       - path: '^internal/installengine/fixture_destroy_seed_mode_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `ledger\.close` is not checked$'
+        source: '^\s*defer ledger\.close\(\)\s*$'
       # Baseline locations: 128:22, 170:22
       - path: '^internal/installengine/fixture_destroy_seed_mode_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `loaded\.close` is not checked$'
+        source: '^\s*defer loaded\.close\(\)\s*$'
       # Baseline locations: 52:22, 140:22, 316:20
       - path: '^internal/installengine/fixture_destroy_seed_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `ledger\.close` is not checked$'
+        source: '^\s*defer ledger\.close\(\)\s*$'
       # Baseline locations: 298:20
       - path: '^internal/installengine/fixture_destroy_seed_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `loaded\.close` is not checked$'
+        source: '^\s*defer loaded\.close\(\)\s*$'
       # Baseline locations: 83:20, 229:22
       - path: '^internal/installengine/fixture_destroy_seed_wire_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `loaded\.close` is not checked$'
+        source: '^\s*defer loaded\.close\(\)\s*$'
       # Baseline locations: 62:22
       - path: '^internal/installengine/fixture_destroy_warm_confirmation_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `ledger\.close` is not checked$'
+        source: '^\s*defer ledger\.close\(\)\s*$'
       # Baseline locations: 78:22
       - path: '^internal/installengine/fixture_destroy_warm_seed_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `ledger\.close` is not checked$'
+        source: '^\s*defer ledger\.close\(\)\s*$'
       # Baseline locations: 78:20, 203:22
       - path: '^internal/installengine/fixture_destroy_warm_seed_wire_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `loaded\.close` is not checked$'
+        source: '^\s*defer loaded\.close\(\)\s*$'
       # Baseline locations: 65:22
       - path: '^internal/installengine/fixture_destroy_warm_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `ledger\.close` is not checked$'
+        source: '^\s*defer ledger\.close\(\)\s*$'
       # Baseline locations: 306:22
       - path: '^internal/installengine/fixture_dry_run_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `loaded\.close` is not checked$'
+        source: '^\s*defer loaded\.close\(\)\s*$'
       # Baseline locations: 48:21
       - path: '^internal/installengine/fixture_ledger_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `resumed\.close` is not checked$'
+        source: '^\s*defer resumed\.close\(\)\s*$'
       # Baseline locations: 83:20, 273:20
       - path: '^internal/installengine/fixture_ledger_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `ledger\.close` is not checked$'
+        source: '^\s*defer ledger\.close\(\)\s*$'
       # Baseline locations: 281:22
       - path: '^internal/installengine/fixture_marked_cleanup_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `loaded\.close` is not checked$'
+        source: '^\s*defer loaded\.close\(\)\s*$'
       # Baseline locations: 35:24
       - path: '^internal/installengine/fixture_marker_dry_run_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `ledger\.close` is not checked$'
+        source: '^\s*defer ledger\.close\(\)\s*$'
       # Baseline locations: 31:23, 77:23
       - path: '^internal/installengine/fixture_metadata_boundary_hotfix_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `ledger\.close` is not checked$'
+        source: '^\s*defer ledger\.close\(\)\s*$'
       # Baseline locations: 28:23, 116:23
       - path: '^internal/installengine/fixture_noop_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `ledger\.close` is not checked$'
+        source: '^\s*defer ledger\.close\(\)\s*$'
       # Baseline locations: 33:19
       - path: '^internal/installengine/fixture_pvc_delete_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `f\.close` is not checked$'
+        source: '^\s*defer f\.close\(\)\s*$'
       # Baseline locations: 53:23
       - path: '^internal/installengine/fixture_recipe_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `ledger\.close` is not checked$'
+        source: '^\s*defer ledger\.close\(\)\s*$'
       # Baseline locations: 69:20, 172:22
       - path: '^internal/installengine/fixture_recipe_version_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `ledger\.close` is not checked$'
+        source: '^\s*defer ledger\.close\(\)\s*$'
       # Baseline locations: 80:15
       - path: '^internal/installengine/fixture_recovery\.go$'
         linters: [errcheck]
         text: '^Error return value of `f\.close` is not checked$'
+        source: '^\s*defer f\.close\(\)\s*$'
       # Baseline locations: 76:22
       - path: '^internal/installengine/fixture_recovery_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `loaded\.close` is not checked$'
+        source: '^\s*defer loaded\.close\(\)\s*$'
       # Baseline locations: 79:22, 142:24, 364:20
       - path: '^internal/installengine/fixture_result_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `ledger\.close` is not checked$'
+        source: '^\s*defer ledger\.close\(\)\s*$'
       # Baseline locations: 347:21
       - path: '^internal/installengine/fixture_result_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `resumed\.close` is not checked$'
+        source: '^\s*defer resumed\.close\(\)\s*$'
       # Baseline locations: 149:20, 259:23
       - path: '^internal/installengine/fixture_retained_marker_learning_wire_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `loaded\.close` is not checked$'
+        source: '^\s*defer loaded\.close\(\)\s*$'
       # Baseline locations: 147:20, 196:21, 512:20
       - path: '^internal/installengine/fixture_retained_marker_ledger_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `ledger\.close` is not checked$'
+        source: '^\s*defer ledger\.close\(\)\s*$'
       # Baseline locations: 45:22, 91:20
       - path: '^internal/installengine/fixture_retained_marker_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `ledger\.close` is not checked$'
+        source: '^\s*defer ledger\.close\(\)\s*$'
       # Baseline locations: 75:20, 172:22
       - path: '^internal/installengine/fixture_retained_marker_wire_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `loaded\.close` is not checked$'
+        source: '^\s*defer loaded\.close\(\)\s*$'
       # Baseline locations: 75:23, 176:22
       - path: '^internal/installengine/fixture_retirement_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `loaded\.close` is not checked$'
+        source: '^\s*defer loaded\.close\(\)\s*$'
       # Baseline locations: 331:18
       - path: '^internal/installengine/fixture_retirement_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `next\.close` is not checked$'
+        source: '^\s*defer next\.close\(\)\s*$'
       # Baseline locations: 107:19, 171:19, 251:19
       - path: '^internal/installengine/fixture_shape_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `files\.Close` is not checked$'
+        source: '^\s*defer files\.Close\(\)\s*$'
       # Baseline locations: 151:20, 241:20
       - path: '^internal/installengine/fixture_shape_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `ledger\.close` is not checked$'
+        source: '^\s*defer ledger\.close\(\)\s*$'
       # Baseline locations: 26:22, 106:20
       - path: '^internal/installengine/fixture_v3_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `ledger\.close` is not checked$'
+        source: '^\s*defer ledger\.close\(\)\s*$'
       # Baseline locations: 28:22, 109:20
       - path: '^internal/installengine/fixture_verified_update_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `ledger\.close` is not checked$'
+        source: '^\s*defer ledger\.close\(\)\s*$'
       # Baseline locations: 27:20, 72:20, 161:20, 248:20
       - path: '^internal/installengine/fixture_warm_capture_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `ledger\.close` is not checked$'
+        source: '^\s*defer ledger\.close\(\)\s*$'
       # Baseline locations: 293:20, 382:23
       - path: '^internal/installengine/fixture_warm_seed_learning_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `loaded\.close` is not checked$'
+        source: '^\s*defer loaded\.close\(\)\s*$'
       # Baseline locations: 477:28
       - path: '^internal/installengine/fixture_wire\.go$'
         linters: [errcheck]
         text: '^Error return value of `response\.Body\.Close` is not checked$'
+        source: '^\s*defer response\.Body\.Close\(\)\s*$'
       # Baseline locations: 501:22, 630:22
       - path: '^internal/installengine/fixture_wire_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `loaded\.close` is not checked$'
+        source: '^\s*defer loaded\.close\(\)\s*$'
       # Baseline locations: 42:18
       - path: '^internal/installengine/fixture_worker_gate_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `f\.close` is not checked$'
+        source: '^\s*defer f\.close\(\)\s*$'
       # Baseline locations: 19:20, 89:22
       - path: '^internal/installengine/fixture_worlds_seal_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `ledger\.close` is not checked$'
+        source: '^\s*defer ledger\.close\(\)\s*$'
       # Baseline locations: 68:20
       - path: '^internal/installengine/fixture_worlds_seal_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `loaded\.close` is not checked$'
+        source: '^\s*defer loaded\.close\(\)\s*$'
       # Baseline locations: 75:20, 206:22, 248:20
       - path: '^internal/installengine/fixture_worlds_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `loaded\.close` is not checked$'
+        source: '^\s*defer loaded\.close\(\)\s*$'
       # Baseline locations: 110:20, 277:20, 305:20, 336:20
       - path: '^internal/installengine/fixture_worlds_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `ledger\.close` is not checked$'
+        source: '^\s*defer ledger\.close\(\)\s*$'
       # Baseline locations: 114:22
       - path: '^internal/installengine/fixture_worlds_wire_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `loaded\.close` is not checked$'
+        source: '^\s*defer loaded\.close\(\)\s*$'
       # Baseline locations: 106:19
       - path: '^internal/installengine/forward_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `peer\.Close` is not checked$'
+        source: '^\s*defer peer\.Close\(\)\s*$'
       # Baseline locations: 301:20
       - path: '^internal/installengine/forward_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `right\.Close` is not checked$'
+        source: '^\s*defer right\.Close\(\)\s*$'
       # Baseline locations: 180:27
       - path: '^internal/installengine/lifecycle\.go$'
         linters: [errcheck]
         text: '^Error return value of `reinstallCA\.Close` is not checked$'
+        source: '^\s*defer reinstallCA\.Close\(\)\s*$'
       # Baseline locations: 283:28
       - path: '^internal/installengine/lifecycle_boundary_diagnostic_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `response\.Body\.Close` is not checked$'
+        source: '^\s*defer response\.Body\.Close\(\)\s*$'
       # Baseline locations: 290:27
       - path: '^internal/installengine/probe_access\.go$'
         linters: [errcheck]
         text: '^Error return value of `response\.Body\.Close` is not checked$'
+        source: '^\s*defer response\.Body\.Close\(\)\s*$'
       # Baseline locations: 83:27
       - path: '^internal/installengine/proof_access\.go$'
         linters: [errcheck]
         text: '^Error return value of `response\.Body\.Close` is not checked$'
+        source: '^\s*defer response\.Body\.Close\(\)\s*$'
       # Baseline locations: 185:32, 210:30
       - path: '^internal/installengine/request_pipeline_fixture_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `\(\*encoding/json\.Encoder\)\.Encode` is not checked$'
+        source: '^\s*(?:json\.NewEncoder\(w\)\.Encode\(review\)|json\.NewEncoder\(w\)\.Encode\(status\))\s*$'
       # Baseline locations: 201:20
       - path: '^internal/installengine/request_pipeline_fixture_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `io\.WriteString` is not checked$'
+        source: '^\s*io\.WriteString\(w, "PRIVATE-CANARY"\)\s*$'
       # Baseline locations: 211:20, 233:20
       - path: '^internal/installengine/request_pipeline_http_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `got\.Body\.Close` is not checked$'
+        source: '^\s*got\.Body\.Close\(\)\s*$'
       # Baseline locations: 329:18, 334:18
       - path: '^internal/installengine/request_pipeline_http_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `io\.WriteString` is not checked$'
+        source: '^\s*(?:io\.WriteString\(w, "PRIVATE-CANARY"\)|io\.WriteString\(w, `\{"kind":"Proof","value":7\}`\))\s*$'
       # Baseline locations: 336:29, 338:29
       - path: '^internal/installengine/request_pipeline_http_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `\(\*encoding/json\.Encoder\)\.Encode` is not checked$'
+        source: '^\s*(?:json\.NewEncoder\(w\)\.Encode\(object\.Object\)|json\.NewEncoder\(w\)\.Encode\(probe\.Object\))\s*$'
       # Baseline locations: 41:18
       - path: '^internal/installerprofile/control_linux\.go$'
         linters: [errcheck]
         text: '^Error return value of `unix\.Close` is not checked$'
+        source: '^\s*defer unix\.Close\(fd\)\s*$'
       # Baseline locations: 140:19
       - path: '^internal/installerprofile/inherited_linux_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `valid\.Close` is not checked$'
+        source: '^\s*defer valid\.Close\(\)\s*$'
       # Baseline locations: 183:18
       - path: '^internal/installerprofile/inherited_linux_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `unix\.Close` is not checked$'
+        source: '^\s*defer unix\.Close\(fd\)\s*$'
       # Baseline locations: 215:24
       - path: '^internal/installerprofile/inherited_linux_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `control\.Close` is not checked$'
+        source: '^\s*defer control\.Close\(\)\s*$'
       # Baseline locations: 96:18, 97:18
       - path: '^internal/installerprofile/matrix_linux_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `unix\.Close` is not checked$'
+        source: '^\s*(?:defer unix\.Close\(pair\[0\]\)|defer unix\.Close\(pair\[1\]\))\s*$'
       # Baseline locations: 30:18
       - path: '^internal/installfiles/baseline\.go$'
         linters: [errcheck]
         text: '^Error return value of `unix\.Close` is not checked$'
+        source: '^\s*defer unix\.Close\(fd\)\s*$'
       # Baseline locations: 56:18, 79:18, 125:18
       - path: '^internal/installfiles/baseline_writer\.go$'
         linters: [errcheck]
         text: '^Error return value of `unix\.Close` is not checked$'
+        source: '^\s*(?:defer unix\.Close\(parent\)|defer unix\.Close\(stage\)|defer unix\.Close\(currentParent\))\s*$'
       # Baseline locations: 87:18, 108:18, 135:13
       - path: '^internal/installfiles/files\.go$'
         linters: [errcheck]
         text: '^Error return value of `unix\.Close` is not checked$'
+        source: '^\s*(?:defer unix\.Close\(fd\)|defer unix\.Close\(manifestFD\)|unix\.Close\(fd\))\s*$'
       # Baseline locations: 152:18, 179:18
       - path: '^internal/installfiles/files\.go$'
         linters: [errcheck]
         text: '^Error return value of `file\.Close` is not checked$'
+        source: '^\s*defer file\.Close\(\)\s*$'
       # Baseline locations: 59:18, 84:18, 103:18, 161:18, 182:18, 224:13, 231:14, 237:13, 299:19
       - path: '^internal/installfiles/writer\.go$'
         linters: [errcheck]
         text: '^Error return value of `unix\.Close` is not checked$'
+        source: '^\s*(?:defer unix\.Close\(parent\)|defer unix\.Close\(stageFD\)|defer unix\.Close\(payloadFD\)|defer unix\.Close\(currentParent\)|defer unix\.Close\(payload\)|unix\.Close\(fd\))\s*$'
       # Baseline locations: 356:18
       - path: '^internal/installfiles/writer\.go$'
         linters: [errcheck]
         text: '^Error return value of `file\.Close` is not checked$'
+        source: '^\s*defer file\.Close\(\)\s*$'
       # Baseline locations: 173:27
       - path: '^internal/installobserve/executables\.go$'
         linters: [errcheck]
         text: '^Error return value of `response\.Body\.Close` is not checked$'
+        source: '^\s*defer response\.Body\.Close\(\)\s*$'
       # Baseline locations: 214:28
       - path: '^internal/installobserve/gc\.go$'
         linters: [errcheck]
         text: '^Error return value of `response\.Body\.Close` is not checked$'
+        source: '^\s*defer response\.Body\.Close\(\)\s*$'
       # Baseline locations: 129:11
       - path: '^internal/installobserve/gc_pages_diagnostic_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `g\.Collect` is not checked$'
+        source: '^\s*g\.Collect\(nil, nil\)\s*$'
       # Baseline locations: 57:27
       - path: '^internal/installobserve/transport\.go$'
         linters: [errcheck]
         text: '^Error return value of `response\.Body\.Close` is not checked$'
+        source: '^\s*defer response\.Body\.Close\(\)\s*$'
       # Baseline locations: 202:18
       - path: '^internal/installstate/bootstrap\.go$'
         linters: [errcheck]
         text: '^Error return value of `lock\.Close` is not checked$'
+        source: '^\s*defer lock\.Close\(\)\s*$'
       # Baseline locations: 216:23
       - path: '^internal/installstate/bootstrap_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `storage\.Close` is not checked$'
+        source: '^\s*defer storage\.Close\(\)\s*$'
       # Baseline locations: 232:18
       - path: '^internal/platform/data/backup_manifest\.go$'
         linters: [errcheck]
         text: '^Error return value of `file\.Close` is not checked$'
+        source: '^\s*defer file\.Close\(\)\s*$'
       # Baseline locations: 143:27, 237:27
       - path: '^internal/platform/image/resolver\.go$'
         linters: [errcheck]
         text: '^Error return value of `response\.Body\.Close` is not checked$'
+        source: '^\s*defer response\.Body\.Close\(\)\s*$'
       # Baseline locations: 77:18, 169:18
       - path: '^internal/privatefs/confirm_comparing\.go$'
         linters: [errcheck]
         text: '^Error return value of `file\.Close` is not checked$'
+        source: '^\s*defer file\.Close\(\)\s*$'
       # Baseline locations: 88:19, 183:17, 298:15, 362:16
       - path: '^internal/privatefs/confirm_comparing_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `s\.Close` is not checked$'
+        source: '^\s*defer s\.Close\(\)\s*$'
       # Baseline locations: 145:24
       - path: '^internal/privatefs/confirm_comparing_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `unix\.Fchmod` is not checked$'
+        source: '^\s*defer unix\.Fchmod\(s\.fd, 0700\)\s*$'
       # Baseline locations: 286:18
       - path: '^internal/privatefs/confirm_comparing_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `unix\.Close` is not checked$'
+        source: '^\s*defer unix\.Close\(ownedFD\)\s*$'
       # Baseline locations: 327:7
       - path: '^internal/privatefs/confirm_comparing_test\.go$'
         linters: [errcheck]
         text: '^Error return value is not checked$'
+        source: '^\s*case <-compared:\s*$'
       # Baseline locations: 49:18
       - path: '^internal/privatefs/digest\.go$'
         linters: [errcheck]
         text: '^Error return value of `file\.Close` is not checked$'
+        source: '^\s*defer file\.Close\(\)\s*$'
       # Baseline locations: 98:15, 134:15
       - path: '^internal/privatefs/digest_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `s\.Close` is not checked$'
+        source: '^\s*defer s\.Close\(\)\s*$'
       # Baseline locations: 19:19, 67:21, 128:19, 154:19
       - path: '^internal/privatefs/evidence_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `store\.Close` is not checked$'
+        source: '^\s*defer store\.Close\(\)\s*$'
       # Baseline locations: 53:18
       - path: '^internal/privatefs/match\.go$'
         linters: [errcheck]
         text: '^Error return value of `file\.Close` is not checked$'
+        source: '^\s*defer file\.Close\(\)\s*$'
       # Baseline locations: 189:19, 222:21, 320:19
       - path: '^internal/privatefs/match_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `store\.Close` is not checked$'
+        source: '^\s*defer store\.Close\(\)\s*$'
       # Baseline locations: 243:19
       - path: '^internal/privatefs/match_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `pin\.Close` is not checked$'
+        source: '^\s*defer pin\.Close\(\)\s*$'
       # Baseline locations: 75:18
       - path: '^internal/privatefs/pin\.go$'
         linters: [errcheck]
         text: '^Error return value of `unix\.Close` is not checked$'
+        source: '^\s*defer unix\.Close\(dir\)\s*$'
       # Baseline locations: 199:17, 224:17, 276:17, 300:17
       - path: '^internal/privatefs/pin_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `pin\.Close` is not checked$'
+        source: '^\s*defer pin\.Close\(\)\s*$'
       # Baseline locations: 311:19
       - path: '^internal/privatefs/pin_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `fresh\.Close` is not checked$'
+        source: '^\s*defer fresh\.Close\(\)\s*$'
       # Baseline locations: 103:15, 107:15, 112:13, 122:14, 128:13, 173:18, 481:13, 486:14, 494:14, 499:14
       - path: '^internal/privatefs/privatefs\.go$'
         linters: [errcheck]
         text: '^Error return value of `unix\.Close` is not checked$'
+        source: '^\s*(?:unix\.Close\(fd\)|defer unix\.Close\(fd\))\s*$'
       # Baseline locations: 184:15, 402:10
       - path: '^internal/privatefs/privatefs\.go$'
         linters: [errcheck]
         text: '^Error return value of `f\.Close` is not checked$'
+        source: '^\s*(?:defer f\.Close\(\)|f\.Close\(\))\s*$'
       # Baseline locations: 330:18
       - path: '^internal/privatefs/privatefs\.go$'
         linters: [errcheck]
         text: '^Error return value of `file\.Close` is not checked$'
+        source: '^\s*defer file\.Close\(\)\s*$'
       # Baseline locations: 32:19, 64:19, 137:19
       - path: '^internal/privatefs/privatefs_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `store\.Close` is not checked$'
+        source: '^\s*defer store\.Close\(\)\s*$'
       # Baseline locations: 162:19
       - path: '^internal/privatefs/privatefs_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `first\.Close` is not checked$'
+        source: '^\s*defer first\.Close\(\)\s*$'
       # Baseline locations: 167:20
       - path: '^internal/privatefs/privatefs_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `second\.Close` is not checked$'
+        source: '^\s*defer second\.Close\(\)\s*$'
       # Baseline locations: 175:13, 185:12
       - path: '^internal/privatefs/privatefs_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `held\.Close` is not checked$'
+        source: '^\s*held\.Close\(\)\s*$'
       # Baseline locations: 219:17, 253:17
       - path: '^internal/privatefs/privatefs_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `s\.Close` is not checked$'
+        source: '^\s*defer s\.Close\(\)\s*$'
       # Baseline locations: 285:22, 309:22
       - path: '^internal/privatefs/privatefs_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `unix\.Close` is not checked$'
+        source: '^\s*defer unix\.Close\(fileFD\)\s*$'
       # Baseline locations: 298:22
       - path: '^internal/privatefs/privatefs_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `unix\.Fchmod` is not checked$'
+        source: '^\s*defer unix\.Fchmod\(s\.fd, 0700\)\s*$'
       # Baseline locations: 119:20
       - path: '^internal/privatefs/read_size_test\.go$'
         linters: [errcheck]
         text: '^Error return value of `file\.Close` is not checked$'
+        source: '^\s*defer file\.Close\(\)\s*$'
       # Baseline locations: 37:7, 77:7, 194:8
       - path: '^internal/installcontract/observed_crd_copy_test\.go$'
         linters: [govet]
         text: '^inline: Constant reflect\.Ptr should be inlined$'
+        source: '^\s*(?:case reflect\.Ptr:|case reflect\.Ptr, reflect\.Slice, reflect\.Map:)\s*$'
       # Baseline locations: 1711:3
       - path: '^internal/controller/gamerestore_controller\.go$'
         linters: [ineffassign]
         text: '^ineffectual assignment to finalState$'
+        source: '^\s*finalState = arcadev1alpha1\.DesiredStateRunning\s*$'
       # Baseline locations: 163:8
       - path: '^internal/installengine/acknowledged_delete_diagnostic\.go$'
         linters: [ineffassign]
         text: '^ineffectual assignment to status$'
+        source: '^\s*step, status := "unknown", "unknown"\s*$'
       # Baseline locations: 118:4
       - path: '^internal/installengine/actor_access_test\.go$'
         linters: [ineffassign]
         text: '^ineffectual assignment to allowed$'
+        source: '^\s*allowed := true\s*$'
       # Baseline locations: 59:4
       - path: '^internal/installengine/admission_controllers_test\.go$'
         linters: [ineffassign]
         text: '^ineffectual assignment to d$'
+        source: '^\s*d := v\.f\.snapshot\.Document\(\)\s*$'
       # Baseline locations: 182:6
       - path: '^internal/installengine/baseline_actors_test\.go$'
         linters: [ineffassign]
         text: '^ineffectual assignment to allowed$'
+        source: '^\s*allowed := true\s*$'
       # Baseline locations: 73:4
       - path: '^internal/installengine/baseline_prerequisites_test\.go$'
         linters: [ineffassign]
         text: '^ineffectual assignment to document$'
+        source: '^\s*document := f\.snapshot\.Document\(\)\s*$'
       # Baseline locations: 207:13
       - path: '^internal/installengine/baseline_probe_diagnostic\.go$'
         linters: [ineffassign]
         text: '^ineffectual assignment to phase$'
+        source: '^\s*operation, phase := "unknown", "unknown"\s*$'
       # Baseline locations: 239:4
       - path: '^internal/installengine/fixture_marked_cleanup_test\.go$'
         linters: [ineffassign]
         text: '^ineffectual assignment to err$'
+        source: '^\s*err := ErrFixtures\s*$'
       # Baseline locations: 212:14
       - path: '^internal/installfiles/baseline_writer_test\.go$'
         linters: [ineffassign]
         text: '^ineffectual assignment to signature$'
+        source: '^\s*manifest, signature, payload := baselineWriteFixture\(t\)\s*$'
       # Baseline locations: 349:5
       - path: '^cmd/arcadectl-installer/mutation_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on fault$'
+        source: '^\s*if fault == "relative" \{\s*$'
       # Baseline locations: 577:10
       - path: '^hack/profile-installer-wrappers/main_linux\.go$'
         linters: [staticcheck]
         text: '^QF1011: could omit type error from declaration; it will be inferred from the right-hand side$'
+        source: '^\s*var err error = errScreen\s*$'
       # Baseline locations: 43:3
       - path: '^internal/adminclient/codec\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on v$'
+        source: '^\s*if v == ''\{'' \{\s*$'
       # Baseline locations: 76:3
       - path: '^internal/admincredential/namespace_test\.go$'
         linters: [staticcheck]
         text: '^SA4020: unreachable case clause: k8s\.io/client-go/testing\.CreateAction will always match before k8s\.io/client-go/testing\.UpdateAction$'
+        source: '^\s*case clienttesting\.UpdateAction:\s*$'
       # Baseline locations: 83:18, 206:18, 311:18, 322:19, 330:19
       - path: '^internal/apiserver/operations_test\.go$'
         linters: [staticcheck]
         text: '^QF1008: could remove embedded field "Client" from selector$'
+        source: '^\s*(?:if err := store\.Client\.Create\(ctx, value\); err != nil \{|if err := store\.Client\.Create\(context\.Background\(\), server\); err != nil \{|if err := store\.Client\.Delete\(context\.Background\(\), winner\); err != nil \{|if err := store\.Client\.Create\(context\.Background\(\), winner\); err != nil \{|if err := store\.Client\.Update\(context\.Background\(\), current\); err != nil \{)\s*$'
       # Baseline locations: 100:15, 288:26, 300:26, 314:29, 397:20, 401:20, 515:26, 518:26, 527:26, 567:26, 655:27, 674:29, 687:30, 691:27, 693:26, 760:29, 766:26
       - path: '^internal/cli/integration_test\.go$'
         linters: [staticcheck]
         text: '^QF1008: could remove embedded field "Client" from selector$'
+        source: '^\s*(?:err := store\.Client\.Create\(ctx, receipt\)|if err := fixture\.store\.Client\.Get\(context\.Background\(\), key, value\); err != nil \{|if err := fixture\.store\.Client\.Update\(context\.Background\(\), value\); err != nil \{|if err := fixture\.store\.Client\.Delete\(context\.Background\(\), server\); err != nil \{|if fixture\.store\.Client\.Get\(context\.Background\(\), key, server\) != nil \{|if fixture\.store\.Client\.Update\(context\.Background\(\), server\) != nil \{|if err := fixture\.store\.Client\.Get\(context\.Background\(\), types\.NamespacedName\{Namespace: integrationNamespace, Name: operationID\}, old\); err != nil \{|if err := fixture\.store\.Client\.Delete\(context\.Background\(\), old\); err != nil \{|if err := fixture\.store\.Client\.Create\(context\.Background\(\), replacement\); err != nil \{|if err := fixture\.store\.Client\.Get\(context\.Background\(\), types\.NamespacedName\{Namespace: integrationNamespace, Name: operationID\}, current\); err != nil \{|if err := fixture\.store\.Client\.Create\(context\.Background\(\), value\); err != nil \{|if err := fixture\.store\.Client\.Get\(ctx, types\.NamespacedName\{Namespace: integrationNamespace, Name: parentID\}, parent\); err != nil \{|if err := fixture\.store\.Client\.Delete\(ctx, parent\); err != nil \{|return fixture\.store\.Client\.Create\(ctx, parent\)|return fixture\.store\.Client\.Update\(ctx, parent\))\s*$'
       # Baseline locations: 465:2
       - path: '^internal/cliattempt/attempt\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on value\.State$'
+        source: '^\s*if value\.State == StateAdmitted \{\s*$'
       # Baseline locations: 194:5
       - path: '^internal/cliattempt/attempt_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on cause$'
+        source: '^\s*if cause == "cancelled" \{\s*$'
       # Baseline locations: 62:49
       - path: '^internal/clidestroy/destroy\.go$'
         linters: [staticcheck]
         text: '^S1002: should omit comparison to bool constant, can be simplified to !uidPattern\.MatchString\(reference\.UID\)$'
+        source: '^\s*if !namePattern\.MatchString\(reference\.Name\) \|\| uidPattern\.MatchString\(reference\.UID\) == false \{\s*$'
       # Baseline locations: 470:36, 509:63, 721:64, 899:35, 1075:34
       - path: '^internal/controller/arcadeoperation_controller_test\.go$'
         linters: [staticcheck]
         text: '^QF1008: could remove embedded field "Time" from selector$'
+        source: '^\s*(?:expires := metav1\.NewTime\(r\.now\(\)\.Time\.Add\(15 \* time\.Minute\)\)|destroy\.Status\.Preview\.ExpiresAt = metav1\.NewTime\(r\.now\(\)\.Time\.Add\(-time\.Second\)\)|o\.Spec\.Admission\.CredentialExpiresAt = metav1\.NewTime\(r\.now\(\)\.Time\.Add\(-time\.Hour\)\)|old := metav1\.NewTime\(r\.now\(\)\.Time\.Add\(-16 \* time\.Minute\)\))\s*$'
       # Baseline locations: 857:16
       - path: '^internal/controller/arcadeoperation_controller_test\.go$'
         linters: [staticcheck]
         text: '^QF1008: could remove embedded field "Client" from selector$'
+        source: '^\s*if err := r\.Client\.Get\(context\.Background\(\), client\.ObjectKeyFromObject\(o\), stored\); err != nil \{\s*$'
       # Baseline locations: 257:46
       - path: '^internal/controller/arcadeoperation_data\.go$'
         linters: [staticcheck]
         text: '^QF1008: could remove embedded field "Time" from selector$'
+        source: '^\s*return o\.Status\.StartedAt != nil && r\.now\(\)\.Time\.Sub\(o\.Status\.StartedAt\.Time\) > 15\*time\.Minute\s*$'
       # Baseline locations: 96:88, 258:89, 269:88
       - path: '^internal/controller/arcadeoperation_server\.go$'
         linters: [staticcheck]
         text: '^QF1008: could remove embedded field "Time" from selector$'
+        source: '^\s*if server\.Status\.Phase == arcade\.PhaseFailed \|\| o\.Status\.StartedAt != nil && r\.now\(\)\.Time\.Sub\(o\.Status\.StartedAt\.Time\) > 15\*time\.Minute \{\s*$'
       # Baseline locations: 86:22, 225:22, 233:22, 356:21, 1047:21, 1064:21, 1120:22, 1147:21
       - path: '^internal/controller/gamebackup_controller\.go$'
         linters: [staticcheck]
         text: '^SA1019: \(sigs\.k8s\.io/controller-runtime\.Result\)\.Requeue is deprecated: Use `RequeueAfter` instead\. $'
+        source: '^\s*(?:return ctrl\.Result\{Requeue: true\}, nil|return ctrl\.Result\{Requeue: err == nil\}, err)\s*$'
       # Baseline locations: 253:4
       - path: '^internal/controller/gamebackup_controller\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on reason$'
+        source: '^\s*if reason == arcadev1alpha1\.ReasonVerificationFailed \{\s*$'
       # Baseline locations: 82:22, 511:22, 531:22, 539:22, 778:23, 794:24
       - path: '^internal/controller/gamedestroy_controller\.go$'
         linters: [staticcheck]
         text: '^SA1019: \(sigs\.k8s\.io/controller-runtime\.Result\)\.Requeue is deprecated: Use `RequeueAfter` instead\. $'
+        source: '^\s*(?:return ctrl\.Result\{Requeue: true\}, r\.Update\(ctx, copy\)|return ctrl\.Result\{Requeue: true\}, nil|return ctrl\.Result\{Requeue: true\}, r\.Update\(ctx, updated\)|return ctrl\.Result\{Requeue: true\}, r\.Status\(\)\.Update\(ctx, copy\))\s*$'
       # Baseline locations: 119:22, 1321:21, 1615:21, 1754:21
       - path: '^internal/controller/gamerestore_controller\.go$'
         linters: [staticcheck]
         text: '^SA1019: \(sigs\.k8s\.io/controller-runtime\.Result\)\.Requeue is deprecated: Use `RequeueAfter` instead\. $'
+        source: '^\s*(?:return ctrl\.Result\{Requeue: true\}, nil|return ctrl\.Result\{Requeue: err == nil\}, err)\s*$'
       # Baseline locations: 283:4
       - path: '^internal/controller/gameserver_controller\.go$'
         linters: [staticcheck]
         text: '^ST1005: error strings should not be capitalized$'
+        source: '^\s*errors\.New\("Deployment reported a terminal availability condition"\),\s*$'
       # Baseline locations: 821:34, 865:34
       - path: '^internal/controller/gameserver_controller\.go$'
         linters: [staticcheck]
         text: '^SA1019: sigs\.k8s\.io/controller-runtime/pkg/client\.Apply is deprecated: Use client\.Client\.Apply\(\) and client\.Client\.SubResource\("subrsource"\)\.Apply\(\) instead\. $'
+        source: '^\s*if err := r\.Patch\(ctx, updated, client\.Apply, client\.FieldOwner\("arcadectl-controller"\), client\.ForceOwnership\); err != nil \{\s*$'
       # Baseline locations: 110:17
       - path: '^internal/controller/gameserver_runtime_drain\.go$'
         linters: [staticcheck]
         text: '^ST1005: error strings should not be capitalized$'
+        source: '^\s*return false, errors\.New\("Pod drain observation was incomplete"\)\s*$'
       # Baseline locations: 208:5
       - path: '^internal/controller/gameserver_workload_observation_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on fault$'
+        source: '^\s*if fault == "replacement" \{\s*$'
       # Baseline locations: 313:48, 318:48, 324:48, 333:48
       - path: '^internal/controller/gameserver_workload_observation_test\.go$'
         linters: [staticcheck]
         text: '^SA1019: sigs\.k8s\.io/controller-runtime/pkg/client\.Apply is deprecated: Use client\.Client\.Apply\(\) and client\.Client\.SubResource\("subrsource"\)\.Apply\(\) instead\. $'
+        source: '^\s*(?:if err := live\.Patch\(t\.Context\(\), deployment, client\.Apply\); err != nil \|\| deployment\.UID != uid \|\| deployment\.Generation != 1 \{|if err := live\.Patch\(t\.Context\(\), deployment, client\.Apply\); err != nil \|\| deployment\.UID != uid \|\| deployment\.Generation != 2 \{|if err := live\.Patch\(t\.Context\(\), deployment, client\.Apply\); err != nil \|\| deployment\.UID != uid \|\| deployment\.Generation != 3 \{)\s*$'
       # Baseline locations: 91:15, 120:11
       - path: '^internal/games/factorio/definition\.go$'
         linters: [staticcheck]
         text: '^ST1005: error strings should not be capitalized$'
+        source: '^\s*(?:return nil, errors\.New\("Factorio server name is required"\)|return errors\.New\("Factorio settings must contain one JSON value"\))\s*$'
       # Baseline locations: 218:100, 239:4, 259:5
       - path: '^internal/installcontract/crd_check_copy_test\.go$'
         linters: [staticcheck]
         text: '^SA1019: \(k8s\.io/apimachinery/pkg/apis/meta/v1\.FieldsV1\)\.Raw is deprecated: Direct access to this field is deprecated\. Use GetRawBytes, GetRawString, SetRawBytes, SetRawString, GetRawReader, NewFieldsV1 instead\. $'
+        source: '^\s*(?:live\.SetManagedFields\(\[\]metav1\.ManagedFieldsEntry\{\{Manager: "owned", FieldsV1: &metav1\.FieldsV1\{Raw: \[\]byte\("\{\}"\)\}\}\}\)|miss\.ManagedFields\[0\]\.FieldsV1\.Raw\[0\] = ''\[''|private\.ManagedFields\[0\]\.FieldsV1\.Raw\[0\] = ''\['')\s*$'
       # Baseline locations: 65:6
       - path: '^internal/installcontract/crd_test\.go$'
         linters: [staticcheck]
         text: '^SA4000: identical expressions on the left and right side of the ''\|\|'' operator$'
+        source: '^\s*if template\.CheckCRD\(live, "original-uid", template\) != nil \|\| template\.CheckCRD\(live, "original-uid", template\) != nil \{\s*$'
       # Baseline locations: 135:5, 139:6
       - path: '^internal/installcontract/observed_decode_test\.go$'
         linters: [staticcheck]
         text: '^SA4000: identical expressions on the left and right side of the ''\|\|'' operator$'
+        source: '^\s*(?:if namespace\.MatchNamespace\(observed, journal\) != nil \|\| namespace\.MatchNamespace\(observed, journal\) != nil \|\| namespace\.MatchAdmitted\(observed\) != ErrIdentity \{|if namespace\.MatchNamespace\(observed, journal\) != nil \|\| namespace\.MatchNamespace\(observed, journal\) != nil \{)\s*$'
       # Baseline locations: 215:4
       - path: '^internal/installengine/access\.go$'
         linters: [staticcheck]
         text: '^QF1008: could remove embedded field "TLSClientConfig" from selector$'
+        source: '^\s*c\.TLSClientConfig\.NextProtos = \[\]string\{"http/1\.1"\}\s*$'
       # Baseline locations: 378:6
       - path: '^internal/installengine/access\.go$'
         linters: [staticcheck]
         text: '^QF1001: could apply De Morgan''s law$'
+        source: '^\s*if !\(ch >= ''a'' && ch <= ''z'' \|\| ch >= ''0'' && ch <= ''9'' \|\| ch == ''-'' \|\| ch == ''\.''\) \{\s*$'
       # Baseline locations: 184:38
       - path: '^internal/installengine/access_test\.go$'
         linters: [staticcheck]
         text: '^ST1013: should use constant http\.StatusTemporaryRedirect instead of numeric literal 307$'
+        source: '^\s*http\.Redirect\(w, r, target\.URL, 307\)\s*$'
       # Baseline locations: 111:30, 203:37
       - path: '^internal/installengine/acknowledged_delete_diagnostic_test\.go$'
         linters: [staticcheck]
         text: '^SA1012: do not pass a nil Context, even if a function permits it; pass context\.TODO if you are unsure about which Context to use$'
+        source: '^\s*(?:traceAcknowledgedDeleteStep\(nil, ackTargetRead\)|traceAcknowledgedDeleteObservation\(nil, ackObservedDraining\))\s*$'
       # Baseline locations: 487:3
       - path: '^internal/installengine/acknowledged_delete_preparation_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on k\.Kind$'
+        source: '^\s*if k\.Kind == "Pod" \{\s*$'
       # Baseline locations: 562:20, 568:39
       - path: '^internal/installengine/acknowledged_deployment_convergence_test\.go$'
         linters: [staticcheck]
         text: '^QF1001: could apply De Morgan''s law$'
+        source: '^\s*(?:if lifecycle && !\(update && failure == "ambiguous-response"\) \{|if deploymentReady != wantReady \|\| !\(update && failure == "ambiguous-response"\) && \(fixture\.quietCollection\.IsZero\(\) \|\| fixture\.quietCollection\.Sub\(fixture\.lastChange\) < 5\*time\.Second\) \{)\s*$'
       # Baseline locations: 17:18
       - path: '^internal/installengine/activation_trace_test\.go$'
         linters: [staticcheck]
         text: '^SA1012: do not pass a nil Context, even if a function permits it; pass context\.TODO if you are unsure about which Context to use$'
+        source: '^\s*traceActivation\(nil, activationSelf\)\s*$'
       # Baseline locations: 84:4
       - path: '^internal/installengine/activation_trace_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on scenario\.name$'
+        source: '^\s*if scenario\.name == "connection" \{\s*$'
       # Baseline locations: 398:114
       - path: '^internal/installengine/admission_phase\.go$'
         linters: [staticcheck]
         text: '^QF1008: could remove embedded field "Time" from selector$'
+        source: '^\s*if field\.Time == nil \|\| field\.Time\.IsZero\(\) \|\| field\.Time\.Year\(\) < 1 \|\| field\.Time\.Year\(\) > 9999 \|\| field\.Time\.Time\.After\(now\.Add\(time\.Second\)\) \|\| field\.Manager == "" \|\| field\.Operation != metav1\.ManagedFieldsOperationUpdate \|\| field\.APIVersion != "coordination\.k8s\.io/v1" \|\| field\.Subresource != "" \|\| field\.FieldsType != "FieldsV1" \|\| field\.FieldsV1 == nil \{\s*$'
       # Baseline locations: 32:220, 146:5
       - path: '^internal/installengine/admission_phase_test\.go$'
         linters: [staticcheck]
         text: '^SA1019: \(k8s\.io/apimachinery/pkg/apis/meta/v1\.FieldsV1\)\.Raw is deprecated: Direct access to this field is deprecated\. Use GetRawBytes, GetRawString, SetRawBytes, SetRawString, GetRawReader, NewFieldsV1 instead\. $'
+        source: '^\s*(?:ManagedFields: \[\]metav1\.ManagedFieldsEntry\{\{Manager: "manager", Operation: metav1\.ManagedFieldsOperationUpdate, APIVersion: "coordination\.k8s\.io/v1", Time: &managed, FieldsType: "FieldsV1", FieldsV1: &metav1\.FieldsV1\{Raw: \[\]byte\(`\{"f:spec":\{"f:acquireTime":\{\},"f:holderIdentity":\{\},"f:leaseDurationSeconds":\{\},"f:leaseTransitions":\{\},"f:renewTime":\{\}\}\}`\)\}\}\},|lease\.ManagedFields\[0\]\.FieldsV1\.Raw = \[\]byte\(`\{"f:spec":\{"f:holderIdentity":\{\}\}\}`\))\s*$'
       # Baseline locations: 118:186, 157:188, 157:344, 170:320
       - path: '^internal/installengine/admission_probes\.go$'
         linters: [staticcheck]
         text: '^QF1008: could remove embedded field "Time" from selector$'
+        source: '^\s*(?:if !condition\.LastProbeTime\.IsZero\(\) \|\| condition\.LastTransitionTime\.IsZero\(\) \|\| condition\.LastTransitionTime\.Time\.Before\(start\.Truncate\(time\.Second\)\) \|\| condition\.LastTransitionTime\.Time\.After\(end\.Add\(time\.Second\)\) \{|if meta\.Name != expected\.GetName\(\) \|\| meta\.Namespace != expected\.GetNamespace\(\) \|\| !receiptUID\.MatchString\(string\(meta\.UID\)\) \|\| !meta\.CreationTimestamp\.Time\.Equal\(meta\.CreationTimestamp\.Time\.Truncate\(time\.Second\)\) \|\| meta\.CreationTimestamp\.IsZero\(\) \|\| meta\.CreationTimestamp\.Time\.Before\(start\.Truncate\(time\.Second\)\) \|\| meta\.CreationTimestamp\.Time\.After\(end\.Add\(time\.Second\)\) \|\| meta\.Generation != wantGeneration \|\| meta\.ResourceVersion != "" \{|if field\.Manager != "arcadectl-installer" \|\| field\.Operation != metav1\.ManagedFieldsOperationUpdate \|\| field\.APIVersion != result\.GetAPIVersion\(\) \|\| field\.FieldsType != "FieldsV1" \|\| field\.FieldsV1 == nil \|\| field\.Time == nil \|\| field\.Time\.IsZero\(\) \|\| field\.Time\.Time\.Before\(start\.Truncate\(time\.Second\)\) \|\| field\.Time\.Time\.After\(end\.Add\(time\.Second\)\) \|\| field\.Subresource != "" \{)\s*$'
       # Baseline locations: 160:156
       - path: '^internal/installengine/admission_probes\.go$'
         linters: [staticcheck]
         text: '^SA1019: \(k8s\.io/apimachinery/pkg/apis/meta/v1\.ObjectMeta\)\.SelfLink is deprecated: selfLink is a legacy read-only field that is no longer populated by the system\. \+optional $'
+        source: '^\s*if !reflect\.DeepEqual\(meta\.Labels, expected\.GetLabels\(\)\) \|\| !reflect\.DeepEqual\(meta\.Annotations, expected\.GetAnnotations\(\)\) \|\| meta\.GenerateName != "" \|\| meta\.SelfLink != "" \|\| meta\.DeletionTimestamp != nil \|\| meta\.DeletionGracePeriodSeconds != nil \|\| len\(meta\.OwnerReferences\) != 0 \{\s*$'
       # Baseline locations: 178:53
       - path: '^internal/installengine/admission_probes\.go$'
         linters: [staticcheck]
         text: '^SA1019: \(k8s\.io/apimachinery/pkg/apis/meta/v1\.FieldsV1\)\.Raw is deprecated: Direct access to this field is deprecated\. Use GetRawBytes, GetRawString, SetRawBytes, SetRawString, GetRawReader, NewFieldsV1 instead\. $'
+        source: '^\s*if strictErrors, err := strictjson\.UnmarshalStrict\(field\.FieldsV1\.Raw, &actualFields\); err != nil \|\| len\(strictErrors\) != 0 \|\| !reflect\.DeepEqual\(actualFields, fieldset\) \{\s*$'
       # Baseline locations: 33:222, 155:42, 207:43
       - path: '^internal/installengine/admission_probes_test\.go$'
         linters: [staticcheck]
         text: '^SA1019: \(k8s\.io/apimachinery/pkg/apis/meta/v1\.FieldsV1\)\.Raw is deprecated: Direct access to this field is deprecated\. Use GetRawBytes, GetRawString, SetRawBytes, SetRawString, GetRawReader, NewFieldsV1 instead\. $'
+        source: '^\s*(?:result\.SetManagedFields\(\[\]metav1\.ManagedFieldsEntry\{\{Manager: "arcadectl-installer", Operation: metav1\.ManagedFieldsOperationUpdate, APIVersion: result\.GetAPIVersion\(\), FieldsType: "FieldsV1", FieldsV1: &metav1\.FieldsV1\{Raw: fields\}, Time: &ts\}\}\)|fields\[0\]\.FieldsV1 = &metav1\.FieldsV1\{Raw: \[\]byte\(`\{"f:spec":\{"f:backupRef":\{\}\}\}`\)\}|fields\[0\]\.FieldsV1 = &metav1\.FieldsV1\{Raw: \[\]byte\(`\{\}`\)\})\s*$'
       # Baseline locations: 22:94
       - path: '^internal/installengine/admission_read_catalog_test\.go$'
         linters: [staticcheck]
         text: '^ST1008: error should be returned as the last argument$'
+        source: '^\s*func testAdmissionReadCatalog\(t \*testing\.T, kind string\) \(\*actorFixture, \[8\]\[\]string, int32, error, func\(context\.Context\) error\) \{\s*$'
       # Baseline locations: 109:8
       - path: '^internal/installengine/admission_reinstall_bootstrap_secrets_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on scenario$'
+        source: '^\s*if scenario == "closing-retirement" \{\s*$'
       # Baseline locations: 129:4
       - path: '^internal/installengine/admission_retirement_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on scenario$'
+        source: '^\s*if scenario == "foreign-receipt-baseline" \{\s*$'
       # Baseline locations: 106:2
       - path: '^internal/installengine/admission_serving_convergence_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on fault$'
+        source: '^\s*if fault == "delayed-ready" \{\s*$'
       # Baseline locations: 76:17, 187:22, 229:31
       - path: '^internal/installengine/admission_trace_test\.go$'
         linters: [staticcheck]
         text: '^SA1012: do not pass a nil Context, even if a function permits it; pass context\.TODO if you are unsure about which Context to use$'
+        source: '^\s*(?:traceAdmission\(nil, admissionActorWitnesses, -1\)|traceAdmissionPhase\(nil, admissionPhaseGC, -1\)|traceAdmissionPreviewRefusal\(nil, fixturePreviewRequest\))\s*$'
       # Baseline locations: 78:48
       - path: '^internal/installengine/admission_trace_test\.go$'
         linters: [staticcheck]
         text: '^SA1029: should not use built-in type string as key for value; define your own type to avoid collisions$'
+        source: '^\s*traceAdmission\(context\.WithValue\(t\.Context\(\), "private-token-canary", trace\), admissionActorWitnesses, -1\)\s*$'
       # Baseline locations: 224:6
       - path: '^internal/installengine/baseline_actor_access_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on row\.version$'
+        source: '^\s*if row\.version == "batch/v1" \{\s*$'
       # Baseline locations: 97:2
       - path: '^internal/installengine/baseline_actors\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on operation$'
+        source: '^\s*if operation == probeCreateOperation \{\s*$'
       # Baseline locations: 182:4
       - path: '^internal/installengine/baseline_behavior\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on key\.Kind$'
+        source: '^\s*if key\.Kind == "ServiceAccount" \{\s*$'
       # Baseline locations: 351:3, 429:3, 654:7, 991:3
       - path: '^internal/installengine/baseline_behavior_provider_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on mode$'
+        source: '^\s*(?:if mode == "complete-upgrade" \{|if mode == "pod-denial-after" \{)\s*$'
       # Baseline locations: 769:3
       - path: '^internal/installengine/baseline_behavior_provider_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on resource\[1\]$'
+        source: '^\s*if resource\[1\] == "Pod" \{\s*$'
       # Baseline locations: 1011:75
       - path: '^internal/installengine/baseline_behavior_provider_test\.go$'
         linters: [staticcheck]
         text: '^QF1001: could apply De Morgan''s law$'
+        source: '^\s*if effect\.failure != "" && effect\.failure != "receipt-at-settlement" && !\(effect\.update && effect\.failure == "ambiguous-response"\) \{\s*$'
       # Baseline locations: 1154:2
       - path: '^internal/installengine/baseline_behavior_provider_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on r\.Method$'
+        source: '^\s*if r\.Method == "DELETE" \{\s*$'
       # Baseline locations: 362:4
       - path: '^internal/installengine/baseline_denied_provider_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on mode$'
+        source: '^\s*if mode == "dropped-guarded" \{\s*$'
       # Baseline locations: 236:3
       - path: '^internal/installengine/baseline_effects\.go$'
         linters: [staticcheck]
         text: '^SA5001: should check error returned from b\.pinEnrollmentReceipt\(\) before deferring originalReceipt\.Close\(\)$'
+        source: '^\s*defer originalReceipt\.Close\(\)\s*$'
       # Baseline locations: 90:2
       - path: '^internal/installengine/baseline_enrollment\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on baseline\.Stage$'
+        source: '^\s*if baseline\.Stage == installstate\.BaselinePreparing \|\| baseline\.Stage == installstate\.BaselineRecovery \{\s*$'
       # Baseline locations: 42:5, 275:8
       - path: '^internal/installengine/baseline_executables_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on scenario$'
+        source: '^\s*(?:if scenario == "reserved-account" \{|if scenario == "get-replaced" \{)\s*$'
       # Baseline locations: 156:30, 200:24
       - path: '^internal/installengine/baseline_executables_test\.go$'
         linters: [staticcheck]
         text: '^QF1001: could apply De Morgan''s law$'
+        source: '^\s*(?:review\.Status\.Allowed = !\(scenario == "list-denied" && verb == "list" \|\| scenario == "get-denied" && verb == "get"\)|if c\.gv == gv && !\(scenario == "discovery-missing" && c\.kind == "CronJob"\) \{)\s*$'
       # Baseline locations: 130:7
       - path: '^internal/installengine/baseline_identity_protocol_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on operation$'
+        source: '^\s*if operation == probeCreateOperation \{\s*$'
       # Baseline locations: 91:4, 194:8
       - path: '^internal/installengine/baseline_metadata_provider_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on mode$'
+        source: '^\s*(?:if mode == "update-after" \|\| mode == "update-new-nonce-old-rv" \{|if mode == "final-journal-change" \|\| mode == "create-final-journal-change" \{)\s*$'
       # Baseline locations: 820:2
       - path: '^internal/installengine/baseline_prerequisite_worlds_test\.go$'
         linters: [staticcheck]
         text: '^S1038: should use t\.Logf\(\.\.\.\) instead of t\.Log\(fmt\.Sprintf\(\.\.\.\)\)$'
+        source: '^\s*t\.Log\(fmt\.Sprintf\("whole current retained proof: typed=%d pv=%d metadata=%d", typedCount, pvCount, metadataCount\)\)\s*$'
       # Baseline locations: 95:5, 1016:3
       - path: '^internal/installengine/baseline_prerequisites_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on scenario$'
+        source: '^\s*(?:if scenario == "rollback" \{|if scenario == "effect-create" \|\| scenario == "effect-coordinator-create" \|\| scenario == "effect-SA-create" \|\| scenario == "effect-settle-response-lost" \|\| scenario == "effect-crd-status-converges" \{)\s*$'
       # Baseline locations: 145:2
       - path: '^internal/installengine/baseline_probe_suite_provider_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on f\.mode$'
+        source: '^\s*if f\.mode == "namespace-uid" \{\s*$'
       # Baseline locations: 99:5
       - path: '^internal/installengine/baseline_probe_suite_test\.go$'
         linters: [staticcheck]
         text: '^SA4000: identical expressions on the left and right side of the ''\|\|'' operator$'
+        source: '^\s*if suite\.close\(\) != nil \|\| suite\.close\(\) != nil \|\| ctx\.Err\(\) == nil \{\s*$'
       # Baseline locations: 231:4
       - path: '^internal/installengine/baseline_probe_suite_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on mode$'
+        source: '^\s*if mode == "owner-canceled-idle" \{\s*$'
       # Baseline locations: 31:222
       - path: '^internal/installengine/baseline_producer_probes_test\.go$'
         linters: [staticcheck]
         text: '^SA1019: \(k8s\.io/apimachinery/pkg/apis/meta/v1\.FieldsV1\)\.Raw is deprecated: Direct access to this field is deprecated\. Use GetRawBytes, GetRawString, SetRawBytes, SetRawString, GetRawReader, NewFieldsV1 instead\. $'
+        source: '^\s*reply\.SetManagedFields\(\[\]metav1\.ManagedFieldsEntry\{\{Manager: "arcadectl-installer", Operation: metav1\.ManagedFieldsOperationUpdate, APIVersion: desired\.GetAPIVersion\(\), FieldsType: "FieldsV1", FieldsV1: &metav1\.FieldsV1\{Raw: fields\}, Time: &stamp\}\}\)\s*$'
       # Baseline locations: 45:5
       - path: '^internal/installengine/baseline_retired_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on collection\.kind$'
+        source: '^\s*if collection\.kind == "Pod" \{\s*$'
       # Baseline locations: 49:21
       - path: '^internal/installengine/baseline_runtime_test\.go$'
         linters: [staticcheck]
         text: '^SA1012: do not pass a nil Context, even if a function permits it; pass context\.TODO if you are unsure about which Context to use$'
+        source: '^\s*if provider\.Verify\(nil, f\.snapshot\) != ErrSecurityBaseline \|\| provider\.Verify\(t\.Context\(\), nil\) != ErrSecurityBaseline \{\s*$'
       # Baseline locations: 70:3
       - path: '^internal/installengine/fixture_admission_cases\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on number$'
+        source: '^\s*if number == 38 \{\s*$'
       # Baseline locations: 357:2
       - path: '^internal/installengine/fixture_admission_driver\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on r\.operation$'
+        source: '^\s*if r\.operation == probeEphemeralOperation \{\s*$'
       # Baseline locations: 117:4
       - path: '^internal/installengine/fixture_decode_guard_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on recipe$'
+        source: '^\s*if recipe == "v2" \{\s*$'
       # Baseline locations: 579:29
       - path: '^internal/installengine/fixture_dry_run_test\.go$'
         linters: [staticcheck]
         text: '^SA1012: do not pass a nil Context, even if a function permits it; pass context\.TODO if you are unsure about which Context to use$'
+        source: '^\s*if _, err := f\.wire\.dryRun\(nil, 0\); err != ErrFixtures \|\| f\.previews != 0 \{\s*$'
       # Baseline locations: 492:2
       - path: '^internal/installengine/fixture_ledger\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on recipe$'
+        source: '^\s*if recipe == fixtureRecipeV2 \{\s*$'
       # Baseline locations: 646:3
       - path: '^internal/installengine/fixture_ledger\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on next\.Entries\[changed\]\.State$'
+        source: '^\s*if next\.Entries\[changed\]\.State == fixtureCreateAttempted \{\s*$'
       # Baseline locations: 183:5
       - path: '^internal/installengine/fixture_ledger_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on scenario$'
+        source: '^\s*if scenario == "journal-namespace-uid" \{\s*$'
       # Baseline locations: 239:4
       - path: '^internal/installengine/fixture_marked_cleanup_test\.go$'
         linters: [staticcheck]
         text: '^SA4006: this value of err is never used$'
+        source: '^\s*err := ErrFixtures\s*$'
       # Baseline locations: 241:51
       - path: '^internal/installengine/fixture_marked_cleanup_test\.go$'
         linters: [staticcheck]
         text: '^SA1012: do not pass a nil Context, even if a function permits it; pass context\.TODO if you are unsure about which Context to use$'
+        source: '^\s*err = f\.wire\.removeAcknowledgedMarkerOriginal\(nil, slot\)\s*$'
       # Baseline locations: 36:6
       - path: '^internal/installengine/fixture_marker_dry_run_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on recipe$'
+        source: '^\s*if recipe == fixtureRecipeV2 \{\s*$'
       # Baseline locations: 300:4
       - path: '^internal/installengine/fixture_observation_diagnostic_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on outcome$'
+        source: '^\s*if outcome == "panic" \{\s*$'
       # Baseline locations: 100:3
       - path: '^internal/installengine/fixture_phase\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on key\.Kind$'
+        source: '^\s*if key\.Kind == "Namespace" \{\s*$'
       # Baseline locations: 421:30, 650:40
       - path: '^internal/installengine/fixture_phase\.go$'
         linters: [staticcheck]
         text: '^SA1012: do not pass a nil Context, even if a function permits it; pass context\.TODO if you are unsure about which Context to use$'
+        source: '^\s*(?:return f\.accountPhaseTraced\(nil, o, floor, now\)|return f\.phaseGCRowsWithAccountsTrace\(nil, o, objects, gc, refreshed, accounts\))\s*$'
       # Baseline locations: 78:199, 139:81
       - path: '^internal/installengine/fixture_phase_floor_pod_diagnostic_test\.go$'
         linters: [staticcheck]
         text: '^SA1019: \(k8s\.io/apimachinery/pkg/apis/meta/v1\.FieldsV1\)\.Raw is deprecated: Direct access to this field is deprecated\. Use GetRawBytes, GetRawString, SetRawBytes, SetRawString, GetRawReader, NewFieldsV1 instead\. $'
+        source: '^\s*(?:p\.ManagedFields = \[\]metav1\.ManagedFieldsEntry\{\{Manager: "PRIVATE-POD-CANARY", Operation: metav1\.ManagedFieldsOperationUpdate, APIVersion: "v1", FieldsType: "FieldsV1", FieldsV1: &metav1\.FieldsV1\{Raw: \[\]byte\(`\{"f:status":\{\}\}`\)\}\}\}|pod\.ManagedFields = \[\]metav1\.ManagedFieldsEntry\{\{FieldsV1: &metav1\.FieldsV1\{Raw: \[\]byte\(`\{"PRIVATE-POD-CANARY":`\)\}\}\})\s*$'
       # Baseline locations: 114:7
       - path: '^internal/installengine/fixture_phase_leaders_test\.go$'
         linters: [staticcheck]
         text: '^SA1019: \(k8s\.io/apimachinery/pkg/apis/meta/v1\.FieldsV1\)\.Raw is deprecated: Direct access to this field is deprecated\. Use GetRawBytes, GetRawString, SetRawBytes, SetRawString, GetRawReader, NewFieldsV1 instead\. $'
+        source: '^\s*fresh\.ManagedFields\[0\]\.FieldsV1\.Raw = \[\]byte\(`\{"f:spec":\{"f:holderIdentity":\{\}\}\}`\)\s*$'
       # Baseline locations: 242:39, 247:51, 258:61, 323:39, 386:36
       - path: '^internal/installengine/fixture_phase_renewal_test\.go$'
         linters: [staticcheck]
         text: '^QF1008: could remove embedded field "Time" from selector$'
+        source: '^\s*(?:managed := metav1\.NewTime\(renew\.Time\.Truncate\(time\.Second\)\)|managed\.Time = lease\.ManagedFields\[0\]\.Time\.Time\.Add\(-time\.Second\)|lease\.Spec\.AcquireTime\.Time = lease\.Spec\.AcquireTime\.Time\.Add\(time\.Second\))\s*$'
       # Baseline locations: 129:114
       - path: '^internal/installengine/fixture_result\.go$'
         linters: [staticcheck]
         text: '^QF1008: could remove embedded field "Time" from selector$'
+        source: '^\s*if field\.Time == nil \|\| field\.Time\.IsZero\(\) \|\| field\.Time\.Year\(\) < 1 \|\| field\.Time\.Year\(\) > 9999 \|\| field\.Time\.Time\.After\(ceiling\) \{\s*$'
       # Baseline locations: 143:69
       - path: '^internal/installengine/fixture_wire_test\.go$'
         linters: [staticcheck]
         text: '^QF1001: could apply De Morgan''s law$'
+        source: '^\s*review\.Status\.Allowed = valid && !a\.denyAdmin && !a\.denyActor && !\(isSeed && f\.denySeed\)\s*$'
       # Baseline locations: 728:30
       - path: '^internal/installengine/fixture_wire_test\.go$'
         linters: [staticcheck]
         text: '^SA1012: do not pass a nil Context, even if a function permits it; pass context\.TODO if you are unsure about which Context to use$'
+        source: '^\s*if _, err := f\.wire\.request\(nil, 0, fixtureGetRequest\); err != ErrFixtures \{\s*$'
       # Baseline locations: 148:3
       - path: '^internal/installengine/fixture_worlds_decode_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on field$'
+        source: '^\s*if field == "run" \{\s*$'
       # Baseline locations: 122:24, 166:34
       - path: '^internal/installengine/lifecycle_boundary_diagnostic_test\.go$'
         linters: [staticcheck]
         text: '^SA1012: do not pass a nil Context, even if a function permits it; pass context\.TODO if you are unsure about which Context to use$'
+        source: '^\s*(?:traceBaselineBoundary\(nil, baselineBoundaryActors\)|if beginBaselineProbeDiagnostic\(nil, probeCreateOperation\) != nil \{)\s*$'
       # Baseline locations: 489:4
       - path: '^internal/installengine/lifecycle_boundary_diagnostic_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on boundary$'
+        source: '^\s*if boundary == "delete-opening" \{\s*$'
       # Baseline locations: 56:6
       - path: '^internal/installengine/lifecycle_convergence_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on fault$'
+        source: '^\s*if fault == "delayed-ready" \{\s*$'
       # Baseline locations: 39:38, 48:21
       - path: '^internal/installengine/lifecycle_cost_test\.go$'
         linters: [staticcheck]
         text: '^SA1012: do not pass a nil Context, even if a function permits it; pass context\.TODO if you are unsure about which Context to use$'
+        source: '^\s*(?:if ctx, costs := WithLifecycleCosts\(nil\); ctx != nil \|\| costs != nil \{|beginLifecycleCost\(nil, costBaseline\)\(\))\s*$'
       # Baseline locations: 18:48, 81:27
       - path: '^internal/installengine/lifecycle_diagnostic_test\.go$'
         linters: [staticcheck]
         text: '^SA1012: do not pass a nil Context, even if a function permits it; pass context\.TODO if you are unsure about which Context to use$'
+        source: '^\s*(?:if ctx, diagnostic := WithLifecycleDiagnostic\(nil\); ctx != nil \|\| diagnostic != nil \{|traceLifecycleCheckpoint\(nil, Prerequisites, lifecycleDiagnosticEntered\))\s*$'
       # Baseline locations: 117:4
       - path: '^internal/installengine/lifecycle_diagnostic_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on scenario$'
+        source: '^\s*if scenario == "provider" \{\s*$'
       # Baseline locations: 116:71
       - path: '^internal/installengine/lifecycle_test\.go$'
         linters: [staticcheck]
         text: '^QF1001: could apply De Morgan''s law$'
+        source: '^\s*\} else if r\.Key\.Kind != "Namespace" && installRank\(r\.Key\) >= 3 && !\(gate == AdmissionEffective && bootstrapRBACKey\(r\.Key\)\) \{\s*$'
       # Baseline locations: 57:49
       - path: '^internal/installengine/original_readers_test\.go$'
         linters: [staticcheck]
         text: '^SA1012: do not pass a nil Context, even if a function permits it; pass context\.TODO if you are unsure about which Context to use$'
+        source: '^\s*if read, err := x\.f\.engine\.readOriginalServing\(nil, x\.f\.snapshot, x\.access, false\); read != nil \|\| err != ErrServing \{\s*$'
       # Baseline locations: 197:91
       - path: '^internal/installengine/prerequisites\.go$'
         linters: [staticcheck]
         text: '^QF1001: could apply De Morgan''s law$'
+        source: '^\s*if \(c\.kind == "Pod" \|\| c\.kind == "PersistentVolumeClaim" \|\| c\.kind == "GameDestroy"\) && !\(mode == installstate\.Uninstall && d\.AdmissionRetirementRevision != 0\) \{\s*$'
       # Baseline locations: 63:396
       - path: '^internal/installengine/probe_access_test\.go$'
         linters: [staticcheck]
         text: '^SA1019: \(k8s\.io/apimachinery/pkg/apis/meta/v1\.DeleteOptions\)\.OrphanDependents is deprecated: please use the PropagationPolicy, this field will be deprecated in 1\.7\. Should the dependent objects be orphaned\. If true/false, the "orphan" finalizer will be added to/removed from the object''s finalizers list\. Either this field or PropagationPolicy may be set, but not both\. \+optional $'
+        source: '^\s*if json\.Unmarshal\(body, &opts\) != nil \|\| len\(opts\.DryRun\) != 1 \|\| opts\.DryRun\[0\] != "All" \|\| opts\.Preconditions == nil \|\| opts\.Preconditions\.UID == nil \|\| \*opts\.Preconditions\.UID != o\.GetUID\(\) \|\| opts\.Preconditions\.ResourceVersion == nil \|\| \*opts\.Preconditions\.ResourceVersion != "17" \|\| r\.URL\.RawQuery != "dryRun=All" \|\| opts\.PropagationPolicy != nil \|\| opts\.GracePeriodSeconds != nil \|\| opts\.OrphanDependents != nil \{\s*$'
       # Baseline locations: 84:45
       - path: '^internal/installengine/proof_access\.go$'
         linters: [staticcheck]
         text: '^QF1001: could apply De Morgan''s law$'
+        source: '^\s*if response\.StatusCode != http\.StatusOK && !\(method == http\.MethodPost && response\.StatusCode == http\.StatusCreated\) \{\s*$'
       # Baseline locations: 26:5
       - path: '^internal/installengine/public_body_buffers_test\.go$'
         linters: [staticcheck]
         text: '^ST1012: error var publicBodyTestPartial should have name of the form errFoo$'
+        source: '^\s*var publicBodyTestPartial = errors\.New\("bounded body read refused"\)\s*$'
       # Baseline locations: 50:4
       - path: '^internal/installengine/receipt_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on scenario$'
+        source: '^\s*if scenario == "duplicate" \{\s*$'
       # Baseline locations: 32:44
       - path: '^internal/installengine/request_pipeline_cost_test\.go$'
         linters: [staticcheck]
         text: '^SA1012: do not pass a nil Context, even if a function permits it; pass context\.TODO if you are unsure about which Context to use$'
+        source: '^\s*if ctx, costs := withRequestPipelineCosts\(nil\); ctx != nil \|\| costs != nil \{\s*$'
       # Baseline locations: 29:4
       - path: '^internal/installengine/retired_leaf_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on scenario$'
+        source: '^\s*if scenario == "leaf-role" \{\s*$'
       # Baseline locations: 182:239
       - path: '^internal/installengine/secrets\.go$'
         linters: [staticcheck]
         text: '^SA1019: \(k8s\.io/api/core/v1\.Secret\)\.SelfLink is deprecated: selfLink is a legacy read-only field that is no longer populated by the system\. \+optional $'
+        source: '^\s*if s == nil \|\| requireUID && \(uid == "" \|\| s\.UID != uid \|\| s\.ResourceVersion == ""\) \|\| s\.DeletionTimestamp != nil \|\| s\.DeletionGracePeriodSeconds != nil \|\| len\(s\.OwnerReferences\) != 0 \|\| len\(s\.Finalizers\) != 0 \|\| s\.GenerateName != "" \|\| s\.SelfLink != "" \|\| len\(s\.StringData\) != 0 \|\| s\.Immutable != nil && \*s\.Immutable \{\s*$'
       # Baseline locations: 71:286
       - path: '^internal/installengine/serving\.go$'
         linters: [staticcheck]
         text: '^SA1019: \(k8s\.io/apimachinery/pkg/apis/meta/v1\.ObjectMeta\)\.SelfLink is deprecated: selfLink is a legacy read-only field that is no longer populated by the system\. \+optional $'
+        source: '^\s*return meta\.Namespace == namespace && addressPart\(meta\.Name\) && receiptUID\.MatchString\(string\(meta\.UID\)\) && receiptUID\.MatchString\(meta\.ResourceVersion\) && meta\.Generation >= 0 && meta\.DeletionTimestamp == nil && meta\.DeletionGracePeriodSeconds == nil && len\(meta\.Finalizers\) == 0 && meta\.SelfLink == ""\s*$'
       # Baseline locations: 141:62
       - path: '^internal/installengine/serving\.go$'
         linters: [staticcheck]
         text: '^QF1001: could apply De Morgan''s law$'
+        source: '^\s*if d\.Pending != nil \|\| d\.Stage != installstate\.Verifying && !\(admissionApplying && d\.Stage == installstate\.Applying\) \|\| d\.Mode == installstate\.Uninstall \{\s*$'
       # Baseline locations: 313:21
       - path: '^internal/installengine/target_auth_test\.go$'
         linters: [staticcheck]
         text: '^SA1012: do not pass a nil Context, even if a function permits it; pass context\.TODO if you are unsure about which Context to use$'
+        source: '^\s*if err := c\.Verify\(nil, r\); err != ErrInvalid \{\s*$'
       # Baseline locations: 51:2
       - path: '^internal/installerprofile/inherited_linux_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on mode$'
+        source: '^\s*if mode == "existing" \{\s*$'
       # Baseline locations: 287:4
       - path: '^internal/installerprofile/inherited_linux_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on scenario$'
+        source: '^\s*if scenario == "valid" \{\s*$'
       # Baseline locations: 154:4
       - path: '^internal/installerprofile/matrix_linux_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on mode$'
+        source: '^\s*if mode == "not-started" \|\| mode == "wrong-command" \{\s*$'
       # Baseline locations: 160:5, 181:4
       - path: '^internal/installfiles/baseline_writer_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on fault$'
+        source: '^\s*if fault == "collision" \{\s*$'
       # Baseline locations: 212:4
       - path: '^internal/installfiles/baseline_writer_test\.go$'
         linters: [staticcheck]
         text: '^SA4006: this value of signature is never used$'
+        source: '^\s*manifest, signature, payload := baselineWriteFixture\(t\)\s*$'
       # Baseline locations: 230:148
       - path: '^internal/installfiles/writer\.go$'
         linters: [staticcheck]
         text: '^QF1001: could apply De Morgan''s law$'
+        source: '^\s*if unix\.Fstat\(fd, &st\) != nil \|\| st\.Mode&unix\.S_IFMT != unix\.S_IFDIR \|\| \(st\.Uid != 0 && st\.Uid != uint32\(os\.Geteuid\(\)\)\) \|\| \(st\.Mode&0022 != 0 && !\(st\.Uid == 0 && st\.Mode&unix\.S_ISVTX != 0\)\) \{\s*$'
       # Baseline locations: 139:49
       - path: '^internal/installobserve/collection_diagnostic_test\.go$'
         linters: [staticcheck]
         text: '^SA1012: do not pass a nil Context, even if a function permits it; pass context\.TODO if you are unsure about which Context to use$'
+        source: '^\s*if ctx, diagnostic := WithCollectionDiagnostic\(nil\); ctx != nil \|\| diagnostic != nil \{\s*$'
       # Baseline locations: 151:4
       - path: '^internal/installobserve/executables_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on scenario$'
+        source: '^\s*if scenario == "empty" \{\s*$'
       # Baseline locations: 184:6
       - path: '^internal/installobserve/executables_test\.go$'
         linters: [staticcheck]
         text: '^S1038: should use t\.Fatalf\(\.\.\.\) instead of t\.Fatal\(fmt\.Sprintf\(\.\.\.\)\)$'
+        source: '^\s*t\.Fatal\(fmt\.Sprintf\("unexpected %s replay count", resource\)\)\s*$'
       # Baseline locations: 54:3, 490:4, 593:5
       - path: '^internal/installobserve/gc_http_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on fault$'
+        source: '^\s*(?:if fault == "event-core-only" \{|if fault == "late-denial" \{|if fault == "event-duplicate" \{)\s*$'
       # Baseline locations: 120:66
       - path: '^internal/installobserve/gc_http_test\.go$'
         linters: [staticcheck]
         text: '^QF1001: could apply De Morgan''s law$'
+        source: '^\s*if key != "limit" && key != "continue" && key != "timeout" && !\(pinnedEvent && \(key == "resourceVersion" \|\| key == "resourceVersionMatch"\)\) \|\| len\(values\) != 1 \{\s*$'
       # Baseline locations: 642:6
       - path: '^internal/installobserve/gc_http_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on source\.GVR\.Resource$'
+        source: '^\s*if source\.GVR\.Resource == "widgets" \{\s*$'
       # Baseline locations: 783:35
       - path: '^internal/installobserve/gc_http_test\.go$'
         linters: [staticcheck]
         text: '^SA1012: do not pass a nil Context, even if a function permits it; pass context\.TODO if you are unsure about which Context to use$'
+        source: '^\s*if observation, err := g\.Collect\(nil, nil\); observation != nil \|\| err != ErrInvalid \|\| g\.DiagnosticStage\(\) != "unknown" \{\s*$'
       # Baseline locations: 25:4
       - path: '^internal/installobserve/gc_pages_diagnostic_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on fault$'
+        source: '^\s*if fault == "cancelled" \{\s*$'
       # Baseline locations: 129:12
       - path: '^internal/installobserve/gc_pages_diagnostic_test\.go$'
         linters: [staticcheck]
         text: '^SA1012: do not pass a nil Context, even if a function permits it; pass context\.TODO if you are unsure about which Context to use$'
+        source: '^\s*g\.Collect\(nil, nil\)\s*$'
       # Baseline locations: 412:163
       - path: '^internal/installobserve/observe\.go$'
         linters: [staticcheck]
         text: '^ST1008: error should be returned as the last argument$'
+        source: '^\s*func boundedPagesDiagnostic\(ctx context\.Context, fetch func\(context\.Context, metav1\.ListOptions\) \(runtime\.Object, error\), budget \*int\) \(\[\]runtime\.Object, string, error, pagesRefusalReason\) \{\s*$'
       # Baseline locations: 139:6
       - path: '^internal/installobserve/owners\.go$'
         linters: [staticcheck]
         text: '^QF1001: could apply De Morgan''s law$'
+        source: '^\s*if !\(c >= ''A'' && c <= ''Z'' \|\| c >= ''a'' && c <= ''z'' \|\| c >= ''0'' && c <= ''9''\) \{\s*$'
       # Baseline locations: 58:50, 71:76
       - path: '^internal/installsafety/domain\.go$'
         linters: [staticcheck]
         text: '^QF1001: could apply De Morgan''s law$'
+        source: '^\s*(?:if !settled\(o, o\.Status\.ObservedGeneration\) \|\| !\(o\.Status\.Phase == arcade\.DestroyPhaseSucceeded \|\| o\.Status\.Phase == arcade\.DestroyPhaseFailed \|\| o\.Status\.Phase == arcade\.DestroyPhaseCancelled\) \{|if !settled\(o, o\.Status\.ObservedGeneration\) \|\| len\(o\.Finalizers\) != 0 \|\| !\(o\.Status\.Phase == arcade\.OperationPhaseSucceeded \|\| o\.Status\.Phase == arcade\.OperationPhaseFailed \|\| o\.Status\.Phase == arcade\.OperationPhaseCancelled\) \{)\s*$'
       # Baseline locations: 231:3, 481:27, 485:4
       - path: '^internal/platform/data/operation\.go$'
         linters: [staticcheck]
         text: '^QF1001: could apply De Morgan''s law$'
+        source: '^\s*(?:!\(kind == RestoreOperation && status\.Phase == arcadev1alpha1\.DataPhaseRollingBack\) \{|return current != "" && !\(kind == RestoreOperation && current == arcadev1alpha1\.DataPhaseActivating\)|!\(kind == RestoreOperation && current == arcadev1alpha1\.DataPhaseActivating\))\s*$'
       # Baseline locations: 228:4, 253:5, 273:5
       - path: '^internal/privatefs/match_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on fault$'
+        source: '^\s*(?:if fault == "empty" \{|if fault == "growth" \{|if fault == "symlink" \{)\s*$'
       # Baseline locations: 121:5
       - path: '^internal/privatefs/pin_test\.go$'
         linters: [staticcheck]
         text: '^QF1003: could use tagged switch on mode$'
+        source: '^\s*if mode == "symlink" \{\s*$'
       # Baseline locations: 318:32
       - path: '^internal/controller/gamebackup_controller\.go$'
         linters: [unused]
         text: '^func \(\*GameBackupReconciler\)\.workerTerminalOrAbsent is unused$'
+        source: '^\s*func \(r \*GameBackupReconciler\) workerTerminalOrAbsent\(ctx context\.Context, backup \*arcadev1alpha1\.GameBackup\) \(bool, error\) \{\s*$'
       # Baseline locations: 172:27
       - path: '^internal/installengine/activation_epoch\.go$'
         linters: [unused]
         text: '^func \(\*activationEpoch\)\.readEvidence is unused$'
+        source: '^\s*func \(o \*activationEpoch\) readEvidence\(ctx context\.Context\) \(\*Serving, credentialBinding, error\) \{\s*$'
       # Baseline locations: 264:6
       - path: '^internal/installengine/baseline_parents\.go$'
         linters: [unused]
         text: '^func baselineDeletingParent is unused$'
+        source: '^\s*func baselineDeletingParent\(before \*installcontract\.Template, pending \*installstate\.Pending, live \*unstructured\.Unstructured\) bool \{\s*$'
       # Baseline locations: 286:35
       - path: '^internal/installengine/baseline_prerequisites\.go$'
         linters: [unused]
         text: '^func \(\*ClusterSecurityBaseline\)\.prerequisiteEmptyNamespace is unused$'
+        source: '^\s*func \(c \*ClusterSecurityBaseline\) prerequisiteEmptyNamespace\(ctx context\.Context, s \*installstate\.Snapshot, operation \*baselinePrerequisite\) \(map\[installstate\.Key\]admissionIdentity, error\) \{\s*$'
       # Baseline locations: 22:23
       - path: '^internal/installengine/fixture_phase_renewal\.go$'
         linters: [unused]
         text: '^func \(\*fixtureWire\)\.phaseGCWithRenewals is unused$'
+        source: '^\s*func \(w \*fixtureWire\) phaseGCWithRenewals\(ctx context\.Context, o \*installobserve\.Observation, phase fixturePhaseBaseline, objects \[fixtureMaxSlots\]\*unstructured\.Unstructured, reads \*fixturePhaseRead\) \(\*installobserve\.GCObservation, fixturePhaseBaseline, error\) \{\s*$'
       # Baseline locations: 75:23
       - path: '^internal/installengine/fixture_phase_renewal\.go$'
         linters: [unused]
         text: '^func \(\*fixtureWire\)\.classifyLeaseRVConflict is unused$'
+        source: '^\s*func \(w \*fixtureWire\) classifyLeaseRVConflict\(ctx context\.Context, o \*installobserve\.Observation, before fixturePhaseBaseline, objects \[fixtureMaxSlots\]\*unstructured\.Unstructured, refusal \*installobserve\.LeaseRVConflict, reads \*fixturePhaseRead\) \(fixturePhaseBaseline, error\) \{\s*$'
       # Baseline locations: 640:21
       - path: '^internal/installengine/lifecycle\.go$'
         linters: [unused]
         text: '^func \(\*Lifecycle\)\.apply is unused$'
+        source: '^\s*func \(l \*Lifecycle\) apply\(ctx context\.Context, s \*installstate\.Snapshot, opts LifecycleOptions\) \(\*installstate\.Snapshot, error\) \{\s*$'
       # Baseline locations: 18:6
       - path: '^internal/installerprofile/control_linux\.go$'
         linters: [unused]
         text: '^func newControlForPipe is unused$'
+        source: '^\s*func newControlForPipe\(pipe unix\.Stat_t\) \(\*os\.File, error\) \{\s*$'
       # Baseline locations: 130:6
       - path: '^internal/installerprofile/inherited_linux_test\.go$'
         linters: [unused]
         text: '^func rejectedTestControl is unused$'
+        source: '^\s*func rejectedTestControl\(t \*testing\.T, identity unix\.Stat_t, scenario string, prefix bool\) \*os\.File \{\s*$'
 
 issues:
   # Report every unsuppressed finding so issue limits cannot hide regressions.
