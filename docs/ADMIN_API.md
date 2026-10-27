@@ -51,6 +51,63 @@ verify the CA and hostname. `--tls-server-name` on the credential utility permit
 a verified hostname when using a local port-forward; it does not bypass TLS.
 Protect any ingress, tunneling, or log-collection infrastructure you add.
 
+## Operator-managed ingress isolation
+
+[`config/networkpolicy/arcadectl-api-ingress.yaml`](../config/networkpolicy/arcadectl-api-ingress.yaml)
+is an operator-applied **cluster change requiring Infra Lead review**. It selects
+API pods by `app.kubernetes.io/name=arcadectl-api` in `arcadectl-system` and denies
+all policy-controlled ingress, including direct Pod-IP TCP 8443 and traffic via
+the ClusterIP Service's TCP 443 -> 8443 mapping. It leaves egress unchanged.
+No in-cluster admin API client is installed: controllers reconcile Kubernetes
+resources without calling this HTTP API.
+
+The installer authenticates over the kube-apiserver `pods/portforward`
+subresource (`internal/installengine/forward.go`), both for target authentication
+and activation epochs. The direct dial in `activation.go` has no production
+caller. The API Kind fixture also uses port-forward. The kube-apiserver sends
+the stream through the kubelet/CRI; the runtime connects inside the pod network
+namespace, so this is not CNI ingress subject to this policy. For example, the
+[containerd CRI implementation](https://github.com/containerd/containerd/blob/v2.0.0/internal/cri/server/sandbox_portforward_linux.go#L27-L75)
+connects to the requested port on localhost inside that namespace. Port-forward
+still requires Kubernetes authorization and normal API TLS/authentication;
+restrict who can create `pods/portforward` requests.
+
+Only kubelet readiness (`/readyz`) and liveness (`/livez`) probes need TCP 8081.
+[Standard NetworkPolicy](https://kubernetes.io/docs/concepts/services-networking/network-policies/)
+exempts traffic from the pod's own node, so the manifest uses `ingress: []`
+without opening the health port to other pods. Kubelet/host-network probe
+behavior and additional host firewall policies differ by CNI. Infra must
+verify both probes with the deployed CNI; if it needs an explicit probe
+exception, use verified probe source ranges and TCP 8081 only. Do not assume
+that a `kube-system` namespace or pod selector identifies kubelet traffic.
+
+The manifest has **no effect unless the CNI enforces NetworkPolicy**. Policies
+are additive: another policy selecting these API pods can allow ingress to
+8443. Node/host-network traffic also has CNI-specific exceptions; this policy
+does not establish a host isolation boundary or replace API authentication.
+
+After Infra verifies CNI enforcement, probe behavior, port-forward support,
+other selecting policies, and any real cluster-side clients, the operator can
+apply the reviewed manifest from the repository root in the intended context:
+
+```sh
+kubectl --context YOUR_REVIEWED_CONTEXT apply \
+  -f config/networkpolicy/arcadectl-api-ingress.yaml
+```
+
+For a non-default installation namespace, review and change `metadata.namespace`
+before applying. Direct Service/Pod-IP access from an administrator's configured
+CLI or credential-rotation origin may be blocked; use an authorized port-forward
+with CA and hostname verification, or have Infra review the actual client path.
+If a legitimate in-cluster client is confirmed, add an allowance limited to TCP
+8443 with **both `namespaceSelector` and `podSelector` in the same `from` peer**.
+No such client exception is needed by the current installation.
+
+This manifest is outside embedded installation assets, rendering, inventory,
+and RBAC. The installer does not apply, upgrade, roll back, or remove it. The
+operator manages its lifecycle separately; deleting this NetworkPolicy removes
+its isolation, subject to any other applicable policies.
+
 ## Trusted administrator bootstrap and rotation
 
 Build the Linux administrator utility from the checkout:
