@@ -109,7 +109,7 @@ func (w *fixtureWire) localCurrent() error {
 		return ErrFixtures
 	}
 	body, identity := f.body, f.identity
-	if f.engine.files.MatchOriginal(f.name, fixtureLedgerMaxBytes, body, identity) != nil || f.engine.files.ConfirmDurable(f.name, identity) != nil {
+	if f.engine.files.MatchOriginal(f.name, fixtureLedgerMaxBytes, body, identity) != nil || f.engine.files.ConfirmDurableComparing(f.name, identity, body) != nil {
 		return ErrFixtures
 	}
 	if f.checkCurrentWAL(body) != nil {
