@@ -89,6 +89,7 @@ func traceLifecycleCheckpoint(ctx context.Context, kind Checkpoint, state lifecy
 			// previous successful checkpoint within this same Step.
 			diagnostic.admission.position.Store(0)
 			diagnostic.admission.phase.Store(0)
+			diagnostic.admission.phaseGate.Store(0)
 			diagnostic.admission.typedMetadata.Store(nil)
 			diagnostic.admission.phaseFloor.Store(nil)
 			diagnostic.activation.step.Store(0)
