@@ -1,132 +1,167 @@
-name: Installer performance lab
+name: SDK rate synthetic controls preflight
 
 on:
-  push:
-    branches: [perf/installer-ci-runtime]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: installer-performance-${{ github.ref }}
-  cancel-in-progress: true
+  group: sdk-controls-preflight-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  descriptor-membership:
-    name: Fresh authorization catalog controls (${{ matrix.shard }})
+  controls:
+    name: SDK rate synthetic controls only
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'gobha-me/arcadectl' && github.ref == 'refs/heads/perf/issue-89-sdk-controls-preflight' && github.run_attempt == 1
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3, 4, 5]
     env:
       GOMAXPROCS: "2"
       GOMEMLIMIT: 1GiB
     steps:
-      - name: Check out exact candidate
+      - name: Check out exact preflight source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 2
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
-      - name: Verify fresh request ownership and complete catalog refusals
-        shell: bash
+      - name: Prove four synthetic controls and tagged vet without a native fixture
         run: |
-          set -euo pipefail
-          controls_shard='${{ matrix.shard }}'
-          [[ "$controls_shard" =~ ^[0-5]$ ]] || exit 2
-          controls_pattern='^(TestBaselineDenied.*|TestBaselineConfigurationLists.*|TestAdmissionConfiguration.*|TestAdmissionNamedCatalog.*|TestBootstrapAdmissionClosedProviderBracketsWholeObservationAndProbes|TestLifecycleConvergenceAdmissionWaitsForOriginalPolicyStatus|TestColdBoundProviderBracketsWorldPolicyAndJournalIdentity|TestBaselineActorsRequireOriginalAuthorityAndCloseEachProbe|TestActivationEpoch.*|TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate)$'
-          controls_listing=$(go test -race -tags=kindinstall -p 1 -list "$controls_pattern" ./internal/installengine)
-          mapfile -t controls_all < <(printf '%s\n' "$controls_listing" | awk '/^Test[^[:space:]]*$/' | LC_ALL=C sort)
-          if [[ ${#controls_all[@]} -eq 0 ]]; then
-            echo 'No compiled control roots selected; refusing an empty lab gate.' >&2
-            exit 1
-          fi
-          mapfile -t controls_selected < <(printf '%s\n' "${controls_all[@]}" | awk -v shard="$controls_shard" '(NR - 1) % 6 == shard')
-          if [[ ${#controls_selected[@]} -eq 0 ]]; then
-            echo 'No control roots assigned to this shard; refusing an empty lab gate.' >&2
-            exit 1
-          fi
-          printf 'Installer performance controls shard %s/6: %s of %s compiled selected roots\n' "$controls_shard" "${#controls_selected[@]}" "${#controls_all[@]}"
-          printf 'Selected: %s\n' "${controls_selected[@]}"
-          controls_union=''
-          for controls_name in "${controls_selected[@]}"; do
-            controls_union+="${controls_union:+|}^${controls_name}$"
-          done
-          go test -race -tags=kindinstall -p 1 -failfast -timeout=15m -v ./internal/installengine -run "$controls_union" -count=1
+          python3 -I - <<'PY_PREFLIGHT'
+          import hashlib,json,os,re,selectors,signal,subprocess,sys,time
+          from pathlib import Path
+          ACTIVE=set()
+          DEADLINE=0
+          STAGE='source-check'
+          PARENT='40a35c3ee44b6e2e63eb3ebd1e8f44035ea9bfaf'
+          BRANCH='refs/heads/perf/issue-89-sdk-controls-preflight'
+          ROOTS=['TestKindSDKRatePilotRealObserverWaitRefusals','TestKindSDKRatePilotFreshSharedBucket','TestKindSDKRatePilotRefusesExplicitAndStalePolicy','TestKindSDKRatePilotFixedBracketAndNoQuotaChanges']
+          FILES=['internal/installengine/kind_sdk_rate_pilot_test.go','internal/installengine/kind_sdk_rate_pilot_controls_test.go']
+          HASHES=['9f5fd140771c7f25562774475f3c529fdefeef69a81844bd07b894059ce19120','cdd85317586cd102d97381089cdb0d7667d9e0701d8d3f369a50543fc41565da']
+          CHANGES={'M\t.github/workflows/installer-performance.yml',*('A\t'+f for f in FILES)}
+          class Refused(Exception):
+              def __init__(self,reason='closed-refusal',code=None,positions=None):
+                  self.detail={'reason':reason,'exitCode':code if isinstance(code,int) and -255<=code<=255 else None,'positions':positions or []}
 
-  descriptor-measurements:
-    name: Fresh catalog measurements and vet
-    needs: [descriptor-membership]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    env:
-      GOMAXPROCS: "2"
-      GOMEMLIMIT: 1GiB
-    steps:
-      - name: Check out exact candidate
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.sha }}
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Compare complete configuration and descriptor membership costs
-        run: go test -p 1 -timeout=3m ./internal/installengine -run '^$' -bench '^(BenchmarkBaselineDeniedDescriptorMembership|BenchmarkAdmissionConfiguration.*)$' -benchmem -benchtime=250ms -count=3
-      - name: Vet the changed engine and its test harness
-        run: go vet -tags=kindinstall -p 1 ./internal/installengine
+          def require(ok):
+              if not ok: raise Refused()
 
-  phase-barriers:
-    name: Complete read-only phase and durability controls
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    env:
-      GOMAXPROCS: "2"
-      GOMEMLIMIT: 1GiB
-    steps:
-      - name: Check out exact candidate
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.sha }}
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Verify complete passes, original closures and local durability with race detection
-        run: go test -race -tags=kindinstall -p 1 -timeout=15m -v ./internal/installengine -run '^(TestFixturePhase(ReadBarrier.*|NamedScan.*|ReadPass.*|PublicOriginalDrift.*|FinalActorRead.*|OriginalWarmRenewal.*|WarmRenewalCompletedFloor.*)|TestFixtureV3.*)$' -count=1
+          def wipe(parts):
+              for part in parts: part[:]=b'\0'*len(part);part.clear()
 
-  native-configuration:
-    name: Native v3 cold matrix (${{ matrix.revision }})
-    needs: [descriptor-measurements, phase-barriers]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 50
-    strategy:
-      fail-fast: false
-      matrix:
-        revision: [before, candidate]
-    env:
-      GOMAXPROCS: "2"
-      GOMEMLIMIT: 1GiB
-    steps:
-      - name: Check out exact comparison revision
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ matrix.revision == 'before' && '5e3347840153a2d9ad2fccf9571cce36bbe0b49c' || github.sha }}
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Run the complete unmodified native matrix on an owned disposable cluster
-        run: make test-kind-install-admission-v3 INSTALL_ADMISSION_PROFILE=137 INSTALL_ADMISSION_MODE=cold
+          def stop_join(process):
+              saved={n:signal.signal(n,signal.SIG_IGN) for n in (signal.SIGINT,signal.SIGTERM,signal.SIGHUP)}
+              try:
+                  try: os.killpg(process.pid,signal.SIGTERM)
+                  except ProcessLookupError: pass
+                  try: process.wait(timeout=2)
+                  except subprocess.TimeoutExpired:
+                      try: os.killpg(process.pid,signal.SIGKILL)
+                      except ProcessLookupError: pass
+                      process.wait(timeout=2)
+                  try: os.killpg(process.pid,signal.SIGKILL)
+                  except ProcessLookupError: pass
+                  require(process.poll() is not None)
+              finally:
+                  for n,handler in saved.items(): signal.signal(n,handler)
 
-# This bounded experiment does not replace any required CI job or certify
-# whole-lifecycle speedup. The complete signed lifecycle remains in CI.
+          def positions(parts):
+              found=[]
+              pattern=re.compile(r'(?:^|\s)(?:\./)?(?:internal/installengine/)?(kind_sdk_rate_pilot(?:_controls)?_test[.]go):([0-9]{1,7})(?::([0-9]{1,7}))?:')
+              for body in parts:
+                  for line in body.decode('utf8','replace').splitlines():
+                      if len(line)>65536: continue
+                      for match in pattern.finditer(line):
+                          value={'file':'internal/installengine/'+match[1],'line':int(match[2]),'column':int(match[3] or 0)}
+                          if value not in found: found.append(value)
+                          if len(found)==16: return found
+              return found
+
+          def capture(command,environment,seconds,limit=2*1024*1024):
+              output=[bytearray(),bytearray()];selector=selectors.DefaultSelector();process=None;reason=None;started=time.monotonic()
+              try:
+                  try:
+                      process=subprocess.Popen(command,env=environment,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+                      ACTIVE.add(process);selector.register(process.stdout,selectors.EVENT_READ,0);selector.register(process.stderr,selectors.EVENT_READ,1)
+                      while selector.get_map() or process.poll() is None:
+                          if time.monotonic()>=DEADLINE or time.monotonic()-started>=seconds: reason='timeout';break
+                          if not selector.get_map(): time.sleep(0.05)
+                          for key,_ in selector.select(0.1) if selector.get_map() else []:
+                              chunk=os.read(key.fd,65536)
+                              if not chunk: selector.unregister(key.fileobj);continue
+                              if sum(map(len,output))+len(chunk)>limit: reason='output-limit';break
+                              output[key.data].extend(chunk)
+                          if reason: break
+                  finally:
+                      try:
+                          if process is not None: stop_join(process);ACTIVE.remove(process)
+                      finally:
+                          selector.close()
+                          if process is not None: process.stdout.close();process.stderr.close()
+                  return process.returncode,reason,output
+              except BaseException:
+                  wipe(output);raise
+
+          def checked(command,environment,seconds,consume=lambda parts:None):
+              code,reason,parts=capture(command,environment,seconds)
+              try:
+                  if code!=0 or reason: raise Refused(reason or 'exit-failure',code,positions(parts))
+                  return consume(parts)
+              finally: wipe(parts)
+
+          def text(parts):
+              value=parts[0].decode('utf8','strict')
+              require(len(value.splitlines())<=40000 and all(len(s)<=65536 for s in value.splitlines()))
+              return value
+
+          def census(value,roots):
+              require(not any(s in value for s in ('--- SKIP:','--- FAIL:','panic:','fatal error:','WARNING: DATA RACE','no tests to run')))
+              require(re.search(r'^FAIL(?:\s|$)',value,re.M) is None)
+              require(re.findall(r'^=== RUN   ([A-Za-z0-9_]+)$',value,re.M)==roots)
+              for root in roots: require(len(re.findall(r'^--- PASS: '+root+r' \([0-9]+(?:[.][0-9]+)?s\)$',value,re.M))==1)
+              require(value.splitlines().count('PASS')==1 and len(re.findall(r'^ok\s+github[.]com/gobha-me/arcadectl/internal/installengine\s+[0-9]+(?:[.][0-9]+)?s\s*$',value,re.M))==1)
+
+          def interrupt(_number,_frame): raise KeyboardInterrupt
+
+          def verify_source(environment):
+              source=environment.get('GITHUB_SHA','')
+              require(environment.get('GITHUB_EVENT_NAME')=='workflow_dispatch' and environment.get('GITHUB_REPOSITORY')=='gobha-me/arcadectl' and environment.get('GITHUB_REF')==BRANCH and environment.get('GITHUB_RUN_ATTEMPT')=='1')
+              require(re.fullmatch('[a-f0-9]{40}',source) and source!=PARENT)
+              git=lambda args:checked(['git',*args],environment,10,lambda p:text(p).strip())
+              require(git(['rev-parse','HEAD'])==source and git(['show','-s','--format=%P','HEAD'])==PARENT and not git(['status','--porcelain']))
+              require(set(git(['diff','--name-status','HEAD^','HEAD']).splitlines())==CHANGES)
+              require(all(hashlib.sha256(Path(f).read_bytes()).hexdigest()==expected for f,expected in zip(FILES,HASHES)))
+              require(Path(FILES[0]).read_text().count('const kindSDKRatePilotParent = ""')==1)
+              return source
+
+          def main():
+              global DEADLINE,STAGE
+              environment=dict(os.environ);source='';summary=None
+              DEADLINE=time.monotonic()+18*60
+              for number in (signal.SIGINT,signal.SIGTERM,signal.SIGHUP): signal.signal(number,interrupt)
+              try:
+                  source=verify_source(environment)
+                  environment.update(GOMAXPROCS='2',GOMEMLIMIT='1GiB',GOTOOLCHAIN='local',ARCADECTL_KIND_SDK_RATE_PILOT='',ARCADECTL_SDK_RATE_SOURCE='',CI='false',GITHUB_ACTIONS='false')
+                  STAGE='race-controls'
+                  checked(['go','test','-mod=readonly','-race','-tags=kindinstall','-p=1','-timeout=5m','-v','./internal/installengine','-run=^('+'|'.join(ROOTS)+')$','-count=1'],environment,300,lambda p:census(text(p),ROOTS))
+                  STAGE='vet';checked(['go','vet','-mod=readonly','-tags=kindinstall','-p=1','./internal/installengine'],environment,300)
+                  STAGE='source-closure';verify_source(dict(os.environ))
+                  summary={'format':'arcadectl-sdk-controls-preflight-v1','source':source,'parent':PARENT,'complete':True,'controlRoots':4,'controlsPassed':True,'vetPassed':True,'nativeDisabled':True,'nativeProofComplete':False,'ratePolicyAdopted':False,'fullCIAcceptance':False}
+              except Refused as error:
+                  summary={'format':'arcadectl-sdk-controls-preflight-v1','complete':False,'stage':STAGE,'failure':error.detail,'nativeDisabled':True,'ratePolicyAdopted':False,'fullCIAcceptance':False}
+              except BaseException:
+                  summary={'format':'arcadectl-sdk-controls-preflight-v1','complete':False,'stage':STAGE,'failure':{'reason':'closed-refusal','exitCode':None,'positions':[]},'nativeDisabled':True,'ratePolicyAdopted':False,'fullCIAcceptance':False}
+              finally:
+                  for process in list(ACTIVE):
+                      try: stop_join(process);ACTIVE.remove(process)
+                      except BaseException: pass
+                  if ACTIVE: summary={'format':'arcadectl-sdk-controls-preflight-v1','complete':False,'stage':'cleanup','failure':{'reason':'join-refused','exitCode':None,'positions':[]},'nativeDisabled':True,'ratePolicyAdopted':False,'fullCIAcceptance':False}
+              print(json.dumps(summary,sort_keys=True),flush=True)
+              return 0 if summary['complete'] else 1
+          if __name__=='__main__': raise SystemExit(main())
+          PY_PREFLIGHT
