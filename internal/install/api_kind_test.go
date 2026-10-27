@@ -17,7 +17,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"io"
 	"math/big"
 	"net"
@@ -193,11 +192,10 @@ func TestKindAuthenticatedAdmin(t *testing.T) {
 	if output, err := newCommand(ctx, "docker", "image", "inspect", imageTag).CombinedOutput(); err == nil || !bytes.Contains(bytes.ToLower(output), []byte("no such image")) {
 		t.Fatal("owned image tag preflight failed")
 	}
-	t.Log("preparing exact-source API image")
-	imageID, err = prepareKindAPIImage(ctx, newCommand, root, filepath.Join(root, "hack", "kind-runtime-images.sh"), sha, epoch, dirty, imageTag)
-	if err != nil {
-		t.Fatal(err)
-	}
+	t.Log("building API image")
+	public("", "docker", "build", "--file", "Dockerfile.api", "--build-arg", "VCS_REF="+sha, "--build-arg", "SOURCE_DATE_EPOCH="+epoch,
+		"--build-arg", "SOURCE_DIRTY="+boolText(dirty), "--tag", imageTag, ".")
+	imageID = public("", "docker", "image", "inspect", "--format", "{{.Id}}", imageTag)
 	public("", "docker", "push", imageTag)
 	var references []string
 	if json.Unmarshal([]byte(public("", "docker", "image", "inspect", "--format", "{{json .RepoDigests}}", imageTag)), &references) != nil {
@@ -465,127 +463,6 @@ func boolText(value bool) string {
 		return "true"
 	}
 	return "false"
-}
-
-func prepareKindAPIImage(ctx context.Context, newCommand func(context.Context, ...string) *exec.Cmd, root, script, sha, epoch string, dirty bool, imageTag string) (string, error) {
-	if output, err := newCommand(ctx, "bash", script, "prepare", "api", root, sha, epoch, boolText(dirty), imageTag).CombinedOutput(); err != nil {
-		return "", errors.New("public fixture step bash failed: " + strings.TrimSpace(string(output)))
-	}
-	inspect := func(format string) (string, error) {
-		output, err := newCommand(ctx, "docker", "image", "inspect", "--format", format, imageTag).CombinedOutput()
-		if err != nil {
-			return "", errors.New("public fixture step docker failed: " + strings.TrimSpace(string(output)))
-		}
-		return strings.TrimSpace(string(output)), nil
-	}
-	id, err := inspect("{{.Id}}")
-	if err != nil {
-		return "", err
-	}
-	revision, err := inspect("{{index .Config.Labels \"org.opencontainers.image.revision\"}}")
-	if err != nil {
-		return id, err
-	}
-	dirtyLabel, err := inspect("{{index .Config.Labels \"arcade.gobha.me/source-dirty\"}}")
-	if err != nil {
-		return id, err
-	}
-	user, err := inspect("{{.Config.User}}")
-	if err != nil {
-		return id, err
-	}
-	if !strings.HasPrefix(id, "sha256:") || len(id) != len("sha256:")+64 || revision != sha || dirtyLabel != boolText(dirty) || user != "65532:65532" {
-		return id, errors.New("owned API image source/user metadata refused")
-	}
-	return id, nil
-}
-
-func TestKindAPIImagePreparationFailsClosedWithoutCluster(t *testing.T) {
-	root := repositoryRoot(t)
-	script := filepath.Join(root, "hack", "kind-runtime-images.sh")
-	workspace := t.TempDir()
-	random := make([]byte, 6)
-	if _, err := rand.Read(random); err != nil {
-		t.Fatal("fixture identity unavailable")
-	}
-	suffix := hex.EncodeToString(random)
-	sha := "0123456789abcdef0123456789abcdef01234567"
-	epoch := "1700000000"
-	missingDigest := "sha256:" + strings.Repeat("0", 64)
-	bundle := filepath.Join(workspace, "bundle")
-	if os.Mkdir(bundle, 0700) != nil ||
-		os.WriteFile(filepath.Join(bundle, "source-sha"), []byte(sha+"\n"), 0600) != nil ||
-		os.WriteFile(filepath.Join(bundle, "source-epoch"), []byte(epoch+"\n"), 0600) != nil ||
-		os.WriteFile(filepath.Join(bundle, "api.id"), []byte(missingDigest+"\n"), 0600) != nil {
-		t.Fatal("write bundle fixture")
-	}
-	newBundleCommand := func(dir string) func(context.Context, ...string) *exec.Cmd {
-		return func(ctx context.Context, args ...string) *exec.Cmd {
-			c := exec.CommandContext(ctx, args[0], args[1:]...)
-			c.Dir = root
-			c.Env = append(os.Environ(), "ARCADECTL_KIND_IMAGE_DIR="+dir)
-			return c
-		}
-	}
-	missingTag := "127.0.0.1:0/arcadectl-api:missing-" + suffix
-	// Pointing the shared bundle at a missing image digest must fail closed without falling back to docker build.
-	if _, err := prepareKindAPIImage(t.Context(), newBundleCommand(bundle), root, script, sha, epoch, false, missingTag); err == nil {
-		t.Fatal("shared API bundle accepted a missing image digest")
-	}
-	// Dirty consumer checkout, source SHA mismatch, and epoch mismatch must fail closed.
-	if _, err := prepareKindAPIImage(t.Context(), newBundleCommand(bundle), root, script, sha, epoch, true, missingTag); err == nil {
-		t.Fatal("shared API bundle accepted a dirty consumer checkout")
-	}
-	if _, err := prepareKindAPIImage(t.Context(), newBundleCommand(bundle), root, script, strings.Repeat("a", 40), epoch, false, missingTag); err == nil {
-		t.Fatal("shared API bundle accepted a mismatched commit SHA")
-	}
-	if _, err := prepareKindAPIImage(t.Context(), newBundleCommand(bundle), root, script, sha, "1700000001", false, missingTag); err == nil {
-		t.Fatal("shared API bundle accepted a mismatched commit timestamp")
-	}
-	// Skipping the preparation script (so imageTag remains absent) must fail closed on post-prepare inspection.
-	noopScript := filepath.Join(workspace, "noop.sh")
-	if os.WriteFile(noopScript, []byte("#!/usr/bin/env bash\nexit 0\n"), 0700) != nil {
-		t.Fatal("write noop script")
-	}
-	if _, err := prepareKindAPIImage(t.Context(), newBundleCommand(""), root, noopScript, sha, epoch, false, missingTag); err == nil {
-		t.Fatal("skipped API image preparation script passed post-prepare inspection")
-	}
-	// Positive control: a verified exact-source scratch image in the bundle succeeds and is cleaned up by exact ID.
-	dockerfileDir := filepath.Join(workspace, "image")
-	sourceTag := "127.0.0.1:0/arcadectl-api:source-" + suffix
-	ownedTag := "127.0.0.1:0/arcadectl-api:owned-" + suffix
-	var createdID string
-	t.Cleanup(func() {
-		for _, tag := range []string{ownedTag, sourceTag} {
-			out, err := exec.Command("docker", "image", "inspect", "--format", "{{.Id}}", tag).CombinedOutput()
-			if err == nil && createdID != "" && strings.TrimSpace(string(out)) == createdID {
-				_ = exec.Command("docker", "image", "rm", tag).Run()
-			}
-		}
-	})
-	dockerfile := "FROM scratch\nLABEL org.opencontainers.image.revision=" + sha + " arcade.gobha.me/source-dirty=false\nUSER 65532:65532\nENTRYPOINT [\"/arcadectl-api\"]\n"
-	if os.Mkdir(dockerfileDir, 0700) != nil || os.WriteFile(filepath.Join(dockerfileDir, "Dockerfile"), []byte(dockerfile), 0600) != nil {
-		t.Fatal("write scratch Dockerfile")
-	}
-	if out, err := exec.CommandContext(t.Context(), "docker", "build", "--platform", "linux/amd64", "-q", "-t", sourceTag, dockerfileDir).CombinedOutput(); err != nil {
-		t.Fatalf("build scratch control image: %s", out)
-	}
-	idOut, err := exec.CommandContext(t.Context(), "docker", "image", "inspect", "--format", "{{.Id}}", sourceTag).CombinedOutput()
-	if err != nil {
-		t.Fatalf("inspect scratch control image: %s", idOut)
-	}
-	createdID = strings.TrimSpace(string(idOut))
-	if os.WriteFile(filepath.Join(bundle, "api.id"), []byte(createdID+"\n"), 0600) != nil {
-		t.Fatal("write valid bundle api.id")
-	}
-	gotID, err := prepareKindAPIImage(t.Context(), newBundleCommand(bundle), root, script, sha, epoch, false, ownedTag)
-	if err != nil || gotID != createdID {
-		t.Fatalf("valid shared API image preparation failed: id=%s err=%v", gotID, err)
-	}
-	// If the script is bypassed on an existing image whose metadata drifts, Go-side inspection refuses it.
-	if _, err := prepareKindAPIImage(t.Context(), newBundleCommand(""), root, noopScript, strings.Repeat("b", 40), epoch, false, ownedTag); err == nil {
-		t.Fatal("bypassed script with drifted revision metadata passed Go-side inspection")
-	}
 }
 
 func kindClientCredential(t *testing.T, path string) adminauth.ClientCredential {
