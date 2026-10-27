@@ -56,12 +56,15 @@ Protect any ingress, tunneling, or log-collection infrastructure you add.
 [`config/networkpolicy/arcadectl-api-ingress.yaml`](../config/networkpolicy/arcadectl-api-ingress.yaml)
 is an operator-applied **cluster change requiring Infra Lead review**. It selects
 API pods by `app.kubernetes.io/name=arcadectl-api` in `arcadectl-system` and denies
-all policy-controlled ingress, including direct Pod-IP TCP 8443 and traffic via
-the ClusterIP Service's TCP 443 -> 8443 mapping. It leaves egress unchanged.
+all policy-controlled ingress on every API pod port, including direct Pod-IP TCP
+8443 and TCP 8081, and traffic via the ClusterIP Service's TCP 443 -> 8443 mapping.
+The product invariants are `ingress: []` (deny-all ingress) and `policyTypes`
+exactly `[Ingress]` (egress unchanged). Adding `Egress` without egress rules would
+deny the API's kube-apiserver and DNS egress and take the API down.
 No in-cluster admin API client is installed: controllers reconcile Kubernetes
 resources without calling this HTTP API.
 
-The installer authenticates over the kube-apiserver `pods/portforward`
+The installer reaches TCP 8443 only through the kube-apiserver `pods/portforward`
 subresource (`internal/installengine/forward.go`), both for target authentication
 and activation epochs. The direct dial in `activation.go` has no production
 caller. The API Kind fixture also uses port-forward. The kube-apiserver sends
@@ -72,7 +75,8 @@ connects to the requested port on localhost inside that namespace. Port-forward
 still requires Kubernetes authorization and normal API TLS/authentication;
 restrict who can create `pods/portforward` requests.
 
-Only kubelet readiness (`/readyz`) and liveness (`/livez`) probes need TCP 8081.
+Only kubelet readiness (`/readyz`) and liveness (`/livez`) probes need TCP 8081;
+these probes originate from the node.
 [Standard NetworkPolicy](https://kubernetes.io/docs/concepts/services-networking/network-policies/)
 exempts traffic from the pod's own node, so the manifest uses `ingress: []`
 without opening the health port to other pods. Kubelet/host-network probe
@@ -86,14 +90,49 @@ are additive: another policy selecting these API pods can allow ingress to
 8443. Node/host-network traffic also has CNI-specific exceptions; this policy
 does not establish a host isolation boundary or replace API authentication.
 
-After Infra verifies CNI enforcement, probe behavior, port-forward support,
-other selecting policies, and any real cluster-side clients, the operator can
-apply the reviewed manifest from the repository root in the intended context:
+**Infra Lead applies; not applied by this PR.** Schedule the apply and verification
+in Infra's night window, recording times in ET first (EDT), with UTC in parentheses.
+All commands below are operator instructions for the intended, reviewed cluster
+context.
+
+Gate before apply (all conditions must hold):
+
+1. Canal/Calico policy enforcement is running.
+2. `kubectl -n arcadectl-system get pods -l app.kubernetes.io/name=arcadectl-api`
+   returns at least one pod, and every returned pod is an API pod.
+3. `kubectl -n arcadectl-system get networkpolicy` shows no other policy selecting
+   these API pods; inspect the selectors, including any selecting all pods.
+4. Establish the pre-apply baseline: API pods are Ready, and an authorized
+   port-forward request to `/v1/auth/self` with a valid credential returns HTTP
+   200, with CA and hostname verification.
+
+Once all gates hold, Infra Lead applies the reviewed manifest from the repository
+root in the intended context:
 
 ```sh
 kubectl --context YOUR_REVIEWED_CONTEXT apply \
   -f config/networkpolicy/arcadectl-api-ingress.yaml
 ```
+
+Verify after apply:
+
+1. API pods stay Ready through at least two periods of both the readiness and
+   liveness probes. This proves the Calico host-to-pod probe path still works.
+   Roll back immediately if readiness drops.
+2. The authorized port-forward request to `/v1/auth/self` with a valid credential
+   still returns HTTP 200, with CA and hostname verification.
+3. From a throwaway pod in another namespace, connections time out to
+   `arcadectl-api.arcadectl-system.svc:443` and to each API pod IP on TCP 8443 and
+   TCP 8081. Clean up the throwaway pod after verification.
+
+Rollback (Infra Lead, immediately if readiness drops):
+
+```sh
+kubectl -n arcadectl-system delete networkpolicy arcadectl-api-ingress
+```
+
+This removes only the policy; it does not remove any PVC or data. Recheck the
+Ready and authenticated port-forward baseline after rollback.
 
 For a non-default installation namespace, review and change `metadata.namespace`
 before applying. Direct Service/Pod-IP access from an administrator's configured
