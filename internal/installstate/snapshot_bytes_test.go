@@ -5,6 +5,7 @@ package installstate
 
 import (
 	"bytes"
+	"fmt"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -88,14 +89,51 @@ func TestSnapshotSameJournalBytesDoesNotAllocate(t *testing.T) {
 	s := &Snapshot{body: bytes.Repeat([]byte("j"), 64*1024)}
 	other := &Snapshot{body: bytes.Clone(s.body)}
 	got := testing.AllocsPerRun(100, func() { snapshotBytesComparisonResult = s.SameJournalBytes(other) })
+	// Assertion edit (#99, A2): preserve the candidate result before the
+	// defensive-copy control overwrites the shared sink with its own result.
+	candidateResult := snapshotBytesComparisonResult
 	old := testing.AllocsPerRun(100, func() { snapshotBytesComparisonResult = bytes.Equal(s.Bytes(), other.Bytes()) })
-	if got != 0 || old <= got || !snapshotBytesComparisonResult {
-		t.Fatalf("byte comparison allocations new=%g defensive-copy control=%g", got, old)
+	if err := checkSnapshotByteComparison(got, old, candidateResult); err != nil {
+		t.Fatalf("byte comparison: %v", err)
 	}
 	input := bytes.Clone(s.body)
 	got = testing.AllocsPerRun(100, func() { snapshotBytesComparisonResult = s.MatchesJournalBytes(input) })
+	// Assertion edit (#99, A2): the caller-owned-byte candidate needs the same
+	// protection against a successful control masking a false candidate result.
+	candidateResult = snapshotBytesComparisonResult
 	old = testing.AllocsPerRun(100, func() { snapshotBytesComparisonResult = bytes.Equal(s.Bytes(), input) })
-	if got != 0 || old <= got || !snapshotBytesComparisonResult {
-		t.Fatalf("owned-byte comparison allocations new=%g defensive-copy control=%g", got, old)
+	if err := checkSnapshotByteComparison(got, old, candidateResult); err != nil {
+		t.Fatalf("owned-byte comparison: %v", err)
 	}
+
+	different := &Snapshot{body: bytes.Clone(s.body)}
+	different.body[0] ^= 1
+	for _, tc := range []struct {
+		name    string
+		compare func() bool
+	}{
+		{"same-journal-bytes", func() bool { return s.SameJournalBytes(different) }},
+		{"matches-journal-bytes", func() bool { return s.MatchesJournalBytes(different.body) }},
+	} {
+		t.Run("rejects-false-"+tc.name, func(t *testing.T) {
+			// Real unequal inputs yield the false, nonallocating result that
+			// the old assertion would lose when the equal-byte control runs.
+			got := testing.AllocsPerRun(100, func() { snapshotBytesComparisonResult = tc.compare() })
+			candidateResult := snapshotBytesComparisonResult
+			old := testing.AllocsPerRun(100, func() { snapshotBytesComparisonResult = bytes.Equal(s.Bytes(), other.Bytes()) })
+			if got != 0 || old <= got || !snapshotBytesComparisonResult {
+				t.Fatalf("expected nonallocating candidate and successful allocating control: new=%g control=%g result=%t", got, old, snapshotBytesComparisonResult)
+			}
+			if err := checkSnapshotByteComparison(got, old, candidateResult); err == nil {
+				t.Fatal("comparison assertion accepted a false candidate masked by a true control")
+			}
+		})
+	}
+}
+
+func checkSnapshotByteComparison(candidate, control float64, candidateResult bool) error {
+	if candidate != 0 || control <= candidate || !candidateResult {
+		return fmt.Errorf("allocations new=%g defensive-copy control=%g candidate result=%t", candidate, control, candidateResult)
+	}
+	return nil
 }
