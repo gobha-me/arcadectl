@@ -471,8 +471,14 @@ controller_build_args=(
 if [[ "$lifecycle_suite" == synthetic ]]; then
   controller_build_args+=(--build-arg LIFECYCLE_TEST=true)
 fi
-say "building $lifecycle_suite controller image"
-run_bounded 360 docker build "${controller_build_args[@]}" --tag "$controller_tag" "$repository_root"
+say "preparing $lifecycle_suite controller image"
+if [[ "$lifecycle_suite" == synthetic ]]; then
+  # This controller has lifecycletest code; production artifacts cannot replace it.
+  run_bounded 360 docker build "${controller_build_args[@]}" --tag "$controller_tag" "$repository_root"
+else
+  run_bounded 360 bash "$repository_root/hack/kind-runtime-images.sh" prepare controller \
+    "$repository_root" "$candidate_sha" "$source_date_epoch" "$source_dirty" "$controller_tag"
+fi
 
 if [[ "$uses_factorio" == true ]]; then
   say "building two immutable Factorio lifecycle variants"
