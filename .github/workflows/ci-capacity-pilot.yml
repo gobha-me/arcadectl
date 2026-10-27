@@ -1,0 +1,88 @@
+name: CI capacity pilot
+
+on:
+  pull_request:
+    # One experimental bracket per PR. Ordinary pushes must not silently run
+    # additional samples or turn an inconclusive trial into a retry campaign.
+    types: [opened]
+    paths:
+      - .github/workflows/ci-capacity-pilot.yml
+      - internal/installengine/*cpu*test.go
+      - internal/installengine/target_auth_kind_test.go
+      - internal/installengine/baseline_gc_node_kind_test.go
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-capacity-pilot-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  controls:
+    name: Owned Kind CPU pilot controls
+    if: github.run_attempt == 1 && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'perf/issue-89-owned-kind-cpu-pilot'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 1GiB
+      ARCADECTL_CPU_PILOT_SOURCE: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Check out exact experimental source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Verify exact experimental source
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$ARCADECTL_CPU_PILOT_SOURCE"
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Prove ownership, quota and cleanup controls without Docker
+        shell: bash
+        run: |
+          set -euo pipefail
+          pilot_log=$(mktemp "$RUNNER_TEMP/arcadectl-cpu-controls.XXXXXX")
+          trap 'rm -f "$pilot_log"' EXIT
+          go test -race -tags=kindinstall -p 1 -timeout=5m -v ./internal/installengine -run '^(TestKindNodeCPUPilotOwnershipAndQuota|TestKindNodeCPUPilotCleanupAndBracket)$' -count=1 | tee "$pilot_log"
+          for test_root in TestKindNodeCPUPilotOwnershipAndQuota TestKindNodeCPUPilotCleanupAndBracket; do
+            test "$(grep -Fxc "=== RUN   $test_root" "$pilot_log")" = 1
+            test "$(grep -Ec "^--- PASS: $test_root \\(" "$pilot_log")" = 1
+          done
+
+  capacity:
+    name: Owned Kind CPU pilot 137 warm
+    needs: [controls]
+    if: github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 1GiB
+      ARCADECTL_KIND_CPU_PILOT: "1"
+      ARCADECTL_CPU_PILOT_SOURCE: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Check out exact experimental source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Verify exact experimental source
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$ARCADECTL_CPU_PILOT_SOURCE"
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run exactly four fresh complete admission proofs
+        shell: bash
+        run: |
+          set -euo pipefail
+          pilot_log=$(mktemp "$RUNNER_TEMP/arcadectl-cpu-native.XXXXXX")
+          trap 'rm -f "$pilot_log"' EXIT
+          go test -tags=kindinstall -p 1 -timeout=45m -v ./internal/installengine -run '^TestKindAdmissionV3OwnedNodeCPUPilot$' -count=1 | tee "$pilot_log"
+          test "$(grep -Fxc '=== RUN   TestKindAdmissionV3OwnedNodeCPUPilot' "$pilot_log")" = 1
+          test "$(grep -Fxc 'ARCADECTL_CPU_PILOT_COMPLETE samples=4 cases=55' "$pilot_log")" = 1

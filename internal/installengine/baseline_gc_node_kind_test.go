@@ -29,7 +29,12 @@ import (
 
 // Captured by the same fixture that creates and cleans this exact node. These
 // methods never adopt an external cluster, container name or image tag.
-type gcOwnedKindNode struct{ name, id, cluster string }
+type gcOwnedKindNode struct {
+	name, id, cluster string
+	pilotCommand      kindNodePilotCommand
+	pilotRestore      bool
+	pilotLimits       kindNodeCPULimits
+}
 
 type gcBoundedOutput struct {
 	bytes.Buffer

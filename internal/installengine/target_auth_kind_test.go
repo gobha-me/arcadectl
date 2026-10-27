@@ -159,6 +159,14 @@ func targetKindFixtureImagesWithOwnedNode(t *testing.T, nodeImage string, withCo
 		}
 	}
 	var nodeID, registryID string
+	ownedNode := &gcOwnedKindNode{name: node, cluster: name}
+	ownedNode.pilotCommand = func(ctx context.Context, args ...string) ([]byte, error) {
+		output := &gcBoundedOutput{remaining: 1 << 20}
+		c := command(ctx, args...)
+		c.Stdout, c.Stderr = output, nil
+		err := c.Run()
+		return output.Bytes(), err
+	}
 	type ownedImage struct{ tag, id string }
 	var images []ownedImage
 	var clusterArmed, registryArmed bool
@@ -176,48 +184,52 @@ func targetKindFixtureImagesWithOwnedNode(t *testing.T, nodeImage string, withCo
 			}
 			return strings.TrimSpace(string(output)), true
 		}
-		if clusterArmed {
-			id, ok := inspect("{{.Id}}", node)
-			label, labelOK := inspect("{{index .Config.Labels \"io.x-k8s.kind.cluster\"}}", node)
-			if ok && labelOK && id != "" && label == name && (nodeID == "" || id == nodeID) {
-				if command(cleanupCtx, "go", "tool", "kind", "delete", "cluster", "--name", name, "--kubeconfig", kubeconfig).Run() != nil {
-					t.Error("owned Kind cluster cleanup failed")
-				}
-			} else if id != "" {
-				t.Error("refusing unowned Kind cleanup")
-			}
-		}
-		if registryArmed {
-			id, ok := inspect("{{.Id}}", registry)
-			label, labelOK := inspect("{{index .Config.Labels \"arcade.gobha.me/e2e-run\"}}", registry)
-			if ok && labelOK && id != "" && label == name && (registryID == "" || id == registryID) {
-				if command(cleanupCtx, "docker", "rm", "--force", "--volumes", id).Run() != nil {
-					t.Error("owned registry cleanup failed")
-				}
-			} else if id != "" {
-				t.Error("refusing unowned registry cleanup")
-			}
-		}
-		for _, image := range images {
-			id, ok := inspect("{{.Id}}", image.tag)
-			if ok && id != "" {
-				if image.id != "" && id == image.id {
-					if command(cleanupCtx, "docker", "image", "rm", image.tag).Run() != nil {
-						t.Error("owned image tag cleanup failed")
+		finishKindPilotCleanup(cleanupCtx, ownedNode, func() {
+			t.Error("owned node CPU restoration failed")
+		}, func() {
+			if clusterArmed {
+				id, ok := inspect("{{.Id}}", node)
+				label, labelOK := inspect("{{index .Config.Labels \"io.x-k8s.kind.cluster\"}}", node)
+				if ok && labelOK && id != "" && label == name && (nodeID == "" || id == nodeID) {
+					if command(cleanupCtx, "go", "tool", "kind", "delete", "cluster", "--name", name, "--kubeconfig", kubeconfig).Run() != nil {
+						t.Error("owned Kind cluster cleanup failed")
 					}
-				} else {
-					t.Error("refusing image cleanup without exact ownership")
+				} else if id != "" {
+					t.Error("refusing unowned Kind cleanup")
 				}
 			}
-			if id, _ := inspect("{{.Id}}", image.tag); id != "" {
-				t.Error("owned image tag remains")
+			if registryArmed {
+				id, ok := inspect("{{.Id}}", registry)
+				label, labelOK := inspect("{{index .Config.Labels \"arcade.gobha.me/e2e-run\"}}", registry)
+				if ok && labelOK && id != "" && label == name && (registryID == "" || id == registryID) {
+					if command(cleanupCtx, "docker", "rm", "--force", "--volumes", id).Run() != nil {
+						t.Error("owned registry cleanup failed")
+					}
+				} else if id != "" {
+					t.Error("refusing unowned registry cleanup")
+				}
 			}
-		}
-		for _, name := range []string{node, registry} {
-			if id, _ := inspect("{{.Id}}", name); id != "" {
-				t.Error("owned container remains")
+			for _, image := range images {
+				id, ok := inspect("{{.Id}}", image.tag)
+				if ok && id != "" {
+					if image.id != "" && id == image.id {
+						if command(cleanupCtx, "docker", "image", "rm", image.tag).Run() != nil {
+							t.Error("owned image tag cleanup failed")
+						}
+					} else {
+						t.Error("refusing image cleanup without exact ownership")
+					}
+				}
+				if id, _ := inspect("{{.Id}}", image.tag); id != "" {
+					t.Error("owned image tag remains")
+				}
 			}
-		}
+			for _, name := range []string{node, registry} {
+				if id, _ := inspect("{{.Id}}", name); id != "" {
+					t.Error("owned container remains")
+				}
+			}
+		})
 	})
 	configPath := filepath.Join(workspace, "kind.yaml")
 	if os.WriteFile(configPath, []byte("kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\ncontainerdConfigPatches:\n- |-\n  [plugins.\"io.containerd.cri.v1.images\".registry]\n    config_path = \"/etc/containerd/certs.d\"\n"), 0600) != nil {
@@ -227,6 +239,7 @@ func targetKindFixtureImagesWithOwnedNode(t *testing.T, nodeImage string, withCo
 	clusterArmed = true
 	public("", "go", "tool", "kind", "create", "cluster", "--name", name, "--image", nodeImage, "--config", configPath, "--kubeconfig", kubeconfig, "--wait", "180s")
 	nodeID = public("", "docker", "inspect", "--format", "{{.Id}}", node)
+	ownedNode.id = nodeID
 	if public("", "docker", "inspect", "--format", "{{index .Config.Labels \"io.x-k8s.kind.cluster\"}}", node) != name {
 		t.Fatal("Kind ownership mismatch")
 	}
@@ -315,7 +328,7 @@ func targetKindFixtureImagesWithOwnedNode(t *testing.T, nodeImage string, withCo
 	if err != nil {
 		t.Fatal("isolated kubeconfig unavailable")
 	}
-	return ctx, configuration, installpackage.Images{API: apiImage, Controller: controllerImage}, previous, &gcOwnedKindNode{name: node, id: nodeID, cluster: name}
+	return ctx, configuration, installpackage.Images{API: apiImage, Controller: controllerImage}, previous, ownedNode
 }
 
 // Shared signed-template setup; the boolean is a test-only closed choice, not
