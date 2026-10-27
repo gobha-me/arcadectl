@@ -28,10 +28,16 @@ production code:
 | Total | 121 | 532 |
 
 The committed baseline lives directly in `.golangci.yml`: 322 exclusions match
-the exact file path, linter, and complete diagnostic text. Each rule records the
-original line:column locations; identical messages in the same file share a rule.
-Those locations are cleanup hints and do not constrain matching. Golangci-lint
-v2 uses [`linters.exclusions.rules`](https://golangci-lint.run/docs/configuration/file/#linters-configuration)
+the exact file path, linter, complete diagnostic text, and baselined source line
+text. Each rule records the original line:column locations; identical messages
+in the same file share a rule. A generated `source` regex quotes the trimmed
+source line at each recorded location and anchors it as `^\s*<quoted line>\s*$`,
+or `^\s*(?:<quoted line>|<another quoted line>)\s*$` for different source lines.
+These anchors narrow each exclusion to the baselined line text, ignoring leading
+and trailing whitespace. A new finding on a line with different text is reported.
+The recorded locations remain cleanup hints rather than line-number match
+criteria. Golangci-lint v2 uses
+[`linters.exclusions.rules`](https://golangci-lint.run/docs/configuration/file/#linters-configuration)
 for these exclusions. Tests remain included, and no linter is disabled by path.
 
 Run from the repository root with golangci-lint v2.15.0:
@@ -57,16 +63,22 @@ The ratchet targets zero exclusions:
 1. Fix findings in small follow-up changes, with relevant behavioral tests.
 2. Remove the matching rule and its location comment in the same change. If a
    rule covers several locations, remove fixed locations from the comment and
-   keep the rule until every matching finding in that file is fixed.
+   remove source alternatives no longer needed by the remaining locations. Keep
+   the rule until every matching finding in that file is fixed.
 3. Run config validation and the full lint command. Address unused-exclusion
    warnings by removing stale rules. Update the remaining baseline counts and
    rule count above and in the config comment whenever the baseline shrinks.
 4. Fix new findings instead of adding or broadening exclusions. Keep issue output
    limits disabled so new diagnostics cannot be hidden by reporting caps.
 
-Exact text rules still suppress a new occurrence of the same diagnostic in the
-same file. Review changes to baselined files for this case. To audit all remaining
-debt, bypass the baseline and reporting limits under the same shared-worker lock:
+A new line whose text is byte-identical to a baselined line in the same file
+with the same finding is still masked; changes only to surrounding whitespace
+are also ignored. Golangci-lint has no line anchor, so source anchors cannot
+distinguish these occurrences. Review changes to baselined files for this case.
+The full fix is burning the baseline down or using `issues.new-from-merge-base`.
+The latter needs a CI checkout change owned by the separate CI workstream.
+To audit all remaining debt, bypass the baseline and reporting limits under the
+same shared-worker lock:
 
 ```sh
 golangci-lint run ./... --no-config --timeout=15m --concurrency=2 \
