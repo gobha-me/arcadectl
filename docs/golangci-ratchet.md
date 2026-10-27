@@ -85,4 +85,7 @@ findings pass, and findings outside those rules fail, including outside changed
 lines. The required Go and policy gate also requires this job to succeed.
 GOMAXPROCS=2 and GOMEMLIMIT=1GiB match the other policy workers; the config's
 15-minute lint timeout and concurrency of two remain in force. Atlas permits
-this additive CI job under #106; it depends on the baseline from #98.
+this additive CI job under #106; it depends on the baseline from #98. Independent
+verification confirmed `actionlint`, `golangci-lint config verify`, a 0-issue
+full-tree scan with `--issues-exit-code=1`, fail-closed detection of an
+unsuppressed probe finding, and `TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate`.
