@@ -192,7 +192,7 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 		fullRun = fullRun || step.Run == "make test-kind-install-admission INSTALL_ADMISSION_PROFILE='${{ matrix.profile }}' INSTALL_ADMISSION_MODE='${{ matrix.mode }}'"
 	}
 	gate := workflow.Jobs["go-and-policy"]
-	if !slices.Equal(gate.Needs, []string{"installer-diagnostics", "install-engine-race", "kind-install-admission", "kind-install-admission-v3", "kind-install-binary", "kind-install-baseline", "kind-install-gc", "kind-install-precontroller", "kind-install-auth", "kind-api", "kind-recovery", "envtest", "kind-lifecycle", "go-policy-checks"}) || gate.ContinueOnError != nil {
+	if !slices.Equal(gate.Needs, []string{"installer-diagnostics", "install-engine-race", "kind-install-admission", "kind-install-admission-v3", "kind-install-binary", "kind-install-baseline", "kind-install-gc", "kind-install-precontroller", "kind-install-auth", "kind-api", "kind-recovery", "envtest", "kind-lifecycle", "go-policy-checks", "mutation-gate"}) || gate.ContinueOnError != nil {
 		t.Fatal("required gate omitted, tolerated or substituted a complete proof")
 	}
 	if len(gate.Needs) != len(workflow.Jobs)-1 {
@@ -438,7 +438,7 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 	}
 	var command string
 	for _, step := range gate.Steps {
-		if step.Env["INSTALLER_DIAGNOSTICS_RESULT"] == "${{ needs.installer-diagnostics.result }}" && step.Env["ENGINE_RACE_RESULT"] == "${{ needs.install-engine-race.result }}" && step.Env["INSTALL_ADMISSION_RESULT"] == "${{ needs.kind-install-admission.result }}" && step.Env["INSTALL_BINARY_RESULT"] == "${{ needs.kind-install-binary.result }}" && step.Env["INSTALL_BASELINE_RESULT"] == "${{ needs.kind-install-baseline.result }}" && step.Env["INSTALL_ADMISSION_V3_RESULT"] == "${{ needs.kind-install-admission-v3.result }}" && step.Env["INSTALL_PRECONTROLLER_RESULT"] == "${{ needs.kind-install-precontroller.result }}" && step.Env["INSTALL_GC_RESULT"] == "${{ needs.kind-install-gc.result }}" && step.Env["INSTALL_AUTH_RESULT"] == "${{ needs.kind-install-auth.result }}" && step.Env["API_RESULT"] == "${{ needs.kind-api.result }}" && step.Env["RECOVERY_RESULT"] == "${{ needs.kind-recovery.result }}" && step.Env["ENVTEST_RESULT"] == "${{ needs.envtest.result }}" && step.Env["LIFECYCLE_RESULT"] == "${{ needs.kind-lifecycle.result }}" && step.Env["GO_POLICY_CHECKS_RESULT"] == "${{ needs.go-policy-checks.result }}" {
+		if step.Env["INSTALLER_DIAGNOSTICS_RESULT"] == "${{ needs.installer-diagnostics.result }}" && step.Env["ENGINE_RACE_RESULT"] == "${{ needs.install-engine-race.result }}" && step.Env["INSTALL_ADMISSION_RESULT"] == "${{ needs.kind-install-admission.result }}" && step.Env["INSTALL_BINARY_RESULT"] == "${{ needs.kind-install-binary.result }}" && step.Env["INSTALL_BASELINE_RESULT"] == "${{ needs.kind-install-baseline.result }}" && step.Env["INSTALL_ADMISSION_V3_RESULT"] == "${{ needs.kind-install-admission-v3.result }}" && step.Env["INSTALL_PRECONTROLLER_RESULT"] == "${{ needs.kind-install-precontroller.result }}" && step.Env["INSTALL_GC_RESULT"] == "${{ needs.kind-install-gc.result }}" && step.Env["INSTALL_AUTH_RESULT"] == "${{ needs.kind-install-auth.result }}" && step.Env["API_RESULT"] == "${{ needs.kind-api.result }}" && step.Env["RECOVERY_RESULT"] == "${{ needs.kind-recovery.result }}" && step.Env["ENVTEST_RESULT"] == "${{ needs.envtest.result }}" && step.Env["LIFECYCLE_RESULT"] == "${{ needs.kind-lifecycle.result }}" && step.Env["GO_POLICY_CHECKS_RESULT"] == "${{ needs.go-policy-checks.result }}" && step.Env["MUTATION_GATE_RESULT"] == "${{ needs.mutation-gate.result }}" {
 			if step.If != "" || step.ContinueOnError != nil {
 				t.Fatal("required dependency assertion can be skipped or tolerate failure")
 			}
@@ -458,7 +458,7 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 					for _, v3 := range []string{"success", "failure", "cancelled", "skipped", ""} {
 						for _, precontroller := range []string{"success", "failure", "cancelled", "skipped", ""} {
 							c := exec.Command("sh", "-e", "-c", command)
-							c.Env = append(os.Environ(), "INSTALLER_DIAGNOSTICS_RESULT=success", "ENGINE_RACE_RESULT="+races, "INSTALL_ADMISSION_RESULT="+native, "INSTALL_BINARY_RESULT="+binary, "INSTALL_BASELINE_RESULT="+baseline, "INSTALL_ADMISSION_V3_RESULT="+v3, "INSTALL_PRECONTROLLER_RESULT="+precontroller, "INSTALL_GC_RESULT=success", "INSTALL_AUTH_RESULT=success", "API_RESULT=success", "RECOVERY_RESULT=success", "ENVTEST_RESULT=success", "LIFECYCLE_RESULT=success", "GO_POLICY_CHECKS_RESULT=success")
+							c.Env = append(os.Environ(), "INSTALLER_DIAGNOSTICS_RESULT=success", "ENGINE_RACE_RESULT="+races, "INSTALL_ADMISSION_RESULT="+native, "INSTALL_BINARY_RESULT="+binary, "INSTALL_BASELINE_RESULT="+baseline, "INSTALL_ADMISSION_V3_RESULT="+v3, "INSTALL_PRECONTROLLER_RESULT="+precontroller, "INSTALL_GC_RESULT=success", "INSTALL_AUTH_RESULT=success", "API_RESULT=success", "RECOVERY_RESULT=success", "ENVTEST_RESULT=success", "LIFECYCLE_RESULT=success", "GO_POLICY_CHECKS_RESULT=success", "MUTATION_GATE_RESULT=success")
 							passed := c.Run() == nil
 							if passed != (races == "success" && native == "success" && binary == "success" && baseline == "success" && v3 == "success" && precontroller == "success") {
 								t.Fatal("failed/cancelled/skipped/absent dependency became a green required gate")
@@ -473,14 +473,14 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 	// Separately exercise every GC outcome while all earlier proofs succeeded.
 	for _, result := range []string{"success", "failure", "cancelled", "skipped", ""} {
 		c := exec.Command("sh", "-e", "-c", command)
-		c.Env = append(os.Environ(), "INSTALLER_DIAGNOSTICS_RESULT=success", "ENGINE_RACE_RESULT=success", "INSTALL_ADMISSION_RESULT=success", "INSTALL_BINARY_RESULT=success", "INSTALL_BASELINE_RESULT=success", "INSTALL_ADMISSION_V3_RESULT=success", "INSTALL_PRECONTROLLER_RESULT=success", "INSTALL_GC_RESULT="+result, "INSTALL_AUTH_RESULT=success", "API_RESULT=success", "RECOVERY_RESULT=success", "ENVTEST_RESULT=success", "LIFECYCLE_RESULT=success", "GO_POLICY_CHECKS_RESULT=success")
+		c.Env = append(os.Environ(), "INSTALLER_DIAGNOSTICS_RESULT=success", "ENGINE_RACE_RESULT=success", "INSTALL_ADMISSION_RESULT=success", "INSTALL_BINARY_RESULT=success", "INSTALL_BASELINE_RESULT=success", "INSTALL_ADMISSION_V3_RESULT=success", "INSTALL_PRECONTROLLER_RESULT=success", "INSTALL_GC_RESULT="+result, "INSTALL_AUTH_RESULT=success", "API_RESULT=success", "RECOVERY_RESULT=success", "ENVTEST_RESULT=success", "LIFECYCLE_RESULT=success", "GO_POLICY_CHECKS_RESULT=success", "MUTATION_GATE_RESULT=success")
 		if passed := c.Run() == nil; passed != (result == "success") {
 			t.Fatal("failed/cancelled/skipped/absent GC proof became a green required gate")
 		}
 	}
 	// Independently exercise every added prerequisite outcome while the others
 	// succeed, preserving all original combinations without multiplying them.
-	added := []string{"INSTALL_AUTH_RESULT", "API_RESULT", "RECOVERY_RESULT", "INSTALLER_DIAGNOSTICS_RESULT", "ENVTEST_RESULT", "LIFECYCLE_RESULT", "GO_POLICY_CHECKS_RESULT"}
+	added := []string{"INSTALL_AUTH_RESULT", "API_RESULT", "RECOVERY_RESULT", "INSTALLER_DIAGNOSTICS_RESULT", "ENVTEST_RESULT", "LIFECYCLE_RESULT", "GO_POLICY_CHECKS_RESULT", "MUTATION_GATE_RESULT"}
 	for _, variable := range added {
 		for _, result := range []string{"success", "failure", "cancelled", "skipped", ""} {
 			c := exec.Command("sh", "-e", "-c", command)
@@ -496,5 +496,40 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 				t.Fatalf("failed/cancelled/skipped/absent %s proof became a green required gate", variable)
 			}
 		}
+	}
+	mutationGate, present := workflow.Jobs["mutation-gate"]
+	if !present || mutationGate.Name != "Gremlins mutation gate" || mutationGate.RunsOn != "ubuntu-24.04" || mutationGate.TimeoutMinutes != 20 || mutationGate.If != "" || mutationGate.ContinueOnError != nil || len(mutationGate.Needs) != 0 || len(mutationGate.Env) != 2 || mutationGate.Env["GOMAXPROCS"] != "2" || mutationGate.Env["GOMEMLIMIT"] != "1GiB" || len(mutationGate.Steps) != 4 || !slices.Contains(gate.Needs, "mutation-gate") {
+		t.Fatal("mutation-gate job missing or altered its bounded CI contract")
+	}
+	for _, step := range mutationGate.Steps {
+		if step.If != "" || step.ContinueOnError != nil || len(step.Env) != 0 {
+			t.Fatal("mutation-gate step can skip, tolerate failure or override bounded environment")
+		}
+	}
+	if mutationGate.Steps[0].Uses != "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" || len(mutationGate.Steps[0].With) != 1 || mutationGate.Steps[1].Uses != "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e" || mutationGate.Steps[1].With["go-version-file"] != "go.mod" || mutationGate.Steps[1].With["cache"] != true || len(mutationGate.Steps[1].With) != 2 || mutationGate.Steps[2].Run != "go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0" || mutationGate.Steps[3].Run != "make mutation-gate" {
+		t.Fatal("mutation-gate changed pinned checkout, Go setup, Gremlins version or Make invocation")
+	}
+	for _, wantMakefileFragment := range []string{
+		"GREMLINS_EFFICACY := 90\n",
+		"GREMLINS_MCOVER := 70\n",
+		"GREMLINS_TIMEOUT_COEFFICIENT := 10\n",
+		"for package in ./internal/adminauth ./internal/receiptid ./internal/catalog; do",
+		"--threshold-efficacy $(GREMLINS_EFFICACY)",
+		"--threshold-mcover $(GREMLINS_MCOVER)",
+		"--timeout-coefficient $(GREMLINS_TIMEOUT_COEFFICIENT)",
+		"--workers 2 --output \"$$report\" || failed=1;",
+		"python3 hack/check-mutation-report.py \"$$report\" \\\n\t\t\t$(GREMLINS_EFFICACY) $(GREMLINS_MCOVER) || failed=1;",
+	} {
+		if strings.Count(string(makefile), wantMakefileFragment) != 1 {
+			t.Fatalf("Makefile mutation-gate contract missing or duplicated fragment %q", wantMakefileFragment)
+		}
+	}
+	absentMutationGate := exec.Command("sh", "-e", "-c", command)
+	absentMutationGate.Env = slices.DeleteFunc(slices.Clone(os.Environ()), func(entry string) bool {
+		return strings.HasPrefix(entry, "MUTATION_GATE_RESULT=")
+	})
+	absentMutationGate.Env = append(absentMutationGate.Env, "INSTALLER_DIAGNOSTICS_RESULT=success", "ENGINE_RACE_RESULT=success", "INSTALL_ADMISSION_RESULT=success", "INSTALL_BINARY_RESULT=success", "INSTALL_BASELINE_RESULT=success", "INSTALL_ADMISSION_V3_RESULT=success", "INSTALL_PRECONTROLLER_RESULT=success", "INSTALL_GC_RESULT=success", "INSTALL_AUTH_RESULT=success", "API_RESULT=success", "RECOVERY_RESULT=success", "ENVTEST_RESULT=success", "LIFECYCLE_RESULT=success", "GO_POLICY_CHECKS_RESULT=success")
+	if absentMutationGate.Run() == nil {
+		t.Fatal("absent MUTATION_GATE_RESULT became a green required gate")
 	}
 }
