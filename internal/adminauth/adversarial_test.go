@@ -15,6 +15,117 @@ import (
 	"time"
 )
 
+func TestFastTimedOutMutantBoundariesAndVerifierRun(t *testing.T) {
+	now := time.Date(2026, 10, 2, 1, 0, 0, 0, time.UTC)
+	credential, err := GenerateCredential(now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	private := ClientCredential{
+		Version:              ClientCredentialVersion,
+		CredentialID:         credential.Bundle.CredentialID,
+		Serial:               credential.Bundle.Serial,
+		ExpiresAt:            credential.Bundle.ExpiresAt,
+		Token:                credential.Token,
+		PriorSecretUID:       "uid-fast",
+		PriorResourceVersion: "7",
+	}
+	rawPrivate, err := MarshalClientCredential(private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawBundle, err := MarshalVerifierBundle(credential.Bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("credential_210_19_conditionals_negation", func(t *testing.T) {
+		if _, err := ParseClientCredential(nil); !errors.Is(err, errInvalidCredential) {
+			t.Fatalf("ParseClientCredential(nil) = %v, want %v", err, errInvalidCredential)
+		}
+		if _, err := ParseClientCredential([]byte{}); !errors.Is(err, errInvalidCredential) {
+			t.Fatalf("ParseClientCredential(empty) = %v, want %v", err, errInvalidCredential)
+		}
+		got, err := ParseClientCredential(rawPrivate)
+		if err != nil || got != private {
+			t.Fatalf("ParseClientCredential(valid) = (%#v, %v), want (%#v, nil)", got, err, private)
+		}
+	})
+
+	t.Run("credential_210_41_conditionals_boundary", func(t *testing.T) {
+		exactPrivate := append(bytes.Repeat([]byte(" "), MaxClientCredentialBytes-len(rawPrivate)), rawPrivate...)
+		if len(exactPrivate) != MaxClientCredentialBytes {
+			t.Fatalf("exactPrivate len = %d, want %d", len(exactPrivate), MaxClientCredentialBytes)
+		}
+		got, err := ParseClientCredential(exactPrivate)
+		if err != nil || got != private {
+			t.Fatalf("ParseClientCredential(exact MaxClientCredentialBytes) = (%#v, %v), want (%#v, nil)", got, err, private)
+		}
+		overPrivate := append([]byte(" "), exactPrivate...)
+		if _, err := ParseClientCredential(overPrivate); !errors.Is(err, errInvalidCredential) {
+			t.Fatalf("ParseClientCredential(MaxClientCredentialBytes+1) = %v, want %v", err, errInvalidCredential)
+		}
+	})
+
+	t.Run("verifier_84_14_conditionals_negation", func(t *testing.T) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				t.Fatalf("Run panicked instead of returning error: %v", recovered)
+			}
+		}()
+		path := filepath.Join(t.TempDir(), "auth.json")
+		if err := os.WriteFile(path, rawBundle, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		verifier := NewFileVerifier(path, func() time.Time { return now })
+		canceledCtx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := verifier.Run(canceledCtx, time.Millisecond); err != nil {
+			t.Fatalf("Run(canceledCtx, 1ms) = %v, want nil", err)
+		}
+		if !verifier.Ready() {
+			t.Fatal("verifier not ready after initial load in Run(canceledCtx, 1ms)")
+		}
+		if principal, err := verifier.Authenticate(context.Background(), credential.Token); err != nil || principal.CredentialID != credential.Bundle.CredentialID {
+			t.Fatalf("Authenticate after Run(canceledCtx, 1ms) = (%#v, %v)", principal, err)
+		}
+		for _, nonPositive := range []time.Duration{0, -time.Nanosecond, -time.Second} {
+			if err := verifier.Run(canceledCtx, nonPositive); err == nil {
+				t.Fatalf("Run(%v) = nil, want non-positive interval error", nonPositive)
+			}
+		}
+	})
+
+	t.Run("verifier_129_40_conditionals_boundary", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "auth.json")
+		exactBundle := append(bytes.Repeat([]byte(" "), MaxVerifierBundleBytes-len(rawBundle)), rawBundle...)
+		if len(exactBundle) != MaxVerifierBundleBytes {
+			t.Fatalf("exactBundle len = %d, want %d", len(exactBundle), MaxVerifierBundleBytes)
+		}
+		if err := os.WriteFile(path, exactBundle, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		readBytes, err := readBoundedFile(path, MaxVerifierBundleBytes)
+		if err != nil || !bytes.Equal(readBytes, exactBundle) {
+			t.Fatalf("readBoundedFile(exact MaxVerifierBundleBytes) = (len=%d, %v), want (len=%d, nil)", len(readBytes), err, len(exactBundle))
+		}
+		verifier := NewFileVerifier(path, func() time.Time { return now })
+		if err := verifier.Reload(); err != nil || !verifier.Ready() {
+			t.Fatalf("Reload(exact MaxVerifierBundleBytes) = %v, ready=%v, want nil/true", err, verifier.Ready())
+		}
+		overBundle := append([]byte(" "), exactBundle...)
+		if err := os.WriteFile(path, overBundle, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readBoundedFile(path, MaxVerifierBundleBytes); !errors.Is(err, ErrInvalidVerifier) {
+			t.Fatalf("readBoundedFile(MaxVerifierBundleBytes+1) = %v, want %v", err, ErrInvalidVerifier)
+		}
+		if err := verifier.Reload(); !errors.Is(err, ErrInvalidVerifier) || verifier.Ready() {
+			t.Fatalf("Reload(MaxVerifierBundleBytes+1) = %v, ready=%v, want ErrInvalidVerifier/false", err, verifier.Ready())
+		}
+	})
+}
+
 func TestFileVerifierAdversarialReloadSequences(t *testing.T) {
 	now := time.Date(2026, 10, 2, 3, 0, 0, 0, time.UTC)
 	first, err := GenerateCredential(now, time.Hour)

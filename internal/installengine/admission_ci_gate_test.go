@@ -518,7 +518,7 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 		"--threshold-mcover $(GREMLINS_MCOVER)",
 		"--timeout-coefficient $(GREMLINS_TIMEOUT_COEFFICIENT)",
 		"--workers 2 --output \"$$report\" || failed=1;",
-		"python3 hack/check-mutation-report.py \"$$report\" \\\n\t\t\t$(GREMLINS_EFFICACY) $(GREMLINS_MCOVER) || failed=1;",
+		"python3 hack/check-mutation-report.py \"$$report\" \\\n\t\t\t$(GREMLINS_EFFICACY) $(GREMLINS_MCOVER) \"$$package\" || failed=1;",
 	} {
 		if strings.Count(string(makefile), wantMakefileFragment) != 1 {
 			t.Fatalf("Makefile mutation-gate contract missing or duplicated fragment %q", wantMakefileFragment)
