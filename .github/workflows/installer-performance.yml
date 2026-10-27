@@ -30,10 +30,22 @@ jobs:
         with:
           ref: ${{ github.sha }}
       - name: Set up Go
+        id: go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+      - &restore-go-cache
+        name: Restore Go module and build cache (read only)
+        id: go-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum') }}-
       - name: Verify fresh request ownership and complete catalog refusals
         shell: bash
         run: |
@@ -74,10 +86,12 @@ jobs:
         with:
           ref: ${{ github.sha }}
       - name: Set up Go
+        id: go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+      - *restore-go-cache
       - name: Compare complete configuration and descriptor membership costs
         run: go test -p 1 -timeout=3m ./internal/installengine -run '^$' -bench '^(BenchmarkBaselineDeniedDescriptorMembership|BenchmarkAdmissionConfiguration.*)$' -benchmem -benchtime=250ms -count=3
       - name: Vet the changed engine and its test harness
@@ -96,10 +110,12 @@ jobs:
         with:
           ref: ${{ github.sha }}
       - name: Set up Go
+        id: go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+      - *restore-go-cache
       - name: Verify complete passes, original closures and local durability with race detection
         run: go test -race -tags=kindinstall -p 1 -timeout=15m -v ./internal/installengine -run '^(TestFixturePhase(ReadBarrier.*|NamedScan.*|ReadPass.*|PublicOriginalDrift.*|FinalActorRead.*|OriginalWarmRenewal.*|WarmRenewalCompletedFloor.*)|TestFixtureV3.*)$' -count=1
 
@@ -120,11 +136,71 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ matrix.revision == 'before' && '5e3347840153a2d9ad2fccf9571cce36bbe0b49c' || github.sha }}
+      - name: Resolve exact pinned Kind node images
+        id: kind-images
+        env:
+          CI_KIND_PROFILE: '137'
+        run: |
+          python3 - <<'PYCODE'
+          import hashlib
+          import os
+          import re
+          from pathlib import Path
+
+          try:
+              source = Path("internal/installengine/target_auth_kind_test.go").read_text()
+              images = {}
+              for profile in ("135", "137"):
+                  image, = re.findall(r'const targetKind' + profile + r' = "([^"\n]+)"', source)
+                  if not re.fullmatch(r"kindest/node:v[0-9.]+@sha256:[0-9a-f]{64}", image):
+                      raise ValueError("node image is not statically pinned")
+                  images[profile] = image
+              # These independent harnesses must agree before sharing a cache.
+              api = Path("internal/install/api_kind_test.go").read_text()
+              lifecycle = Path("hack/test-kind-lifecycle.sh").read_text()
+              if (f'const apiKindNode = "{images["137"]}"' not in api
+                      or f"readonly kind_node_image='{images['137']}'" not in lifecycle):
+                  raise ValueError("independent node image pins differ")
+              profile = os.environ["CI_KIND_PROFILE"]
+              selected = [images[p] for p in (("135", "137") if profile == "both" else (profile,))]
+              refs = " ".join(selected)
+              digest = hashlib.sha256(refs.encode()).hexdigest()
+              with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+                  output.write(f"valid=true\nimages={refs}\nkey={digest}\n")
+          except Exception:
+              print("::notice::Cannot statically determine exact node pins; harness will pull normally")
+          PYCODE
+      - name: Restore pinned Kind node image tarball (read only)
+        id: kind-cache
+        if: steps.kind-images.outputs.valid == 'true'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/kind-node-images.tar
+          key: kind-node-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.kind-images.outputs.key }}
+      - name: Load pinned Kind node images
+        if: steps.kind-images.outputs.valid == 'true'
+        env:
+          KIND_IMAGES: ${{ steps.kind-images.outputs.images }}
+          KIND_TARBALL: ${{ runner.temp }}/kind-node-images.tar
+        run: |
+          if [[ -f "$KIND_TARBALL" ]]; then
+            docker load --input "$KIND_TARBALL" || echo '::warning::Node tarball load failed; falling back to pinned pulls'
+          fi
+          read -r -a images <<< "$KIND_IMAGES"
+          for image in "${images[@]}"; do
+            # Legacy Docker archives can lose RepoDigests. A digest pull then
+            # restores registry metadata, reusing the layers just loaded.
+            if ! docker image inspect "$image" >/dev/null 2>&1; then
+              docker pull "$image"
+            fi
+          done
       - name: Set up Go
+        id: go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+      - *restore-go-cache
       - name: Run the complete unmodified native matrix on an owned disposable cluster
         run: make test-kind-install-admission-v3 INSTALL_ADMISSION_PROFILE=137 INSTALL_ADMISSION_MODE=cold
 

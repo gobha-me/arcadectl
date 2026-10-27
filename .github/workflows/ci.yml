@@ -4,17 +4,161 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # 9:00 PM EDT / 8:00 PM EST (01:00 UTC), full main proof set.
+    - cron: '0 1 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  classify:
+    name: Classify CI scope
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      scope: ${{ steps.scope.outputs.scope }}
+    steps:
+      - name: Check scheduled main freshness (fail safe to full)
+        id: nightly
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_REPOSITORY: ${{ github.repository }}
+          CI_SHA: ${{ github.sha }}
+          CI_REF: ${{ github.ref }}
+        run: |
+          python3 - <<'PYCODE'
+          import datetime
+          import json
+          import os
+          import re
+          import subprocess
+          import urllib.parse
+
+          def lookup(endpoint):
+              raw = subprocess.check_output(
+                  ["gh", "api", "--method", "GET", endpoint],
+                  stderr=subprocess.DEVNULL, timeout=30)
+              return json.loads(raw)
+
+          skip = False
+          try:
+              sha = os.environ["CI_SHA"]
+              if os.environ["CI_REF"] != "refs/heads/main" or not re.fullmatch(r"[0-9a-f]{40}", sha):
+                  raise ValueError("unexpected scheduled ref")
+              repo = os.environ["CI_REPOSITORY"]
+              head = lookup(f"repos/{repo}/commits/main")
+              if head["sha"] != sha:
+                  raise ValueError("main moved since the scheduled event")
+              now = datetime.datetime.now(datetime.timezone.utc)
+              cutoff = now - datetime.timedelta(hours=24)
+              committed = datetime.datetime.strptime(
+                  head["commit"]["committer"]["date"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+              if committed < cutoff:
+                  # Main is squash-only: its committer dates mark landed commits.
+                  since = urllib.parse.quote(cutoff.strftime("%Y-%m-%dT%H:%M:%SZ"), safe="")
+                  recent = lookup(f"repos/{repo}/commits?sha={sha}&since={since}&per_page=1")
+                  if not isinstance(recent, list):
+                      raise ValueError("unexpected commits response")
+                  skip = recent == []
+          except Exception:
+              print("::notice::Nightly freshness lookup uncertain; running full CI")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("skip=" + str(skip).lower() + "\n")
+          if skip:
+              print("::notice::No commit landed on main in the last 24 h; skipping the full nightly proof set")
+          else:
+              print("Nightly freshness guard: running the full proof set")
+          PYCODE
+      - name: Check out exact source
+        if: steps.nightly.outputs.skip != 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Classify changed files (fail safe to full)
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          NIGHTLY_SKIP: ${{ steps.nightly.outputs.skip }}
+        run: |
+          python3 - <<'PYCODE'
+          import fnmatch
+          import json
+          import os
+          import re
+          import subprocess
+
+          def git(*args):
+              return subprocess.check_output(["git", *args], stderr=subprocess.DEVNULL)
+
+          def classify():
+              event_name = os.environ["EVENT_NAME"]
+              if event_name == "workflow_dispatch":
+                  return "full"
+              if event_name == "schedule":
+                  return "idle" if os.environ.get("NIGHTLY_SKIP") == "true" else "full"
+              with open(os.environ["GITHUB_EVENT_PATH"]) as event_file:
+                  event = json.load(event_file)
+              if event_name == "pull_request":
+                  base = event["pull_request"]["base"]["sha"]
+                  head = event["pull_request"]["head"]["sha"]
+              elif event_name == "push" and event.get("ref") == "refs/heads/main":
+                  base, head = event["before"], event["after"]
+                  if event.get("forced") or event.get("created") or event.get("deleted"):
+                      return "full"
+              else:
+                  return "full"
+              for sha in (base, head):
+                  if not re.fullmatch(r"[0-9a-f]{40}", sha) or sha == "0" * 40:
+                      return "full"
+                  git("cat-file", "-e", sha + "^{commit}")
+              if git("rev-parse", "HEAD").decode().strip() != head:
+                  return "full"
+              if event_name == "pull_request":
+                  # Compare the entire PR since its merge base, including renames'
+                  # deleted paths; a renamed source must never disappear as docs.
+                  base = git("merge-base", base, head).decode().strip()
+              else:
+                  git("merge-base", "--is-ancestor", base, head)
+              raw = git("diff", "--no-ext-diff", "--no-renames", "--name-only", "-z", base, head, "--")
+              paths = raw.decode("utf-8", errors="strict").split("\0")[:-1]
+              if not paths or len(paths) > 300:
+                  return "full"
+
+              def allowed(path):
+                  # These directories always require proofs, even for .md files.
+                  if path.startswith((".github/", "hack/", "config/")):
+                      return False
+                  return (path.endswith(".md") or path.startswith("docs/")
+                          or path in ("LICENSE", "LICENSE.txt", "NOTICE", "NOTICE.txt",
+                                      ".golangci.yml", ".golangci.yaml", ".editorconfig")
+                          or ("/" not in path and fnmatch.fnmatchcase(path, ".markdownlint*")))
+
+              if all(allowed(path) for path in paths):
+                  return "docs"
+              return "cheap" if event_name == "push" else "full"
+
+          scope = "full"
+          try:
+              scope = classify()
+          except Exception:
+              print("::notice::Changed-file classification uncertain; running full CI")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("scope=" + scope + "\n")
+          print("CI scope: " + scope)
+          PYCODE
+
   installer-diagnostics:
     name: Installer CLI and diagnostic controls
+    needs: [classify]
+    if: ${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -26,10 +170,22 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Set up Go
+        id: go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+      - &restore-go-cache
+        name: Restore Go module and build cache (read only)
+        id: go-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum') }}-
       - name: Test the actual CLI boundary with race detection
         run: go test -race -p 1 -timeout=5m ./cmd/arcadectl-installer -count=1
       - name: Test pure diagnostic controls without a cluster
@@ -51,10 +207,10 @@ jobs:
 
   kind-install-baseline:
     name: Kind installation security baseline ${{ matrix.profile }}
-    needs: [installer-diagnostics]
-    if: ${{ !cancelled() }}
+    needs: [classify, installer-diagnostics]
+    if: ${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -64,39 +220,132 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Resolve exact pinned Kind node images
+        id: kind-images
+        env:
+          CI_KIND_PROFILE: '${{ matrix.profile }}'
+        run: &resolve-kind-pins |
+          python3 - <<'PYCODE'
+          import hashlib
+          import os
+          import re
+          from pathlib import Path
+
+          try:
+              source = Path("internal/installengine/target_auth_kind_test.go").read_text()
+              images = {}
+              for profile in ("135", "137"):
+                  image, = re.findall(r'const targetKind' + profile + r' = "([^"\n]+)"', source)
+                  if not re.fullmatch(r"kindest/node:v[0-9.]+@sha256:[0-9a-f]{64}", image):
+                      raise ValueError("node image is not statically pinned")
+                  images[profile] = image
+              # These independent harnesses must agree before sharing a cache.
+              api = Path("internal/install/api_kind_test.go").read_text()
+              lifecycle = Path("hack/test-kind-lifecycle.sh").read_text()
+              if (f'const apiKindNode = "{images["137"]}"' not in api
+                      or f"readonly kind_node_image='{images['137']}'" not in lifecycle):
+                  raise ValueError("independent node image pins differ")
+              profile = os.environ["CI_KIND_PROFILE"]
+              selected = [images[p] for p in (("135", "137") if profile == "both" else (profile,))]
+              refs = " ".join(selected)
+              digest = hashlib.sha256(refs.encode()).hexdigest()
+              with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+                  output.write(f"valid=true\nimages={refs}\nkey={digest}\n")
+          except Exception:
+              print("::notice::Cannot statically determine exact node pins; harness will pull normally")
+          PYCODE
+      - &restore-kind-cache
+        name: Restore pinned Kind node image tarball (read only)
+        id: kind-cache
+        if: steps.kind-images.outputs.valid == 'true'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/kind-node-images.tar
+          key: kind-node-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.kind-images.outputs.key }}
+      - &load-kind-cache
+        name: Load pinned Kind node images
+        if: steps.kind-images.outputs.valid == 'true'
+        env:
+          KIND_IMAGES: ${{ steps.kind-images.outputs.images }}
+          KIND_TARBALL: ${{ runner.temp }}/kind-node-images.tar
+        run: |
+          if [[ -f "$KIND_TARBALL" ]]; then
+            docker load --input "$KIND_TARBALL" || echo '::warning::Node tarball load failed; falling back to pinned pulls'
+          fi
+          read -r -a images <<< "$KIND_IMAGES"
+          for image in "${images[@]}"; do
+            # Legacy Docker archives can lose RepoDigests. A digest pull then
+            # restores registry metadata, reusing the layers just loaded.
+            if ! docker image inspect "$image" >/dev/null 2>&1; then
+              docker pull "$image"
+            fi
+          done
+      - &prepare-kind-cache
+        name: Prepare main Kind cache on a miss
+        if: ${{ success() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule') && steps.kind-images.outputs.valid == 'true' && steps.kind-cache.outputs.cache-hit != 'true' }}
+        env:
+          KIND_IMAGES: ${{ steps.kind-images.outputs.images }}
+          KIND_TARBALL: ${{ runner.temp }}/kind-node-images.tar
+        run: |
+          read -r -a images <<< "$KIND_IMAGES"
+          tags=()
+          for image in "${images[@]}"; do
+            tag="${image%@*}"
+            docker tag "$image" "$tag"
+            tags+=("$tag")
+          done
+          docker save --output "$KIND_TARBALL" "${tags[@]}"
+      - &save-kind-cache
+        name: Save Kind node images from main only
+        if: ${{ success() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule') && steps.kind-images.outputs.valid == 'true' && steps.kind-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/kind-node-images.tar
+          key: ${{ steps.kind-cache.outputs.cache-primary-key }}
       - name: Set up Go
+        id: go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+      - *restore-go-cache
       - name: Prove native baseline typechecking and original prerequisite effects
         run: make test-kind-install-baseline INSTALL_BASELINE_PROFILE='${{ matrix.profile }}'
 
   kind-install-gc:
     name: Kind baseline native foreground GC 137
-    needs: [installer-diagnostics]
-    if: ${{ !cancelled() }}
+    needs: [classify, installer-diagnostics]
+    if: ${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Resolve exact pinned Kind node images
+        id: kind-images
+        env:
+          CI_KIND_PROFILE: '137'
+        run: *resolve-kind-pins
+      - *restore-kind-cache
+      - *load-kind-cache
       - name: Set up Go
+        id: go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+      - *restore-go-cache
       - name: Prove combined historical runtime and native foreground GC boundary
         run: make test-kind-install-gc
 
   kind-install-precontroller:
     name: Kind pre-controller runtime ${{ matrix.profile }}
-    needs: [installer-diagnostics]
-    if: ${{ !cancelled() }}
+    needs: [classify, installer-diagnostics]
+    if: ${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: ${{ matrix.profile == 135 && 30 || 35 }}
     strategy:
       fail-fast: false
       matrix:
@@ -106,11 +355,20 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Resolve exact pinned Kind node images
+        id: kind-images
+        env:
+          CI_KIND_PROFILE: '${{ matrix.profile }}'
+        run: *resolve-kind-pins
+      - *restore-kind-cache
+      - *load-kind-cache
       - name: Set up Go
+        id: go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+      - *restore-go-cache
       - name: Prove genuine pre-controller originals and retained runtime barriers
         run: make test-kind-install-precontroller INSTALL_PRECONTROLLER_PROFILE='${{ matrix.profile }}'
 
@@ -119,9 +377,10 @@ jobs:
     # Start the longest independent proofs once diagnostics pass. Each job
     # builds its own artifacts; all native foundations remain mandatory in the
     # final aggregate. Earlier eligibility does not guarantee runner capacity.
-    needs: [installer-diagnostics]
+    needs: [classify, installer-diagnostics]
+    if: ${{ success() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 350
+    timeout-minutes: ${{ matrix.mode == 'transition' && 350 || 290 }}
     strategy:
       fail-fast: false
       matrix:
@@ -149,20 +408,38 @@ jobs:
           test "$(git rev-parse '15c63004cd1ddab3f561acaf783348faf72b7ee7^{tree}')" = f6ed281f6bfb2896e2dab14297cdf4e37e5f970c
           test "$(git rev-parse '15c63004cd1ddab3f561acaf783348faf72b7ee7^')" = 2e897ca3b76617ac63c4a294d7ba8c908dcc368b
           test "$(git rev-parse '2e897ca3b76617ac63c4a294d7ba8c908dcc368b^{tree}')" = 6ba09e173b112c60a7c38d78cebf62e6d2859ec9
+      - name: Resolve exact pinned Kind node images
+        id: kind-images
+        env:
+          CI_KIND_PROFILE: '${{ matrix.profile }}'
+        run: *resolve-kind-pins
+      - *restore-kind-cache
+      - *load-kind-cache
       - name: Set up Go
+        id: go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+      - *restore-go-cache
       - name: Prove actual signed installer fresh install and retaining lifecycle
-        run: make test-kind-install-binary INSTALL_BINARY_PROFILE='${{ matrix.profile }}' INSTALL_BINARY_MODE='${{ matrix.mode }}'
+        env:
+          INSTALL_BINARY_PROFILE: ${{ matrix.profile }}
+          INSTALL_BINARY_MODE: ${{ matrix.mode }}
+        run: |
+          if [[ "$INSTALL_BINARY_MODE" == transition ]]; then
+            bash ./hack/ci-no-progress-watchdog.sh 30 "137 transition" \
+              make test-kind-install-binary INSTALL_BINARY_PROFILE="$INSTALL_BINARY_PROFILE" INSTALL_BINARY_MODE="$INSTALL_BINARY_MODE"
+          else
+            make test-kind-install-binary INSTALL_BINARY_PROFILE="$INSTALL_BINARY_PROFILE" INSTALL_BINARY_MODE="$INSTALL_BINARY_MODE"
+          fi
 
   kind-install-admission:
     name: Kind installer full admission ${{ matrix.profile }} ${{ matrix.mode }}
-    needs: [installer-diagnostics]
-    if: ${{ !cancelled() }}
+    needs: [classify, installer-diagnostics]
+    if: ${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 50
+    timeout-minutes: ${{ matrix.mode == 'warm' && 30 || 25 }}
     strategy:
       fail-fast: false
       matrix:
@@ -173,20 +450,29 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Resolve exact pinned Kind node images
+        id: kind-images
+        env:
+          CI_KIND_PROFILE: '${{ matrix.profile }}'
+        run: *resolve-kind-pins
+      - *restore-kind-cache
+      - *load-kind-cache
       - name: Set up Go
+        id: go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+      - *restore-go-cache
       - name: Prove full production admission, original cleanup and retirement
         run: make test-kind-install-admission INSTALL_ADMISSION_PROFILE='${{ matrix.profile }}' INSTALL_ADMISSION_MODE='${{ matrix.mode }}'
 
   kind-install-admission-v3:
     name: Kind baseline-active v3 admission ${{ matrix.profile }} ${{ matrix.mode }}
-    needs: [installer-diagnostics]
-    if: ${{ !cancelled() }}
+    needs: [classify, installer-diagnostics]
+    if: ${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 50
+    timeout-minutes: ${{ matrix.mode == 'warm' && 30 || 25 }}
     strategy:
       fail-fast: false
       matrix:
@@ -197,68 +483,106 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Resolve exact pinned Kind node images
+        id: kind-images
+        env:
+          CI_KIND_PROFILE: '${{ matrix.profile }}'
+        run: *resolve-kind-pins
+      - *restore-kind-cache
+      - *load-kind-cache
       - name: Set up Go
+        id: go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+      - *restore-go-cache
       - name: Prove full v3 matrix and original cleanup with security active
         run: make test-kind-install-admission-v3 INSTALL_ADMISSION_PROFILE='${{ matrix.profile }}' INSTALL_ADMISSION_MODE='${{ matrix.mode }}'
 
   kind-install-auth:
     name: Kind installer native authentication
-    needs: [installer-diagnostics]
-    if: ${{ !cancelled() }}
+    needs: [classify, installer-diagnostics]
+    if: ${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 50
+    timeout-minutes: 35
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Resolve exact pinned Kind node images
+        id: kind-images
+        env:
+          CI_KIND_PROFILE: 'both'
+        run: *resolve-kind-pins
+      - *restore-kind-cache
+      - *load-kind-cache
+      - *prepare-kind-cache
+      - *save-kind-cache
       - name: Set up Go
+        id: go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+      - *restore-go-cache
       - name: Prove native authentication and inert fixtures on both profiles
         run: make test-kind-install-auth
 
   kind-api:
     name: Kind authenticated admin API
-    needs: [installer-diagnostics]
-    if: ${{ !cancelled() }}
+    needs: [classify, installer-diagnostics]
+    if: ${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 25
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Resolve exact pinned Kind node images
+        id: kind-images
+        env:
+          CI_KIND_PROFILE: '137'
+        run: *resolve-kind-pins
+      - *restore-kind-cache
+      - *load-kind-cache
       - name: Set up Go
+        id: go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+      - *restore-go-cache
       - name: Prove isolated authenticated API and HTTP Factorio lifecycle
         run: make test-kind-api
 
   kind-recovery:
     name: Kind recovery failure safety
-    needs: [installer-diagnostics]
-    if: ${{ !cancelled() }}
+    needs: [classify, installer-diagnostics]
+    if: ${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 100
+    timeout-minutes: 90
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Resolve exact pinned Kind node images
+        id: kind-images
+        env:
+          CI_KIND_PROFILE: '137'
+        run: *resolve-kind-pins
+      - *restore-kind-cache
+      - *load-kind-cache
       - name: Set up Go
+        id: go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+      - *restore-go-cache
       - name: Prove real Factorio recovery and isolated failure safety
         env:
           GOMAXPROCS: "2"
@@ -275,11 +599,11 @@ jobs:
 
   install-engine-race:
     name: Installer engine race shard ${{ matrix.shard }}
-    # Let native foundations finish before the bulk worker burst. Failure is
-    # ordering-only here: every independent tree still runs unless cancelled.
-    needs: [installer-diagnostics, kind-install-gc, kind-install-admission, kind-install-admission-v3,
+    # Launch all 32 shards only after every foundation succeeds.
+    # The aggregate gate rejects these skips when a foundation fails.
+    needs: [classify, installer-diagnostics, kind-install-gc, kind-install-admission, kind-install-admission-v3,
             kind-install-auth, kind-install-baseline, kind-install-precontroller]
-    if: ${{ !cancelled() }}
+    if: ${{ success() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
@@ -297,22 +621,24 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Set up Go
+        id: go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+      - *restore-go-cache
       - name: Discover and run every assigned race test
         run: bash ./hack/test-installengine-race-shard.sh '${{ matrix.shard }}'
 
   envtest:
     name: API-server lifecycle transitions ${{ matrix.part }}
-    needs: [installer-diagnostics, kind-install-gc, kind-install-admission, kind-install-admission-v3,
+    needs: [classify, installer-diagnostics, kind-install-gc, kind-install-admission, kind-install-admission-v3,
             kind-install-auth, kind-install-baseline, kind-install-precontroller]
-    if: ${{ !cancelled() }}
+    if: ${{ success() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}
     runs-on: ubuntu-24.04
     # The full tagged engine union exceeds one 30m package process. Partition
     # compiled whole trees, not a native-test prefix or an ordinary-test omission.
-    timeout-minutes: 45
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -327,10 +653,12 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Set up Go
+        id: go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+      - *restore-go-cache
       - name: Test API-server lifecycle transitions
         run: make test-envtest-part ENVTEST_PART='${{ matrix.part }}'
 
@@ -338,10 +666,10 @@ jobs:
     name: Go and policy checks
     # These checks consume no native job artifacts. Run them alongside native
     # proofs, including after diagnostic failure, not after the long lifecycle.
-    needs: [installer-diagnostics]
-    if: ${{ !cancelled() }}
+    needs: [classify, installer-diagnostics]
+    if: ${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 35
     env:
       GOMAXPROCS: "2"
       GOMEMLIMIT: 1GiB
@@ -351,10 +679,12 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Set up Go
+        id: go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+      - *restore-go-cache
       - name: Verify module
         run: go mod verify
       - name: Check formatting
@@ -402,10 +732,18 @@ jobs:
           test "$(docker image inspect --format '{{.Config.User}}' arcadectl-api:ci-first)" = '65532:65532'
           test "$(docker image inspect --format '{{json .Config.Entrypoint}}' arcadectl-api:ci-first)" = '["/arcadectl-api"]'
           test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' arcadectl-api:ci-first)" = "$(git rev-parse HEAD)"
+      - name: Save Go cache from main only
+        if: ${{ success() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule') && steps.go-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
 
   go-and-policy:
     name: Go and policy
-    needs: [installer-diagnostics, install-engine-race, kind-install-admission, kind-install-admission-v3,
+    needs: [classify, installer-diagnostics, install-engine-race, kind-install-admission, kind-install-admission-v3,
             kind-install-binary, kind-install-baseline, kind-install-gc,
             kind-install-precontroller, kind-install-auth, kind-api, kind-recovery, envtest,
             kind-lifecycle, go-policy-checks]
@@ -413,7 +751,7 @@ jobs:
     # Whole-workflow cancellation can cancel this gate too; it is never green.
     if: ${{ always() }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 40
     env:
       GOMAXPROCS: "2"
       GOMEMLIMIT: 1GiB
@@ -424,6 +762,8 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Require every foundation, lifecycle and Go/policy proof
         env:
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          CI_SCOPE: ${{ needs.classify.outputs.scope }}
           INSTALLER_DIAGNOSTICS_RESULT: ${{ needs.installer-diagnostics.result }}
           ENGINE_RACE_RESULT: ${{ needs.install-engine-race.result }}
           INSTALL_ADMISSION_RESULT: ${{ needs.kind-install-admission.result }}
@@ -439,37 +779,66 @@ jobs:
           LIFECYCLE_RESULT: ${{ needs.kind-lifecycle.result }}
           GO_POLICY_CHECKS_RESULT: ${{ needs.go-policy-checks.result }}
         run: |
-          test "$INSTALLER_DIAGNOSTICS_RESULT" = success
-          test "$ENGINE_RACE_RESULT" = success
-          test "$INSTALL_ADMISSION_RESULT" = success
-          test "$INSTALL_BINARY_RESULT" = success
-          test "$INSTALL_BASELINE_RESULT" = success
-          test "$INSTALL_GC_RESULT" = success
-          test "$INSTALL_ADMISSION_V3_RESULT" = success
-          test "$INSTALL_PRECONTROLLER_RESULT" = success
-          test "$INSTALL_AUTH_RESULT" = success
-          test "$API_RESULT" = success
-          test "$RECOVERY_RESULT" = success
-          test "$ENVTEST_RESULT" = success
-          test "$LIFECYCLE_RESULT" = success
-          test "$GO_POLICY_CHECKS_RESULT" = success
+          test "$CLASSIFY_RESULT" = success
+          case "$CI_SCOPE" in
+            docs|idle)
+              # Both protected checks pass: lifecycle is intentionally skipped.
+              for result in "$INSTALLER_DIAGNOSTICS_RESULT" "$GO_POLICY_CHECKS_RESULT" \
+                "$ENGINE_RACE_RESULT" "$INSTALL_ADMISSION_RESULT" "$INSTALL_BINARY_RESULT" \
+                "$INSTALL_BASELINE_RESULT" "$INSTALL_GC_RESULT" "$INSTALL_ADMISSION_V3_RESULT" \
+                "$INSTALL_PRECONTROLLER_RESULT" "$INSTALL_AUTH_RESULT" "$API_RESULT" \
+                "$RECOVERY_RESULT" "$ENVTEST_RESULT" "$LIFECYCLE_RESULT"; do
+                test "$result" = skipped
+              done
+              if [[ "$CI_SCOPE" == idle ]]; then
+                echo 'Unchanged main in the last 24 h: full nightly proof set intentionally skipped; required CI gate passes.'
+              else
+                echo 'Documentation/lint-config-only change: required CI gate passes.'
+              fi
+              exit 0
+              ;;
+            cheap|full)
+              test "$INSTALLER_DIAGNOSTICS_RESULT" = success
+              test "$GO_POLICY_CHECKS_RESULT" = success
+              ;;
+            *) echo '::error::Missing or unknown CI scope'; exit 1 ;;
+          esac
+          expected=success
+          if [[ "$CI_SCOPE" == cheap ]]; then
+            expected=skipped
+          fi
+          for result in "$ENGINE_RACE_RESULT" "$INSTALL_ADMISSION_RESULT" "$INSTALL_BINARY_RESULT" \
+            "$INSTALL_BASELINE_RESULT" "$INSTALL_GC_RESULT" "$INSTALL_ADMISSION_V3_RESULT" \
+            "$INSTALL_PRECONTROLLER_RESULT" "$INSTALL_AUTH_RESULT" "$API_RESULT" \
+            "$RECOVERY_RESULT" "$ENVTEST_RESULT" "$LIFECYCLE_RESULT"; do
+            test "$result" = "$expected"
+          done
 
   kind-lifecycle:
     name: Kind lifecycle
-    needs: [installer-diagnostics]
-    if: ${{ !cancelled() }}
+    needs: [classify, installer-diagnostics]
+    if: ${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 35
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Resolve exact pinned Kind node images
+        id: kind-images
+        env:
+          CI_KIND_PROFILE: '137'
+        run: *resolve-kind-pins
+      - *restore-kind-cache
+      - *load-kind-cache
       - name: Set up Go
+        id: go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+      - *restore-go-cache
       - name: Prove isolated-cluster lifecycle
         run: make test-kind-lifecycle
       - name: Prove certified Factorio lifecycle
