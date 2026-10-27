@@ -17,6 +17,12 @@ jobs:
     name: Installer CLI and diagnostic controls
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    # Same seven checks, isolated bounded workers; the matrix result is the
+    # diagnostics-passed gate. Do not cancel sibling checks after a failure.
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [cli, controls, discovery, observation, benchmarks, wrappers, vet]
     env:
       GOMAXPROCS: "2"
       GOMEMLIMIT: 1GiB
@@ -31,102 +37,66 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Test the actual CLI boundary with race detection
+        if: matrix.check == 'cli'
         run: go test -race -p 1 -timeout=5m ./cmd/arcadectl-installer -count=1
       - name: Test pure diagnostic controls without a cluster
+        if: matrix.check == 'controls'
         run: go test -race -tags=kindinstall -p 1 -timeout=5m ./internal/installengine -run '^(TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate|TestEnvtestPartitionsCompleteCompiledUnion|TestEnvtestPartitionsRefuseInvalidInputs|TestEnvtestPartitionsAllPartsAndFailures|TestInstallerBinaryProgressCapture|TestInstallerBinaryRequestPipelineCapture|TestInstallerBinaryParentContext|TestLifecycleCostsBoundedCommandAndInvocationIsolation|TestLifecycleCostsConcurrentRefusalsAndCancellation)$' -count=1
       - name: Test fresh discovery and bounded authorization ownership and refusals
+        if: matrix.check == 'discovery'
         run: go test -race -p 1 -timeout=5m -v ./internal/installengine -run '^(TestDiscoveryReplyMemo.*|TestProofDiscovery.*|TestBaselineContainment.*|TestBaselineDenied(EightLanes|Index).*)$' -count=1
       - name: Test closed observation and settlement diagnostics before native proofs
+        if: matrix.check == 'observation'
         run: |
           go test -race -p 1 -timeout=5m ./internal/installobserve -run '^TestCollectionDiagnostic.*$' -count=1
           go test -race -p 1 -timeout=5m ./internal/installengine -run '^(TestFixtureTypedCollectionDiagnostic.*|TestFixtureObservationDiagnostic.*|TestFixtureAdmissionSettle.*)$' -count=1
       - name: Measure pure conversion and descriptor membership costs
+        if: matrix.check == 'benchmarks'
         run: go test -p 1 -timeout=2m ./internal/installengine -run '^$' -bench '^(BenchmarkDiscoveryReplyConversion|BenchmarkBaselineDeniedDescriptorMembership)$' -benchmem -benchtime=250ms -count=1
       - name: Measure complete synthetic installer wrappers without raw profile artifacts
+        if: matrix.check == 'wrappers'
         run: |
           go test -race -p 1 -timeout=1m ./hack/profile-installer-wrappers -count=1
           go run -p 1 ./hack/profile-installer-wrappers '${{ github.event.pull_request.head.sha || github.sha }}'
       - name: Vet the CLI and tagged diagnostic harness
+        if: matrix.check == 'vet'
         run: go vet -tags=kindinstall -p 1 ./cmd/arcadectl-installer ./internal/installengine ./internal/installobserve
 
-  kind-install-baseline:
-    name: Kind installation security baseline ${{ matrix.profile }}
-    needs: [installer-diagnostics]
-    if: ${{ !cancelled() }}
+  kind-images:
+    name: Shared exact-source Kind runtime images
+    # Start alongside diagnostics; never wait for policy reproducibility or
+    # native foundations. This is an artifact dependency, not an ordering delay.
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        profile: [135, 137]
+    timeout-minutes: 20
     steps:
-      - name: Check out source
+      - name: Check out exact source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - name: Build and export production API and controller once
+        run: bash ./hack/kind-runtime-images.sh export "$GITHUB_WORKSPACE" "$RUNNER_TEMP/kind-images"
+      - name: Upload exact-source runtime images
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          go-version-file: go.mod
-          cache: true
-      - name: Prove native baseline typechecking and original prerequisite effects
-        run: make test-kind-install-baseline INSTALL_BASELINE_PROFILE='${{ matrix.profile }}'
-
-  kind-install-gc:
-    name: Kind baseline native foreground GC 137
-    needs: [installer-diagnostics]
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Prove combined historical runtime and native foreground GC boundary
-        run: make test-kind-install-gc
-
-  kind-install-precontroller:
-    name: Kind pre-controller runtime ${{ matrix.profile }}
-    needs: [installer-diagnostics]
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 40
-    strategy:
-      fail-fast: false
-      matrix:
-        profile: [135, 137]
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Prove genuine pre-controller originals and retained runtime barriers
-        run: make test-kind-install-precontroller INSTALL_PRECONTROLLER_PROFILE='${{ matrix.profile }}'
+          name: kind-images-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-images/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
 
   kind-install-binary:
     name: Kind signed installer binary ${{ matrix.profile }} ${{ matrix.mode }}
-    # Start the longest independent proofs once diagnostics pass. Each job
-    # builds its own artifacts; all native foundations remain mandatory in the
-    # final aggregate. Earlier eligibility does not guarantee runner capacity.
-    needs: [installer-diagnostics]
+    # Start the longest proofs after diagnostics and the required shared images,
+    # without native-foundation or bulk-matrix needs. Historical builds remain
+    # local. Eligibility/order cannot reserve or guarantee hosted runner capacity.
+    needs: [installer-diagnostics, kind-images]
     runs-on: ubuntu-24.04
     timeout-minutes: 350
     strategy:
       fail-fast: false
       matrix:
-        profile: [135, 137]
-        mode: [fresh, transition]
+        profile: [137, 135]
+        mode: [transition, fresh]
         exclude:
           - profile: 135
             mode: transition
@@ -149,6 +119,15 @@ jobs:
           test "$(git rev-parse '15c63004cd1ddab3f561acaf783348faf72b7ee7^{tree}')" = f6ed281f6bfb2896e2dab14297cdf4e37e5f970c
           test "$(git rev-parse '15c63004cd1ddab3f561acaf783348faf72b7ee7^')" = 2e897ca3b76617ac63c4a294d7ba8c908dcc368b
           test "$(git rev-parse '2e897ca3b76617ac63c4a294d7ba8c908dcc368b^{tree}')" = 6ba09e173b112c60a7c38d78cebf62e6d2859ec9
+      - name: Download shared exact-source runtime images
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: kind-images-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-images/
+      - name: Verify and load shared runtime images
+        run: |
+          bash ./hack/kind-runtime-images.sh load "$GITHUB_WORKSPACE" "$RUNNER_TEMP/kind-images"
+          echo "ARCADECTL_KIND_IMAGE_DIR=$RUNNER_TEMP/kind-images" >> "$GITHUB_ENV"
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -157,10 +136,102 @@ jobs:
       - name: Prove actual signed installer fresh install and retaining lifecycle
         run: make test-kind-install-binary INSTALL_BINARY_PROFILE='${{ matrix.profile }}' INSTALL_BINARY_MODE='${{ matrix.mode }}'
 
+  kind-install-baseline:
+    name: Kind installation security baseline ${{ matrix.profile }}
+    needs: [installer-diagnostics, kind-images]
+    if: ${{ !cancelled() && needs.kind-images.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [135, 137]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Download shared exact-source runtime images
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: kind-images-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-images/
+      - name: Verify and load shared runtime images
+        run: |
+          bash ./hack/kind-runtime-images.sh load "$GITHUB_WORKSPACE" "$RUNNER_TEMP/kind-images"
+          echo "ARCADECTL_KIND_IMAGE_DIR=$RUNNER_TEMP/kind-images" >> "$GITHUB_ENV"
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Prove native baseline typechecking and original prerequisite effects
+        run: make test-kind-install-baseline INSTALL_BASELINE_PROFILE='${{ matrix.profile }}'
+
+  kind-install-gc:
+    name: Kind baseline native foreground GC 137
+    needs: [installer-diagnostics, kind-images]
+    if: ${{ !cancelled() && needs.kind-images.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Download shared exact-source runtime images
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: kind-images-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-images/
+      - name: Verify and load shared runtime images
+        run: |
+          bash ./hack/kind-runtime-images.sh load "$GITHUB_WORKSPACE" "$RUNNER_TEMP/kind-images"
+          echo "ARCADECTL_KIND_IMAGE_DIR=$RUNNER_TEMP/kind-images" >> "$GITHUB_ENV"
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Prove combined historical runtime and native foreground GC boundary
+        run: make test-kind-install-gc
+
+  kind-install-precontroller:
+    name: Kind pre-controller runtime ${{ matrix.profile }}
+    needs: [installer-diagnostics, kind-images]
+    if: ${{ !cancelled() && needs.kind-images.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [135, 137]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Download shared exact-source runtime images
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: kind-images-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-images/
+      - name: Verify and load shared runtime images
+        run: |
+          bash ./hack/kind-runtime-images.sh load "$GITHUB_WORKSPACE" "$RUNNER_TEMP/kind-images"
+          echo "ARCADECTL_KIND_IMAGE_DIR=$RUNNER_TEMP/kind-images" >> "$GITHUB_ENV"
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Prove genuine pre-controller originals and retained runtime barriers
+        run: make test-kind-install-precontroller INSTALL_PRECONTROLLER_PROFILE='${{ matrix.profile }}'
+
   kind-install-admission:
     name: Kind installer full admission ${{ matrix.profile }} ${{ matrix.mode }}
-    needs: [installer-diagnostics]
-    if: ${{ !cancelled() }}
+    needs: [installer-diagnostics, kind-images]
+    if: ${{ !cancelled() && needs.kind-images.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     strategy:
@@ -173,6 +244,15 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Download shared exact-source runtime images
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: kind-images-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-images/
+      - name: Verify and load shared runtime images
+        run: |
+          bash ./hack/kind-runtime-images.sh load "$GITHUB_WORKSPACE" "$RUNNER_TEMP/kind-images"
+          echo "ARCADECTL_KIND_IMAGE_DIR=$RUNNER_TEMP/kind-images" >> "$GITHUB_ENV"
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -183,8 +263,8 @@ jobs:
 
   kind-install-admission-v3:
     name: Kind baseline-active v3 admission ${{ matrix.profile }} ${{ matrix.mode }}
-    needs: [installer-diagnostics]
-    if: ${{ !cancelled() }}
+    needs: [installer-diagnostics, kind-images]
+    if: ${{ !cancelled() && needs.kind-images.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     strategy:
@@ -197,6 +277,15 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Download shared exact-source runtime images
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: kind-images-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-images/
+      - name: Verify and load shared runtime images
+        run: |
+          bash ./hack/kind-runtime-images.sh load "$GITHUB_WORKSPACE" "$RUNNER_TEMP/kind-images"
+          echo "ARCADECTL_KIND_IMAGE_DIR=$RUNNER_TEMP/kind-images" >> "$GITHUB_ENV"
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -207,8 +296,8 @@ jobs:
 
   kind-install-auth:
     name: Kind installer native authentication
-    needs: [installer-diagnostics]
-    if: ${{ !cancelled() }}
+    needs: [installer-diagnostics, kind-images]
+    if: ${{ !cancelled() && needs.kind-images.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     steps:
@@ -216,6 +305,15 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Download shared exact-source runtime images
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: kind-images-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-images/
+      - name: Verify and load shared runtime images
+        run: |
+          bash ./hack/kind-runtime-images.sh load "$GITHUB_WORKSPACE" "$RUNNER_TEMP/kind-images"
+          echo "ARCADECTL_KIND_IMAGE_DIR=$RUNNER_TEMP/kind-images" >> "$GITHUB_ENV"
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -226,8 +324,8 @@ jobs:
 
   kind-api:
     name: Kind authenticated admin API
-    needs: [installer-diagnostics]
-    if: ${{ !cancelled() }}
+    needs: [installer-diagnostics, kind-images]
+    if: ${{ !cancelled() && needs.kind-images.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -235,6 +333,15 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Download shared exact-source runtime images
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: kind-images-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-images/
+      - name: Verify and load shared runtime images
+        run: |
+          bash ./hack/kind-runtime-images.sh load "$GITHUB_WORKSPACE" "$RUNNER_TEMP/kind-images"
+          echo "ARCADECTL_KIND_IMAGE_DIR=$RUNNER_TEMP/kind-images" >> "$GITHUB_ENV"
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -245,8 +352,8 @@ jobs:
 
   kind-recovery:
     name: Kind recovery failure safety
-    needs: [installer-diagnostics]
-    if: ${{ !cancelled() }}
+    needs: [installer-diagnostics, kind-images]
+    if: ${{ !cancelled() && needs.kind-images.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 100
     steps:
@@ -254,6 +361,15 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Download shared exact-source runtime images
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: kind-images-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-images/
+      - name: Verify and load shared runtime images
+        run: |
+          bash ./hack/kind-runtime-images.sh load "$GITHUB_WORKSPACE" "$RUNNER_TEMP/kind-images"
+          echo "ARCADECTL_KIND_IMAGE_DIR=$RUNNER_TEMP/kind-images" >> "$GITHUB_ENV"
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -408,7 +524,7 @@ jobs:
     needs: [installer-diagnostics, install-engine-race, kind-install-admission, kind-install-admission-v3,
             kind-install-binary, kind-install-baseline, kind-install-gc,
             kind-install-precontroller, kind-install-auth, kind-api, kind-recovery, envtest,
-            kind-lifecycle, go-policy-checks]
+            kind-lifecycle, go-policy-checks, kind-images]
     # Do not turn failed/cancelled dependencies into a skipped passing gate.
     # Whole-workflow cancellation can cancel this gate too; it is never green.
     if: ${{ always() }}
@@ -438,6 +554,7 @@ jobs:
           ENVTEST_RESULT: ${{ needs.envtest.result }}
           LIFECYCLE_RESULT: ${{ needs.kind-lifecycle.result }}
           GO_POLICY_CHECKS_RESULT: ${{ needs.go-policy-checks.result }}
+          KIND_IMAGES_RESULT: ${{ needs.kind-images.result }}
         run: |
           test "$INSTALLER_DIAGNOSTICS_RESULT" = success
           test "$ENGINE_RACE_RESULT" = success
@@ -453,11 +570,12 @@ jobs:
           test "$ENVTEST_RESULT" = success
           test "$LIFECYCLE_RESULT" = success
           test "$GO_POLICY_CHECKS_RESULT" = success
+          test "$KIND_IMAGES_RESULT" = success
 
   kind-lifecycle:
     name: Kind lifecycle
-    needs: [installer-diagnostics]
-    if: ${{ !cancelled() }}
+    needs: [installer-diagnostics, kind-images]
+    if: ${{ !cancelled() && needs.kind-images.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -465,6 +583,15 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Download shared exact-source runtime images
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: kind-images-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-images/
+      - name: Verify and load shared runtime images
+        run: |
+          bash ./hack/kind-runtime-images.sh load "$GITHUB_WORKSPACE" "$RUNNER_TEMP/kind-images"
+          echo "ARCADECTL_KIND_IMAGE_DIR=$RUNNER_TEMP/kind-images" >> "$GITHUB_ENV"
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:

@@ -192,9 +192,8 @@ func TestKindAuthenticatedAdmin(t *testing.T) {
 	if output, err := newCommand(ctx, "docker", "image", "inspect", imageTag).CombinedOutput(); err == nil || !bytes.Contains(bytes.ToLower(output), []byte("no such image")) {
 		t.Fatal("owned image tag preflight failed")
 	}
-	t.Log("building API image")
-	public("", "docker", "build", "--file", "Dockerfile.api", "--build-arg", "VCS_REF="+sha, "--build-arg", "SOURCE_DATE_EPOCH="+epoch,
-		"--build-arg", "SOURCE_DIRTY="+boolText(dirty), "--tag", imageTag, ".")
+	t.Log("preparing exact-source API image")
+	public("", "bash", filepath.Join(root, "hack", "kind-runtime-images.sh"), "prepare", "api", root, sha, epoch, boolText(dirty), imageTag)
 	imageID = public("", "docker", "image", "inspect", "--format", "{{.Id}}", imageTag)
 	public("", "docker", "push", imageTag)
 	var references []string

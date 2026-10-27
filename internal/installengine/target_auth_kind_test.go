@@ -56,7 +56,7 @@ func targetKindPrecontrollerFixture(t *testing.T, nodeImage string) (context.Con
 }
 
 // The closed warm option builds the normal controller, not lifecycle-test code.
-// Both images use the same exact-owned registry/cluster and serial build path.
+// Both images use the same exact-owned registry/cluster and production build inputs.
 func targetKindFixtureImages(t *testing.T, nodeImage string, withController bool) (context.Context, *rest.Config, string, string) {
 	return targetKindFixtureImagesForRecipe(t, nodeImage, withController, false)
 }
@@ -259,13 +259,19 @@ func targetKindFixtureImagesWithOwnedNode(t *testing.T, nodeImage string, withCo
 			t.Fatal("owned image tag preflight failed")
 		}
 		images = append(images, ownedImage{tag: tag}) // cleanup armed before build
-		t.Log("building digest-pinned " + repository + " image with serialized, concurrency-limited Go build")
-		args := []string{"docker", "build", "--file", filepath.Join(sourceRoot, dockerfile), "--build-arg", "VCS_REF=" + sourceSHA, "--build-arg", "SOURCE_DATE_EPOCH=" + sourceEpoch, "--build-arg", "SOURCE_DIRTY=" + sourceDirty}
-		if dockerfile == "Dockerfile" {
-			args = append(args, "--build-arg", "LIFECYCLE_TEST=false")
+		if sourceRoot == root {
+			t.Log("preparing exact-source digest-pinned " + repository + " image")
+			role := strings.TrimPrefix(repository, "arcadectl-")
+			public("", "bash", filepath.Join(root, "hack", "kind-runtime-images.sh"), "prepare", role, sourceRoot, sourceSHA, sourceEpoch, sourceDirty, tag)
+		} else {
+			t.Log("building digest-pinned " + repository + " image with serialized, concurrency-limited Go build")
+			args := []string{"docker", "build", "--file", filepath.Join(sourceRoot, dockerfile), "--build-arg", "VCS_REF=" + sourceSHA, "--build-arg", "SOURCE_DATE_EPOCH=" + sourceEpoch, "--build-arg", "SOURCE_DIRTY=" + sourceDirty}
+			if dockerfile == "Dockerfile" {
+				args = append(args, "--build-arg", "LIFECYCLE_TEST=false")
+			}
+			args = append(args, "--tag", tag, sourceRoot)
+			public("", args...)
 		}
-		args = append(args, "--tag", tag, sourceRoot)
-		public("", args...)
 		images[len(images)-1].id = public("", "docker", "image", "inspect", "--format", "{{.Id}}", tag)
 		if public("", "docker", "image", "inspect", "--format", "{{index .Config.Labels \"org.opencontainers.image.revision\"}}", tag) != sourceSHA || public("", "docker", "image", "inspect", "--format", "{{index .Config.Labels \"arcade.gobha.me/source-dirty\"}}", tag) != sourceDirty || public("", "docker", "image", "inspect", "--format", "{{.Config.User}}", tag) != "65532:65532" {
 			t.Fatal("owned image source/user metadata refused")
