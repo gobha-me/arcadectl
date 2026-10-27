@@ -4,8 +4,11 @@
 package installengine
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -86,9 +89,39 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	// Identical PR-merge/head trees do not have identical source SHA/epoch.
 	// Signed packages, image revision labels and lifecycle evidence must use
 	// the requested head (or exact main push), not a synthetic merge identity.
-	for _, name := range []string{"installer-diagnostics", "kind-install-binary", "kind-install-baseline", "kind-install-gc", "kind-install-precontroller", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-api", "kind-recovery", "install-engine-race", "envtest", "go-policy-checks", "go-and-policy", "kind-lifecycle", "kind-images"} {
+	originalJobs := []string{"installer-diagnostics", "kind-install-binary", "kind-install-baseline", "kind-install-gc", "kind-install-precontroller", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-api", "kind-recovery", "install-engine-race", "envtest", "go-policy-checks", "go-and-policy", "kind-lifecycle"}
+	for _, name := range originalJobs {
 		if _, present := workflow.Jobs[name]; !present {
-			t.Errorf("required exact-source CI job %s is absent", name)
+			t.Errorf("original CI job family %s is absent", name)
+		}
+	}
+	if _, present := workflow.Jobs["kind-images"]; !present {
+		t.Error("required exact-source CI job kind-images is absent")
+	}
+	if len(workflow.Jobs) != len(originalJobs)+1 {
+		t.Errorf("unexpected CI job count: got %d, want %d", len(workflow.Jobs), len(originalJobs)+1)
+	}
+	wantTimeouts := map[string]int{
+		"installer-diagnostics":      20,
+		"kind-images":                20,
+		"kind-install-binary":        350,
+		"kind-install-baseline":      30,
+		"kind-install-gc":            30,
+		"kind-install-precontroller": 40,
+		"kind-install-admission":     50,
+		"kind-install-admission-v3":  50,
+		"kind-install-auth":          50,
+		"kind-api":                   40,
+		"kind-recovery":              100,
+		"install-engine-race":        30,
+		"envtest":                    45,
+		"go-policy-checks":           45,
+		"go-and-policy":              45,
+		"kind-lifecycle":             45,
+	}
+	for name, wantTimeout := range wantTimeouts {
+		if job, present := workflow.Jobs[name]; present && job.TimeoutMinutes != wantTimeout {
+			t.Errorf("CI job %s changed timeout-minutes: got %d, want %d", name, job.TimeoutMinutes, wantTimeout)
 		}
 	}
 	for name, job := range workflow.Jobs {
@@ -108,7 +141,8 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	if t.Failed() {
 		t.FailNow()
 	}
-	for _, name := range []string{"kind-install-baseline", "kind-install-gc", "kind-install-precontroller", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-api", "kind-recovery", "kind-lifecycle"} {
+	nativeKindConsumers := []string{"kind-install-baseline", "kind-install-gc", "kind-install-precontroller", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-api", "kind-recovery", "kind-lifecycle"}
+	for _, name := range nativeKindConsumers {
 		job := workflow.Jobs[name]
 		if !nativeImagePrerequisites(job.Needs, job.If, job.ContinueOnError) {
 			t.Fatalf("CI job %s competes with early diagnostics or skips independent coverage after their failure", name)
@@ -121,14 +155,19 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	if !nativeImagePrerequisites([]string{"installer-diagnostics", "kind-images"}, "${{ !cancelled() && needs.kind-images.result == 'success' }}", nil) {
 		t.Fatal("native image prerequisite positive control refused")
 	}
-	for _, needs := range [][]string{nil, {"installer-diagnostics"}, {"kind-images"}, {"installer-diagnostics", "kind-images", "kind-install-binary"}} {
+	for _, needs := range [][]string{nil, {}, {"installer-diagnostics"}, {"kind-images"}, {"kind-images", "installer-diagnostics"}, {"installer-diagnostics", "kind-images", "kind-images"}, {"installer-diagnostics", "kind-images", "kind-install-binary"}} {
 		if nativeImagePrerequisites(needs, "${{ !cancelled() && needs.kind-images.result == 'success' }}", nil) {
-			t.Fatal("native image prerequisite accepted missing or artificial dependencies")
+			t.Fatal("native image prerequisite accepted missing, reordered, duplicate or artificial dependencies")
 		}
 	}
-	for _, condition := range []string{"", "${{ !cancelled() }}", "${{ always() }}", "${{ success() }}"} {
+	for _, condition := range []string{"", "${{ !cancelled() }}", "${{ always() }}", "${{ success() }}", "${{ needs.kind-images.result == 'success' }}"} {
 		if nativeImagePrerequisites([]string{"installer-diagnostics", "kind-images"}, condition, nil) {
 			t.Fatal("native image prerequisite accepted a coverage skip or artifact bypass")
+		}
+	}
+	for _, tolerate := range []any{false, true, "${{ true }}"} {
+		if nativeImagePrerequisites([]string{"installer-diagnostics", "kind-images"}, "${{ !cancelled() && needs.kind-images.result == 'success' }}", tolerate) {
+			t.Fatal("native image prerequisite accepted a failure-tolerance override")
 		}
 	}
 	producer := workflow.Jobs["kind-images"]
@@ -143,9 +182,17 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 			t.Fatal("shared image production can skip or tolerate failure")
 		}
 	}
+	kindConsumerCount := 0
 	for name, job := range workflow.Jobs {
 		if !strings.HasPrefix(name, "kind-") || name == "kind-images" {
 			continue
+		}
+		kindConsumerCount++
+		if name != "kind-install-binary" && !slices.Contains(nativeKindConsumers, name) {
+			t.Fatal("unclassified Kind consumer job", name)
+		}
+		if !slices.Equal(job.Needs, []string{"installer-diagnostics", "kind-images"}) {
+			t.Fatal("Kind consumer does not depend on installer-diagnostics and kind-images", name)
 		}
 		downloads, loads := 0, 0
 		for _, step := range job.Steps {
@@ -168,6 +215,9 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 		if downloads != 1 || loads != 1 {
 			t.Fatal("Kind consumer omitted shared images", name)
 		}
+	}
+	if kindConsumerCount != 10 {
+		t.Fatalf("unexpected Kind consumer job count: got %d, want 10", kindConsumerCount)
 	}
 	for _, name := range []string{"install-engine-race", "envtest"} {
 		job := workflow.Jobs[name]
@@ -246,8 +296,8 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	if !raceRun {
 		t.Fatal("CI does not execute its assigned compiled race test trees")
 	}
-	if !slices.Equal(admission.Strategy.Matrix.Profile, []int{135, 137}) || !slices.Equal(admission.Strategy.Matrix.Mode, []string{"cold", "warm"}) {
-		t.Fatal("full native admission profile/mode omitted")
+	if admission.TimeoutMinutes != 50 || admission.Strategy.FailFast == nil || *admission.Strategy.FailFast || !slices.Equal(admission.Strategy.Matrix.Profile, []int{135, 137}) || !slices.Equal(admission.Strategy.Matrix.Mode, []string{"cold", "warm"}) || len(admission.Strategy.Matrix.Exclude) != 0 {
+		t.Fatal("full native admission profile/mode or timeout omitted")
 	}
 	fullRun := false
 	for _, step := range admission.Steps {
@@ -322,18 +372,28 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 		t.Fatal("protected aggregate changed its name, exact checkout or assertion-only scope")
 	}
 	diagnostics := workflow.Jobs["installer-diagnostics"]
-	var diagnosticRuns []string
 	wantDiagnosticChecks := []string{"cli", "controls", "discovery", "observation", "benchmarks", "wrappers", "vet"}
 	for index, step := range diagnostics.Steps {
 		condition := ""
 		if index >= 2 && index-2 < len(wantDiagnosticChecks) {
 			condition = "matrix.check == '" + wantDiagnosticChecks[index-2] + "'"
 		}
-		if step.If != condition || step.ContinueOnError != nil || len(step.Env) != 0 {
+		if step.If != condition || step.ContinueOnError != nil || len(step.Env) != 0 || index < 2 && step.Run != "" || index >= 2 && (step.Run == "" || step.Uses != "" || len(step.With) != 0) {
 			t.Fatal("early diagnostic step can skip, tolerate failure or override bounded environment")
 		}
-		if step.Run != "" {
-			diagnosticRuns = append(diagnosticRuns, step.Run)
+	}
+	var diagnosticRuns []string
+	for _, check := range diagnostics.Strategy.Matrix.Check {
+		wantIf := "matrix.check == '" + check + "'"
+		matches := 0
+		for _, step := range diagnostics.Steps[2:] {
+			if step.If == wantIf {
+				matches++
+				diagnosticRuns = append(diagnosticRuns, step.Run)
+			}
+		}
+		if matches != 1 {
+			t.Fatalf("diagnostic matrix check %s does not map to a unique diagnostic step", check)
 		}
 	}
 	wantDiagnosticRuns := []string{
@@ -419,7 +479,7 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 	if !binaryDiagnosticsPrerequisite([]string{"installer-diagnostics", "kind-images"}, "", nil) {
 		t.Fatal("binary diagnostics-success positive control refused")
 	}
-	for _, needs := range [][]string{nil, {}, {"installer-diagnostics"}, {"kind-images"}, {"kind-install-gc"}, {"installer-diagnostics", "installer-diagnostics"}, {"installer-diagnostics", "kind-images", "kind-images"}, {"installer-diagnostics", "kind-install-binary"}, {"installer-diagnostics", "go-and-policy"}} {
+	for _, needs := range [][]string{nil, {}, {"installer-diagnostics"}, {"kind-images"}, {"kind-images", "installer-diagnostics"}, {"kind-install-gc"}, {"installer-diagnostics", "installer-diagnostics"}, {"installer-diagnostics", "kind-images", "kind-images"}, {"installer-diagnostics", "kind-install-binary"}, {"installer-diagnostics", "go-and-policy"}, {"installer-diagnostics", "kind-images", "kind-install-binary"}, {"installer-diagnostics", "kind-images", "go-and-policy"}} {
 		if binaryDiagnosticsPrerequisite(needs, "", nil) {
 			t.Fatal("binary scheduling accepted missing, substituted, duplicate or cyclic prerequisites")
 		}
@@ -458,6 +518,19 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 		if job.TimeoutMinutes != required.minutes || runs != 1 || !slices.Contains(gate.Needs, required.name) {
 			t.Fatalf("native proof %s or its fail-closed required dependency omitted", required.name)
 		}
+	}
+	lifecycle := workflow.Jobs["kind-lifecycle"]
+	lifecycleRuns, factorioRuns := 0, 0
+	for _, step := range lifecycle.Steps {
+		if step.Run == "make test-kind-lifecycle" {
+			lifecycleRuns++
+		}
+		if step.Run == "make test-kind-factorio" {
+			factorioRuns++
+		}
+	}
+	if lifecycle.TimeoutMinutes != 45 || lifecycleRuns != 1 || factorioRuns != 1 || !slices.Contains(gate.Needs, "kind-lifecycle") {
+		t.Fatal("native lifecycle proof, certified Factorio proof or timeout omitted")
 	}
 	// Every prerequisite must exist and the full workflow must remain a DAG.
 	// In particular, binary may never depend on its own required aggregate.
@@ -503,12 +576,86 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 		}
 	}
 	binaryMatrix := binary.Strategy.Matrix
-	if !fullRun || !binaryRun || !binaryHistory || !slices.Equal(binaryMatrix.Profile, []int{137, 135}) || !slices.Equal(binaryMatrix.Mode, []string{"transition", "fresh"}) || len(binaryMatrix.Exclude) != 1 || binaryMatrix.Exclude[0].Profile != 135 || binaryMatrix.Exclude[0].Mode != "transition" || gate.If != "${{ always() }}" || !slices.Contains(gate.Needs, "install-engine-race") || !slices.Contains(gate.Needs, "kind-install-admission") || !slices.Contains(gate.Needs, "kind-install-binary") {
+	if !fullRun || !binaryRun || !binaryHistory || binary.TimeoutMinutes != 350 || binary.Strategy.FailFast == nil || *binary.Strategy.FailFast || !slices.Equal(binaryMatrix.Profile, []int{137, 135}) || !slices.Equal(binaryMatrix.Mode, []string{"transition", "fresh"}) || len(binaryMatrix.Exclude) != 1 || binaryMatrix.Exclude[0].Profile != 135 || binaryMatrix.Exclude[0].Mode != "transition" || gate.If != "${{ always() }}" || !slices.Contains(gate.Needs, "install-engine-race") || !slices.Contains(gate.Needs, "kind-install-admission") || !slices.Contains(gate.Needs, "kind-install-binary") {
 		t.Fatal("required gate bypasses full native admission or engine races")
+	}
+	// Expand matrix legs for every Kind consumer job and every workflow job,
+	// pinning both the per-job expanded leg sets and the total leg counts vs 0225dc4.
+	expandProfileModeLegs := func(name string) []string {
+		m := workflow.Jobs[name].Strategy.Matrix
+		var legs []string
+		matchedExcludes := 0
+		for _, p := range m.Profile {
+			for _, mode := range m.Mode {
+				excluded := false
+				for _, ex := range m.Exclude {
+					if ex.Profile == p && ex.Mode == mode {
+						excluded = true
+						matchedExcludes++
+					}
+				}
+				if !excluded {
+					legs = append(legs, strconv.Itoa(p)+":"+mode)
+				}
+			}
+		}
+		if matchedExcludes != len(m.Exclude) {
+			t.Fatalf("CI job %s has unmatched matrix exclude entry", name)
+		}
+		return legs
+	}
+	expandProfileLegs := func(name string) []string {
+		m := workflow.Jobs[name].Strategy.Matrix
+		if len(m.Exclude) != 0 || len(m.Mode) != 0 {
+			t.Fatalf("CI job %s has unexpected mode/exclude on profile matrix", name)
+		}
+		var legs []string
+		for _, p := range m.Profile {
+			legs = append(legs, strconv.Itoa(p))
+		}
+		return legs
+	}
+	wantKindLegs := map[string][]string{
+		"kind-install-binary":        {"137:transition", "137:fresh", "135:fresh"},
+		"kind-install-baseline":      {"135", "137"},
+		"kind-install-gc":            {"single"},
+		"kind-install-precontroller": {"135", "137"},
+		"kind-install-admission":     {"135:cold", "135:warm", "137:cold", "137:warm"},
+		"kind-install-admission-v3":  {"135:cold", "135:warm", "137:cold", "137:warm"},
+		"kind-install-auth":          {"single"},
+		"kind-api":                   {"single"},
+		"kind-recovery":              {"single"},
+		"kind-lifecycle":             {"single"},
+	}
+	totalKindLegs := 0
+	for name, wantLegs := range wantKindLegs {
+		m := workflow.Jobs[name].Strategy.Matrix
+		var gotLegs []string
+		switch {
+		case len(m.Profile) != 0 && len(m.Mode) != 0:
+			gotLegs = expandProfileModeLegs(name)
+		case len(m.Profile) != 0:
+			gotLegs = expandProfileLegs(name)
+		case len(m.Profile) == 0 && len(m.Mode) == 0 && len(m.Exclude) == 0 && len(m.Shard) == 0 && len(m.Part) == 0 && len(m.Check) == 0:
+			gotLegs = []string{"single"}
+		default:
+			t.Fatalf("CI Kind job %s has malformed matrix dimensions", name)
+		}
+		if !slices.Equal(gotLegs, wantLegs) {
+			t.Fatalf("CI Kind job %s expanded matrix legs changed: got %v, want %v", name, gotLegs, wantLegs)
+		}
+		totalKindLegs += len(gotLegs)
+	}
+	if totalKindLegs != 20 {
+		t.Fatalf("expanded Kind consumer leg count changed vs 0225dc4: got %d, want 20", totalKindLegs)
+	}
+	totalExpandedLegs := totalKindLegs + len(diagnostics.Strategy.Matrix.Check) + len(races.Strategy.Matrix.Shard) + len(envtest.Strategy.Matrix.Part) + 3 // kind-images, go-policy-checks, go-and-policy
+	if totalExpandedLegs != 95 {
+		t.Fatalf("total expanded workflow leg count changed: got %d, want 95", totalExpandedLegs)
 	}
 	var command string
 	for _, step := range gate.Steps {
-		if step.Env["KIND_IMAGES_RESULT"] == "${{ needs.kind-images.result }}" && step.Env["INSTALLER_DIAGNOSTICS_RESULT"] == "${{ needs.installer-diagnostics.result }}" && step.Env["ENGINE_RACE_RESULT"] == "${{ needs.install-engine-race.result }}" && step.Env["INSTALL_ADMISSION_RESULT"] == "${{ needs.kind-install-admission.result }}" && step.Env["INSTALL_BINARY_RESULT"] == "${{ needs.kind-install-binary.result }}" && step.Env["INSTALL_BASELINE_RESULT"] == "${{ needs.kind-install-baseline.result }}" && step.Env["INSTALL_ADMISSION_V3_RESULT"] == "${{ needs.kind-install-admission-v3.result }}" && step.Env["INSTALL_PRECONTROLLER_RESULT"] == "${{ needs.kind-install-precontroller.result }}" && step.Env["INSTALL_GC_RESULT"] == "${{ needs.kind-install-gc.result }}" && step.Env["INSTALL_AUTH_RESULT"] == "${{ needs.kind-install-auth.result }}" && step.Env["API_RESULT"] == "${{ needs.kind-api.result }}" && step.Env["RECOVERY_RESULT"] == "${{ needs.kind-recovery.result }}" && step.Env["ENVTEST_RESULT"] == "${{ needs.envtest.result }}" && step.Env["LIFECYCLE_RESULT"] == "${{ needs.kind-lifecycle.result }}" && step.Env["GO_POLICY_CHECKS_RESULT"] == "${{ needs.go-policy-checks.result }}" {
+		if len(step.Env) == 15 && step.Env["KIND_IMAGES_RESULT"] == "${{ needs.kind-images.result }}" && step.Env["INSTALLER_DIAGNOSTICS_RESULT"] == "${{ needs.installer-diagnostics.result }}" && step.Env["ENGINE_RACE_RESULT"] == "${{ needs.install-engine-race.result }}" && step.Env["INSTALL_ADMISSION_RESULT"] == "${{ needs.kind-install-admission.result }}" && step.Env["INSTALL_BINARY_RESULT"] == "${{ needs.kind-install-binary.result }}" && step.Env["INSTALL_BASELINE_RESULT"] == "${{ needs.kind-install-baseline.result }}" && step.Env["INSTALL_ADMISSION_V3_RESULT"] == "${{ needs.kind-install-admission-v3.result }}" && step.Env["INSTALL_PRECONTROLLER_RESULT"] == "${{ needs.kind-install-precontroller.result }}" && step.Env["INSTALL_GC_RESULT"] == "${{ needs.kind-install-gc.result }}" && step.Env["INSTALL_AUTH_RESULT"] == "${{ needs.kind-install-auth.result }}" && step.Env["API_RESULT"] == "${{ needs.kind-api.result }}" && step.Env["RECOVERY_RESULT"] == "${{ needs.kind-recovery.result }}" && step.Env["ENVTEST_RESULT"] == "${{ needs.envtest.result }}" && step.Env["LIFECYCLE_RESULT"] == "${{ needs.kind-lifecycle.result }}" && step.Env["GO_POLICY_CHECKS_RESULT"] == "${{ needs.go-policy-checks.result }}" {
 			if step.If != "" || step.ContinueOnError != nil {
 				t.Fatal("required dependency assertion can be skipped or tolerate failure")
 			}
@@ -566,5 +713,230 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 				t.Fatalf("failed/cancelled/skipped/absent %s proof became a green required gate", variable)
 			}
 		}
+	}
+	// Also prove every required *_RESULT variable fails closed when completely
+	// absent (unset) from the process environment while all others are "success".
+	allResultVariables := []string{"INSTALLER_DIAGNOSTICS_RESULT", "ENGINE_RACE_RESULT", "INSTALL_ADMISSION_RESULT", "INSTALL_BINARY_RESULT", "INSTALL_BASELINE_RESULT", "INSTALL_GC_RESULT", "INSTALL_ADMISSION_V3_RESULT", "INSTALL_PRECONTROLLER_RESULT", "INSTALL_AUTH_RESULT", "API_RESULT", "RECOVERY_RESULT", "ENVTEST_RESULT", "LIFECYCLE_RESULT", "GO_POLICY_CHECKS_RESULT", "KIND_IMAGES_RESULT"}
+	var baseEnv []string
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if !slices.Contains(allResultVariables, name) {
+			baseEnv = append(baseEnv, entry)
+		}
+	}
+	for _, omitted := range allResultVariables {
+		c := exec.Command("sh", "-e", "-c", command)
+		c.Env = slices.Clone(baseEnv)
+		for _, other := range allResultVariables {
+			if other != omitted {
+				c.Env = append(c.Env, other+"=success")
+			}
+		}
+		if c.Run() == nil {
+			t.Fatalf("unset/absent %s environment variable became a green required gate", omitted)
+		}
+	}
+	verifyKindRuntimeImagesScriptAndFixtures(t)
+}
+
+func verifyKindRuntimeImagesScriptAndFixtures(t *testing.T) {
+	t.Helper()
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal("repository root unavailable")
+	}
+	script := filepath.Join(root, "hack", "kind-runtime-images.sh")
+	workspace := t.TempDir()
+	random := make([]byte, 6)
+	if _, err := rand.Read(random); err != nil {
+		t.Fatal("fixture identity unavailable")
+	}
+	suffix := hex.EncodeToString(random)
+	repo := filepath.Join(workspace, "repo")
+	if os.Mkdir(repo, 0700) != nil || os.WriteFile(filepath.Join(repo, "README"), []byte("exact\n"), 0600) != nil {
+		t.Fatal("write git fixture")
+	}
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"config", "user.email", "test@gobha.me"},
+		{"config", "user.name", "Test"},
+		{"add", "README"},
+		{"commit", "-q", "-m", "init"},
+	} {
+		if out, err := exec.CommandContext(t.Context(), "git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git fixture %v: %s", args, out)
+		}
+	}
+	shaOut, err := exec.CommandContext(t.Context(), "git", "-C", repo, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse: %s", shaOut)
+	}
+	sha := strings.TrimSpace(string(shaOut))
+	epochOut, err := exec.CommandContext(t.Context(), "git", "-C", repo, "show", "-s", "--format=%ct", "HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git epoch: %s", epochOut)
+	}
+	epoch := strings.TrimSpace(string(epochOut))
+
+	// 1. Invalid subcommand and arity checks fail closed.
+	for _, args := range [][]string{
+		nil,
+		{"unknown"},
+		{"export", repo},
+		{"load", repo},
+		{"prepare", "api", repo, sha, epoch, "false"},
+		{"prepare", "unsupported", repo, sha, epoch, "false", "127.0.0.1:0/arcadectl-api:bad-" + suffix},
+	} {
+		if exec.CommandContext(t.Context(), "bash", append([]string{script}, args...)...).Run() == nil {
+			t.Fatalf("kind-runtime-images.sh accepted invalid arguments: %v", args)
+		}
+	}
+
+	// 2. Dirty tree on export fails closed before touching Docker.
+	if os.WriteFile(filepath.Join(repo, "dirty"), []byte("dirty\n"), 0600) != nil {
+		t.Fatal("write dirty file")
+	}
+	out, err := exec.CommandContext(t.Context(), "bash", script, "export", repo, filepath.Join(workspace, "dirty-export")).CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "export requires a clean exact-source checkout") {
+		t.Fatalf("dirty export did not fail closed: err=%v out=%s", err, out)
+	}
+	if os.Remove(filepath.Join(repo, "dirty")) != nil {
+		t.Fatal("clean dirty file")
+	}
+
+	// 3. Bundle load checksum verification (SHA256SUMS) and source-sha/epoch checks fail closed.
+	bundle := filepath.Join(workspace, "bundle")
+	if os.Mkdir(bundle, 0700) != nil {
+		t.Fatal("create bundle")
+	}
+	missingDigest := "sha256:" + strings.Repeat("0", 64)
+	writeBundle := func(bundleSHA, bundleEpoch, apiID, controllerID, tarBody string) {
+		if os.WriteFile(filepath.Join(bundle, "images.tar"), []byte(tarBody), 0600) != nil ||
+			os.WriteFile(filepath.Join(bundle, "source-sha"), []byte(bundleSHA+"\n"), 0600) != nil ||
+			os.WriteFile(filepath.Join(bundle, "source-epoch"), []byte(bundleEpoch+"\n"), 0600) != nil ||
+			os.WriteFile(filepath.Join(bundle, "api.id"), []byte(apiID+"\n"), 0600) != nil ||
+			os.WriteFile(filepath.Join(bundle, "controller.id"), []byte(controllerID+"\n"), 0600) != nil {
+			t.Fatal("write bundle files")
+		}
+		sumCmd := exec.CommandContext(t.Context(), "sha256sum", "images.tar", "source-sha", "source-epoch", "api.id", "controller.id")
+		sumCmd.Dir = bundle
+		sums, err := sumCmd.Output()
+		if err != nil || os.WriteFile(filepath.Join(bundle, "SHA256SUMS"), sums, 0600) != nil {
+			t.Fatal("write SHA256SUMS")
+		}
+	}
+	for _, target := range []string{"images.tar", "source-sha", "source-epoch", "api.id", "controller.id", "SHA256SUMS"} {
+		writeBundle(sha, epoch, missingDigest, missingDigest, "archive-bytes")
+		if os.WriteFile(filepath.Join(bundle, target), []byte("corrupted\n"), 0600) != nil {
+			t.Fatal("corrupt bundle file")
+		}
+		if exec.CommandContext(t.Context(), "bash", script, "load", repo, bundle).Run() == nil {
+			t.Fatalf("load accepted corrupted %s checksum", target)
+		}
+	}
+	writeBundle(strings.Repeat("a", 40), epoch, missingDigest, missingDigest, "archive-bytes")
+	if out, err := exec.CommandContext(t.Context(), "bash", script, "load", repo, bundle).CombinedOutput(); err == nil || !strings.Contains(string(out), "bundle belongs to another commit") {
+		t.Fatalf("load accepted foreign commit SHA: err=%v out=%s", err, out)
+	}
+	writeBundle(sha, "1700000001", missingDigest, missingDigest, "archive-bytes")
+	if out, err := exec.CommandContext(t.Context(), "bash", script, "load", repo, bundle).CombinedOutput(); err == nil || !strings.Contains(string(out), "bundle timestamp mismatch") {
+		t.Fatalf("load accepted foreign commit timestamp: err=%v out=%s", err, out)
+	}
+
+	// 4. Shared prepare fails closed on dirty tree, SHA/epoch mismatch, invalid digest format, missing image, and metadata drift, and succeeds on exact digest match.
+	writeBundle(sha, epoch, missingDigest, missingDigest, "archive-bytes")
+	runPrepare := func(role, candSHA, candEpoch, dirty, tag string) ([]byte, error) {
+		c := exec.CommandContext(t.Context(), "bash", script, "prepare", role, repo, candSHA, candEpoch, dirty, tag)
+		c.Env = append(os.Environ(), "ARCADECTL_KIND_IMAGE_DIR="+bundle)
+		return c.CombinedOutput()
+	}
+	ownedTag := "127.0.0.1:0/arcadectl-api:gate-" + suffix
+	if out, err := runPrepare("api", sha, epoch, "true", ownedTag); err == nil || !strings.Contains(string(out), "shared images require a clean consumer checkout") {
+		t.Fatalf("prepare accepted dirty consumer checkout: err=%v out=%s", err, out)
+	}
+	if out, err := runPrepare("api", strings.Repeat("a", 40), epoch, "false", ownedTag); err == nil || !strings.Contains(string(out), "shared source mismatch") {
+		t.Fatalf("prepare accepted mismatched source SHA: err=%v out=%s", err, out)
+	}
+	if out, err := runPrepare("api", sha, "1700000001", "false", ownedTag); err == nil || !strings.Contains(string(out), "shared timestamp mismatch") {
+		t.Fatalf("prepare accepted mismatched source epoch: err=%v out=%s", err, out)
+	}
+	if os.WriteFile(filepath.Join(bundle, "api.id"), []byte("arcadectl-api:mutable-tag\n"), 0600) != nil {
+		t.Fatal("write non-digest api.id")
+	}
+	if out, err := runPrepare("api", sha, epoch, "false", ownedTag); err == nil || !strings.Contains(string(out), "invalid shared image identity") {
+		t.Fatalf("prepare accepted non-digest image identity: err=%v out=%s", err, out)
+	}
+	if os.WriteFile(filepath.Join(bundle, "api.id"), []byte(missingDigest+"\n"), 0600) != nil {
+		t.Fatal("restore missingDigest api.id")
+	}
+	if _, err := runPrepare("api", sha, epoch, "false", ownedTag); err == nil {
+		t.Fatal("prepare accepted a missing image digest")
+	}
+
+	// Build task-owned scratch control images to verify digest + label/user/entrypoint checks in verify_image.
+	var cleanupTags []struct{ tag, id string }
+	t.Cleanup(func() {
+		for _, item := range cleanupTags {
+			out, err := exec.Command("docker", "image", "inspect", "--format", "{{.Id}}", item.tag).CombinedOutput()
+			if err == nil && item.id != "" && strings.TrimSpace(string(out)) == item.id {
+				_ = exec.Command("docker", "image", "rm", item.tag).Run()
+			}
+		}
+	})
+	buildScratch := func(name, rev, dirtyLabel, user, entrypoint string) string {
+		dir := filepath.Join(workspace, "img-"+name)
+		tag := "127.0.0.1:0/arcadectl-api:" + name + "-" + suffix
+		df := "FROM scratch\nLABEL org.opencontainers.image.revision=" + rev + " arcade.gobha.me/source-dirty=" + dirtyLabel + "\nUSER " + user + "\nENTRYPOINT [\"" + entrypoint + "\"]\n"
+		if os.Mkdir(dir, 0700) != nil || os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(df), 0600) != nil {
+			t.Fatal("write scratch image fixture")
+		}
+		if out, err := exec.CommandContext(t.Context(), "docker", "build", "--platform", "linux/amd64", "-q", "-t", tag, dir).CombinedOutput(); err != nil {
+			t.Fatalf("build scratch image %s: %s", name, out)
+		}
+		idOut, err := exec.CommandContext(t.Context(), "docker", "image", "inspect", "--format", "{{.Id}}", tag).CombinedOutput()
+		if err != nil {
+			t.Fatalf("inspect scratch image %s: %s", name, idOut)
+		}
+		id := strings.TrimSpace(string(idOut))
+		cleanupTags = append(cleanupTags, struct{ tag, id string }{tag, id})
+		return id
+	}
+	for _, bad := range []struct {
+		name, rev, dirty, user, entrypoint, wantErr string
+	}{
+		{"bad-rev", strings.Repeat("c", 40), "false", "65532:65532", "/arcadectl-api", "source mismatch"},
+		{"bad-dirty", sha, "true", "65532:65532", "/arcadectl-api", "source state mismatch"},
+		{"bad-user", sha, "false", "0:0", "/arcadectl-api", "user mismatch"},
+		{"bad-entry", sha, "false", "65532:65532", "/arcadectl-controller", "entrypoint mismatch"},
+	} {
+		id := buildScratch(bad.name, bad.rev, bad.dirty, bad.user, bad.entrypoint)
+		if os.WriteFile(filepath.Join(bundle, "api.id"), []byte(id+"\n"), 0600) != nil {
+			t.Fatal("write bad api.id")
+		}
+		if out, err := runPrepare("api", sha, epoch, "false", ownedTag); err == nil || !strings.Contains(string(out), bad.wantErr) {
+			t.Fatalf("prepare accepted %s image: err=%v out=%s", bad.name, err, out)
+		}
+	}
+	validID := buildScratch("valid", sha, "false", "65532:65532", "/arcadectl-api")
+	cleanupTags = append(cleanupTags, struct{ tag, id string }{ownedTag, validID})
+	if os.WriteFile(filepath.Join(bundle, "api.id"), []byte(validID+"\n"), 0600) != nil {
+		t.Fatal("write valid api.id")
+	}
+	if out, err := runPrepare("api", sha, epoch, "false", ownedTag); err != nil {
+		t.Fatalf("prepare refused valid exact-source digest image: %v %s", err, out)
+	}
+
+	// 5. Verify Kind fixture files wire hack/kind-runtime-images.sh prepare and post-prepare digest/label checks.
+	apiKindSource, err := os.ReadFile(filepath.Join(root, "internal", "install", "api_kind_test.go"))
+	if err != nil || !strings.Contains(string(apiKindSource), `prepareKindAPIImage(ctx, newCommand, root, filepath.Join(root, "hack", "kind-runtime-images.sh"), sha, epoch, dirty, imageTag)`) {
+		t.Fatal("api_kind_test.go does not wire exact-source Kind runtime image preparation")
+	}
+	targetAuthSource, err := os.ReadFile(filepath.Join(root, "internal", "installengine", "target_auth_kind_test.go"))
+	if err != nil || !strings.Contains(string(targetAuthSource), `prepareTargetKindRuntimeImage(ctx, command, root, filepath.Join(root, "hack", "kind-runtime-images.sh"), repository, dockerfile, sourceRoot, sourceSHA, sourceEpoch, sourceDirty, tag)`) {
+		t.Fatal("target_auth_kind_test.go does not wire exact-source Kind runtime image preparation")
+	}
+	lifecycleScript, err := os.ReadFile(filepath.Join(root, "hack", "test-kind-lifecycle.sh"))
+	if err != nil || !strings.Contains(string(lifecycleScript), `run_bounded 360 bash "$repository_root/hack/kind-runtime-images.sh" prepare controller`) {
+		t.Fatal("test-kind-lifecycle.sh does not wire exact-source controller image preparation")
 	}
 }

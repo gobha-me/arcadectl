@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"os/exec"
@@ -261,20 +262,13 @@ func targetKindFixtureImagesWithOwnedNode(t *testing.T, nodeImage string, withCo
 		images = append(images, ownedImage{tag: tag}) // cleanup armed before build
 		if sourceRoot == root {
 			t.Log("preparing exact-source digest-pinned " + repository + " image")
-			role := strings.TrimPrefix(repository, "arcadectl-")
-			public("", "bash", filepath.Join(root, "hack", "kind-runtime-images.sh"), "prepare", role, sourceRoot, sourceSHA, sourceEpoch, sourceDirty, tag)
 		} else {
 			t.Log("building digest-pinned " + repository + " image with serialized, concurrency-limited Go build")
-			args := []string{"docker", "build", "--file", filepath.Join(sourceRoot, dockerfile), "--build-arg", "VCS_REF=" + sourceSHA, "--build-arg", "SOURCE_DATE_EPOCH=" + sourceEpoch, "--build-arg", "SOURCE_DIRTY=" + sourceDirty}
-			if dockerfile == "Dockerfile" {
-				args = append(args, "--build-arg", "LIFECYCLE_TEST=false")
-			}
-			args = append(args, "--tag", tag, sourceRoot)
-			public("", args...)
 		}
-		images[len(images)-1].id = public("", "docker", "image", "inspect", "--format", "{{.Id}}", tag)
-		if public("", "docker", "image", "inspect", "--format", "{{index .Config.Labels \"org.opencontainers.image.revision\"}}", tag) != sourceSHA || public("", "docker", "image", "inspect", "--format", "{{index .Config.Labels \"arcade.gobha.me/source-dirty\"}}", tag) != sourceDirty || public("", "docker", "image", "inspect", "--format", "{{.Config.User}}", tag) != "65532:65532" {
-			t.Fatal("owned image source/user metadata refused")
+		imageID, err := prepareTargetKindRuntimeImage(ctx, command, root, filepath.Join(root, "hack", "kind-runtime-images.sh"), repository, dockerfile, sourceRoot, sourceSHA, sourceEpoch, sourceDirty, tag)
+		images[len(images)-1].id = imageID
+		if err != nil {
+			t.Fatal(err)
 		}
 		public("", "docker", "push", tag)
 		var digests []string
@@ -461,5 +455,148 @@ func TestKindTargetAuthenticatedNativeKubelet(t *testing.T) {
 				t.Fatal("native authentication changed the original journal")
 			}
 		})
+	}
+}
+
+func prepareTargetKindRuntimeImage(ctx context.Context, command func(context.Context, ...string) *exec.Cmd, root, script, repository, dockerfile, sourceRoot, sourceSHA, sourceEpoch, sourceDirty, tag string) (string, error) {
+	if sourceRoot == root {
+		role := strings.TrimPrefix(repository, "arcadectl-")
+		if output, err := command(ctx, "bash", script, "prepare", role, sourceRoot, sourceSHA, sourceEpoch, sourceDirty, tag).CombinedOutput(); err != nil {
+			return "", errors.New("public fixture step bash failed: " + strings.TrimSpace(string(output)))
+		}
+	} else {
+		args := []string{"docker", "build", "--file", filepath.Join(sourceRoot, dockerfile), "--build-arg", "VCS_REF=" + sourceSHA, "--build-arg", "SOURCE_DATE_EPOCH=" + sourceEpoch, "--build-arg", "SOURCE_DIRTY=" + sourceDirty}
+		if dockerfile == "Dockerfile" {
+			args = append(args, "--build-arg", "LIFECYCLE_TEST=false")
+		}
+		args = append(args, "--tag", tag, sourceRoot)
+		if output, err := command(ctx, args...).CombinedOutput(); err != nil {
+			return "", errors.New("public fixture step docker failed: " + strings.TrimSpace(string(output)))
+		}
+	}
+	inspect := func(format string) (string, error) {
+		output, err := command(ctx, "docker", "image", "inspect", "--format", format, tag).CombinedOutput()
+		if err != nil {
+			return "", errors.New("public fixture step docker failed: " + strings.TrimSpace(string(output)))
+		}
+		return strings.TrimSpace(string(output)), nil
+	}
+	id, err := inspect("{{.Id}}")
+	if err != nil {
+		return "", err
+	}
+	revision, err := inspect("{{index .Config.Labels \"org.opencontainers.image.revision\"}}")
+	if err != nil {
+		return id, err
+	}
+	dirtyLabel, err := inspect("{{index .Config.Labels \"arcade.gobha.me/source-dirty\"}}")
+	if err != nil {
+		return id, err
+	}
+	user, err := inspect("{{.Config.User}}")
+	if err != nil {
+		return id, err
+	}
+	if !strings.HasPrefix(id, "sha256:") || len(id) != len("sha256:")+64 || revision != sourceSHA || dirtyLabel != sourceDirty || user != "65532:65532" {
+		return id, errors.New("owned image source/user metadata refused")
+	}
+	return id, nil
+}
+
+func TestTargetKindImagePreparationFailsClosedWithoutCluster(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal("repository root unavailable")
+	}
+	script := filepath.Join(root, "hack", "kind-runtime-images.sh")
+	workspace := t.TempDir()
+	random := make([]byte, 6)
+	if _, err := rand.Read(random); err != nil {
+		t.Fatal("fixture identity unavailable")
+	}
+	suffix := hex.EncodeToString(random)
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	epoch := "1700000000"
+	missingDigest := "sha256:" + strings.Repeat("0", 64)
+	bundle := filepath.Join(workspace, "bundle")
+	if os.Mkdir(bundle, 0700) != nil ||
+		os.WriteFile(filepath.Join(bundle, "source-sha"), []byte(sha+"\n"), 0600) != nil ||
+		os.WriteFile(filepath.Join(bundle, "source-epoch"), []byte(epoch+"\n"), 0600) != nil ||
+		os.WriteFile(filepath.Join(bundle, "api.id"), []byte(missingDigest+"\n"), 0600) != nil ||
+		os.WriteFile(filepath.Join(bundle, "controller.id"), []byte(missingDigest+"\n"), 0600) != nil {
+		t.Fatal("write bundle fixture")
+	}
+	newBundleCommand := func(dir string) func(context.Context, ...string) *exec.Cmd {
+		return func(ctx context.Context, args ...string) *exec.Cmd {
+			c := exec.CommandContext(ctx, args[0], args[1:]...)
+			c.Dir = root
+			c.Env = append(os.Environ(), "ARCADECTL_KIND_IMAGE_DIR="+dir)
+			return c
+		}
+	}
+	noopScript := filepath.Join(workspace, "noop.sh")
+	if os.WriteFile(noopScript, []byte("#!/usr/bin/env bash\nexit 0\n"), 0700) != nil {
+		t.Fatal("write noop script")
+	}
+	for _, item := range []struct {
+		repository, dockerfile, role string
+	}{
+		{"arcadectl-api", "Dockerfile.api", "api"},
+		{"arcadectl-controller", "Dockerfile", "controller"},
+	} {
+		missingTag := "127.0.0.1:0/" + item.repository + ":missing-" + suffix
+		if _, err := prepareTargetKindRuntimeImage(t.Context(), newBundleCommand(bundle), root, script, item.repository, item.dockerfile, root, sha, epoch, "false", missingTag); err == nil {
+			t.Fatalf("shared %s bundle accepted a missing image digest", item.role)
+		}
+		if _, err := prepareTargetKindRuntimeImage(t.Context(), newBundleCommand(bundle), root, script, item.repository, item.dockerfile, root, sha, epoch, "true", missingTag); err == nil {
+			t.Fatalf("shared %s bundle accepted a dirty consumer checkout", item.role)
+		}
+		if _, err := prepareTargetKindRuntimeImage(t.Context(), newBundleCommand(bundle), root, script, item.repository, item.dockerfile, root, strings.Repeat("a", 40), epoch, "false", missingTag); err == nil {
+			t.Fatalf("shared %s bundle accepted a mismatched commit SHA", item.role)
+		}
+		if _, err := prepareTargetKindRuntimeImage(t.Context(), newBundleCommand(bundle), root, script, item.repository, item.dockerfile, root, sha, "1700000001", "false", missingTag); err == nil {
+			t.Fatalf("shared %s bundle accepted a mismatched commit timestamp", item.role)
+		}
+		if _, err := prepareTargetKindRuntimeImage(t.Context(), newBundleCommand(""), root, noopScript, item.repository, item.dockerfile, root, sha, epoch, "false", missingTag); err == nil {
+			t.Fatalf("skipped %s image preparation script passed post-prepare inspection", item.role)
+		}
+		dockerfileDir := filepath.Join(workspace, "image-"+item.role)
+		sourceTag := "127.0.0.1:0/" + item.repository + ":source-" + suffix
+		ownedTag := "127.0.0.1:0/" + item.repository + ":owned-" + suffix
+		var createdID string
+		t.Cleanup(func() {
+			for _, tag := range []string{ownedTag, sourceTag} {
+				out, err := exec.Command("docker", "image", "inspect", "--format", "{{.Id}}", tag).CombinedOutput()
+				if err == nil && createdID != "" && strings.TrimSpace(string(out)) == createdID {
+					_ = exec.Command("docker", "image", "rm", tag).Run()
+				}
+			}
+		})
+		dockerfile := "FROM scratch\nLABEL org.opencontainers.image.revision=" + sha + " arcade.gobha.me/source-dirty=false\nUSER 65532:65532\nENTRYPOINT [\"/" + item.repository + "\"]\n"
+		if os.Mkdir(dockerfileDir, 0700) != nil || os.WriteFile(filepath.Join(dockerfileDir, "Dockerfile"), []byte(dockerfile), 0600) != nil {
+			t.Fatal("write scratch Dockerfile")
+		}
+		if out, err := exec.CommandContext(t.Context(), "docker", "build", "--platform", "linux/amd64", "-q", "-t", sourceTag, dockerfileDir).CombinedOutput(); err != nil {
+			t.Fatalf("build scratch control image: %s", out)
+		}
+		idOut, err := exec.CommandContext(t.Context(), "docker", "image", "inspect", "--format", "{{.Id}}", sourceTag).CombinedOutput()
+		if err != nil {
+			t.Fatalf("inspect scratch control image: %s", idOut)
+		}
+		createdID = strings.TrimSpace(string(idOut))
+		if os.WriteFile(filepath.Join(bundle, item.role+".id"), []byte(createdID+"\n"), 0600) != nil {
+			t.Fatal("write valid bundle role id")
+		}
+		gotID, err := prepareTargetKindRuntimeImage(t.Context(), newBundleCommand(bundle), root, script, item.repository, item.dockerfile, root, sha, epoch, "false", ownedTag)
+		if err != nil || gotID != createdID {
+			t.Fatalf("valid shared %s image preparation failed: id=%s err=%v", item.role, gotID, err)
+		}
+		if _, err := prepareTargetKindRuntimeImage(t.Context(), newBundleCommand(""), root, noopScript, item.repository, item.dockerfile, root, strings.Repeat("b", 40), epoch, "false", ownedTag); err == nil {
+			t.Fatalf("bypassed script with drifted %s revision metadata passed Go-side inspection", item.role)
+		}
+	}
+	// Predecessor sourceRoot != root path invokes docker build and fails closed when sourceRoot is missing.
+	if _, err := prepareTargetKindRuntimeImage(t.Context(), newBundleCommand(bundle), root, noopScript, "arcadectl-api-predecessor", "Dockerfile.api", filepath.Join(workspace, "missing-predecessor"), sha, epoch, "false", "127.0.0.1:0/arcadectl-api-predecessor:missing-"+suffix); err == nil {
+		t.Fatal("predecessor image build accepted a missing source tree")
 	}
 }
