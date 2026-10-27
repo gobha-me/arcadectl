@@ -263,8 +263,12 @@ func TestInstallScriptAppliesAnchorsThenController(t *testing.T) {
 	t.Parallel()
 
 	fakeKubectl, logPath := writeFakeKubectl(t)
+	tmpDir := t.TempDir()
+	if err := os.Chmod(tmpDir, 0o700); err != nil {
+		t.Fatalf("chmod temporary directory: %v", err)
+	}
 	command := exec.CommandContext(context.Background(), filepath.Join(repositoryRoot(t), "hack", "install.sh"), testControllerImage)
-	command.Env = append(os.Environ(), "KUBECTL="+fakeKubectl, "KUBECTL_LOG="+logPath)
+	command.Env = append(os.Environ(), "KUBECTL="+fakeKubectl, "KUBECTL_LOG="+logPath, "TMPDIR="+tmpDir)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("install script failed: %v\n%s", err, output)
 	}
@@ -280,7 +284,8 @@ func TestInstallScriptAppliesAnchorsThenController(t *testing.T) {
 		"wait --for=condition=Established customresourcedefinition/gamerestores.arcade.gobha.me --timeout=60s",
 		"wait --for=condition=Established customresourcedefinition/gamedestroys.arcade.gobha.me --timeout=60s",
 		"wait --for=condition=Established customresourcedefinition/arcadeoperations.arcade.gobha.me --timeout=60s",
-		"apply -f /tmp/",
+		// Host TMPDIR is not always /tmp.
+		"apply -f " + tmpDir + string(os.PathSeparator),
 		"rollout status deployment/arcadectl-controller --namespace arcadectl-system --timeout=120s",
 		"rollout status deployment/arcadectl-destroy-controller --namespace arcadectl-system --timeout=120s",
 	} {
