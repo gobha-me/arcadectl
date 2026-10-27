@@ -511,7 +511,7 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 	}
 	for _, wantMakefileFragment := range []string{
 		"GREMLINS_EFFICACY := 90\n",
-		"GREMLINS_MCOVER := 70\n",
+		"GREMLINS_MCOVER := 90\n",
 		"GREMLINS_TIMEOUT_COEFFICIENT := 10\n",
 		"for package in ./internal/adminauth ./internal/receiptid ./internal/catalog; do",
 		"--threshold-efficacy $(GREMLINS_EFFICACY)",
