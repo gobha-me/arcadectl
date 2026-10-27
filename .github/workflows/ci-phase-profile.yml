@@ -1,0 +1,289 @@
+name: Native phase CPU profile
+
+on:
+  pull_request:
+    types: [opened]
+    paths: [.github/workflows/ci-phase-profile.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-phase-profile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  profile:
+    name: Native phase CPU profile 137 warm
+    if: github.run_attempt == 1 && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'perf/issue-89-native-phase-profile'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 1GiB
+      ARCADECTL_PROFILE_SOURCE: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Check out exact profiling source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
+      - name: Verify workflow-only source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$ARCADECTL_PROFILE_SOURCE"
+          test "$(git show -s --format=%P HEAD)" = 40a35c3ee44b6e2e63eb3ebd1e8f44035ea9bfaf
+          test "$(git diff --name-status HEAD^ HEAD)" = $'A\t.github/workflows/ci-phase-profile.yml'
+          test -z "$(git status --porcelain)"
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Profile one unchanged full native proof and emit closed CPU tables
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          test "$(git rev-parse HEAD)" = "$ARCADECTL_PROFILE_SOURCE"
+          test -z "$(git status --porcelain)"
+          if ! temp_parent=$(cd "$RUNNER_TEMP" 2>/dev/null && pwd -P); then
+            printf '%s\n' 'NATIVE_PHASE_PROFILE_SETUP unavailable'
+            exit 1
+          fi
+          if ! profile_dir=$(mktemp -d "$temp_parent/arcadectl-phase-profile.XXXXXXXX" 2>/dev/null); then
+            printf '%s\n' 'NATIVE_PHASE_PROFILE_SETUP unavailable'
+            exit 1
+          fi
+          cleanup() {
+            status=$?
+            trap - EXIT
+            set +e
+            python3 -I - "$temp_parent" "$profile_dir" <<'CLEANUP'
+          import os, pathlib, shutil, stat, sys
+          parent, root = map(pathlib.Path, sys.argv[1:])
+          cleaned = False
+          try:
+              s = root.lstat()
+              marker = root / 'JOINED'
+              m = marker.lstat()
+              safe = root.parent == parent and root.resolve() == root and root.name.startswith('arcadectl-phase-profile.') and stat.S_ISDIR(s.st_mode) and s.st_uid == os.geteuid() and stat.S_IMODE(s.st_mode) == 0o700 and stat.S_ISREG(m.st_mode) and m.st_uid == os.geteuid() and m.st_nlink == 1 and marker.read_bytes() == b'joined\n'
+              if safe:
+                  shutil.rmtree(root)
+                  cleaned = True
+          except BaseException:
+              pass
+          if not cleaned:
+              print('NATIVE_PHASE_PROFILE_CLEANUP unavailable')
+              raise SystemExit(1)
+          CLEANUP
+            cleanup_status=$?
+            if [ "$status" -eq 0 ] && [ "$cleanup_status" -ne 0 ]; then status=1; fi
+            exit "$status"
+          }
+          trap cleanup EXIT
+          python3 -I - "$profile_dir" <<'PROFILE'
+          import decimal, json, os, pathlib, re, selectors, signal, stat, subprocess, sys, time
+
+          ACTIVE = set()
+          ROOT_TEST = 'TestKindAdmissionEffectiveV3WithBaseline'
+          TESTS = (ROOT_TEST, ROOT_TEST + '/kubernetes-1.37.0', ROOT_TEST + '/kubernetes-1.37.0/warm')
+          SELECTOR = '^TestKindAdmissionEffectiveV3WithBaseline$/^kubernetes-1[.]37[.]0$/^warm$'
+          SAFE = 9007199254740991
+
+          def require(value):
+              if not value:
+                  raise RuntimeError('closed native profile refusal')
+
+          def stop_join(process):
+              saved = {n: signal.signal(n, signal.SIG_IGN) for n in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+              try:
+                  try: os.killpg(process.pid, signal.SIGTERM)
+                  except ProcessLookupError: pass
+                  try: process.wait(timeout=2)
+                  except subprocess.TimeoutExpired:
+                      try: os.killpg(process.pid, signal.SIGKILL)
+                      except ProcessLookupError: pass
+                      process.wait(timeout=2)
+                  try: os.killpg(process.pid, signal.SIGKILL)
+                  except ProcessLookupError: pass
+                  require(process.poll() is not None)
+              finally:
+                  for n, handler in saved.items(): signal.signal(n, handler)
+
+          def capture(command, environment, seconds, limit):
+              output = [bytearray(), bytearray()]
+              selector, process, reason = selectors.DefaultSelector(), None, None
+              started = time.monotonic()
+              try:
+                  process = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+                  ACTIVE.add(process)
+                  selector.register(process.stdout, selectors.EVENT_READ, 0)
+                  selector.register(process.stderr, selectors.EVENT_READ, 1)
+                  while selector.get_map() or process.poll() is None:
+                      if seconds is not None and time.monotonic() - started >= seconds:
+                          reason = 'timeout'; break
+                      if not selector.get_map(): time.sleep(0.05)
+                      for key, _ in selector.select(0.1) if selector.get_map() else []:
+                          chunk = os.read(key.fd, 65536)
+                          if not chunk:
+                              selector.unregister(key.fileobj); continue
+                          target = output[key.data]
+                          if len(target) + len(chunk) > limit:
+                              reason = 'output-limit'; break
+                          target.extend(chunk)
+                      if reason: break
+              finally:
+                  try:
+                      if process is not None:
+                          stop_join(process); ACTIVE.remove(process)
+                  finally:
+                      selector.close()
+                      if process is not None:
+                          process.stdout.close(); process.stderr.close()
+              return process.returncode, reason, output
+
+          def native_census(body):
+              text = bytes(body).decode('utf-8', 'strict')
+              require(len(text.splitlines()) <= 50000 and all(len(x) <= 65536 for x in text.splitlines()))
+              require(not any(x in text for x in ('--- SKIP:', 'no tests to run', 'WARNING: DATA RACE', 'panic:', 'fatal error:', 'test timed out')))
+              runs = re.findall(r'^=== RUN\s+(\S+)$', text, re.M)
+              passes = re.findall(r'^\s*--- PASS: (\S+) \(([0-9]+(?:\.[0-9]+)?)s\)$', text, re.M)
+              require(len(runs) == 3 and set(runs) == set(TESTS) and len(passes) == 3 and {x[0] for x in passes} == set(TESTS))
+              require(text.count('running all 55 production cases, persistent setups, original-only cleanup and retirement') == 1)
+              require(text.splitlines().count('PASS') == 1 and not re.search(r'^\s*--- FAIL:|^FAIL\b', text, re.M))
+              require(len(re.findall(r'^ok\s+github\.com/gobha-me/arcadectl/internal/installengine\s+[0-9]+(?:\.[0-9]+)?s$', text, re.M)) == 1)
+              wall = decimal.Decimal(dict(passes)[ROOT_TEST]) * 1000000000
+              require(wall == int(wall) and 0 < wall <= SAFE)
+              return int(wall)
+
+          def artifact(file, maximum):
+              s = file.lstat()
+              require(stat.S_ISREG(s.st_mode) and s.st_uid == os.geteuid() and s.st_nlink == 1 and 0 < s.st_size <= maximum)
+              return (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
+
+          def number(value, unit=False):
+              if unit:
+                  if value == '0': return 0
+                  require(re.fullmatch(r'(?:0|[1-9][0-9]*)(?:\.[0-9]{1,2})?ms', value) is not None)
+                  result = decimal.Decimal(value[:-2]) * 1000000
+              else:
+                  require(re.fullmatch(r'(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[-+]?[0-9]{1,2})?', value) is not None)
+                  result = decimal.Decimal(value) * 1000000
+                  require(0 <= result <= 100000000)
+              require(result == int(result) and 0 <= result <= SAFE)
+              return int(result)
+
+          def public_symbol(name, modules):
+              require(len(name) <= 512 and re.fullmatch(r'[A-Za-z0-9_./()*\[\]{}<>,:=+\-]+', name) is not None)
+              standard = ('runtime.', 'runtime/', 'internal/', 'reflect.', 'encoding/', 'net.', 'net/', 'crypto/', 'hash/', 'bytes.', 'strings.', 'strconv.', 'sort.', 'slices.', 'maps.', 'cmp.', 'unique.', 'weak.', 'iter.', 'sync.', 'sync/', 'io.', 'io/', 'os.', 'os/', 'syscall.', 'time.', 'math.', 'math/', 'unicode.', 'unicode/', 'testing.', 'context.', 'errors.', 'fmt.', 'bufio.', 'path/', 'compress/', 'vendor/')
+              suffix = name
+              for prefix in ('type:.eq.', 'type:.hash.'):
+                  if name.startswith(prefix):
+                      suffix = name[len(prefix):]
+                      break
+              require(suffix.startswith(standard) or any(suffix.startswith(m + '/') or suffix.startswith(m + '.') for m in modules))
+              return name
+
+          def project(body, error, scope, order, modules):
+              result = {'scope': scope, 'order': order, 'status': 'unavailable', 'rows': [], 'unknownRows': 0}
+              if error: return {**result, 'reason': error}
+              try:
+                  require(body.endswith(b'\n'))
+                  text = bytes(body).decode('utf-8', 'strict'); lines = text.splitlines()
+                  require(len(lines) <= 4096 and all(len(x) <= 4096 for x in lines))
+                  require(lines.count('Type: cpu') == 1)
+                  totals, shown, headers, expected_rows = [], [], 0, None
+                  require(sum(line.strip() == 'focus=observePhase' for line in lines) == (1 if scope == 'observePhase' else 0))
+                  for line in lines:
+                      m = re.fullmatch(r'Duration: [0-9.]+(?:ns|us|ms|s|hrs), Total samples = (0|[0-9.]+ms)(?: \( {0,5}[0-9.e+\-]+%\))?\s*', line)
+                      if m: totals.append(number(m[1], True)); continue
+                      m = re.fullmatch(r'Showing nodes accounting for (0|[0-9.]+ms), ([0-9.e+\-]+)% of (0|[0-9.]+ms) total', line)
+                      if m: shown.append((number(m[1], True), number(m[2]), number(m[3], True))); continue
+                      if re.fullmatch(r'\s*flat\s+flat%\s+sum%\s+cum\s+cum%\s*', line): headers += 1; continue
+                      m = re.fullmatch(r'Showing top ([1-9][0-9]*) nodes out of ([1-9][0-9]*)', line)
+                      if m:
+                          require(expected_rows is None and 0 < int(m[1]) <= 40 and int(m[1]) < int(m[2]) <= 1000000)
+                          expected_rows = int(m[1]); continue
+                      m = re.fullmatch(r'\s*(0|[0-9.]+ms)\s+([0-9.e+\-]+)%\s+([0-9.e+\-]+)%\s+(0|[0-9.]+ms)\s+([0-9.e+\-]+)%\s+(\S+?)(?: \((inline|partial-inline)\))?\s*', line)
+                      if m:
+                          values = [number(m[1], True), number(m[2]), number(m[3]), number(m[4], True), number(m[5])]
+                          try: name = public_symbol(m[6], modules)
+                          except RuntimeError: result['unknownRows'] += 1; continue
+                          result['rows'].append({'function': name, 'flatNanoseconds': values[0], 'flatPercentMillionths': values[1], 'sumPercentMillionths': values[2], 'cumulativeNanoseconds': values[3], 'cumulativePercentMillionths': values[4], 'inline': m[7] or 'none'})
+                          continue
+                      if line and line != 'Type: cpu' and line != 'Active filters:' and line.strip() != 'focus=observePhase' and not line.startswith(('File:', 'Build ID:', 'Time:', 'Doc:', 'Dropped ')):
+                          require(False)
+                  require(len(totals) == len(shown) == headers == 1 and totals[0] > 0 and shown[0][2] == totals[0] and 0 < len(result['rows']) + result['unknownRows'] <= 40 and result['rows'])
+                  require(expected_rows is None or len(result['rows']) + result['unknownRows'] == expected_rows)
+                  require(shown[0][0] <= totals[0] and all(row['flatNanoseconds'] <= row['cumulativeNanoseconds'] <= totals[0] for row in result['rows']))
+                  result.update(status='partial-public-functions' if result['unknownRows'] else 'available', reportedTotalCPUNanoseconds=totals[0], reportedShownCPUNanoseconds=shown[0][0], reportedShownPercentMillionths=shown[0][1])
+                  return result
+              except (ValueError, UnicodeError, decimal.InvalidOperation, RuntimeError):
+                  return {**result, 'status': 'unavailable', 'reason': 'unrecognized-or-empty', 'rows': []}
+
+          def main(root):
+              def interrupt(_n, _f): raise KeyboardInterrupt
+              for n in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT): signal.signal(n, interrupt)
+              s = root.lstat(); require(root.resolve() == root and stat.S_ISDIR(s.st_mode) and s.st_uid == os.geteuid() and stat.S_IMODE(s.st_mode) == 0o700)
+              profile, binary = root / 'cpu.pprof', root / 'engine.test'
+              for file in (profile, binary):
+                  fd = os.open(file, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600); os.close(fd)
+              native = ['go', 'test', '-tags=kindinstall', '-p', '1', '-timeout=45m', '-v', '-count=1', '-cpuprofile=' + str(profile), '-o=' + str(binary), './internal/installengine', '-run', SELECTOR]
+              code, reason, streams = capture(native, os.environ.copy(), None, 4 * 1024**2)
+              try:
+                  require(code == 0 and reason is None)
+                  wall = native_census(streams[0])
+              finally:
+                  for stream in streams: stream[:] = b'\0' * len(stream)
+              artifact(profile, 8 * 1024**2); artifact(binary, 256 * 1024**2)
+              profile.chmod(0o600); binary.chmod(0o600)
+              identities = (artifact(profile, 8 * 1024**2), artifact(binary, 256 * 1024**2))
+              # Public dependency roots come only from unchanged source go.mod.
+              modules = re.findall(r'^\s*(?:module\s+)?([a-z0-9][a-z0-9.\-]*\.[a-z0-9.\-]+/[A-Za-z0-9_./\-]+)(?:\s|$)', pathlib.Path('go.mod').read_text(), re.M)
+              env = {k: v for k, v in os.environ.items() if k in ('PATH', 'GOROOT', 'GOPATH', 'GOCACHE', 'GOMODCACHE', 'GOMAXPROCS', 'GOMEMLIMIT')}
+              env.update(HOME=str(root), TMPDIR=str(root), PPROF_TMPDIR=str(root), GOENV='off', GOWORK='off', GOTOOLCHAIN='local', GOPROXY='off', GOSUMDB='off', LANG='C', LC_ALL='C')
+              tables = []
+              for scope, order in (('whole', 'flat'), ('whole', 'cumulative'), ('observePhase', 'flat'), ('observePhase', 'cumulative')):
+                  command = ['go', 'tool', 'pprof', '-symbolize=none', '-top', '-nodecount=40', '-unit=ms']
+                  if order == 'cumulative': command.append('-cum')
+                  if scope == 'observePhase': command.append('-focus=observePhase')
+                  code, reason, streams = capture(command + [str(binary), str(profile)], env, 30, 256 * 1024)
+                  try:
+                      error = reason or ('summary-exit' if code != 0 else 'focus-or-summary-unavailable' if streams[1] else None)
+                      tables.append(project(streams[0], error, scope, order, modules))
+                  finally:
+                      for stream in streams: stream[:] = b'\0' * len(stream)
+                  require(identities == (artifact(profile, 8 * 1024**2), artifact(binary, 256 * 1024**2)))
+              whole = tables[0].get('reportedTotalCPUNanoseconds')
+              for table in tables:
+                  if table.get('reportedTotalCPUNanoseconds') != whole:
+                      table.update(status='unavailable', reason='whole-denominator-unavailable-or-mismatch', rows=[])
+              source = os.environ['ARCADECTL_PROFILE_SOURCE']; require(re.fullmatch('[a-f0-9]{40}', source) is not None)
+              code, reason, streams = capture(['git', 'status', '--porcelain'], env, 10, 256 * 1024)
+              try: require(code == 0 and reason is None and not streams[0] and not streams[1])
+              finally:
+                  for stream in streams: stream[:] = b'\0' * len(stream)
+              complete = all(table['status'] == 'available' for table in tables)
+              print(json.dumps({'format': 'arcadectl-native-phase-cpu-v1', 'source': source, 'parent': '40a35c3ee44b6e2e63eb3ebd1e8f44035ea9bfaf', 'nativeRootWallNanoseconds': wall, 'wholeClientCPUNanoseconds': whole, 'measurementComplete': complete, 'scope': 'Go-test-client-including-setup', 'childContainerAndBuildCPUExcluded': True, 'cumulativeRowsOverlap': True, 'percentDenominator': 'whole-client-profile', 'wallAttributionClaim': False, 'permanentAdoption': False, 'tables': tables}, sort_keys=True))
+              return 0 if complete else 1
+
+          if __name__ == '__main__':
+              root = pathlib.Path(sys.argv[1])
+              try:
+                  code = main(root)
+              except BaseException:
+                  print('NATIVE_PHASE_PROFILE unavailable')
+                  code = 1
+              finally:
+                  if not ACTIVE:
+                      try:
+                          fd = os.open(root / 'JOINED', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                          try: os.write(fd, b'joined\n'); os.fsync(fd)
+                          finally: os.close(fd)
+                      except BaseException:
+                          print('NATIVE_PHASE_PROFILE_JOIN unavailable')
+                          code = 1
+              raise SystemExit(code)
+          PROFILE
