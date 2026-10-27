@@ -153,13 +153,7 @@ func (e *Engine) compatible(d installstate.Document) bool {
 	return false
 }
 func predecessor(newPlan, oldPlan *installrender.Plan) bool {
-	m := oldPlan.Manifest()
-	for _, p := range newPlan.Manifest().Predecessors {
-		if p.PackageSHA256 == oldPlan.Digest() && p.SourceSHA == m.SourceSHA && p.Images == m.Images && p.Namespace == oldPlan.Namespace() && slices.Contains(p.ProfileIDs, oldPlan.Profile().ID) {
-			return true
-		}
-	}
-	return false
+	return newPlan.DeclaresPredecessor(oldPlan)
 }
 
 func (e *Engine) inventory(d installstate.Document, key installstate.Key) (*installstate.Resource, *installcontract.Template) {

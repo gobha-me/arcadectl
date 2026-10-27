@@ -245,13 +245,15 @@ func (a *ClusterAdmission) configured(ctx context.Context, request LifecycleChec
 			if !ok || !healthyAdmissionPolicy(policy) || witness.policies[key.Name] != nil {
 				return nil, ErrAdmission
 			}
-			witness.policies[key.Name] = policy.DeepCopy()
+			// MatchLiveAdmissionObject already returns a defensive, unnormalized
+			// object. Transfer this request's owned result into its witness.
+			witness.policies[key.Name] = policy
 		} else {
 			binding, ok := matched.(*admissionv1.ValidatingAdmissionPolicyBinding)
 			if !ok || witness.bindings[key.Name] != nil {
 				return nil, ErrAdmission
 			}
-			witness.bindings[key.Name] = binding.DeepCopy()
+			witness.bindings[key.Name] = binding
 		}
 		witness.objects[key] = admissionIdentity{UID: entry.resource.UID, ResourceVersion: live.GetResourceVersion(), TemplateSHA256: entry.template.Hash()}
 	}
