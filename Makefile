@@ -3,6 +3,9 @@
 CANONICAL_CONTROLLER_IMAGE := ghcr.io/gobha-me/arcadectl-controller@sha256:0000000000000000000000000000000000000000000000000000000000000000
 
 # Require 90% efficacy and mutant coverage with adminauth adversarial tests.
+# Count all mutation statuses; any TIMED OUT or NOT VIABLE fails the gate.
+# Checker exits 0=PASS, 1=FAIL (also malformed/inconsistent reports), or
+# 2=INCONCLUSIVE when >20% of all mutants time out; both non-zero codes fail.
 GREMLINS_EFFICACY := 90
 GREMLINS_MCOVER := 90
 # Includes mutant compilation: warm coverage takes 61-100ms, while a mutant
@@ -23,7 +26,7 @@ mutation-gate:
 			--timeout-coefficient $(GREMLINS_TIMEOUT_COEFFICIENT) \
 			--workers 2 --output "$$report" || failed=1; \
 		python3 hack/check-mutation-report.py "$$report" \
-			$(GREMLINS_EFFICACY) $(GREMLINS_MCOVER) || failed=1; \
+			$(GREMLINS_EFFICACY) $(GREMLINS_MCOVER) "$$package" || failed=1; \
 	done; \
 	exit $$failed
 
