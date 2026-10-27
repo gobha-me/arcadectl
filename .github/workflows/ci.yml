@@ -403,12 +403,40 @@ jobs:
           test "$(docker image inspect --format '{{json .Config.Entrypoint}}' arcadectl-api:ci-first)" = '["/arcadectl-api"]'
           test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' arcadectl-api:ci-first)" = "$(git rev-parse HEAD)"
 
+  golangci-lint:
+    name: Golangci-lint baseline ratchet
+    needs: [installer-diagnostics]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 1GiB
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Fail on findings outside the committed baseline
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.15.0
+          verify: true
+          # The exclusions are the ratchet; scan the whole tree on PRs and pushes.
+          only-new-issues: false
+          args: --config=.golangci.yml --issues-exit-code=1 ./...
+
   go-and-policy:
     name: Go and policy
     needs: [installer-diagnostics, install-engine-race, kind-install-admission, kind-install-admission-v3,
             kind-install-binary, kind-install-baseline, kind-install-gc,
             kind-install-precontroller, kind-install-auth, kind-api, kind-recovery, envtest,
-            kind-lifecycle, go-policy-checks]
+            kind-lifecycle, go-policy-checks, golangci-lint]
     # Do not turn failed/cancelled dependencies into a skipped passing gate.
     # Whole-workflow cancellation can cancel this gate too; it is never green.
     if: ${{ always() }}
@@ -438,6 +466,7 @@ jobs:
           ENVTEST_RESULT: ${{ needs.envtest.result }}
           LIFECYCLE_RESULT: ${{ needs.kind-lifecycle.result }}
           GO_POLICY_CHECKS_RESULT: ${{ needs.go-policy-checks.result }}
+          GOLANGCI_LINT_RESULT: ${{ needs.golangci-lint.result }}
         run: |
           test "$INSTALLER_DIAGNOSTICS_RESULT" = success
           test "$ENGINE_RACE_RESULT" = success
@@ -453,6 +482,7 @@ jobs:
           test "$ENVTEST_RESULT" = success
           test "$LIFECYCLE_RESULT" = success
           test "$GO_POLICY_CHECKS_RESULT" = success
+          test "$GOLANGCI_LINT_RESULT" = success
 
   kind-lifecycle:
     name: Kind lifecycle
