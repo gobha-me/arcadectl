@@ -40,9 +40,11 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 		t.Fatal("CI source unavailable")
 	}
 	var workflow struct {
-		Jobs map[string]struct {
+		Permissions map[string]string `yaml:"permissions"`
+		Jobs        map[string]struct {
 			Name            string            `yaml:"name"`
 			RunsOn          string            `yaml:"runs-on"`
+			Permissions     map[string]string `yaml:"permissions"`
 			If              string            `yaml:"if"`
 			ContinueOnError any               `yaml:"continue-on-error"`
 			Needs           []string          `yaml:"needs"`
@@ -76,15 +78,22 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	if yaml.Unmarshal(body, &workflow) != nil {
 		t.Fatal("CI workflow malformed")
 	}
+	if len(workflow.Permissions) != 1 || workflow.Permissions["contents"] != "read" {
+		t.Fatal("CI workflow permissions must be read-only contents")
+	}
 	// Identical PR-merge/head trees do not have identical source SHA/epoch.
 	// Signed packages, image revision labels and lifecycle evidence must use
 	// the requested head (or exact main push), not a synthetic merge identity.
-	for _, name := range []string{"installer-diagnostics", "kind-install-binary", "kind-install-baseline", "kind-install-gc", "kind-install-precontroller", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-api", "kind-recovery", "install-engine-race", "envtest", "go-policy-checks", "golangci-lint", "go-and-policy", "kind-lifecycle"} {
+	requiredJobs := []string{"installer-diagnostics", "kind-install-binary", "kind-install-baseline", "kind-install-gc", "kind-install-precontroller", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-api", "kind-recovery", "install-engine-race", "envtest", "go-policy-checks", "go-and-policy", "kind-lifecycle", "golangci-lint"}
+	for _, name := range requiredJobs {
 		if _, present := workflow.Jobs[name]; !present {
 			t.Errorf("required exact-source CI job %s is absent", name)
 		}
 	}
 	for name, job := range workflow.Jobs {
+		if len(job.Permissions) != 0 {
+			t.Errorf("CI job %s overrides workflow read-only permissions", name)
+		}
 		checkouts := 0
 		for _, step := range job.Steps {
 			if strings.HasPrefix(step.Uses, "actions/checkout@") {
@@ -101,7 +110,7 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	if t.Failed() {
 		t.FailNow()
 	}
-	for _, name := range []string{"kind-install-baseline", "kind-install-gc", "kind-install-precontroller", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-api", "kind-recovery", "kind-lifecycle", "go-policy-checks", "golangci-lint"} {
+	for _, name := range []string{"kind-install-baseline", "kind-install-gc", "kind-install-precontroller", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-api", "kind-recovery", "kind-lifecycle", "golangci-lint", "go-policy-checks"} {
 		job := workflow.Jobs[name]
 		if !diagnosticOrderingOnly(job.Needs, job.If, job.ContinueOnError) {
 			t.Fatalf("CI job %s competes with early diagnostics or skips independent coverage after their failure", name)
@@ -192,7 +201,7 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 		fullRun = fullRun || step.Run == "make test-kind-install-admission INSTALL_ADMISSION_PROFILE='${{ matrix.profile }}' INSTALL_ADMISSION_MODE='${{ matrix.mode }}'"
 	}
 	gate := workflow.Jobs["go-and-policy"]
-	if !slices.Equal(gate.Needs, []string{"installer-diagnostics", "install-engine-race", "kind-install-admission", "kind-install-admission-v3", "kind-install-binary", "kind-install-baseline", "kind-install-gc", "kind-install-precontroller", "kind-install-auth", "kind-api", "kind-recovery", "envtest", "kind-lifecycle", "go-policy-checks", "golangci-lint"}) || gate.ContinueOnError != nil {
+	if !slices.Equal(gate.Needs, []string{"installer-diagnostics", "install-engine-race", "kind-install-admission", "kind-install-admission-v3", "kind-install-binary", "kind-install-baseline", "kind-install-gc", "kind-install-precontroller", "kind-install-auth", "kind-api", "kind-recovery", "envtest", "kind-lifecycle", "go-policy-checks", "golangci-lint"}) || gate.ContinueOnError != nil || len(gate.Permissions) != 0 {
 		t.Fatal("required gate omitted, tolerated or substituted a complete proof")
 	}
 	if len(gate.Needs) != len(workflow.Jobs)-1 {
@@ -256,22 +265,21 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 			t.Fatal("moved policy commands changed, became conditional or tolerated failures", index)
 		}
 	}
-	// The committed exclusions are the ratchet. Diff-only filtering or a
-	// successful issues exit code would hide regressions from the required gate.
-	lint := workflow.Jobs["golangci-lint"]
-	if lint.Name != "Golangci-lint baseline ratchet" || lint.RunsOn != "ubuntu-24.04" || lint.TimeoutMinutes != 20 || len(lint.Env) != 2 || lint.Env["GOMAXPROCS"] != "2" || lint.Env["GOMEMLIMIT"] != "1GiB" || len(lint.Steps) != 3 {
-		t.Fatal("lint ratchet changed its bounded worker or complete step set")
+	// Independently derived golangci-lint baseline ratchet invariants (#106).
+	lintJob, lintExists := workflow.Jobs["golangci-lint"]
+	if !lintExists || lintJob.Name != "Golangci-lint baseline ratchet" || lintJob.RunsOn != "ubuntu-24.04" || lintJob.TimeoutMinutes != 20 || len(lintJob.Permissions) != 0 || len(lintJob.Env) != 2 || lintJob.Env["GOMAXPROCS"] != "2" || lintJob.Env["GOMEMLIMIT"] != "1GiB" || lintJob.Strategy.FailFast != nil || lintJob.Strategy.MaxParallel != 0 || len(lintJob.Strategy.Matrix.Shard) != 0 || len(lintJob.Strategy.Matrix.Part) != 0 || len(lintJob.Strategy.Matrix.Profile) != 0 || len(lintJob.Strategy.Matrix.Mode) != 0 || len(lintJob.Strategy.Matrix.Exclude) != 0 || len(lintJob.Steps) != 3 {
+		t.Fatal("golangci-lint ratchet altered its job identity, read-only permissions, bounded worker or strategy")
 	}
-	if lint.Steps[0].Uses != "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" || len(lint.Steps[0].With) != 1 || lint.Steps[1].Uses != "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e" || lint.Steps[1].With["go-version-file"] != "go.mod" || lint.Steps[1].With["cache"] != true || len(lint.Steps[1].With) != 2 {
-		t.Fatal("lint ratchet changed pinned source or Go setup")
+	if lintJob.Steps[0].Name != "Check out exact source" || lintJob.Steps[0].Uses != "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" || len(lintJob.Steps[0].With) != 1 || lintJob.Steps[0].With["ref"] != "${{ github.event.pull_request.head.sha || github.sha }}" || lintJob.Steps[1].Name != "Set up Go" || lintJob.Steps[1].Uses != "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e" || len(lintJob.Steps[1].With) != 2 || lintJob.Steps[1].With["go-version-file"] != "go.mod" || lintJob.Steps[1].With["cache"] != true {
+		t.Fatal("golangci-lint ratchet altered exact source checkout or pinned Go setup")
 	}
-	lintStep := lint.Steps[2]
-	if lintStep.Uses != "golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a" || len(lintStep.With) != 4 || lintStep.With["version"] != "v2.15.0" || lintStep.With["verify"] != true || lintStep.With["only-new-issues"] != false || lintStep.With["args"] != "--config=.golangci.yml --issues-exit-code=1 ./..." {
-		t.Fatal("lint ratchet must verify the baseline and fail on every unsuppressed finding with the pinned v2 tool")
+	ratchetAction := lintJob.Steps[2]
+	if ratchetAction.Name != "Fail on findings outside the committed baseline" || ratchetAction.Uses != "golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a" || strings.Count(string(body), "uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0") != 1 || len(ratchetAction.With) != 4 || ratchetAction.With["version"] != "v2.15.0" || ratchetAction.With["verify"] != true || ratchetAction.With["only-new-issues"] != false || ratchetAction.With["args"] != "--config=.golangci.yml --issues-exit-code=1 ./..." {
+		t.Fatal("golangci-lint ratchet must use SHA-pinned v9.3.0 action with v2.15.0, verify=true, only-new-issues=false and fail-closed whole-tree args")
 	}
-	for _, step := range lint.Steps {
+	for stepIdx, step := range lintJob.Steps {
 		if step.If != "" || step.ContinueOnError != nil || len(step.Env) != 0 || step.Run != "" {
-			t.Fatal("lint ratchet can skip, tolerate failure or override its bounded environment")
+			t.Fatalf("golangci-lint step %d can be conditionally skipped, tolerate failure or override env/run", stepIdx)
 		}
 	}
 	if gate.Name != "Go and policy" || gate.RunsOn != "ubuntu-24.04" || len(gate.Steps) != 2 || gate.Steps[0].Uses != "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" || gate.Steps[0].Run != "" || gate.Steps[0].If != "" || gate.Steps[0].ContinueOnError != nil || len(gate.Steps[0].Env) != 0 {
@@ -456,7 +464,7 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 	}
 	var command string
 	for _, step := range gate.Steps {
-		if step.Env["INSTALLER_DIAGNOSTICS_RESULT"] == "${{ needs.installer-diagnostics.result }}" && step.Env["ENGINE_RACE_RESULT"] == "${{ needs.install-engine-race.result }}" && step.Env["INSTALL_ADMISSION_RESULT"] == "${{ needs.kind-install-admission.result }}" && step.Env["INSTALL_BINARY_RESULT"] == "${{ needs.kind-install-binary.result }}" && step.Env["INSTALL_BASELINE_RESULT"] == "${{ needs.kind-install-baseline.result }}" && step.Env["INSTALL_ADMISSION_V3_RESULT"] == "${{ needs.kind-install-admission-v3.result }}" && step.Env["INSTALL_PRECONTROLLER_RESULT"] == "${{ needs.kind-install-precontroller.result }}" && step.Env["INSTALL_GC_RESULT"] == "${{ needs.kind-install-gc.result }}" && step.Env["INSTALL_AUTH_RESULT"] == "${{ needs.kind-install-auth.result }}" && step.Env["API_RESULT"] == "${{ needs.kind-api.result }}" && step.Env["RECOVERY_RESULT"] == "${{ needs.kind-recovery.result }}" && step.Env["ENVTEST_RESULT"] == "${{ needs.envtest.result }}" && step.Env["LIFECYCLE_RESULT"] == "${{ needs.kind-lifecycle.result }}" && step.Env["GO_POLICY_CHECKS_RESULT"] == "${{ needs.go-policy-checks.result }}" && step.Env["GOLANGCI_LINT_RESULT"] == "${{ needs.golangci-lint.result }}" {
+		if len(step.Env) == 15 && step.Env["INSTALLER_DIAGNOSTICS_RESULT"] == "${{ needs.installer-diagnostics.result }}" && step.Env["ENGINE_RACE_RESULT"] == "${{ needs.install-engine-race.result }}" && step.Env["INSTALL_ADMISSION_RESULT"] == "${{ needs.kind-install-admission.result }}" && step.Env["INSTALL_BINARY_RESULT"] == "${{ needs.kind-install-binary.result }}" && step.Env["INSTALL_BASELINE_RESULT"] == "${{ needs.kind-install-baseline.result }}" && step.Env["INSTALL_ADMISSION_V3_RESULT"] == "${{ needs.kind-install-admission-v3.result }}" && step.Env["INSTALL_PRECONTROLLER_RESULT"] == "${{ needs.kind-install-precontroller.result }}" && step.Env["INSTALL_GC_RESULT"] == "${{ needs.kind-install-gc.result }}" && step.Env["INSTALL_AUTH_RESULT"] == "${{ needs.kind-install-auth.result }}" && step.Env["API_RESULT"] == "${{ needs.kind-api.result }}" && step.Env["RECOVERY_RESULT"] == "${{ needs.kind-recovery.result }}" && step.Env["ENVTEST_RESULT"] == "${{ needs.envtest.result }}" && step.Env["LIFECYCLE_RESULT"] == "${{ needs.kind-lifecycle.result }}" && step.Env["GO_POLICY_CHECKS_RESULT"] == "${{ needs.go-policy-checks.result }}" && step.Env["GOLANGCI_LINT_RESULT"] == "${{ needs.golangci-lint.result }}" {
 			if step.If != "" || step.ContinueOnError != nil {
 				t.Fatal("required dependency assertion can be skipped or tolerate failure")
 			}
@@ -476,7 +484,7 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 					for _, v3 := range []string{"success", "failure", "cancelled", "skipped", ""} {
 						for _, precontroller := range []string{"success", "failure", "cancelled", "skipped", ""} {
 							c := exec.Command("sh", "-e", "-c", command)
-							c.Env = append(os.Environ(), "INSTALLER_DIAGNOSTICS_RESULT=success", "ENGINE_RACE_RESULT="+races, "INSTALL_ADMISSION_RESULT="+native, "INSTALL_BINARY_RESULT="+binary, "INSTALL_BASELINE_RESULT="+baseline, "INSTALL_ADMISSION_V3_RESULT="+v3, "INSTALL_PRECONTROLLER_RESULT="+precontroller, "INSTALL_GC_RESULT=success", "INSTALL_AUTH_RESULT=success", "API_RESULT=success", "RECOVERY_RESULT=success", "ENVTEST_RESULT=success", "LIFECYCLE_RESULT=success", "GO_POLICY_CHECKS_RESULT=success", "GOLANGCI_LINT_RESULT=success")
+							c.Env = append(os.Environ(), "INSTALLER_DIAGNOSTICS_RESULT=success", "GOLANGCI_LINT_RESULT=success", "ENGINE_RACE_RESULT="+races, "INSTALL_ADMISSION_RESULT="+native, "INSTALL_BINARY_RESULT="+binary, "INSTALL_BASELINE_RESULT="+baseline, "INSTALL_ADMISSION_V3_RESULT="+v3, "INSTALL_PRECONTROLLER_RESULT="+precontroller, "INSTALL_GC_RESULT=success", "INSTALL_AUTH_RESULT=success", "API_RESULT=success", "RECOVERY_RESULT=success", "ENVTEST_RESULT=success", "LIFECYCLE_RESULT=success", "GO_POLICY_CHECKS_RESULT=success")
 							passed := c.Run() == nil
 							if passed != (races == "success" && native == "success" && binary == "success" && baseline == "success" && v3 == "success" && precontroller == "success") {
 								t.Fatal("failed/cancelled/skipped/absent dependency became a green required gate")
@@ -491,14 +499,14 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 	// Separately exercise every GC outcome while all earlier proofs succeeded.
 	for _, result := range []string{"success", "failure", "cancelled", "skipped", ""} {
 		c := exec.Command("sh", "-e", "-c", command)
-		c.Env = append(os.Environ(), "INSTALLER_DIAGNOSTICS_RESULT=success", "ENGINE_RACE_RESULT=success", "INSTALL_ADMISSION_RESULT=success", "INSTALL_BINARY_RESULT=success", "INSTALL_BASELINE_RESULT=success", "INSTALL_ADMISSION_V3_RESULT=success", "INSTALL_PRECONTROLLER_RESULT=success", "INSTALL_GC_RESULT="+result, "INSTALL_AUTH_RESULT=success", "API_RESULT=success", "RECOVERY_RESULT=success", "ENVTEST_RESULT=success", "LIFECYCLE_RESULT=success", "GO_POLICY_CHECKS_RESULT=success", "GOLANGCI_LINT_RESULT=success")
+		c.Env = append(os.Environ(), "INSTALLER_DIAGNOSTICS_RESULT=success", "GOLANGCI_LINT_RESULT=success", "ENGINE_RACE_RESULT=success", "INSTALL_ADMISSION_RESULT=success", "INSTALL_BINARY_RESULT=success", "INSTALL_BASELINE_RESULT=success", "INSTALL_ADMISSION_V3_RESULT=success", "INSTALL_PRECONTROLLER_RESULT=success", "INSTALL_GC_RESULT="+result, "INSTALL_AUTH_RESULT=success", "API_RESULT=success", "RECOVERY_RESULT=success", "ENVTEST_RESULT=success", "LIFECYCLE_RESULT=success", "GO_POLICY_CHECKS_RESULT=success")
 		if passed := c.Run() == nil; passed != (result == "success") {
 			t.Fatal("failed/cancelled/skipped/absent GC proof became a green required gate")
 		}
 	}
 	// Independently exercise every added prerequisite outcome while the others
 	// succeed, preserving all original combinations without multiplying them.
-	added := []string{"INSTALL_AUTH_RESULT", "API_RESULT", "RECOVERY_RESULT", "INSTALLER_DIAGNOSTICS_RESULT", "ENVTEST_RESULT", "LIFECYCLE_RESULT", "GO_POLICY_CHECKS_RESULT", "GOLANGCI_LINT_RESULT"}
+	added := []string{"GOLANGCI_LINT_RESULT", "INSTALL_AUTH_RESULT", "API_RESULT", "RECOVERY_RESULT", "INSTALLER_DIAGNOSTICS_RESULT", "ENVTEST_RESULT", "LIFECYCLE_RESULT", "GO_POLICY_CHECKS_RESULT"}
 	for _, variable := range added {
 		for _, result := range []string{"success", "failure", "cancelled", "skipped", ""} {
 			c := exec.Command("sh", "-e", "-c", command)
@@ -514,5 +522,138 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 				t.Fatalf("failed/cancelled/skipped/absent %s proof became a green required gate", variable)
 			}
 		}
+		absentCmd := exec.Command("sh", "-e", "-c", command)
+		for _, kv := range os.Environ() {
+			if !strings.HasPrefix(kv, variable+"=") {
+				absentCmd.Env = append(absentCmd.Env, kv)
+			}
+		}
+		absentCmd.Env = append(absentCmd.Env, "ENGINE_RACE_RESULT=success", "INSTALL_ADMISSION_RESULT=success", "INSTALL_BINARY_RESULT=success", "INSTALL_BASELINE_RESULT=success", "INSTALL_ADMISSION_V3_RESULT=success", "INSTALL_PRECONTROLLER_RESULT=success", "INSTALL_GC_RESULT=success")
+		for _, other := range added {
+			if other != variable {
+				absentCmd.Env = append(absentCmd.Env, other+"=success")
+			}
+		}
+		if absentCmd.Run() == nil {
+			t.Fatalf("absent %s environment binding became a green required gate", variable)
+		}
+	}
+}
+
+func TestGolangciLintRatchetGateInvariants(t *testing.T) {
+	body, err := os.ReadFile("../../.github/workflows/ci.yml")
+	if err != nil {
+		t.Fatal("CI workflow source unavailable")
+	}
+	var ci struct {
+		Permissions map[string]string `yaml:"permissions"`
+		Jobs        map[string]struct {
+			Name            string            `yaml:"name"`
+			RunsOn          string            `yaml:"runs-on"`
+			Permissions     map[string]string `yaml:"permissions"`
+			If              string            `yaml:"if"`
+			ContinueOnError any               `yaml:"continue-on-error"`
+			Needs           []string          `yaml:"needs"`
+			TimeoutMinutes  int               `yaml:"timeout-minutes"`
+			Env             map[string]string `yaml:"env"`
+			Steps           []struct {
+				If              string            `yaml:"if"`
+				ContinueOnError any               `yaml:"continue-on-error"`
+				Name            string            `yaml:"name"`
+				Uses            string            `yaml:"uses"`
+				Run             string            `yaml:"run"`
+				Env             map[string]string `yaml:"env"`
+				With            map[string]any    `yaml:"with"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if yaml.Unmarshal(body, &ci) != nil {
+		t.Fatal("CI workflow YAML malformed")
+	}
+	if len(ci.Permissions) != 1 || ci.Permissions["contents"] != "read" {
+		t.Fatal("workflow permissions are not read-only")
+	}
+	lint, ok := ci.Jobs["golangci-lint"]
+	if !ok || lint.Name != "Golangci-lint baseline ratchet" || len(lint.Permissions) != 0 || !diagnosticOrderingOnly(lint.Needs, lint.If, lint.ContinueOnError) || lint.RunsOn != "ubuntu-24.04" || lint.TimeoutMinutes != 20 || len(lint.Env) != 2 || lint.Env["GOMAXPROCS"] != "2" || lint.Env["GOMEMLIMIT"] != "1GiB" || len(lint.Steps) != 3 {
+		t.Fatal("golangci-lint job missing or altered its identity, permissions, ordering barrier or worker bounds")
+	}
+	for i, step := range lint.Steps {
+		if step.If != "" || step.ContinueOnError != nil || len(step.Env) != 0 || step.Run != "" {
+			t.Fatalf("golangci-lint step %d permits conditional skip, failure tolerance or custom run/env", i)
+		}
+	}
+	if lint.Steps[0].Name != "Check out exact source" || lint.Steps[0].Uses != "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" || len(lint.Steps[0].With) != 1 || lint.Steps[0].With["ref"] != "${{ github.event.pull_request.head.sha || github.sha }}" || lint.Steps[1].Name != "Set up Go" || lint.Steps[1].Uses != "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e" || len(lint.Steps[1].With) != 2 || lint.Steps[1].With["go-version-file"] != "go.mod" || lint.Steps[1].With["cache"] != true {
+		t.Fatal("golangci-lint setup steps altered exact-source checkout or pinned Go toolchain")
+	}
+	actionStep := lint.Steps[2]
+	if actionStep.Name != "Fail on findings outside the committed baseline" || actionStep.Uses != "golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a" || strings.Count(string(body), "uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0") != 1 || len(actionStep.With) != 4 || actionStep.With["version"] != "v2.15.0" || actionStep.With["verify"] != true || actionStep.With["only-new-issues"] != false || actionStep.With["args"] != "--config=.golangci.yml --issues-exit-code=1 ./..." {
+		t.Fatal("golangci-lint action step altered SHA/version pinning, only-new-issues=false or fail-closed args")
+	}
+	gate, gateOK := ci.Jobs["go-and-policy"]
+	if !gateOK || !slices.Contains(gate.Needs, "golangci-lint") || len(gate.Steps) != 2 || gate.Steps[1].If != "" || gate.Steps[1].ContinueOnError != nil || gate.Steps[1].Env["GOLANGCI_LINT_RESULT"] != "${{ needs.golangci-lint.result }}" {
+		t.Fatal("go-and-policy aggregate gate omits golangci-lint prerequisite or GOLANGCI_LINT_RESULT wiring")
+	}
+	baseEnv := []string{
+		"INSTALLER_DIAGNOSTICS_RESULT=success",
+		"ENGINE_RACE_RESULT=success",
+		"INSTALL_ADMISSION_RESULT=success",
+		"INSTALL_BINARY_RESULT=success",
+		"INSTALL_BASELINE_RESULT=success",
+		"INSTALL_GC_RESULT=success",
+		"INSTALL_ADMISSION_V3_RESULT=success",
+		"INSTALL_PRECONTROLLER_RESULT=success",
+		"INSTALL_AUTH_RESULT=success",
+		"API_RESULT=success",
+		"RECOVERY_RESULT=success",
+		"ENVTEST_RESULT=success",
+		"LIFECYCLE_RESULT=success",
+		"GO_POLICY_CHECKS_RESULT=success",
+	}
+	for _, result := range []string{"success", "failure", "cancelled", "skipped", ""} {
+		cmd := exec.Command("sh", "-e", "-c", gate.Steps[1].Run)
+		cmd.Env = append(append(os.Environ(), baseEnv...), "GOLANGCI_LINT_RESULT="+result)
+		if (cmd.Run() == nil) != (result == "success") {
+			t.Fatalf("go-and-policy aggregate did not fail closed on GOLANGCI_LINT_RESULT=%q", result)
+		}
+	}
+	absent := exec.Command("sh", "-e", "-c", gate.Steps[1].Run)
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "GOLANGCI_LINT_RESULT=") {
+			absent.Env = append(absent.Env, kv)
+		}
+	}
+	absent.Env = append(absent.Env, baseEnv...)
+	if absent.Run() == nil {
+		t.Fatal("go-and-policy aggregate did not fail closed on absent GOLANGCI_LINT_RESULT")
+	}
+	cfgBytes, err := os.ReadFile("../../.golangci.yml")
+	if err != nil {
+		t.Fatal(".golangci.yml unavailable")
+	}
+	var lintCfg struct {
+		Version string `yaml:"version"`
+		Run     struct {
+			Timeout          string `yaml:"timeout"`
+			Concurrency      int    `yaml:"concurrency"`
+			RelativePathMode string `yaml:"relative-path-mode"`
+		} `yaml:"run"`
+		Linters struct {
+			Default    string   `yaml:"default"`
+			Enable     []string `yaml:"enable"`
+			Exclusions struct {
+				WarnUnused bool `yaml:"warn-unused"`
+			} `yaml:"exclusions"`
+		} `yaml:"linters"`
+		Issues struct {
+			MaxIssuesPerLinter *int  `yaml:"max-issues-per-linter"`
+			MaxSameIssues      *int  `yaml:"max-same-issues"`
+			UniqByLine         *bool `yaml:"uniq-by-line"`
+		} `yaml:"issues"`
+	}
+	if yaml.Unmarshal(cfgBytes, &lintCfg) != nil {
+		t.Fatal(".golangci.yml malformed")
+	}
+	if lintCfg.Version != "2" || lintCfg.Run.Timeout != "15m" || lintCfg.Run.Concurrency != 2 || lintCfg.Run.RelativePathMode != "cfg" || lintCfg.Linters.Default != "none" || !slices.Equal(lintCfg.Linters.Enable, []string{"errcheck", "govet", "ineffassign", "staticcheck", "unused"}) || !lintCfg.Linters.Exclusions.WarnUnused || lintCfg.Issues.MaxIssuesPerLinter == nil || *lintCfg.Issues.MaxIssuesPerLinter != 0 || lintCfg.Issues.MaxSameIssues == nil || *lintCfg.Issues.MaxSameIssues != 0 || lintCfg.Issues.UniqByLine == nil || *lintCfg.Issues.UniqByLine {
+		t.Fatal(".golangci.yml baseline ratchet configuration drifted from uncapped v2 invariants")
 	}
 }
