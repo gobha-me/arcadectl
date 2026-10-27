@@ -77,6 +77,12 @@ golangci-lint run ./... --no-config --timeout=15m --concurrency=2 \
 Reconcile the inventory during tool upgrades rather than silently regenerating
 exclusions. Remove the exclusions block when the baseline reaches zero.
 
-CI enablement is a separate workflow change for Atlas to coordinate with the
-owner. This change adds only local configuration and documentation; workflow
-wiring and build scripts are outside its scope.
+CI wiring for [issue #106](https://github.com/gobha-me/arcadectl/issues/106) uses
+the SHA-pinned official golangci-lint action with v2.15.0 on PRs and main pushes.
+The job verifies this config and scans all packages with an explicit failure
+exit code for unsuppressed findings. The exclusions are the ratchet: baseline
+findings pass, and findings outside those rules fail, including outside changed
+lines. The required Go and policy gate also requires this job to succeed.
+GOMAXPROCS=2 and GOMEMLIMIT=1GiB match the other policy workers; the config's
+15-minute lint timeout and concurrency of two remain in force. Atlas permits
+this additive CI job under #106; it depends on the baseline from #98.
