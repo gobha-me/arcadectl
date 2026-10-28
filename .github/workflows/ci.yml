@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -251,6 +251,7 @@ jobs:
     timeout-minutes: 20
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         profile: [135, 137]
     steps:
@@ -386,6 +387,7 @@ jobs:
     timeout-minutes: ${{ matrix.profile == 135 && 30 || 35 }}
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         profile: [135, 137]
     steps:
@@ -421,6 +423,7 @@ jobs:
     timeout-minutes: ${{ matrix.mode == 'transition' && 350 || 290 }}
     strategy:
       fail-fast: false
+      max-parallel: 3
       matrix:
         profile: [135, 137]
         mode: [fresh, transition]
@@ -474,12 +477,15 @@ jobs:
 
   kind-install-admission:
     name: Kind installer full admission ${{ matrix.profile }} ${{ matrix.mode }}
-    needs: [classify, installer-diagnostics]
+    # Capacity only: wait for the six early Kind slots, even after failure.
+    needs: [classify, installer-diagnostics, kind-install-baseline, kind-install-gc,
+            kind-install-precontroller, kind-install-auth]
     if: ${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ matrix.mode == 'warm' && 30 || 25 }}
     strategy:
       fail-fast: false
+      max-parallel: 3
       matrix:
         profile: [135, 137]
         mode: [cold, warm]
@@ -507,12 +513,15 @@ jobs:
 
   kind-install-admission-v3:
     name: Kind baseline-active v3 admission ${{ matrix.profile }} ${{ matrix.mode }}
-    needs: [classify, installer-diagnostics]
+    # Capacity only: this group shares seven slots with full admission.
+    needs: [classify, installer-diagnostics, kind-install-baseline, kind-install-gc,
+            kind-install-precontroller, kind-install-auth]
     if: ${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ matrix.mode == 'warm' && 30 || 25 }}
     strategy:
       fail-fast: false
+      max-parallel: 4
       matrix:
         profile: [135, 137]
         mode: [cold, warm]
@@ -570,7 +579,8 @@ jobs:
 
   kind-api:
     name: Kind authenticated admin API
-    needs: [classify, installer-diagnostics]
+    # Capacity only: replace the policy slot after envtest releases its slots.
+    needs: [classify, installer-diagnostics, go-policy-checks]
     if: ${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -598,7 +608,8 @@ jobs:
 
   kind-recovery:
     name: Kind recovery failure safety
-    needs: [classify, installer-diagnostics]
+    # Capacity only: envtest releases three slots; its failure must not skip recovery.
+    needs: [classify, installer-diagnostics, envtest]
     if: ${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -679,7 +690,7 @@ jobs:
     timeout-minutes: 20
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 3
       matrix:
         part: [base-packages, "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31"]
     env:
@@ -702,9 +713,9 @@ jobs:
 
   go-policy-checks:
     name: Go and policy checks
-    # These checks consume no native job artifacts. Run them alongside native
-    # proofs, including after diagnostic failure, not after the long lifecycle.
-    needs: [classify, installer-diagnostics]
+    # Capacity only: share the released envtest slots with recovery/lifecycle.
+    # !cancelled() also runs cheap main checks when envtest is intentionally skipped.
+    needs: [classify, installer-diagnostics, envtest]
     if: ${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
@@ -865,7 +876,8 @@ jobs:
 
   kind-lifecycle:
     name: Kind lifecycle
-    needs: [classify, installer-diagnostics]
+    # Capacity only: share the three released envtest slots with recovery/policy.
+    needs: [classify, installer-diagnostics, envtest]
     if: ${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35

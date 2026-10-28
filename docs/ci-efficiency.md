@@ -2,10 +2,10 @@
 
 Ordinary pull requests run every existing proof: both Kubernetes profiles,
 all cold/warm admission legs, all three signed-installer legs, recovery,
-32 race shards and 33 envtest parts. Both bulk matrices retain max-parallel 4
-and fail-fast false. Race and envtest start only after all their foundations
-succeed; a failed or cancelled foundation skips those matrices and makes the
-`Go and policy` aggregate fail.
+32 race shards and 33 envtest parts. Race uses max-parallel 4, envtest 3,
+and every matrix retains fail-fast false. Race and envtest start only after
+all their foundations succeed; a failed or cancelled foundation skips those
+matrices and makes the `Go and policy` aggregate fail.
 
 A normal push to main runs Installer CLI and diagnostic controls, Go and policy
 checks, and the Go and policy gate (plus the tiny classifier). The gate expects
@@ -36,10 +36,106 @@ budget; not finding proof in that bounded history also runs full. A proven
 same-SHA skip logs a notice, skips checkout and every proof, and leaves a green
 aggregate that verifies those skips. `workflow_dispatch` bypasses this guard
 and always runs the complete set on the selected ref on demand.
-Event-specific concurrency groups prevent a main push or manual run from
-cancelling a nightly; only superseded PR runs are
-automatically cancelled. Schedule and main-push runs are not cancelled in
-progress.
+
+Only a superseded head of the same PR cancels an in-progress run. Main pushes,
+nightlies and manual dispatches never cancel in-progress runs. The workflow uses
+Atlas's exact expression:
+
+```yaml
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+```
+
+GitHub's default concurrency queue still replaces an older **pending** run
+when another run enters the same group, even with `cancel-in-progress: false`.
+Main pushes and nightlies (also dispatches on main) share
+`ci-CI-refs/heads/main`. A newer pending push/nightly can therefore drop an
+intermediate main SHA's push proof or scheduled full proof. The same-SHA
+nightly guard cannot recover a superseded SHA once main advances. Atlas could
+choose to append `github.run_id` for non-PR events to preserve those runs;
+that would also allow them to overlap and increase aggregate runner demand.
+This caveat is flagged here; the requested expression is implemented verbatim.
+See [GitHub's concurrency behavior](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+
+## Runner fairness: at most ten hosted jobs per CI run
+
+Every matrix now has an explicit `max-parallel`: baseline **2**,
+precontroller **2**, signed binary **3**, full admission **3**, v3 admission
+**4**, race **4**, envtest **3**. **Capping parallelism is not reducing shards:
+every profile, mode, all 32 race shards and all 33 envtest parts still run,
+unreduced**, subject to the existing scope exception and race/envtest's
+failed-foundation early exit.
+
+All three binary legs remain eligible immediately after diagnostics succeed,
+keeping the 290/350-minute-budget long pole as early as possible. Baseline, GC,
+precontroller and native authentication run alongside them. Both admission
+matrices wait for that entire early Kind group. Race and envtest retain their
+exact foundation dependencies and `success()` conditions. Recovery, lifecycle
+and policy wait for envtest to finish; API then replaces the policy slot.
+On a cheap main push, skipped envtest resolves without running and policy
+still runs after diagnostics.
+
+Every capacity-only barrier uses `!cancelled()` with the existing scope
+conditions, so an upstream failure or skip does not suppress these independent
+proofs. Binary has no new capacity-only needs edges and retains its original
+diagnostic-success requirement with `success()` plus the scope conditions.
+Diagnostic failure skips binary, which only lowers concurrency; the caps table
+is unchanged. Failed foundations still skip race/envtest under item 2;
+recovery and the other 135/137 matrices remain eligible.
+The unchanged aggregate rejects any failed or unexpectedly skipped proof.
+The exact required check names remain `Go and policy` and `Kind lifecycle`.
+
+Caps are worst-case upper bounds, including arbitrary failure/skip outcomes;
+non-matrix jobs count as one. Each row is a possible overlap phase, not a
+promise about runner scheduling. Binary may span every heavy phase; race may
+span the last two. Policy and API are ordered, so only one occupies their slot.
+
+| Concurrency phase | Jobs (in cap order) | Caps | Sum | Phase maximum |
+|---|---|---|---|---:|
+| Classifier | classify | 1 | 1 | 1 |
+| Diagnostics | installer-diagnostics | 1 | 1 | 1 |
+| Early Kind | binary, baseline, GC, precontroller, auth | 3, 2, 1, 2, 1 | 3 + 2 + 1 + 2 + 1 | 9 |
+| Admission | binary, admission, admission-v3 | 3, 3, 4 | 3 + 3 + 4 | 10 |
+| Bulk proofs | binary, race, envtest | 3, 4, 3 | 3 + 4 + 3 | 10 |
+| After envtest, possibly with race | binary, race, recovery, lifecycle, policy OR API | 3, 4, 1, 1, 1 | 3 + 4 + 1 + 1 + 1 | 10 |
+| Aggregate | go-and-policy | 1 | 1 | 1 |
+
+The maximum over every unordered set of jobs in the `needs` graph is **10**;
+this does not assume a successful or typical-duration run. Cheap, docs-only
+and idle scopes are subsets and cannot increase the bound.
+
+From `october-durations.tsv`, a conservative wave model uses
+`ceil(legs / cap) * slowest_leg_duration` within each matrix. After diagnostics,
+the early group takes at most **19.2 / 22.8 minutes** using p50 / p99 leg
+inputs; admission adds **21.6 / 31.4**. Race takes **64.0 / 181.6**; envtest
+**28.6 / 68.2**, followed by at most **62.8 / 67.1** for recovery (longer than
+lifecycle or policy then API). Thus all non-binary work finishes within
+**132.2 / 235.8 minutes** after diagnostics. The binary transition's
+**241.7 / 328.9 minutes** still dominates, before and after this change:
+**estimated added full-PR wall clock: 0 minutes** at both modeled inputs.
+Diagnostics/classification/gate are common overhead. Envtest alone adds two
+waves, about **5.2 / 12.4 minutes**, hidden under binary; other proofs report
+later and failures may be discovered later. This model combines per-job
+percentiles, not observed whole-run percentiles or a guarantee. Queueing,
+cache behavior, outliers and changed binary performance can change wall time.
+Successful runner-minutes remain about **1,116.2 per full run**; caps alone
+claim no compute-minute saving.
+
+The bound is **per run, not repo-wide**. Two PR runs can request **20 jobs**,
+using the account's approximately 20-slot pool and leaving none for other
+repos. One full PR plus a cheap main run and the unchanged performance lab
+can request **10 + 1 + 7 = 18** (the lab has six membership shards plus one
+independent phase-barrier job). A PR plus a full nightly can request **20**;
+two PRs plus that nightly and the lab can request **37**, with excess jobs
+queued by the account. Main push and nightly cannot run simultaneously in
+their shared group, so they must not be counted as two simultaneous runs.
+Long binary-only tails often use fewer slots, but do not provide a hard limit.
+A hard repo-wide ten-job cap needs a shared ten-slot admission controller with
+a durable queue across all runs/workflows, or a dedicated runner pool limited
+to ten workers. A single global workflow concurrency group would replace
+pending runs by default and is not implemented. The performance workflow and
+repository settings are unchanged.
 
 ## Documentation and lint configuration exception
 
