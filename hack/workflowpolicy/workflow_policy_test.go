@@ -1582,7 +1582,17 @@ func verifyNightlyExpectedJobsSync(body []byte, wf *workflowFile) error {
 
 // nightlyTimeTokens would indicate a time-window freshness heuristic
 // instead of proof by the same main SHA.
-var nightlyTimeTokens = []string{"datetime", "timedelta", "time.time", "strptime", "fromisoformat", "utcnow", "created_at", "updated_at", "run_started_at", "created=", "\"created\"", "hours", "date -", "date +"}
+var nightlyTimeTokens = []string{
+	"datetime", "timedelta", "from time import", "time.time", "time.gmtime", "time.localtime",
+	"strptime", "fromisoformat", "utcnow", "created_at", "updated_at", "run_started_at",
+	"created=", "\"created\"", "hours", "date -", "date +",
+}
+
+var (
+	nightlyFromTimeImportRe = regexp.MustCompile(`\bfrom\s+time\s+import\b`)
+	nightlyImportTimeAsRe   = regexp.MustCompile(`\bimport\s+time\s+as\b`)
+	nightlyTimeAttrRe       = regexp.MustCompile(`\btime\s*\.\s*([a-z0-9_]+)`)
+)
 
 func findStep(job workflowJob, id string) (int, *workflowStep) {
 	for i := range job.Steps {
@@ -1627,6 +1637,17 @@ func validateNightlyGuardStatic(wf *workflowFile) error {
 	for _, token := range nightlyTimeTokens {
 		if strings.Contains(lower, token) {
 			return fmt.Errorf("nightly guard contains time-window logic token %q; coverage must be proven by SHA", token)
+		}
+	}
+	if nightlyFromTimeImportRe.MatchString(lower) {
+		return fmt.Errorf("nightly guard contains time-window logic token \"from time import\"; coverage must be proven by SHA")
+	}
+	if nightlyImportTimeAsRe.MatchString(lower) {
+		return fmt.Errorf("nightly guard contains time-window logic token \"import time as\"; coverage must be proven by SHA")
+	}
+	for _, m := range nightlyTimeAttrRe.FindAllStringSubmatch(lower, -1) {
+		if m[1] != "monotonic" {
+			return fmt.Errorf("nightly guard contains time-window logic token %q; only time.monotonic is allowed and coverage must be proven by SHA", "time."+m[1])
 		}
 	}
 	return nil
@@ -1979,6 +2000,12 @@ def out(obj):
     sys.stdout.write(json.dumps(obj))
     sys.exit(0)
 
+raw_spec = fx.get("raw_response")
+def maybe_raw(tag):
+    if raw_spec and raw_spec.get("endpoint") == tag:
+        sys.stdout.write(raw_spec["body"])
+        sys.exit(0)
+
 if fx.get("fail_all"):
     fail("HTTP 502: stub outage")
 if not args or args[0] != "api":
@@ -2016,12 +2043,31 @@ allowed_content_paths = {".github/workflows/ci.yml"} | {r.get("path", "") for r 
 if path == "commits/main" and not params:
     if "commit" in failing:
         fail("HTTP 502")
-    out({"sha": fx["main_sha"]})
+    prior_commits = sum(
+        1 for call in prior_calls
+        if any(isinstance(tok, str) and tok.endswith("/commits/main") for tok in call)
+    )
+    prior_jobs = sum(
+        1 for call in prior_calls
+        if any(isinstance(tok, str) and "/jobs" in tok for tok in call)
+    )
+    if prior_commits >= 1 or prior_jobs >= 1:
+        maybe_raw("commit_after")
+    maybe_raw("commit")
+    sha_val = fx["main_sha"]
+    if "main_sha_seq" in fx:
+        seq = fx["main_sha_seq"]
+        idx = 1 if prior_jobs >= 1 else min(prior_commits, len(seq) - 1)
+        sha_val = seq[idx]
+    out({"sha": sha_val})
 
 m = re.fullmatch(r"actions/runs/(\d+)", path)
 if m and not params:
     if "run" in failing:
         fail("HTTP 502")
+    maybe_raw("run")
+    if runs and m.group(1) == str(fx.get("current_id")):
+        out(runs[0])
     if m.group(1) not in by_id:
         fail("HTTP 404")
     out(by_id[m.group(1)])
@@ -2032,6 +2078,7 @@ if path.startswith("contents/"):
         violate("unsupported contents endpoint or query: " + endpoint)
     if "contents" in failing:
         fail("HTTP 502")
+    maybe_raw("contents")
     prior_contents = sum(
         1 for call in prior_calls
         if any(isinstance(tok, str) and "/contents/" in tok for tok in call)
@@ -2045,8 +2092,8 @@ m = re.fullmatch(r"actions/workflows/(\d+)/runs", path)
 if m and set(params.keys()) == {"branch", "head_sha", "status", "per_page"} and params["branch"] == "main" and params["status"] == "success" and params["per_page"] == "100":
     if "runs" in failing:
         fail("HTTP 502")
-    current_id = fx.get("current_id")
-    selected = [r for r in runs if r["id"] != current_id]
+    maybe_raw("runs")
+    selected = list(runs[1:])
     selected.sort(key=lambda r: r["id"], reverse=True)
     per_page = int(params["per_page"])
     out({"total_count": fx.get("runs_total", len(selected)),
@@ -2056,6 +2103,7 @@ m = re.fullmatch(r"actions/runs/(\d+)/attempts/1/jobs", path)
 if m and set(params.keys()) == {"per_page"} and params["per_page"] == "100":
     if "jobs" in failing:
         fail("HTTP 502")
+    maybe_raw("jobs")
     if m.group(1) not in by_id:
         fail("HTTP 404")
     jobs = fx["jobs"].get(m.group(1), [])
@@ -2064,6 +2112,24 @@ if m and set(params.keys()) == {"per_page"} and params["per_page"] == "100":
          "jobs": jobs[:per_page]})
 
 violate("HTTP 404: unsupported stub endpoint " + endpoint)
+`
+
+const ghSiteCustomize = `import os, sys
+
+if os.environ.get("GH_STUB_MONITOR") == "1" and hasattr(sys, "monitoring"):
+    def _on_ret(code, off, val):
+        vpath = os.environ.get("GH_STUB_VIOLATION")
+        if not vpath:
+            return
+        if code.co_name == "lookup" and not isinstance(val, dict):
+            with open(vpath, "a") as vf:
+                vf.write(f"lookup returned non-dict {type(val).__name__}\n")
+        if code.co_name == "complete_page" and isinstance(val, list) and len(val) >= 100 and isinstance(val[0], dict) and "run_id" in val[0]:
+            with open(vpath, "a") as vf:
+                vf.write(f"complete_page accepted jobs page of length {len(val)} >= 100\n")
+    sys.monitoring.use_tool_id(4, "workflowpolicy")
+    sys.monitoring.register_callback(4, sys.monitoring.events.PY_RETURN, _on_ret)
+    sys.monitoring.set_events(4, sys.monitoring.events.PY_RETURN)
 `
 
 // verifyNightlyGuard runs the nightly step's own Python with a stub gh on
@@ -2160,6 +2226,20 @@ func verifyNightlyGuard(t *testing.T, wf *workflowFile, body []byte) error {
 			return js
 		}
 	}
+	setJobField := func(name, key string, val any) func([]map[string]any) []map[string]any {
+		return func(js []map[string]any) []map[string]any {
+			for _, j := range js {
+				if j["name"] == name {
+					j[key] = val
+					break
+				}
+			}
+			return js
+		}
+	}
+	renameJob := func(oldName, newName string) func([]map[string]any) []map[string]any {
+		return setJobField(oldName, "name", newName)
+	}
 	drop := func(name string) func([]map[string]any) []map[string]any {
 		return func(js []map[string]any) []map[string]any {
 			return slices.DeleteFunc(js, func(j map[string]any) bool { return j["name"] == name })
@@ -2177,6 +2257,15 @@ func verifyNightlyGuard(t *testing.T, wf *workflowFile, body []byte) error {
 			return js
 		}
 	}
+	padJobsTo100 := func(js []map[string]any) []map[string]any {
+		out := slices.Clone(js)
+		for len(out) < 100 {
+			c := maps.Clone(js[0])
+			c["id"] = 400000 + 900 + len(out)
+			out = append(out, c)
+		}
+		return out
+	}
 	fixture := func(prior []map[string]any, jobsByRun map[int][]map[string]any) map[string]any {
 		jobsJSON := map[string]any{}
 		for id, js := range jobsByRun {
@@ -2186,6 +2275,11 @@ func verifyNightlyGuard(t *testing.T, wf *workflowFile, body []byte) error {
 			"repo": repo, "main_sha": sha, "blob_sha": blobSHA, "current_id": currentID,
 			"runs": append([]map[string]any{current}, prior...), "jobs": jobsJSON,
 		}
+	}
+	fixtureWithCurrent := func(cur map[string]any, prior []map[string]any, jobsByRun map[int][]map[string]any) map[string]any {
+		fx := fixture(prior, jobsByRun)
+		fx["runs"] = append([]map[string]any{cur}, prior...)
+		return fx
 	}
 	goodPrior := run(4000, "schedule", "completed", "success", sha, "main")
 	goodDispatch := run(4000, "workflow_dispatch", "completed", "success", sha, "main")
@@ -2237,13 +2331,62 @@ func verifyNightlyGuard(t *testing.T, wf *workflowFile, body []byte) error {
 			run(4001, "push", "completed", "success", sha, "main"),
 			run(4002, "pull_request", "completed", "success", sha, "topic"),
 		}, map[int][]map[string]any{4001: jobs(4001, sha, nil), 4002: jobs(4002, sha, nil)}), false},
-		// Positive cases: prior schedule full run and prior workflow_dispatch full run.
-		{"(iii) prior successful schedule run of same SHA and workflow blob, every job success", proven(), true},
-		{"(iii-b) prior successful workflow_dispatch run of same SHA and workflow blob, every job success", provenDispatch(), true},
+		// Round 8 single-field behavioural negatives (a) and (b) 1-11.
+		{"(a) prior 89-job run with one race shard renamed to unknown job name", fixture([]map[string]any{goodPrior}, map[int][]map[string]any{4000: jobs(4000, sha, renameJob("Installer engine race shard 31", "Installer engine race shard 32"))}), false},
+		{"(a-b) prior 89-job run with one race shard renamed to duplicate another job name", fixture([]map[string]any{goodPrior}, map[int][]map[string]any{4000: jobs(4000, sha, renameJob("Installer engine race shard 31", "Installer engine race shard 0"))}), false},
+		{"(b1-mid) main moves mid-proof (commits/main returns scheduled SHA then different SHA)", with(proven(), "main_sha_seq", []string{sha, otherSHA}), false},
+		{"(b1-pre) main moved on first call before lookup (commits/main returns different SHA then scheduled SHA)", with(proven(), "main_sha_seq", []string{otherSHA, sha}), false},
+		{"(b2) candidate head_branch != main", fixture([]map[string]any{runWith(goodPrior, "head_branch", "topic")}, map[int][]map[string]any{4000: jobs(4000, sha, nil)}), false},
+		{"(b3-push) candidate event push (otherwise full run on main)", fixture([]map[string]any{runWith(goodPrior, "event", "push")}, map[int][]map[string]any{4000: jobs(4000, sha, nil)}), false},
+		{"(b3-pr) candidate event pull_request (otherwise full run on main)", fixture([]map[string]any{runWith(goodPrior, "event", "pull_request")}, map[int][]map[string]any{4000: jobs(4000, sha, nil)}), false},
+		{"(b4-newer) candidate id newer than current run id", fixture([]map[string]any{run(6000, "schedule", "completed", "success", sha, "main")}, map[int][]map[string]any{6000: jobs(6000, sha, nil)}), false},
+		{"(b4-equal) candidate id equal to current run id", fixture([]map[string]any{run(currentID, "schedule", "completed", "success", sha, "main")}, map[int][]map[string]any{currentID: jobs(currentID, sha, nil)}), false},
+		{"(b5-dispatch) current run event workflow_dispatch", fixtureWithCurrent(runWith(current, "event", "workflow_dispatch"), []map[string]any{goodPrior}, map[int][]map[string]any{4000: jobs(4000, sha, nil)}), false},
+		{"(b5-push) current run event push", fixtureWithCurrent(runWith(current, "event", "push"), []map[string]any{goodPrior}, map[int][]map[string]any{4000: jobs(4000, sha, nil)}), false},
+		{"(b5-branch) current run head_branch != main", fixtureWithCurrent(runWith(current, "head_branch", "topic"), []map[string]any{goodPrior}, map[int][]map[string]any{4000: jobs(4000, sha, nil)}), false},
+		{"(b5-sha) current run head_sha != scheduled SHA", fixtureWithCurrent(runWith(current, "head_sha", otherSHA), []map[string]any{goodPrior}, map[int][]map[string]any{4000: jobs(4000, sha, nil)}), false},
+		{"(b5-id) current run id != CI_RUN_ID", fixtureWithCurrent(runWith(current, "id", currentID+1), []map[string]any{goodPrior}, map[int][]map[string]any{4000: jobs(4000, sha, nil)}), false},
+		{"(b6-current) @ref suffix on current run path (.github/workflows/ci.yml@refs/heads/main)", fixtureWithCurrent(runWith(current, "path", ".github/workflows/ci.yml@refs/heads/main"), []map[string]any{goodPrior}, map[int][]map[string]any{4000: jobs(4000, sha, nil)}), false},
+		{"(b6-candidate) @ref suffix on candidate run path (.github/workflows/ci.yml@refs/heads/main)", fixture([]map[string]any{runWith(goodPrior, "path", ".github/workflows/ci.yml@refs/heads/main")}, map[int][]map[string]any{4000: jobs(4000, sha, nil)}), false},
+		{"(b6-both) @ref suffix on current and candidate run paths (.github/workflows/ci.yml@refs/heads/main)", fixtureWithCurrent(runWith(current, "path", ".github/workflows/ci.yml@refs/heads/main"), []map[string]any{runWith(goodPrior, "path", ".github/workflows/ci.yml@refs/heads/main")}, map[int][]map[string]any{4000: jobs(4000, sha, nil)}), false},
+		{"(b8) job record with run_id of a different run", fixture([]map[string]any{goodPrior}, map[int][]map[string]any{4000: jobs(4000, sha, setJobField("Installer engine race shard 0", "run_id", 4001))}), false},
+		{"(b9-run) candidate status in_progress with conclusion success", fixture([]map[string]any{runWith(goodPrior, "status", "in_progress")}, map[int][]map[string]any{4000: jobs(4000, sha, nil)}), false},
+		{"(b9-job) prior run with one job status in_progress and conclusion success", fixture([]map[string]any{goodPrior}, map[int][]map[string]any{4000: jobs(4000, sha, setJobField("Installer engine race shard 0", "status", "in_progress"))}), false},
+		{"(b10-run) candidate run head_sha differs while all job head_shas match", fixture([]map[string]any{runWith(goodPrior, "head_sha", otherSHA)}, map[int][]map[string]any{4000: jobs(4000, sha, nil)}), false},
+		{"(b10-job) single job head_sha differs while candidate run head_sha matches", fixture([]map[string]any{goodPrior}, map[int][]map[string]any{4000: jobs(4000, sha, setJobField("Installer engine race shard 0", "head_sha", otherSHA))}), false},
+		{"(b11-runs-short) short runs page total_count<100 (len(entries)!=total_count)", with(proven(), "runs_total", 2), false},
+		{"(b11-jobs-short) short jobs page total_count<100 (len(entries)!=total_count)", with(proven(), "jobs_total", 90), false},
+		{"(b11-runs-100) full 100-entry runs page with total_count=100", with(fixture(append(slices.Clone(page), goodPrior), map[int][]map[string]any{4000: jobs(4000, sha, nil)}), "runs_total", 100), false},
+		{"(b11-jobs-100) full 100-entry jobs page with total_count=100", with(fixture([]map[string]any{goodPrior}, map[int][]map[string]any{4000: padJobsTo100(jobs(4000, sha, nil))}), "jobs_total", 100), false},
+		{"(b11-runs-dupid-len) runs page with duplicate entry and total_count=1 (len(entries)!=total_count)", with(fixture([]map[string]any{goodPrior, goodPrior}, map[int][]map[string]any{4000: jobs(4000, sha, nil)}), "runs_total", 1), false},
+		{"(b11-runs-dupid) runs page with duplicate entry id and total_count=2", with(fixture([]map[string]any{goodPrior, goodPrior}, map[int][]map[string]any{4000: jobs(4000, sha, nil)}), "runs_total", 2), false},
 	}
+	for _, ep := range []string{"commit", "run", "contents", "runs", "jobs"} {
+		for _, bad := range []struct{ kind, body string }{
+			{"array", `[{"sha":"` + sha + `"}]`},
+			{"null", "null"},
+			{"string", `"ok"`},
+			{"empty", ""},
+			{"invalid", "{invalid-json"},
+		} {
+			scenarios = append(scenarios, scenario{
+				name:     fmt.Sprintf("(b7-%s-%s) %s response on %s endpoint", ep, bad.kind, bad.kind, ep),
+				fixture:  with(proven(), "raw_response", map[string]any{"endpoint": ep, "body": bad.body}),
+				wantSkip: false,
+			})
+		}
+	}
+	// Positive cases: prior schedule full run and prior workflow_dispatch full run.
+	scenarios = append(scenarios,
+		scenario{"(iii) prior successful schedule run of same SHA and workflow blob, every job success", proven(), true},
+		scenario{"(iii-b) prior successful workflow_dispatch run of same SHA and workflow blob, every job success", provenDispatch(), true},
+	)
 
 	stubDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(stubDir, "gh"), []byte(ghStub), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(stubDir, "sitecustomize.py"), []byte(ghSiteCustomize), 0o600); err != nil {
 		return err
 	}
 	for _, sc := range scenarios {
@@ -2263,6 +2406,8 @@ func verifyNightlyGuard(t *testing.T, wf *workflowFile, body []byte) error {
 		cmd.Dir = dir
 		cmd.Env = append([]string{
 			"PATH=" + stubDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+			"PYTHONPATH=" + stubDir,
+			"GH_STUB_MONITOR=1",
 			"HOME=" + dir,
 			"GITHUB_OUTPUT=" + outputPath,
 			"GH_STUB_FIXTURE=" + fixturePath,
@@ -2985,6 +3130,50 @@ func TestWorkflowPolicy(t *testing.T) {
 				return replaceInJob(s, "envtest", "needs.kind-install-gc.result == 'success' && ", "")
 			},
 			wantErr: "rule 4: envtest if condition must require foundation \"kind-install-gc\"",
+		},
+		// Round 8 (d): time-token ban negatives (from time import, time.time,
+		// time.gmtime, time.localtime, datetime, and any time.<attr> != monotonic).
+		{
+			name: "r8-(d1) nightly guard uses from time import monotonic",
+			mutate: func(s string) string {
+				return replaceInJob(s, "classify", "          import time\n", "          from time import monotonic\n          import time\n")
+			},
+			wantErr: "time-window logic token \"from time import\"",
+		},
+		{
+			name: "r8-(d1b) nightly guard uses multiline/spaced from time import",
+			mutate: func(s string) string {
+				return replaceInJob(s, "classify", "          import time\n", "          from   time   import (monotonic)\n          import time\n")
+			},
+			wantErr: "time-window logic token \"from time import\"",
+		},
+		{
+			name: "r8-(d2) nightly guard uses time.time",
+			mutate: func(s string) string {
+				return replaceInJob(s, "classify", "time.monotonic()", "time.time()")
+			},
+			wantErr: "time-window logic token \"time.time\"",
+		},
+		{
+			name: "r8-(d3) nightly guard uses time.gmtime",
+			mutate: func(s string) string {
+				return replaceInJob(s, "classify", "          import time\n", "          import time\n          _ = time.gmtime()\n")
+			},
+			wantErr: "time-window logic token \"time.gmtime\"",
+		},
+		{
+			name: "r8-(d4) nightly guard uses time.localtime",
+			mutate: func(s string) string {
+				return replaceInJob(s, "classify", "          import time\n", "          import time\n          _ = time.localtime()\n")
+			},
+			wantErr: "time-window logic token \"time.localtime\"",
+		},
+		{
+			name: "r8-(d5) nightly guard uses non-monotonic time attribute",
+			mutate: func(s string) string {
+				return replaceInJob(s, "classify", "          import time\n", "          import time\n          _ = time.ctime()\n")
+			},
+			wantErr: "time-window logic token \"time.ctime\"; only time.monotonic is allowed",
 		},
 	}
 
