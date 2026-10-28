@@ -25,6 +25,7 @@ type ciSpeedupsWorkflow struct {
 type ciSpeedupsJob struct {
 	Name            string            `yaml:"name"`
 	RunsOn          string            `yaml:"runs-on"`
+	Container       any               `yaml:"container"`
 	If              string            `yaml:"if"`
 	ContinueOnError any               `yaml:"continue-on-error"`
 	Needs           []string          `yaml:"needs"`
@@ -795,11 +796,515 @@ func TestCISpeedupsRuntimeImagesScriptCliAndDirtyRefusals(t *testing.T) {
 
 func requireScratchDocker(t *testing.T) {
 	t.Helper()
+	// Every CI job in .github/workflows/ci.yml that executes internal/installengine
+	// tests (install-engine-race, envtest, installer-diagnostics, and kind-install-*)
+	// runs on ubuntu-24.04 GitHub-hosted VM runners without a container: job wrapper,
+	// where the Docker CLI and daemon are always provisioned. Fail closed when CI=true.
+	ci := strings.EqualFold(strings.TrimSpace(os.Getenv("CI")), "true")
 	if _, err := exec.LookPath("docker"); err != nil {
-		t.Skip("docker not found in PATH: this test builds a scratch image; install docker or run in CI")
+		if ci {
+			t.Fatalf("requireScratchDocker: docker CLI missing from PATH (%q) while CI=true: %v", os.Getenv("PATH"), err)
+		}
+		t.Skipf("requireScratchDocker: skipping local scratch-image test because docker CLI was not found in PATH (%q): %v", os.Getenv("PATH"), err)
 	}
-	if err := exec.Command("docker", "info").Run(); err != nil {
-		t.Skip("docker not found in PATH: this test builds a scratch image; install docker or run in CI")
+	if out, err := exec.Command("docker", "info").CombinedOutput(); err != nil {
+		detail := strings.TrimSpace(string(out))
+		if ci {
+			t.Fatalf("requireScratchDocker: docker daemon unreachable (`docker info` failed) while CI=true: %v (%s)", err, detail)
+		}
+		t.Skipf("requireScratchDocker: skipping local scratch-image test because docker daemon is unreachable (`docker info` failed): %v (%s)", err, detail)
+	}
+}
+
+func setupFakeDockerShim(t *testing.T, sha string) (string, string, string, string, string) {
+	t.Helper()
+	shimDir := filepath.Join(t.TempDir(), "bin")
+	stateDir := filepath.Join(t.TempDir(), "state")
+	if err := os.MkdirAll(shimDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stateDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(t.TempDir(), "docker.log")
+	if err := os.WriteFile(logPath, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	freshAPIID := "sha256:" + strings.Repeat("a", 64)
+	freshControllerID := "sha256:" + strings.Repeat("b", 64)
+	shimScript := `#!/usr/bin/env bash
+set -euo pipefail
+key_of() { printf '%s' "$1" | tr ':/' '__'; }
+printf 'cmd=%s env_kind_image_dir=%s\n' "$*" "${ARCADECTL_KIND_IMAGE_DIR-}" >> "$FAKE_DOCKER_LOG"
+
+case "${1:-}" in
+  info)
+    if [[ "${FAKE_DOCKER_INFO_FAIL:-0}" == "1" ]]; then
+      echo "Cannot connect to the Docker daemon at unix:///nonexistent/docker.sock. Is the docker daemon running?" >&2
+      exit 1
+    fi
+    exit 0
+    ;;
+  build)
+    tag=""
+    dockerfile=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --tag) tag="$2"; shift 2 ;;
+        --file) dockerfile="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    tkey=$(key_of "$tag")
+    if [[ "$dockerfile" == *Dockerfile.api ]]; then
+      printf '%s\n' "$FAKE_DOCKER_FRESH_API_ID" > "$FAKE_DOCKER_STATE_DIR/id_$tkey"
+      printf 'api\n' > "$FAKE_DOCKER_STATE_DIR/role_$tkey"
+    else
+      printf '%s\n' "$FAKE_DOCKER_FRESH_CONTROLLER_ID" > "$FAKE_DOCKER_STATE_DIR/id_$tkey"
+      printf 'controller\n' > "$FAKE_DOCKER_STATE_DIR/role_$tkey"
+    fi
+    exit 0
+    ;;
+  image)
+    shift
+    case "${1:-}" in
+      save)
+        shift
+        out=""
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --output) out="$2"; shift 2 ;;
+            *) shift ;;
+          esac
+        done
+        printf 'fake-docker-archive-v1\n' > "$out"
+        exit 0
+        ;;
+      load)
+        shift
+        in_file=""
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --input) in_file="$2"; shift 2 ;;
+            *) shift ;;
+          esac
+        done
+        [[ -f "$in_file" ]]
+        exit 0
+        ;;
+      tag)
+        src="$2"
+        dst="$3"
+        skey=$(key_of "$src")
+        dkey=$(key_of "$dst")
+        if [[ -f "$FAKE_DOCKER_STATE_DIR/id_$skey" ]]; then
+          cp "$FAKE_DOCKER_STATE_DIR/id_$skey" "$FAKE_DOCKER_STATE_DIR/id_$dkey"
+        else
+          printf '%s\n' "$src" > "$FAKE_DOCKER_STATE_DIR/id_$dkey"
+        fi
+        if [[ -f "$FAKE_DOCKER_STATE_DIR/role_$skey" ]]; then
+          cp "$FAKE_DOCKER_STATE_DIR/role_$skey" "$FAKE_DOCKER_STATE_DIR/role_$dkey"
+        fi
+        exit 0
+        ;;
+      inspect)
+        fmt="$3"
+        target="$4"
+        tkey=$(key_of "$target")
+        resolved="$target"
+        if [[ -f "$FAKE_DOCKER_STATE_DIR/id_$tkey" ]]; then
+          resolved=$(cat "$FAKE_DOCKER_STATE_DIR/id_$tkey")
+        fi
+        role=""
+        if [[ -f "$FAKE_DOCKER_STATE_DIR/role_$tkey" ]]; then
+          role=$(cat "$FAKE_DOCKER_STATE_DIR/role_$tkey")
+        elif [[ "$target" == *api* || "$resolved" == "$FAKE_DOCKER_FRESH_API_ID" || "$resolved" == "${FAKE_DOCKER_ALT_API_ID:-}" ]]; then
+          role="api"
+        elif [[ "$target" == *controller* || "$resolved" == "$FAKE_DOCKER_FRESH_CONTROLLER_ID" || "$resolved" == "${FAKE_DOCKER_ALT_CONTROLLER_ID:-}" ]]; then
+          role="controller"
+        fi
+        case "$fmt" in
+          '{{.Id}}') printf '%s\n' "$resolved" ;;
+          '{{.Os}}/{{.Architecture}}') printf '%s\n' "${FAKE_DOCKER_PLATFORM:-linux/amd64}" ;;
+          '{{index .Config.Labels "org.opencontainers.image.revision"}}') printf '%s\n' "${FAKE_DOCKER_SHA}" ;;
+          '{{index .Config.Labels "arcade.gobha.me/source-dirty"}}') printf '%s\n' "${FAKE_DOCKER_DIRTY:-false}" ;;
+          '{{.Config.User}}') printf '%s\n' "${FAKE_DOCKER_USER:-65532:65532}" ;;
+          '{{json .Config.Entrypoint}}') printf '["/arcadectl-%s"]\n' "$role" ;;
+          *) echo "unexpected inspect format: $fmt" >&2; exit 2 ;;
+        esac
+        exit 0
+        ;;
+    esac
+    ;;
+esac
+echo "unexpected fake docker invocation: $*" >&2
+exit 2
+`
+	shimFile := filepath.Join(shimDir, "docker")
+	if err := os.WriteFile(shimFile, []byte(shimScript), 0700); err != nil {
+		t.Fatal(err)
+	}
+	_ = sha
+	return shimDir, stateDir, logPath, freshAPIID, freshControllerID
+}
+
+func TestCISpeedupsRuntimeImagesBundleIntegrityAndTamperRefusal(t *testing.T) {
+	scriptPath, err := filepath.Abs("../../hack/kind-runtime-images.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(scriptPath); err != nil {
+		t.Fatalf("hack/kind-runtime-images.sh unavailable: %v", err)
+	}
+	repo, sha, epoch := initTempRuntimeImagesRepo(t, "bundle-integrity")
+	shimDir, stateDir, logPath, freshAPIID, freshControllerID := setupFakeDockerShim(t, sha)
+	altAPIID := "sha256:" + strings.Repeat("c", 64)
+	altControllerID := "sha256:" + strings.Repeat("d", 64)
+
+	runWithShim := func(extraEnv []string, args ...string) (string, string, error) {
+		if err := os.WriteFile(logPath, nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command("bash", append([]string{scriptPath}, args...)...)
+		baseEnv := []string{
+			"PATH=" + shimDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+			"FAKE_DOCKER_LOG=" + logPath,
+			"FAKE_DOCKER_STATE_DIR=" + stateDir,
+			"FAKE_DOCKER_SHA=" + sha,
+			"FAKE_DOCKER_FRESH_API_ID=" + freshAPIID,
+			"FAKE_DOCKER_FRESH_CONTROLLER_ID=" + freshControllerID,
+			"FAKE_DOCKER_ALT_API_ID=" + altAPIID,
+			"FAKE_DOCKER_ALT_CONTROLLER_ID=" + altControllerID,
+		}
+		cmd.Env = append(append(os.Environ(), baseEnv...), extraEnv...)
+		out, runErr := cmd.CombinedOutput()
+		logBytes, logErr := os.ReadFile(logPath)
+		if logErr != nil {
+			t.Fatal(logErr)
+		}
+		return string(out), string(logBytes), runErr
+	}
+
+	bundle := filepath.Join(t.TempDir(), "bundle")
+	if out, _, err := runWithShim(nil, "export", repo, bundle); err != nil {
+		t.Fatalf("export with docker shim failed: %v (%s)", err, out)
+	}
+	origTar, err := os.ReadFile(filepath.Join(bundle, "images.tar"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	origAPIID, err := os.ReadFile(filepath.Join(bundle, "api.id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	origControllerID, err := os.ReadFile(filepath.Join(bundle, "controller.id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	origSums, err := os.ReadFile(filepath.Join(bundle, "SHA256SUMS"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoreBundle := func() {
+		t.Helper()
+		for name, content := range map[string][]byte{
+			"images.tar":    origTar,
+			"api.id":        origAPIID,
+			"controller.id": origControllerID,
+			"SHA256SUMS":    origSums,
+		} {
+			if err := os.WriteFile(filepath.Join(bundle, name), content, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	// Unhappy paths first: tamper with artifacts or SHA256SUMS while keeping source-sha,
+	// source-epoch, and image ID formats valid so only sha256sum --check --strict can catch it.
+	for _, tc := range []struct {
+		name   string
+		tamper func()
+	}{
+		{
+			name: "tampered-images-tar",
+			tamper: func() {
+				if err := os.WriteFile(filepath.Join(bundle, "images.tar"), []byte("tampered-archive-payload\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "tampered-api-id-artifact",
+			tamper: func() {
+				if err := os.WriteFile(filepath.Join(bundle, "api.id"), []byte(altAPIID+"\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "tampered-controller-id-artifact",
+			tamper: func() {
+				if err := os.WriteFile(filepath.Join(bundle, "controller.id"), []byte(altControllerID+"\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "tampered-sha256sums-digest",
+			tamper: func() {
+				corrupted := make([]byte, len(origSums))
+				copy(corrupted, origSums)
+				if corrupted[0] == '0' {
+					corrupted[0] = '1'
+				} else {
+					corrupted[0] = '0'
+				}
+				if err := os.WriteFile(filepath.Join(bundle, "SHA256SUMS"), corrupted, 0600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "strict-malformed-sha256sums-line",
+			tamper: func() {
+				withJunk := append(slices.Clone(origSums), []byte("malformed-checksum-line\n")...)
+				if err := os.WriteFile(filepath.Join(bundle, "SHA256SUMS"), withJunk, 0600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "missing-sha256sums",
+			tamper: func() {
+				if err := os.Remove(filepath.Join(bundle, "SHA256SUMS")); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		restoreBundle()
+		tc.tamper()
+		out, dockerLog, err := runWithShim(nil, "load", repo, bundle)
+		if err == nil {
+			t.Fatalf("case %s: load succeeded on tampered bundle (out=%q, dockerLog=%q)", tc.name, out, dockerLog)
+		}
+		if strings.Contains(dockerLog, "image load") {
+			t.Fatalf("case %s: load invoked `docker image load` despite tampered checksums (dockerLog=%q)", tc.name, dockerLog)
+		}
+	}
+
+	// Also verify prepare refuses tampered image identity or image metadata before `docker image tag`.
+	restoreBundle()
+	if err := os.WriteFile(filepath.Join(bundle, "api.id"), []byte("tampered-non-digest\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if out, dockerLog, err := runWithShim([]string{"ARCADECTL_KIND_IMAGE_DIR=" + bundle}, "prepare", "api", repo, sha, epoch, "false", "arcadectl-api:test"); err == nil || !strings.Contains(out, "invalid shared image identity") || strings.Contains(dockerLog, "image tag") {
+		t.Fatalf("prepare accepted tampered api.id: err=%v out=%q dockerLog=%q", err, out, dockerLog)
+	}
+	restoreBundle()
+	if out, dockerLog, err := runWithShim([]string{"ARCADECTL_KIND_IMAGE_DIR=" + bundle, "FAKE_DOCKER_SHA=deadbeef"}, "prepare", "api", repo, sha, epoch, "false", "arcadectl-api:test"); err == nil || !strings.Contains(out, "source mismatch") || strings.Contains(dockerLog, "image tag") {
+		t.Fatalf("prepare accepted tampered image revision label: err=%v out=%q dockerLog=%q", err, out, dockerLog)
+	}
+
+	// Happy path: untampered bundle passes checksum verification, loads archive, and prepares both roles.
+	restoreBundle()
+	out, dockerLog, err := runWithShim(nil, "load", repo, bundle)
+	if err != nil {
+		t.Fatalf("load failed on untampered bundle: %v (%s)", err, out)
+	}
+	if !strings.Contains(dockerLog, "cmd=image load --input "+filepath.Join(bundle, "images.tar")) {
+		t.Fatalf("load did not invoke expected `docker image load`: %q", dockerLog)
+	}
+	for _, role := range []string{"api", "controller"} {
+		out, dockerLog, err = runWithShim([]string{"ARCADECTL_KIND_IMAGE_DIR=" + bundle}, "prepare", role, repo, sha, epoch, "false", "arcadectl-"+role+":consumer")
+		if err != nil {
+			t.Fatalf("prepare %s failed on untampered bundle: %v (%s)", role, err, out)
+		}
+		if !strings.Contains(dockerLog, "cmd=image tag ") {
+			t.Fatalf("prepare %s did not tag shared image: %q", role, dockerLog)
+		}
+	}
+}
+
+func TestCISpeedupsRuntimeImagesProducerIgnoresInheritedBundleEnv(t *testing.T) {
+	scriptPath, err := filepath.Abs("../../hack/kind-runtime-images.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(scriptPath); err != nil {
+		t.Fatalf("hack/kind-runtime-images.sh unavailable: %v", err)
+	}
+	repo, sha, epoch := initTempRuntimeImagesRepo(t, "producer-env")
+	shimDir, stateDir, logPath, freshAPIID, freshControllerID := setupFakeDockerShim(t, sha)
+	poisonAPIID := "sha256:" + strings.Repeat("1", 64)
+	poisonControllerID := "sha256:" + strings.Repeat("2", 64)
+
+	// Construct a valid-looking pre-existing bundle matching repo's exact SHA and epoch,
+	// but containing poisoned image IDs so we can detect if export inherits ARCADECTL_KIND_IMAGE_DIR.
+	poisonBundle := filepath.Join(t.TempDir(), "poison-inherited-bundle")
+	if err := os.MkdirAll(poisonBundle, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		"images.tar":    "poison-archive\n",
+		"source-sha":    sha + "\n",
+		"source-epoch":  epoch + "\n",
+		"api.id":        poisonAPIID + "\n",
+		"controller.id": poisonControllerID + "\n",
+	} {
+		if err := os.WriteFile(filepath.Join(poisonBundle, name), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeBundleChecksums(t, poisonBundle)
+
+	runWithShim := func(extraEnv []string, args ...string) (string, string, error) {
+		if err := os.WriteFile(logPath, nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command("bash", append([]string{scriptPath}, args...)...)
+		baseEnv := []string{
+			"PATH=" + shimDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+			"FAKE_DOCKER_LOG=" + logPath,
+			"FAKE_DOCKER_STATE_DIR=" + stateDir,
+			"FAKE_DOCKER_SHA=" + sha,
+			"FAKE_DOCKER_FRESH_API_ID=" + freshAPIID,
+			"FAKE_DOCKER_FRESH_CONTROLLER_ID=" + freshControllerID,
+			"FAKE_DOCKER_ALT_API_ID=" + poisonAPIID,
+			"FAKE_DOCKER_ALT_CONTROLLER_ID=" + poisonControllerID,
+		}
+		cmd.Env = append(append(os.Environ(), baseEnv...), extraEnv...)
+		out, runErr := cmd.CombinedOutput()
+		logBytes, logErr := os.ReadFile(logPath)
+		if logErr != nil {
+			t.Fatal(logErr)
+		}
+		return string(out), string(logBytes), runErr
+	}
+
+	// Control check first: consumer `prepare` WITH ARCADECTL_KIND_IMAGE_DIR=poisonBundle
+	// consumes the bundle via `docker image tag` and fails when pointed at a missing dir.
+	if out, _, err := runWithShim([]string{"ARCADECTL_KIND_IMAGE_DIR=/nonexistent-bundle-dir"}, "prepare", "api", repo, sha, epoch, "false", "arcadectl-api:control"); err == nil {
+		t.Fatalf("consumer prepare unexpectedly succeeded with nonexistent ARCADECTL_KIND_IMAGE_DIR: %s", out)
+	}
+	if out, dockerLog, err := runWithShim([]string{"ARCADECTL_KIND_IMAGE_DIR=" + poisonBundle}, "prepare", "api", repo, sha, epoch, "false", "arcadectl-api:control"); err != nil || !strings.Contains(dockerLog, "cmd=image tag "+poisonAPIID) {
+		t.Fatalf("consumer prepare did not consume ARCADECTL_KIND_IMAGE_DIR as expected: err=%v out=%q log=%q", err, out, dockerLog)
+	}
+
+	// Producer check 1: export with ARCADECTL_KIND_IMAGE_DIR=poisonBundle MUST unset
+	// ARCADECTL_KIND_IMAGE_DIR, invoke `docker build` (never `docker image tag`), and
+	// export the freshly built image IDs rather than inheriting poisonAPIID/poisonControllerID.
+	outBundle1 := filepath.Join(t.TempDir(), "exported-1")
+	out, dockerLog, err := runWithShim([]string{"ARCADECTL_KIND_IMAGE_DIR=" + poisonBundle}, "export", repo, outBundle1)
+	if err != nil {
+		t.Fatalf("export with inherited poison bundle failed: %v (%s)", err, out)
+	}
+	if strings.Contains(dockerLog, "cmd=image tag") {
+		t.Fatalf("producer export inherited ARCADECTL_KIND_IMAGE_DIR and called `docker image tag`: %q", dockerLog)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(dockerLog), "\n") {
+		if strings.HasPrefix(line, "cmd=build ") && !strings.HasSuffix(line, "env_kind_image_dir=") {
+			t.Fatalf("producer export leaked non-empty ARCADECTL_KIND_IMAGE_DIR into prepare/docker build: %q", line)
+		}
+	}
+	if !strings.Contains(dockerLog, "--tag arcadectl-api:kind-shared") || !strings.Contains(dockerLog, "--tag arcadectl-controller:kind-shared") {
+		t.Fatalf("producer export did not run fresh `docker build` for both roles: %q", dockerLog)
+	}
+	gotAPIBytes, err := os.ReadFile(filepath.Join(outBundle1, "api.id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotControllerBytes, err := os.ReadFile(filepath.Join(outBundle1, "controller.id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(gotAPIBytes)); got != freshAPIID {
+		t.Fatalf("exported api.id got %q (poison=%q), want fresh %q", got, poisonAPIID, freshAPIID)
+	}
+	if got := strings.TrimSpace(string(gotControllerBytes)); got != freshControllerID {
+		t.Fatalf("exported controller.id got %q (poison=%q), want fresh %q", got, poisonControllerID, freshControllerID)
+	}
+
+	// Producer check 2: export with ARCADECTL_KIND_IMAGE_DIR pointing to a nonexistent directory
+	// MUST also succeed because the producer clears ARCADECTL_KIND_IMAGE_DIR.
+	outBundle2 := filepath.Join(t.TempDir(), "exported-2")
+	if out, dockerLog, err := runWithShim([]string{"ARCADECTL_KIND_IMAGE_DIR=/nonexistent-bundle-dir"}, "export", repo, outBundle2); err != nil || strings.Contains(dockerLog, "cmd=image tag") {
+		t.Fatalf("export with nonexistent ARCADECTL_KIND_IMAGE_DIR failed: err=%v out=%q log=%q", err, out, dockerLog)
+	}
+}
+
+func TestCISpeedupsRequireScratchDockerLoudSkipAndCIFatal(t *testing.T) {
+	if os.Getenv("ARCADECTL_TEST_SCRATCH_DOCKER_SUBPROC") == "1" {
+		requireScratchDocker(t)
+		return
+	}
+
+	// Verify in .github/workflows/ci.yml that kind-images is present and every job
+	// (including install-engine-race and envtest, which run this package's tests)
+	// runs directly on ubuntu-24.04 without a container: job wrapper.
+	wf, _ := loadCISpeedupsWorkflow(t)
+	if _, ok := wf.Jobs["kind-images"]; !ok {
+		t.Fatal("kind-images job missing from workflow")
+	}
+	for name, job := range wf.Jobs {
+		if job.RunsOn != "ubuntu-24.04" || job.Container != nil {
+			t.Fatalf("job %s runs-on=%q container=%v, want ubuntu-24.04 host runner with Docker available", name, job.RunsOn, job.Container)
+		}
+	}
+
+	emptyBin := filepath.Join(t.TempDir(), "empty-bin")
+	if err := os.MkdirAll(emptyBin, 0700); err != nil {
+		t.Fatal(err)
+	}
+	brokenDockerBin, stateDir, logPath, _, _ := setupFakeDockerShim(t, "deadbeef")
+
+	runSubproc := func(pathEnv, ciEnv, infoFail string) (string, error) {
+		cmd := exec.Command(os.Args[0], "-test.v", "-test.run=^TestCISpeedupsRequireScratchDockerLoudSkipAndCIFatal$")
+		var cleanEnv []string
+		for _, kv := range os.Environ() {
+			if strings.HasPrefix(kv, "PATH=") || strings.HasPrefix(kv, "CI=") || strings.HasPrefix(kv, "FAKE_DOCKER_") {
+				continue
+			}
+			cleanEnv = append(cleanEnv, kv)
+		}
+		cleanEnv = append(cleanEnv,
+			"ARCADECTL_TEST_SCRATCH_DOCKER_SUBPROC=1",
+			"PATH="+pathEnv,
+			"CI="+ciEnv,
+			"FAKE_DOCKER_LOG="+logPath,
+			"FAKE_DOCKER_STATE_DIR="+stateDir,
+			"FAKE_DOCKER_INFO_FAIL="+infoFail,
+		)
+		cmd.Env = cleanEnv
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+
+	// 1. Missing docker CLI + CI=true -> must FAIL (t.Fatalf).
+	if out, err := runSubproc(emptyBin, "true", "0"); err == nil || !strings.Contains(out, "requireScratchDocker: docker CLI missing from PATH") {
+		t.Fatalf("expected t.Fatalf when docker is missing from PATH and CI=true, got err=%v out=%q", err, out)
+	}
+
+	// 2. Unreachable docker daemon (`docker info` fails) + CI=true -> must FAIL (t.Fatalf).
+	if out, err := runSubproc(brokenDockerBin+string(os.PathListSeparator)+os.Getenv("PATH"), "true", "1"); err == nil || !strings.Contains(out, "requireScratchDocker: docker daemon unreachable (`docker info` failed) while CI=true") {
+		t.Fatalf("expected t.Fatalf when `docker info` fails and CI=true, got err=%v out=%q", err, out)
+	}
+
+	// 3. Missing docker CLI + CI="" -> must SKIP with explicit missing-CLI reason.
+	outMissingSkip, err := runSubproc(emptyBin, "", "0")
+	if err != nil || !strings.Contains(outMissingSkip, "--- SKIP:") || !strings.Contains(outMissingSkip, "requireScratchDocker: skipping local scratch-image test because docker CLI was not found in PATH") {
+		t.Fatalf("expected explicit missing-CLI skip when CI is unset, got err=%v out=%q", err, outMissingSkip)
+	}
+
+	// 4. Unreachable docker daemon (`docker info` fails) + CI="" -> must SKIP with distinct explicit daemon-unreachable reason.
+	outDaemonSkip, err := runSubproc(brokenDockerBin+string(os.PathListSeparator)+os.Getenv("PATH"), "", "1")
+	if err != nil || !strings.Contains(outDaemonSkip, "--- SKIP:") || !strings.Contains(outDaemonSkip, "requireScratchDocker: skipping local scratch-image test because docker daemon is unreachable (`docker info` failed)") {
+		t.Fatalf("expected explicit daemon-unreachable skip when CI is unset, got err=%v out=%q", err, outDaemonSkip)
+	}
+
+	// 5. Healthy docker CLI and daemon -> must PASS without skipping.
+	if out, err := runSubproc(brokenDockerBin+string(os.PathListSeparator)+os.Getenv("PATH"), "true", "0"); err != nil || !strings.Contains(out, "--- PASS:") {
+		t.Fatalf("expected pass when docker CLI and daemon succeed, got err=%v out=%q", err, out)
 	}
 }
 
