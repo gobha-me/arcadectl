@@ -70,8 +70,6 @@ func (trace *admissionTrace) phaseGateSnapshot() fixturePhaseGate {
 // Counters saturate at 2^32-1. Only closed trace labels and a bounded slot are
 // retained; no trace, error, object, identity, credential or evidence is retained.
 // The caller serializes all access, including String.
-//
-//nolint:unused // The separate test author wires the Kind phaseRead consumer.
 type warmPhaseReadDiagnostic struct {
 	attempts uint32
 	refusals [phaseGateLeaders + 1]uint32
@@ -82,8 +80,6 @@ type warmPhaseReadDiagnostic struct {
 
 // record counts one refused observation, independently of the attempt count.
 // Invalid gates join unknown; phaseSnapshot supplies only closed labels/slots.
-//
-//nolint:unused // Used by the wrapper awaiting the separate Kind test author.
 func (d *warmPhaseReadDiagnostic) record(gate fixturePhaseGate, trace *admissionTrace) {
 	if d == nil {
 		return
@@ -105,8 +101,6 @@ func (d *warmPhaseReadDiagnostic) record(gate fixturePhaseGate, trace *admission
 // Counts are decimal; all gates always appear in this order. Nil and zero values
 // report zero counts, unknown gate/substage and slot=-1. Successes count as
 // attempts but leave the last refusal and its position unchanged.
-//
-//nolint:unused // The separate test author wires the Kind phaseRead consumer.
 func (d *warmPhaseReadDiagnostic) String() string {
 	if d == nil {
 		d = &warmPhaseReadDiagnostic{}
@@ -124,8 +118,6 @@ func (d *warmPhaseReadDiagnostic) String() string {
 
 // observePhaseAttributed adds opt-in diagnostics to the same observation. It
 // never retries or changes deadlines, predicates, observations or error values.
-//
-//nolint:unused // The separate test author wires the Kind phaseRead consumer.
 func (w *fixtureWire) observePhaseAttributed(ctx context.Context, d *warmPhaseReadDiagnostic) (*fixturePhaseObservation, error) {
 	if d != nil && d.attempts < ^uint32(0) {
 		d.attempts++
@@ -141,7 +133,6 @@ func (w *fixtureWire) observePhaseAttributed(ctx context.Context, d *warmPhaseRe
 	return observation, err
 }
 
-//nolint:unused // The separate test author wires the Kind phaseRead fatal site.
 func warmPhaseReadFailureMessage(d *warmPhaseReadDiagnostic) string {
 	return "complete original phase did not converge with both renewing native leaders (" + d.String() + ")"
 }
