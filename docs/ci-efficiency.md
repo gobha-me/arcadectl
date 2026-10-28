@@ -15,48 +15,80 @@ merges with linear history: the merged tree is the tested PR head tree.
 Changing that merge policy requires revisiting this optimization.
 
 The complete proof set runs on main nightly at **9:00 PM EDT / 8:00 PM EST
-(01:00 UTC)** unless that exact main SHA already passed a complete scheduled
-or manually dispatched CI run on main. The guard uses the default
-`GITHUB_TOKEN`; only the classifier job adds `actions: read` to `contents: read`.
-It checks main still matches the scheduled SHA, identifies the current CI
-workflow, and queries successful runs of that workflow on main for that SHA.
-It examines up to five newest eligible previous runs, using each run's exact
-attempt. A run qualifies only when its complete jobs response includes exactly
-one successful `Kind lifecycle` and `Go and policy`, and every returned job
-completed successfully. A successful run whose lifecycle was skipped cannot
-justify another skip. Commit age has no bearing on coverage, so cron delays
-cannot strand an untested SHA outside a rolling time window.
+(01:00 UTC)**. Per Atlas's ruling at **9:19 PM EDT (01:19 UTC)**, a nightly
+may skip only after proving a successful **first-attempt, full-scope** run of
+the **same workflow file and workflow-file blob SHA on that exact main commit**.
+Both prior `schedule` and `workflow_dispatch` runs remain eligible under
+identical conditions; push and PR runs cannot justify a skip. The default
+`GITHUB_TOKEN` is sufficient; only the classifier job adds `actions: read`
+to `contents: read`.
 
-Any API error, timeout, malformed/inconsistent response, moved/unexpected HEAD,
-missing proof or pagination uncertainty runs the full set. Run/job responses
-must contain fewer than 100 entries with matching `total_count` and unique
-IDs; larger histories/pages fall back to full rather than assuming coverage.
-The five-candidate bound keeps API time within the classifier's five-minute
-budget; not finding proof in that bounded history also runs full. A proven
-same-SHA skip logs a notice, skips checkout and every proof, and leaves a green
-aggregate that verifies those skips. `workflow_dispatch` bypasses this guard
-and always runs the complete set on the selected ref on demand.
+The guard checks main still matches the scheduled SHA, identifies the current
+run, and queries successful runs of its workflow on main for that SHA. Both
+`workflow_id` and `path` must match exactly. The only accepted path is the bare
+`.github/workflows/ci.yml`: any `@ref` suffix is rejected, even if both paths
+have the same suffix, rather than guessing which workflow content it denotes.
+For the current run and each eligible candidate, the guard reads the file at
+that run's `head_sha` using the contents API and requires `type: file`, the
+exact path, and equal 40-hex blob `sha` values. This uses the documented
+[repository contents endpoint](https://docs.github.com/en/rest/repos/contents#get-repository-content)
+with a commit `ref`; the run's `head_sha` identifies the commit, not the file
+blob. See also the documented
+[workflow run endpoints](https://docs.github.com/en/rest/actions/workflow-runs).
 
-Only a superseded head of the same PR cancels an in-progress run. Main pushes,
-nightlies and manual dispatches never cancel in-progress runs. The workflow uses
-Atlas's exact expression:
+Up to five newest eligible previous runs are considered. Each must have
+`head_sha` equal to the scheduled SHA, `head_branch: main`, run
+`status: completed`, `conclusion: success`, and `run_attempt: 1`; reruns cannot prove
+coverage because they can contain only a subset of jobs. Its complete
+attempt-1 jobs response must match the embedded expected name-to-count table
+**exactly: 89 jobs**, no extra, missing, duplicate or skipped job. Every job
+must belong to that run and commit and have `status: completed` and
+`conclusion: success`. The table covers classification, diagnostics, every
+Kind profile/mode leg, all three binary legs, 32 race shards, 33 envtest parts,
+Go and policy checks, Kind lifecycle, and the Go and policy aggregate. A
+separately authored policy test will keep this table in sync with the jobs/matrices. Full
+scope is proven by this complete successful job set, including the lifecycle
+sentinel and the aggregate that validates the scope: idle/docs/cheap scopes
+cannot satisfy it. Main is checked again immediately before accepting proof.
+
+Any API error, timeout, missing/odd field, unexpected type, inconsistent
+response, moved/unexpected HEAD, missing proof or pagination uncertainty
+runs the full set (`skip=false`). Run/job responses must contain fewer than
+100 entries with matching `total_count` and unique positive integer IDs;
+larger histories/pages fall back to full rather than assuming coverage.
+Every API call is `gh api --method GET`, with a 20-second call timeout and a
+240-second total lookup budget inside the classifier's five-minute budget.
+The five-candidate bound also limits requests. No proof within these bounds
+means full CI. Commit age has no bearing on coverage, so cron delays cannot
+strand an untested SHA outside a rolling time window. A proven skip logs a
+notice, skips checkout and every proof, and leaves a green aggregate that
+verifies those skips. `workflow_dispatch` bypasses this guard and always runs
+the complete set on the selected ref on demand.
+
+Only a superseded head of the same PR cancels an in-progress run. Atlas's
+**9:19 PM EDT (01:19 UTC)** decision appends `github.run_id` for every non-PR
+event, preserving each queued main, nightly and manual run:
 
 ```yaml
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.event_name == 'pull_request' && format('ci-{0}-{1}', github.workflow, github.event.pull_request.number) || format('ci-{0}-{1}-{2}', github.workflow, github.ref, github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 ```
 
-GitHub's default concurrency queue still replaces an older **pending** run
-when another run enters the same group, even with `cancel-in-progress: false`.
-Main pushes and nightlies (also dispatches on main) share
-`ci-CI-refs/heads/main`. A newer pending push/nightly can therefore drop an
-intermediate main SHA's push proof or scheduled full proof. The same-SHA
-nightly guard cannot recover a superseded SHA once main advances. Atlas could
-choose to append `github.run_id` for non-PR events to preserve those runs;
-that would also allow them to overlap and increase aggregate runner demand.
-This caveat is flagged here; the requested expression is implemented verbatim.
-See [GitHub's concurrency behavior](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+For this workflow (`github.workflow == 'CI'`), the evaluated groups are:
+
+| Event | Evaluated concurrency group |
+|---|---|
+| `pull_request` | `ci-CI-<PR number>` (e.g. `ci-CI-140`, unchanged) |
+| `push` to main | `ci-CI-refs/heads/main-<run_id>` |
+| `schedule` | `ci-CI-refs/heads/main-<run_id>` |
+| `workflow_dispatch` | `ci-CI-<selected github.ref>-<run_id>` (e.g. `ci-CI-refs/heads/main-12345`) |
+
+GitHub replaces an older pending run when a new run enters the same group,
+even with `cancel-in-progress: false`. Unique run IDs prevent replacement
+between separate non-PR runs and allow those runs to overlap, increasing
+aggregate runner demand. PR grouping and cancellation remain unchanged. See
+[GitHub's concurrency behavior](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
 
 ## Runner fairness: at most ten hosted jobs per CI run
 
@@ -128,8 +160,9 @@ repos. One full PR plus a cheap main run and the unchanged performance lab
 can request **10 + 1 + 7 = 18** (the lab has six membership shards plus one
 independent phase-barrier job). A PR plus a full nightly can request **20**;
 two PRs plus that nightly and the lab can request **37**, with excess jobs
-queued by the account. Main push and nightly cannot run simultaneously in
-their shared group, so they must not be counted as two simultaneous runs.
+queued by the account. Main pushes, nightlies and dispatches now have distinct
+run-ID groups and may overlap; each additional cheap main run can request one
+more job, and each additional full run can request ten more jobs.
 Long binary-only tails often use fewer slots, but do not provide a hard limit.
 A hard repo-wide ten-job cap needs a shared ten-slot admission controller with
 a durable queue across all runs/workflows, or a dedicated runner pool limited

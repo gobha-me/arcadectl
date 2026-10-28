@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.event_name == 'pull_request' && format('ci-{0}-{1}', github.workflow, github.event.pull_request.number) || format('ci-{0}-{1}-{2}', github.workflow, github.ref, github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -27,7 +27,7 @@ jobs:
     outputs:
       scope: ${{ steps.scope.outputs.scope }}
     steps:
-      - name: Check for a successful full run of scheduled main SHA (fail safe to full)
+      - name: Prove prior first-attempt full CI on identical main commit and workflow blob (fail safe to full)
         id: nightly
         if: github.event_name == 'schedule'
         env:
@@ -38,26 +38,82 @@ jobs:
           CI_RUN_ID: ${{ github.run_id }}
         run: |
           python3 - <<'PYCODE'
+          from collections import Counter
           import json
           import os
           import re
           import subprocess
+          import time
           import urllib.parse
 
+          # Expected full-run job name -> count. A separate policy test must
+          # keep this table in sync with all workflow jobs and matrix legs.
+          expected_jobs = {
+              "Classify CI scope": 1,
+              "Installer CLI and diagnostic controls": 1,
+              "Kind baseline native foreground GC 137": 1,
+              "Kind installer native authentication": 1,
+              "Kind authenticated admin API": 1,
+              "Kind recovery failure safety": 1,
+              "Kind lifecycle": 1,
+              "Go and policy checks": 1,
+              "Go and policy": 1,
+              **{f"Kind installation security baseline {profile}": 1 for profile in (135, 137)},
+              **{f"Kind pre-controller runtime {profile}": 1 for profile in (135, 137)},
+              **{f"Kind signed installer binary {profile} {mode}": 1
+                 for profile, mode in ((135, "fresh"), (137, "fresh"), (137, "transition"))},
+              **{f"Kind installer full admission {profile} {mode}": 1
+                 for profile in (135, 137) for mode in ("cold", "warm")},
+              **{f"Kind baseline-active v3 admission {profile} {mode}": 1
+                 for profile in (135, 137) for mode in ("cold", "warm")},
+              **{f"Installer engine race shard {shard}": 1 for shard in range(32)},
+              **{f"API-server lifecycle transitions {part}": 1
+                 for part in ("base-packages", *map(str, range(32)))},
+          }
+          # Leave time for fail-safe output inside the five-minute job budget.
+          deadline = time.monotonic() + 240
+
           def lookup(endpoint):
+              remaining = deadline - time.monotonic()
+              if remaining <= 0:
+                  raise TimeoutError("coverage lookup budget exhausted")
               raw = subprocess.check_output(
                   ["gh", "api", "--method", "GET", endpoint],
-                  stderr=subprocess.DEVNULL, timeout=20)
-              return json.loads(raw)
+                  stderr=subprocess.DEVNULL, timeout=min(20, remaining))
+              response = json.loads(raw)
+              if not isinstance(response, dict):
+                  raise ValueError("unexpected API response type")
+              return response
+
+          def positive_int(value):
+              if type(value) is not int or value <= 0:
+                  raise ValueError("invalid API integer")
+              return value
 
           def complete_page(response, key):
               # Never infer absence or coverage from a truncated/ambiguous page.
               count, entries = response["total_count"], response[key]
               if (type(count) is not int or not isinstance(entries, list)
                       or not 0 <= count < 100 or len(entries) != count
-                      or len({entry["id"] for entry in entries}) != count):
+                      or any(not isinstance(entry, dict) for entry in entries)
+                      or len({positive_int(entry["id"]) for entry in entries}) != count):
                   raise ValueError("incomplete or ambiguous Actions API page")
               return entries
+
+          def workflow_blob(run):
+              # Require the exact bare path; reject any API @ref suffix rather
+              # than guessing its semantics or silently stripping it.
+              path = run["path"]
+              if path != ".github/workflows/ci.yml":
+                  raise ValueError("unexpected workflow path or @ref suffix")
+              encoded_path = urllib.parse.quote(path, safe="/")
+              query = urllib.parse.urlencode({"ref": run["head_sha"]})
+              content = lookup(f"repos/{repo}/contents/{encoded_path}?{query}")
+              blob = content["sha"]
+              if (content["type"] != "file" or content["path"] != path
+                      or not isinstance(blob, str) or not re.fullmatch(r"[0-9a-f]{40}", blob)):
+                  raise ValueError("workflow blob not proven")
+              return blob
 
           skip = False
           try:
@@ -67,52 +123,59 @@ jobs:
               repo = os.environ["CI_REPOSITORY"]
               if lookup(f"repos/{repo}/commits/main")["sha"] != sha:
                   raise ValueError("main moved since the scheduled event")
-              run_id = int(os.environ["CI_RUN_ID"])
+              run_id = positive_int(int(os.environ["CI_RUN_ID"]))
               current = lookup(f"repos/{repo}/actions/runs/{run_id}")
-              if (current["id"] != run_id or current["head_sha"] != sha
+              if (positive_int(current["id"]) != run_id or current["head_sha"] != sha
                       or current["head_branch"] != "main" or current["event"] != "schedule"):
                   raise ValueError("unexpected current run")
-              workflow_id = current["workflow_id"]
-              if type(workflow_id) is not int or workflow_id <= 0:
-                  raise ValueError("invalid workflow identity")
+              workflow_id = positive_int(current["workflow_id"])
+              current_blob = workflow_blob(current)
               query = urllib.parse.urlencode({
                   "branch": "main", "head_sha": sha, "status": "success", "per_page": 100})
               runs = complete_page(lookup(
                   f"repos/{repo}/actions/workflows/{workflow_id}/runs?{query}"), "workflow_runs")
               candidates = []
               for run in runs:
-                  if (run["workflow_id"] != workflow_id or run["head_sha"] != sha
+                  if (positive_int(run["workflow_id"]) != workflow_id or run["path"] != current["path"]
+                          or run["head_sha"] != sha
                           or run["head_branch"] != "main" or run["status"] != "completed"
-                          or run["conclusion"] != "success"):
+                          or run["conclusion"] != "success" or not isinstance(run["event"], str)):
                       raise ValueError("inconsistent run search result")
+                  positive_int(run["run_attempt"])
                   if run["id"] < run_id and run["event"] in ("schedule", "workflow_dispatch"):
                       candidates.append(run)
               # Bound API time within this job's five-minute budget. More history
               # may cause an extra full run, never an unproven skip.
               for run in sorted(candidates, key=lambda run: run["id"], reverse=True)[:5]:
-                  attempt = run["run_attempt"]
-                  if type(attempt) is not int or attempt < 1:
-                      raise ValueError("invalid run attempt")
+                  # Reruns may cover only selected jobs, even when successful.
+                  if run["run_attempt"] != 1:
+                      continue
+                  if workflow_blob(run) != current_blob:
+                      raise ValueError("workflow blob mismatch")
                   jobs = complete_page(lookup(
-                      f"repos/{repo}/actions/runs/{run['id']}/attempts/{attempt}/jobs?per_page=100"), "jobs")
-                  if any(job["run_id"] != run["id"] or job["head_sha"] != sha for job in jobs):
+                      f"repos/{repo}/actions/runs/{run['id']}/attempts/1/jobs?per_page=100"), "jobs")
+                  if any(positive_int(job["run_id"]) != run["id"] or job["head_sha"] != sha
+                         or not isinstance(job["name"], str) for job in jobs):
                       raise ValueError("job identity mismatch")
-                  # A successful idle/docs/cheap run has lifecycle skipped. The
-                  # full-run sentinel and aggregate must both actually succeed.
-                  names = [job["name"] for job in jobs]
-                  if (names.count("Kind lifecycle") == 1 and names.count("Go and policy") == 1
+                  # Full scope is proven by every expected job (including the
+                  # lifecycle sentinel and scope-checking aggregate) succeeding.
+                  # Idle/docs/cheap scopes cannot satisfy this exact multiset.
+                  if (len(jobs) == sum(expected_jobs.values())
+                          and Counter(job["name"] for job in jobs) == expected_jobs
                           and all(job["status"] == "completed" and job["conclusion"] == "success"
                                   for job in jobs)):
+                      if lookup(f"repos/{repo}/commits/main")["sha"] != sha:
+                          raise ValueError("main moved during coverage proof")
                       skip = True
                       break
           except Exception:
-              print("::notice::Previous full-run lookup uncertain; running full CI")
+              print("::notice::Identical-commit/workflow full-run proof uncertain; running full CI")
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write("skip=" + str(skip).lower() + "\n")
           if skip:
-              print("::notice::Same main SHA already passed a full scheduled/manual CI run; skipping nightly proofs")
+              print("::notice::Identical main commit and workflow blob passed all full-scope jobs on attempt 1 of a prior scheduled/manual run; skipping nightly proofs")
           else:
-              print("Nightly coverage guard: running the full proof set")
+              print("Nightly coverage guard: no proven identical-commit/workflow first-attempt full run; running all proofs")
           PYCODE
       - name: Check out exact source
         if: steps.nightly.outputs.skip != 'true'
