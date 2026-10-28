@@ -1,6 +1,6 @@
 # Operator-applied cluster change: Infra Lead review required before applying.
-# From the repository root, after selecting the intended cluster context:
-#   kubectl apply -f config/networkpolicy/arcadectl-api-ingress.yaml
+# From the repository root, using the same reviewed context as docs/ADMIN_API.md:
+#   kubectl --context YOUR_REVIEWED_CONTEXT apply -f config/networkpolicy/arcadectl-api-ingress.yaml
 # This is outside the installer's embedded assets and owned-object inventory.
 # No effect unless the CNI enforces NetworkPolicy. See docs/ADMIN_API.md.
 # No pod-network clients of 8443 are installed; administrators use authenticated

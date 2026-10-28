@@ -125,16 +125,48 @@ Verify after apply:
    still returns HTTP 200, with CA and hostname verification.
 3. From a throwaway pod in another namespace, connections time out to
    `arcadectl-api.arcadectl-system.svc:443` and to each API pod IP on TCP 8443 and
-   TCP 8081. Clean up the throwaway pod after verification.
+   TCP 8081. Use `default` for the throwaway pod, outside `arcadectl-system`.
+   Continue with probes only after the pod is Ready and the API pod IP list is
+   nonempty. A timeout is the expected **PASS**; a successful connection is
+   **FAIL**. Connection refusal, DNS failure, or any other error is inconclusive
+   and must be investigated. The probes return nonzero on timeout, so run them
+   in a shell without `set -e` and inspect every result. Clean up the throwaway
+   pod even if verification fails or is interrupted.
+
+   ```sh
+   kubectl --context YOUR_REVIEWED_CONTEXT -n default run arcadectl-np-verify \
+     --image=nicolaka/netshoot:v0.14 --restart=Never --command -- sleep 600
+   kubectl --context YOUR_REVIEWED_CONTEXT -n default wait \
+     --for=condition=Ready pod/arcadectl-np-verify --timeout=60s
+
+   api_pod_ips=$(kubectl --context YOUR_REVIEWED_CONTEXT -n arcadectl-system get pods \
+     -l app.kubernetes.io/name=arcadectl-api \
+     -o jsonpath='{range .items[*]}{range .status.podIPs[*]}{.ip}{"\n"}{end}{end}')
+   printf 'API pod IPs:\n%s\n' "$api_pod_ips"
+
+   kubectl --context YOUR_REVIEWED_CONTEXT -n default exec arcadectl-np-verify -- \
+     nc -z -v -w 5 arcadectl-api.arcadectl-system.svc 443
+   for api_pod_ip in $api_pod_ips; do
+     for port in 8443 8081; do
+       printf 'Probing %s:%s\n' "$api_pod_ip" "$port"
+       kubectl --context YOUR_REVIEWED_CONTEXT -n default exec arcadectl-np-verify -- \
+         nc -z -v -w 5 "$api_pod_ip" "$port"
+     done
+   done
+
+   kubectl --context YOUR_REVIEWED_CONTEXT -n default delete pod arcadectl-np-verify \
+     --ignore-not-found --wait
+   ```
 
 Rollback (Infra Lead, immediately if readiness drops):
 
 ```sh
-kubectl --context YOUR_REVIEWED_CONTEXT -n arcadectl-system delete networkpolicy arcadectl-api-ingress
+kubectl --context YOUR_REVIEWED_CONTEXT -n arcadectl-system delete networkpolicy arcadectl-api-ingress --ignore-not-found
 ```
 
-This removes only the policy; it does not remove any PVC or data. Recheck the
-Ready and authenticated port-forward baseline after rollback.
+NotFound/already absent is acceptable. This removes only the policy; it does not
+remove any PVC or data. Recheck the Ready and authenticated port-forward baseline
+after rollback.
 
 For a non-default installation namespace, review and change `metadata.namespace`
 before applying. Direct Service/Pod-IP access from an administrator's configured
