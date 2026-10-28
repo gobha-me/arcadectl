@@ -5,7 +5,8 @@ all cold/warm admission legs, all three signed-installer legs, recovery,
 32 race shards and 33 envtest parts. Race uses max-parallel 4, envtest 3,
 and every matrix retains fail-fast false. Race and envtest start only after
 all their foundations succeed; a failed or cancelled foundation skips those
-matrices and makes the `Go and policy` aggregate fail.
+matrices and makes the `Go and policy` aggregate fail. Envtest also waits for
+Go and policy checks to finish, but their result does not gate its execution.
 
 A normal push to main runs Installer CLI and diagnostic controls, Go and policy
 checks, and the Go and policy gate (plus the tiny classifier). The gate expects
@@ -94,7 +95,7 @@ aggregate runner demand. PR grouping and cancellation remain unchanged. See
 
 Every matrix now has an explicit `max-parallel`: baseline **2**,
 precontroller **2**, signed binary **3**, full admission **3**, v3 admission
-**4**, race **4**, envtest **3**. **Capping parallelism is not reducing shards:
+**3**, race **4**, envtest **3**. **Capping parallelism is not reducing shards:
 every profile, mode, all 32 race shards and all 33 envtest parts still run,
 unreduced**, subject to the existing scope exception and race/envtest's
 failed-foundation early exit.
@@ -102,15 +103,31 @@ failed-foundation early exit.
 All three binary legs remain eligible immediately after diagnostics succeed,
 keeping the 290/350-minute-budget long pole as early as possible. Baseline, GC,
 precontroller and native authentication run alongside them. Both admission
-matrices wait for that entire early Kind group. Race and envtest retain their
-exact foundation dependencies and `success()` conditions. Recovery, lifecycle
-and policy wait for envtest to finish; API then replaces the policy slot.
-On a cheap main push, skipped envtest resolves without running and policy
-still runs after diagnostics.
+matrices wait for that entire early Kind group. Atlas's fourth ruling at
+**9:54 PM EDT (01:54 UTC)** reverses the previous delay of Go/policy feedback:
+Go and policy checks now need only classification and diagnostics, with no
+direct or transitive dependency on Kind, race or envtest. They run alongside
+the early Kind group on full runs and immediately after diagnostics on cheap
+main pushes. Reducing v3 admission from
+four slots to three leaves room for policy alongside binary and both admission
+matrices; all four v3 legs still run.
+
+Race retains its exact foundation dependencies and `success()` condition.
+Envtest adds a capacity-only dependency on policy, preventing binary (3),
+race (4), envtest (3) and policy (1) from overlapping at eleven jobs. Its
+condition now uses `!cancelled()` and explicit success checks on all eight
+existing foundations: classify, installer-diagnostics, kind-install-gc,
+kind-install-admission, kind-install-admission-v3, kind-install-auth,
+kind-install-baseline and kind-install-precontroller. Its existing scope
+conditions remain. Thus a failed foundation still skips envtest, while a
+Go/policy failure does not. Recovery and lifecycle still wait for envtest;
+API replaces its former policy dependency with envtest and shares those three
+released slots with them.
 
 Every capacity-only barrier uses `!cancelled()` with the existing scope
-conditions, so an upstream failure or skip does not suppress these independent
-proofs. Binary has no new capacity-only needs edges and retains its original
+conditions, so failure or skip of a capacity-only predecessor does not suppress
+the proof; envtest additionally checks its original foundations as described
+above. Binary has no new capacity-only needs edges and retains its original
 diagnostic-success requirement with `success()` plus the scope conditions.
 Diagnostic failure skips binary, which only lowers concurrency; the caps table
 is unchanged. Failed foundations still skip race/envtest under item 2;
@@ -120,17 +137,20 @@ The exact required check names remain `Go and policy` and `Kind lifecycle`.
 
 Caps are worst-case upper bounds, including arbitrary failure/skip outcomes;
 non-matrix jobs count as one. Each row is a possible overlap phase, not a
-promise about runner scheduling. Binary may span every heavy phase; race may
-span the last two. Policy and API are ordered, so only one occupies their slot.
+promise about runner scheduling. Each row enumerates a maximal antichain of
+the transitive `needs` graph, with weight `min(max-parallel, matrix legs)`
+for each matrix and one for each other job. Binary may span every heavy phase;
+race can overlap policy before envtest, envtest itself, or the post-envtest jobs.
 
 | Concurrency phase | Jobs (in cap order) | Caps | Sum | Phase maximum |
 |---|---|---|---|---:|
 | Classifier | classify | 1 | 1 | 1 |
 | Diagnostics | installer-diagnostics | 1 | 1 | 1 |
-| Early Kind | binary, baseline, GC, precontroller, auth | 3, 2, 1, 2, 1 | 3 + 2 + 1 + 2 + 1 | 9 |
-| Admission | binary, admission, admission-v3 | 3, 3, 4 | 3 + 3 + 4 | 10 |
+| Early Kind and policy | binary, baseline, GC, precontroller, auth, policy | 3, 2, 1, 2, 1, 1 | 3 + 2 + 1 + 2 + 1 + 1 | 10 |
+| Admission and policy | binary, admission, admission-v3, policy | 3, 3, 3, 1 | 3 + 3 + 3 + 1 | 10 |
+| Race while policy finishes | binary, race, policy | 3, 4, 1 | 3 + 4 + 1 | 8 |
 | Bulk proofs | binary, race, envtest | 3, 4, 3 | 3 + 4 + 3 | 10 |
-| After envtest, possibly with race | binary, race, recovery, lifecycle, policy OR API | 3, 4, 1, 1, 1 | 3 + 4 + 1 + 1 + 1 | 10 |
+| After envtest, possibly with race | binary, race, recovery, lifecycle, API | 3, 4, 1, 1, 1 | 3 + 4 + 1 + 1 + 1 | 10 |
 | Aggregate | go-and-policy | 1 | 1 | 1 |
 
 The maximum over every unordered set of jobs in the `needs` graph is **10**;
@@ -139,17 +159,24 @@ and idle scopes are subsets and cannot increase the bound.
 
 From `october-durations.tsv`, a conservative wave model uses
 `ceil(legs / cap) * slowest_leg_duration` within each matrix. After diagnostics,
-the early group takes at most **19.2 / 22.8 minutes** using p50 / p99 leg
-inputs; admission adds **21.6 / 31.4**. Race takes **64.0 / 181.6**; envtest
-**28.6 / 68.2**, followed by at most **62.8 / 67.1** for recovery (longer than
-lifecycle or policy then API). Thus all non-binary work finishes within
-**132.2 / 235.8 minutes** after diagnostics. The binary transition's
-**241.7 / 328.9 minutes** still dominates, before and after this change:
+the early Kind group takes at most **19.2 / 22.8 minutes** using p50 / p99 leg
+inputs; admission now adds **24.6 / 35.2** (previously **21.6 / 31.4**).
+Policy finishes **21.2 / 22.2** minutes after diagnostics, before admission
+finishes in this model, so its new envtest edge adds no modeled delay.
+Race takes **64.0 / 181.6**; envtest **28.6 / 68.2**, followed by at most
+**62.8 / 67.1** for recovery (longer than
+lifecycle or API). Thus all non-binary work finishes within
+**135.2 / 239.6 minutes** after diagnostics (previously **132.2 / 235.8**).
+The binary transition's **241.7 / 328.9 minutes** still dominates, before and
+after this change:
 **estimated added full-PR wall clock: 0 minutes** at both modeled inputs.
-Diagnostics/classification/gate are common overhead. Envtest alone adds two
-waves, about **5.2 / 12.4 minutes**, hidden under binary; other proofs report
-later and failures may be discovered later. This model combines per-job
-percentiles, not observed whole-run percentiles or a guarantee. Queueing,
+Including diagnostics gives **247.3 / 341.8 minutes**, plus unmodeled common
+classification/gate overhead. Go/policy feedback previously arrived at
+**90.6 / 144.6 minutes** after diagnostics and now arrives at **21.2 / 22.2**,
+about **69.4 / 122.4 minutes earlier**. V3 admission adds one wave; the admission
+phase grows **3.0 / 3.8 minutes**, hidden under binary, and affected heavy proofs
+report later. This model combines per-job percentiles, not observed whole-run
+percentiles or a guarantee. Queueing,
 cache behavior, outliers and changed binary performance can change wall time.
 Successful runner-minutes remain about **1,116.2 per full run**; caps alone
 claim no compute-minute saving.

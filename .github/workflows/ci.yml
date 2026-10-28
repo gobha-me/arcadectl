@@ -576,7 +576,7 @@ jobs:
 
   kind-install-admission-v3:
     name: Kind baseline-active v3 admission ${{ matrix.profile }} ${{ matrix.mode }}
-    # Capacity only: this group shares seven slots with full admission.
+    # Capacity only: this group shares six slots with full admission.
     needs: [classify, installer-diagnostics, kind-install-baseline, kind-install-gc,
             kind-install-precontroller, kind-install-auth]
     if: ${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}
@@ -584,7 +584,7 @@ jobs:
     timeout-minutes: ${{ matrix.mode == 'warm' && 30 || 25 }}
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 3
       matrix:
         profile: [135, 137]
         mode: [cold, warm]
@@ -642,8 +642,8 @@ jobs:
 
   kind-api:
     name: Kind authenticated admin API
-    # Capacity only: replace the policy slot after envtest releases its slots.
-    needs: [classify, installer-diagnostics, go-policy-checks]
+    # Capacity only: share the released envtest slots with recovery/lifecycle.
+    needs: [classify, installer-diagnostics, envtest]
     if: ${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -744,9 +744,15 @@ jobs:
 
   envtest:
     name: API-server lifecycle transitions ${{ matrix.part }}
+    # Policy is a capacity-only edge; only foundation failures suppress this matrix.
     needs: [classify, installer-diagnostics, kind-install-gc, kind-install-admission, kind-install-admission-v3,
-            kind-install-auth, kind-install-baseline, kind-install-precontroller]
-    if: ${{ success() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}
+            kind-install-auth, kind-install-baseline, kind-install-precontroller, go-policy-checks]
+    if: >-
+      ${{ !cancelled() && needs.classify.result == 'success' && needs.installer-diagnostics.result == 'success' &&
+          needs.kind-install-gc.result == 'success' && needs.kind-install-admission.result == 'success' &&
+          needs.kind-install-admission-v3.result == 'success' && needs.kind-install-auth.result == 'success' &&
+          needs.kind-install-baseline.result == 'success' && needs.kind-install-precontroller.result == 'success' &&
+          needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}
     runs-on: ubuntu-24.04
     # The full tagged engine union exceeds one 30m package process. Partition
     # compiled whole trees, not a native-test prefix or an ordinary-test omission.
@@ -776,9 +782,8 @@ jobs:
 
   go-policy-checks:
     name: Go and policy checks
-    # Capacity only: share the released envtest slots with recovery/lifecycle.
-    # !cancelled() also runs cheap main checks when envtest is intentionally skipped.
-    needs: [classify, installer-diagnostics, envtest]
+    # Report cheap checks early, independently of every Kind/race/envtest job.
+    needs: [classify, installer-diagnostics]
     if: ${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
@@ -939,7 +944,7 @@ jobs:
 
   kind-lifecycle:
     name: Kind lifecycle
-    # Capacity only: share the three released envtest slots with recovery/policy.
+    # Capacity only: share the three released envtest slots with recovery/API.
     needs: [classify, installer-diagnostics, envtest]
     if: ${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}
     runs-on: ubuntu-24.04
