@@ -51,6 +51,136 @@ verify the CA and hostname. `--tls-server-name` on the credential utility permit
 a verified hostname when using a local port-forward; it does not bypass TLS.
 Protect any ingress, tunneling, or log-collection infrastructure you add.
 
+## Operator-managed ingress isolation
+
+[`config/networkpolicy/arcadectl-api-ingress.yaml`](../config/networkpolicy/arcadectl-api-ingress.yaml)
+is an operator-applied **cluster change requiring Infra Lead review**. It selects
+API pods by `app.kubernetes.io/name=arcadectl-api` in `arcadectl-system` and denies
+all policy-controlled ingress on every API pod port, including direct Pod-IP TCP
+8443 and TCP 8081, and traffic via the ClusterIP Service's TCP 443 -> 8443 mapping.
+The product invariants are `ingress: []` (deny-all ingress) and `policyTypes`
+exactly `[Ingress]` (egress unchanged). Adding `Egress` without egress rules would
+deny the API's kube-apiserver and DNS egress and take the API down.
+No in-cluster admin API client is installed: controllers reconcile Kubernetes
+resources without calling this HTTP API.
+
+The installer reaches TCP 8443 only through the kube-apiserver `pods/portforward`
+subresource (`internal/installengine/forward.go`), both for target authentication
+and activation epochs. The direct dial in `activation.go` has no production
+caller. The API Kind fixture also uses port-forward. The kube-apiserver sends
+the stream through the kubelet/CRI; the runtime connects inside the pod network
+namespace, so this is not CNI ingress subject to this policy. For example, the
+[containerd CRI implementation](https://github.com/containerd/containerd/blob/v2.0.0/internal/cri/server/sandbox_portforward_linux.go#L27-L75)
+connects to the requested port on localhost inside that namespace. Port-forward
+still requires Kubernetes authorization and normal API TLS/authentication;
+restrict who can create `pods/portforward` requests.
+
+Only kubelet readiness (`/readyz`) and liveness (`/livez`) probes need TCP 8081;
+these probes originate from the node.
+[Standard NetworkPolicy](https://kubernetes.io/docs/concepts/services-networking/network-policies/)
+exempts traffic from the pod's own node, so the manifest uses `ingress: []`
+without opening the health port to other pods. Kubelet/host-network probe
+behavior and additional host firewall policies differ by CNI. Infra must
+verify both probes with the deployed CNI; if it needs an explicit probe
+exception, use verified probe source ranges and TCP 8081 only. Do not assume
+that a `kube-system` namespace or pod selector identifies kubelet traffic.
+
+The manifest has **no effect unless the CNI enforces NetworkPolicy**. Policies
+are additive: another policy selecting these API pods can allow ingress to
+8443. Node/host-network traffic also has CNI-specific exceptions; this policy
+does not establish a host isolation boundary or replace API authentication.
+
+**Infra Lead applies; not applied by this PR.** Schedule the apply and verification
+in Infra's night window, recording times in ET first (EDT), with UTC in parentheses.
+All commands below are operator instructions for the intended, reviewed cluster
+context.
+Every command must use the same reviewed context and be run by Infra Lead;
+agents never run these commands.
+
+Gate before apply (all conditions must hold):
+
+1. Canal/Calico policy enforcement is running.
+2. `kubectl --context YOUR_REVIEWED_CONTEXT -n arcadectl-system get pods -l app.kubernetes.io/name=arcadectl-api`
+   returns at least one pod, and every returned pod is an API pod.
+3. `kubectl --context YOUR_REVIEWED_CONTEXT -n arcadectl-system get networkpolicy` shows no other policy selecting
+   these API pods; inspect the selectors, including any selecting all pods.
+4. Establish the pre-apply baseline: API pods are Ready, and an authorized
+   port-forward request to `/v1/auth/self` with a valid credential returns HTTP
+   200, with CA and hostname verification.
+
+Once all gates hold, Infra Lead applies the reviewed manifest from the repository
+root in the intended context:
+
+```sh
+kubectl --context YOUR_REVIEWED_CONTEXT apply \
+  -f config/networkpolicy/arcadectl-api-ingress.yaml
+```
+
+Verify after apply:
+
+1. API pods stay Ready through at least two periods of both the readiness and
+   liveness probes. This proves the Calico host-to-pod probe path still works.
+   Roll back immediately if readiness drops.
+2. The authorized port-forward request to `/v1/auth/self` with a valid credential
+   still returns HTTP 200, with CA and hostname verification.
+3. From a throwaway pod in another namespace, connections time out to
+   `arcadectl-api.arcadectl-system.svc:443` and to each API pod IP on TCP 8443 and
+   TCP 8081. Use `default` for the throwaway pod, outside `arcadectl-system`.
+   Continue with probes only after the pod is Ready and the API pod IP list is
+   nonempty. A timeout is the expected **PASS**; a successful connection is
+   **FAIL**. Connection refusal, DNS failure, or any other error is inconclusive
+   and must be investigated. The probes return nonzero on timeout, so run them
+   in a shell without `set -e` and inspect every result. Clean up the throwaway
+   pod even if verification fails or is interrupted.
+
+   ```sh
+   kubectl --context YOUR_REVIEWED_CONTEXT -n default run arcadectl-np-verify \
+     --image=nicolaka/netshoot:v0.14 --restart=Never --command -- sleep 600
+   kubectl --context YOUR_REVIEWED_CONTEXT -n default wait \
+     --for=condition=Ready pod/arcadectl-np-verify --timeout=60s
+
+   api_pod_ips=$(kubectl --context YOUR_REVIEWED_CONTEXT -n arcadectl-system get pods \
+     -l app.kubernetes.io/name=arcadectl-api \
+     -o jsonpath='{range .items[*]}{range .status.podIPs[*]}{.ip}{"\n"}{end}{end}')
+   printf 'API pod IPs:\n%s\n' "$api_pod_ips"
+
+   kubectl --context YOUR_REVIEWED_CONTEXT -n default exec arcadectl-np-verify -- \
+     nc -z -v -w 5 arcadectl-api.arcadectl-system.svc 443
+   for api_pod_ip in $api_pod_ips; do
+     for port in 8443 8081; do
+       printf 'Probing %s:%s\n' "$api_pod_ip" "$port"
+       kubectl --context YOUR_REVIEWED_CONTEXT -n default exec arcadectl-np-verify -- \
+         nc -z -v -w 5 "$api_pod_ip" "$port"
+     done
+   done
+
+   kubectl --context YOUR_REVIEWED_CONTEXT -n default delete pod arcadectl-np-verify \
+     --ignore-not-found --wait
+   ```
+
+Rollback (Infra Lead, immediately if readiness drops):
+
+```sh
+kubectl --context YOUR_REVIEWED_CONTEXT -n arcadectl-system delete networkpolicy arcadectl-api-ingress --ignore-not-found
+```
+
+NotFound/already absent is acceptable. This removes only the policy; it does not
+remove any PVC or data. Recheck the Ready and authenticated port-forward baseline
+after rollback.
+
+For a non-default installation namespace, review and change `metadata.namespace`
+before applying. Direct Service/Pod-IP access from an administrator's configured
+CLI or credential-rotation origin may be blocked; use an authorized port-forward
+with CA and hostname verification, or have Infra review the actual client path.
+If a legitimate in-cluster client is confirmed, add an allowance limited to TCP
+8443 with **both `namespaceSelector` and `podSelector` in the same `from` peer**.
+No such client exception is needed by the current installation.
+
+This manifest is outside embedded installation assets, rendering, inventory,
+and RBAC. The installer does not apply, upgrade, roll back, or remove it. The
+operator manages its lifecycle separately; deleting this NetworkPolicy removes
+its isolation, subject to any other applicable policies.
+
 ## Trusted administrator bootstrap and rotation
 
 Build the Linux administrator utility from the checkout:
