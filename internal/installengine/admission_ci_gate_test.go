@@ -50,6 +50,37 @@ func bulkFoundationOrderingOnly(needs []string, condition string, tolerate any) 
 	return slices.Equal(needs, []string{"classify", "installer-diagnostics", "kind-install-gc", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-install-baseline", "kind-install-precontroller"}) && condition == "${{ success() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}" && tolerate == nil
 }
 
+// envtest waits on all eight foundations plus go-policy-checks as a capacity
+// edge, using !cancelled() and explicit foundation result == 'success' checks
+// so a Go/policy failure never skips envtest.
+func envtestFoundationAndPolicyCapacityOrdering(needs []string, condition string, tolerate any) bool {
+	const wantIf = "${{ !cancelled() && needs.classify.result == 'success' && needs.installer-diagnostics.result == 'success' && needs.kind-install-gc.result == 'success' && needs.kind-install-admission.result == 'success' && needs.kind-install-admission-v3.result == 'success' && needs.kind-install-auth.result == 'success' && needs.kind-install-baseline.result == 'success' && needs.kind-install-precontroller.result == 'success' && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}"
+	return slices.Equal(needs, []string{"classify", "installer-diagnostics", "kind-install-gc", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-install-baseline", "kind-install-precontroller", "go-policy-checks"}) && strings.Join(strings.Fields(condition), " ") == wantIf && tolerate == nil
+}
+
+// Go and policy checks must start right after classify and installer-diagnostics
+// and never depend on envtest, Kind or race jobs directly or transitively.
+func policyIndependentOfEnvtestAndHeavy(needsByJob map[string][]string) bool {
+	if !slices.Equal(needsByJob["go-policy-checks"], []string{"classify", "installer-diagnostics"}) {
+		return false
+	}
+	seen := map[string]bool{}
+	var queue []string
+	for _, n := range needsByJob["go-policy-checks"] {
+		seen[n] = true
+		queue = append(queue, n)
+	}
+	for i := 0; i < len(queue); i++ {
+		for _, n := range needsByJob[queue[i]] {
+			if !seen[n] {
+				seen[n] = true
+				queue = append(queue, n)
+			}
+		}
+	}
+	return !seen["envtest"] && len(seen) == 2 && seen["classify"] && seen["installer-diagnostics"]
+}
+
 // Diagnostics and classification must succeed in full scope before spending the
 // signed lifecycle budget. No failure tolerance may bypass needs-success behavior.
 func binaryDiagnosticsPrerequisite(needs []string, condition string, tolerate any) bool {
@@ -143,9 +174,8 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 			t.Fatalf("CI job %s skips independent coverage after an unrelated capacity predecessor fails", name)
 		}
 	}
-	policyCondition := "${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' }}"
 	capacityNeeds := []string{"classify", "installer-diagnostics", "envtest"}
-	if !capacityOrderingOnly(jobNames, "kind-recovery", capacityNeeds, nativeCondition, nativeCondition, nil) || !capacityOrderingOnly(jobNames, "go-policy-checks", capacityNeeds, policyCondition, policyCondition, nil) || !capacityOrderingOnly(jobNames, "kind-install-baseline", []string{"classify", "installer-diagnostics"}, nativeCondition, nativeCondition, nil) {
+	if !capacityOrderingOnly(jobNames, "kind-recovery", capacityNeeds, nativeCondition, nativeCondition, nil) || !capacityOrderingOnly(jobNames, "kind-api", capacityNeeds, nativeCondition, nativeCondition, nil) || !capacityOrderingOnly(jobNames, "kind-install-baseline", []string{"classify", "installer-diagnostics"}, nativeCondition, nativeCondition, nil) {
 		t.Fatal("capacity ordering positive control refused")
 	}
 	for _, bad := range []struct {
@@ -175,17 +205,46 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 			t.Fatal("unsafe capacity-only ordering accepted", bad.needs, bad.condition)
 		}
 	}
-	for _, name := range []string{"install-engine-race", "envtest"} {
-		job := workflow.Jobs[name]
-		if !bulkFoundationOrderingOnly(job.Needs, job.If, job.ContinueOnError) {
-			t.Fatal("bulk matrix bypasses foundations or skips independent coverage on failure", name)
-		}
+	if raceJob := workflow.Jobs["install-engine-race"]; !bulkFoundationOrderingOnly(raceJob.Needs, raceJob.If, raceJob.ContinueOnError) {
+		t.Fatal("bulk matrix bypasses foundations or skips independent coverage on failure", "install-engine-race")
+	}
+	if envtestJob := workflow.Jobs["envtest"]; !envtestFoundationAndPolicyCapacityOrdering(envtestJob.Needs, envtestJob.If, envtestJob.ContinueOnError) {
+		t.Fatal("envtest matrix bypasses foundations, omits go-policy-checks capacity edge or skips on Go/policy failure")
 	}
 	// Literal independent oracle, not copied from another job's mutable DAG.
 	bulkNeeds := []string{"classify", "installer-diagnostics", "kind-install-gc", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-install-baseline", "kind-install-precontroller"}
 	bulkCondition := "${{ success() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}"
-	if !bulkFoundationOrderingOnly(bulkNeeds, bulkCondition, nil) {
+	envtestNeeds := []string{"classify", "installer-diagnostics", "kind-install-gc", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-install-baseline", "kind-install-precontroller", "go-policy-checks"}
+	envtestCondition := "${{ !cancelled() && needs.classify.result == 'success' && needs.installer-diagnostics.result == 'success' && needs.kind-install-gc.result == 'success' && needs.kind-install-admission.result == 'success' && needs.kind-install-admission-v3.result == 'success' && needs.kind-install-auth.result == 'success' && needs.kind-install-baseline.result == 'success' && needs.kind-install-precontroller.result == 'success' && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}"
+	if !bulkFoundationOrderingOnly(bulkNeeds, bulkCondition, nil) || !envtestFoundationAndPolicyCapacityOrdering(envtestNeeds, envtestCondition, nil) {
 		t.Fatal("bulk ordering-only positive control refused")
+	}
+	for index := range envtestNeeds {
+		if envtestFoundationAndPolicyCapacityOrdering(slices.Delete(slices.Clone(envtestNeeds), index, index+1), envtestCondition, nil) {
+			t.Fatal("envtest ordering accepted an omitted foundation or missing policy capacity edge", index)
+		}
+	}
+	for _, extra := range []string{"unrelated", "classify", "go-policy-checks", "envtest", "install-engine-race", "kind-install-binary", "go-and-policy"} {
+		if envtestFoundationAndPolicyCapacityOrdering(append(slices.Clone(envtestNeeds), extra), envtestCondition, nil) {
+			t.Fatal("envtest ordering accepted an extra, duplicate, self or sibling dependency", extra)
+		}
+	}
+	for _, badEnvtestCond := range []string{
+		"",
+		bulkCondition,
+		"${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}",
+		strings.Replace(envtestCondition, "needs.kind-install-precontroller.result == 'success' &&", "needs.kind-install-precontroller.result == 'success' && needs.go-policy-checks.result == 'success' &&", 1),
+		strings.Replace(envtestCondition, "needs.kind-install-gc.result == 'success' && ", "", 1),
+		strings.Replace(envtestCondition, "!cancelled()", "success()", 1),
+	} {
+		if envtestFoundationAndPolicyCapacityOrdering(envtestNeeds, badEnvtestCond, nil) {
+			t.Fatal("envtest ordering accepted a condition that skips on policy failure or omits a foundation check", badEnvtestCond)
+		}
+	}
+	for _, tolerate := range []any{true, "${{ true }}"} {
+		if envtestFoundationAndPolicyCapacityOrdering(envtestNeeds, envtestCondition, tolerate) {
+			t.Fatal("envtest ordering tolerated failure")
+		}
 	}
 	for index := range bulkNeeds {
 		if bulkFoundationOrderingOnly(slices.Delete(slices.Clone(bulkNeeds), index, index+1), bulkCondition, nil) {
@@ -323,7 +382,25 @@ test "$(docker image inspect --format '{{json .Config.Entrypoint}}' arcadectl-ap
 test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' arcadectl-api:ci-first)" = "$(git rev-parse HEAD)"
 `,
 	}
-	if checks.Name != "Go and policy checks" || checks.RunsOn != "ubuntu-24.04" || !capacityOrderingOnly(jobNames, "go-policy-checks", checks.Needs, policyCondition, checks.If, checks.ContinueOnError) || checks.If != "${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' }}" || checks.ContinueOnError != nil || checks.TimeoutMinutes != 35 || len(checks.Env) != 2 || checks.Env["GOMAXPROCS"] != "2" || checks.Env["GOMEMLIMIT"] != "1GiB" || len(checks.Steps) != 12 {
+	needsByJob := map[string][]string{}
+	for name, job := range workflow.Jobs {
+		needsByJob[name] = slices.Clone(job.Needs)
+	}
+	if !policyIndependentOfEnvtestAndHeavy(needsByJob) {
+		t.Fatal("Go/policy must not depend on envtest, Kind or race jobs directly or transitively")
+	}
+	for _, badPolicyGraph := range []map[string][]string{
+		{"classify": nil, "installer-diagnostics": {"classify"}, "go-policy-checks": {"classify", "installer-diagnostics", "envtest"}},
+		{"classify": nil, "installer-diagnostics": {"classify"}, "kind-recovery": {"classify", "installer-diagnostics", "envtest"}, "go-policy-checks": {"classify", "installer-diagnostics", "kind-recovery"}},
+		{"classify": nil, "installer-diagnostics": {"classify", "envtest"}, "go-policy-checks": {"classify", "installer-diagnostics"}},
+		{"classify": nil, "installer-diagnostics": {"classify"}, "go-policy-checks": {"classify", "installer-diagnostics", "kind-install-gc"}},
+		{"classify": nil, "installer-diagnostics": {"classify"}, "go-policy-checks": {"classify", "installer-diagnostics", "install-engine-race"}},
+	} {
+		if policyIndependentOfEnvtestAndHeavy(badPolicyGraph) {
+			t.Fatal("Go/policy must not depend on envtest, Kind or race jobs directly or transitively")
+		}
+	}
+	if checks.Name != "Go and policy checks" || checks.RunsOn != "ubuntu-24.04" || !slices.Equal(checks.Needs, []string{"classify", "installer-diagnostics"}) || checks.If != "${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' }}" || checks.ContinueOnError != nil || checks.TimeoutMinutes != 35 || len(checks.Env) != 2 || checks.Env["GOMAXPROCS"] != "2" || checks.Env["GOMEMLIMIT"] != "1GiB" || len(checks.Steps) != 12 {
 		t.Fatal("independent policy checks changed their runner, budget, environment or complete step set")
 	}
 	if checks.Steps[0].Uses != "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" || len(checks.Steps[0].With) != 1 || checks.Steps[1].Uses != "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e" || checks.Steps[1].With["go-version-file"] != "go.mod" || checks.Steps[1].With["cache"] != false || len(checks.Steps[1].With) != 2 || checks.Steps[2].Uses != "actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830" || checks.Steps[11].Uses != "actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830" || checks.Steps[11].If != "${{ success() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule') && steps.go-cache.outputs.cache-hit != 'true' }}" || checks.Steps[11].With["key"] != "${{ steps.go-cache.outputs.cache-primary-key }}" {
@@ -467,6 +544,9 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 			t.Fatalf("native proof %s or its fail-closed required dependency omitted", required.name)
 		}
 	}
+	if !slices.Equal(workflow.Jobs["kind-api"].Needs, []string{"classify", "installer-diagnostics", "envtest"}) {
+		t.Fatal("kind-api must wait on envtest as a capacity edge after classify and installer-diagnostics")
+	}
 	// Every prerequisite must exist and the full workflow must remain a DAG.
 	// In particular, binary may never depend on its own required aggregate.
 	visited := map[string]uint8{}
@@ -498,7 +578,7 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 	for _, step := range v3.Steps {
 		v3Run = v3Run || step.Run == "make test-kind-install-admission-v3 INSTALL_ADMISSION_PROFILE='${{ matrix.profile }}' INSTALL_ADMISSION_MODE='${{ matrix.mode }}'"
 	}
-	if !v3Run || v3.TimeoutMinutes != "${{ matrix.mode == 'warm' && 30 || 25 }}" || v3.Strategy.FailFast == nil || *v3.Strategy.FailFast || !slices.Equal(v3.Strategy.Matrix.Profile, []int{135, 137}) || !slices.Equal(v3.Strategy.Matrix.Mode, []string{"cold", "warm"}) || len(v3.Strategy.Matrix.Exclude) != 0 || !slices.Contains(gate.Needs, "kind-install-admission-v3") || !strings.Contains(string(makefile), "^TestKindAdmissionEffectiveV3WithBaseline$$/") {
+	if !v3Run || v3.TimeoutMinutes != "${{ matrix.mode == 'warm' && 30 || 25 }}" || v3.Strategy.FailFast == nil || *v3.Strategy.FailFast || v3.Strategy.MaxParallel != 3 || !slices.Equal(v3.Strategy.Matrix.Profile, []int{135, 137}) || !slices.Equal(v3.Strategy.Matrix.Mode, []string{"cold", "warm"}) || len(v3.Strategy.Matrix.Exclude) != 0 || !slices.Contains(gate.Needs, "kind-install-admission-v3") || !strings.Contains(string(makefile), "^TestKindAdmissionEffectiveV3WithBaseline$$/") {
 		t.Fatal("complete baseline-active v3 matrix missing from required CI")
 	}
 	const wantBinaryRun = `if [[ "$INSTALL_BINARY_MODE" == transition ]]; then

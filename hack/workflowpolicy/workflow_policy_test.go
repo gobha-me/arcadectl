@@ -213,6 +213,7 @@ func validateCIWorkflowBytes(body []byte) (*workflowFile, error) {
 	// Verify job-level 'if:' conditions on all proof jobs:
 	// No github.event_name, labels, paths, or ref exclusions on pull_request.
 	// Only upstream foundation status (!cancelled() or success()) and classifier scope checks are allowed.
+	const wantEnvtestIf = "${{ !cancelled() && needs.classify.result == 'success' && needs.installer-diagnostics.result == 'success' && needs.kind-install-gc.result == 'success' && needs.kind-install-admission.result == 'success' && needs.kind-install-admission-v3.result == 'success' && needs.kind-install-auth.result == 'success' && needs.kind-install-baseline.result == 'success' && needs.kind-install-precontroller.result == 'success' && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}"
 	allowedIfs := map[string]string{
 		"installer-diagnostics":      "${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' }}",
 		"go-policy-checks":           "${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' }}",
@@ -227,7 +228,7 @@ func validateCIWorkflowBytes(body []byte) (*workflowFile, error) {
 		"kind-lifecycle":             "${{ !cancelled() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}",
 		"kind-install-binary":        "${{ success() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}",
 		"install-engine-race":        "${{ success() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}",
-		"envtest":                    "${{ success() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}",
+		"envtest":                    wantEnvtestIf,
 		"go-and-policy":              "${{ always() }}",
 		"classify":                   "",
 	}
@@ -239,6 +240,13 @@ func validateCIWorkflowBytes(body []byte) (*workflowFile, error) {
 				return nil, fmt.Errorf("job %q if condition contains forbidden token %q: %s", jobName, forbiddenToken, job.If)
 			}
 		}
+	}
+
+	// Rule 1 (Atlas ruling 4): go-policy-checks starts right after classify
+	// and installer-diagnostics and must NOT depend on envtest (or any Kind or
+	// race job), directly or transitively.
+	if err := validateGoPolicyIndependence(&wf); err != nil {
+		return nil, err
 	}
 
 	// Verify item 2: race and envtest require all foundations in needs.
@@ -257,14 +265,16 @@ func validateCIWorkflowBytes(body []byte) (*workflowFile, error) {
 	// the classifier, diagnostics and the six native foundations (item 2's
 	// only allowed upstream-failure skip). Waiting on any other job would let
 	// an unrelated failure or skip suppress a proof that must run on every
-	// code pull request. Capacity-only edges with !cancelled() are checked in 3.
+	// code pull request. Capacity-only edges with !cancelled() are checked in 3;
+	// envtest's foundation-only result checks with its policy capacity edge are
+	// checked in validateEnvtestPolicy below.
 	allowedUpstream := []string{
 		"classify", "installer-diagnostics", "kind-install-gc", "kind-install-admission",
 		"kind-install-admission-v3", "kind-install-auth", "kind-install-baseline", "kind-install-precontroller",
 	}
 	for _, rejected := range []string{
 		"kind-install-binary", "kind-recovery", "kind-install-baseline", "kind-install-precontroller",
-		"kind-install-admission", "kind-install-admission-v3", "envtest", "install-engine-race",
+		"kind-install-admission", "kind-install-admission-v3", "install-engine-race",
 	} {
 		if keepsRunningAfterFailure(wf.Jobs[rejected].If) {
 			continue
@@ -278,10 +288,16 @@ func validateCIWorkflowBytes(body []byte) (*workflowFile, error) {
 
 	// 3) Fairness caps may serialize jobs with capacity-only needs edges. Any
 	// prerequisite beyond a job's spec'd barrier (classifier + diagnostics;
-	// for race/envtest the item-2 foundation set, which keeps success()) must
-	// not use success()-only semantics, or an unrelated earlier failure would
-	// skip a must-run proof (signed binary, recovery, 135/137 matrices, envtest).
+	// for race/envtest the item-2 foundation set) must not use success()-only
+	// semantics, or an unrelated earlier failure would skip a must-run proof.
 	if err := validateCapacityEdges(&wf, wantBulkNeeds); err != nil {
+		return nil, err
+	}
+
+	// Rule 4 (Atlas ruling 4): envtest waits on go-policy-checks as a capacity
+	// edge, uses !cancelled() (never bare success()), requires each foundation
+	// result == 'success', and never references go-policy-checks' result.
+	if err := validateEnvtestPolicy(&wf, wantBulkNeeds); err != nil {
 		return nil, err
 	}
 
@@ -289,18 +305,19 @@ func validateCIWorkflowBytes(body []byte) (*workflowFile, error) {
 	for _, jobName := range slices.Sorted(maps.Keys(allowedIfs)) {
 		wantIf := allowedIfs[jobName]
 		job := wf.Jobs[jobName]
-		if job.If != wantIf {
-			return nil, fmt.Errorf("job %q if condition = %q, want %q", jobName, job.If, wantIf)
+		if normalizeSpace(job.If) != wantIf {
+			return nil, fmt.Errorf("job %q if condition = %q, want %q", jobName, normalizeSpace(job.If), wantIf)
 		}
 		if job.ContinueOnError != nil {
 			return nil, fmt.Errorf("job %q sets continue-on-error: %v", jobName, job.ContinueOnError)
 		}
 	}
 
-	for _, bulkJob := range []string{"install-engine-race", "envtest"} {
-		if !slices.Equal(wf.Jobs[bulkJob].Needs, wantBulkNeeds) {
-			return nil, fmt.Errorf("bulk job %q needs = %v, want %v", bulkJob, wf.Jobs[bulkJob].Needs, wantBulkNeeds)
-		}
+	if !slices.Equal(wf.Jobs["install-engine-race"].Needs, wantBulkNeeds) {
+		return nil, fmt.Errorf("bulk job %q needs = %v, want %v", "install-engine-race", wf.Jobs["install-engine-race"].Needs, wantBulkNeeds)
+	}
+	if !slices.Equal(wf.Jobs["kind-install-binary"].Needs, []string{"classify", "installer-diagnostics"}) {
+		return nil, fmt.Errorf("kind-install-binary needs = %v, want [classify installer-diagnostics] with no capacity edge", wf.Jobs["kind-install-binary"].Needs)
 	}
 
 	// Verify gate covers all other jobs.
@@ -320,6 +337,14 @@ func validateCIWorkflowBytes(body []byte) (*workflowFile, error) {
 	// Fairness: every matrix has max-parallel and the worst-case number of
 	// concurrently runnable hosted jobs in one run stays <= 10.
 	if _, err := validateFairness(body); err != nil {
+		return nil, err
+	}
+
+	// Rules 2, 3, and 4 exact capacity-edge and max-parallel pins (checked
+	// after validateFairness so removing an edge or raising v3 max-parallel to 4
+	// reports the 11 > 10 fairness violation first, while lowering or swapping
+	// still fails).
+	if err := validateRuling4GraphPins(&wf, wantBulkNeeds); err != nil {
 		return nil, err
 	}
 
@@ -343,6 +368,60 @@ func validateCIWorkflowBytes(body []byte) (*workflowFile, error) {
 	return &wf, nil
 }
 
+func normalizeSpace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// transitiveNeeds computes the transitive needs closure of job start across
+// wf.Jobs, terminating safely even if a mutated workflow introduces a cycle.
+func transitiveNeeds(wf *workflowFile, start string) []string {
+	visited := map[string]bool{}
+	var queue []string
+	for _, n := range wf.Jobs[start].Needs {
+		if !visited[n] {
+			visited[n] = true
+			queue = append(queue, n)
+		}
+	}
+	for i := 0; i < len(queue); i++ {
+		job, ok := wf.Jobs[queue[i]]
+		if !ok {
+			continue
+		}
+		for _, n := range job.Needs {
+			if !visited[n] {
+				visited[n] = true
+				queue = append(queue, n)
+			}
+		}
+	}
+	return slices.Sorted(maps.Keys(visited))
+}
+
+func validateGoPolicyIndependence(wf *workflowFile) error {
+	policyJob, ok := wf.Jobs["go-policy-checks"]
+	if !ok {
+		return fmt.Errorf("required CI job \"go-policy-checks\" is missing")
+	}
+	if policyJob.Name != "Go and policy checks" {
+		return fmt.Errorf("rule 1: go-policy-checks name = %q, want %q", policyJob.Name, "Go and policy checks")
+	}
+	closure := transitiveNeeds(wf, "go-policy-checks")
+	if slices.Contains(closure, "envtest") || slices.Contains(policyJob.Needs, "envtest") {
+		return fmt.Errorf("rule 1: Go/policy must not depend on envtest (go-policy-checks transitive needs: %v)", closure)
+	}
+	for _, dep := range closure {
+		if strings.HasPrefix(dep, "kind-") || dep == "install-engine-race" || dep == "envtest" {
+			return fmt.Errorf("rule 1: Go/policy must not depend on any Kind, race or envtest job, found %q in transitive needs %v", dep, closure)
+		}
+	}
+	wantPolicyNeeds := []string{"classify", "installer-diagnostics"}
+	if !slices.Equal(policyJob.Needs, wantPolicyNeeds) || !slices.Equal(closure, wantPolicyNeeds) {
+		return fmt.Errorf("rule 1: go-policy-checks must start right after classify and installer-diagnostics: needs = %v (transitive %v), want %v", policyJob.Needs, closure, wantPolicyNeeds)
+	}
+	return nil
+}
+
 // keepsRunningAfterFailure reports whether a job condition keeps the
 // "run unless the workflow was cancelled" semantics: it starts with
 // !cancelled() and has no other status function or needs result test that
@@ -364,11 +443,13 @@ func validateCapacityEdges(wf *workflowFile, bulkNeeds []string) error {
 		"classify":              nil,
 		"installer-diagnostics": {"classify"},
 		"install-engine-race":   bulkNeeds,
-		"envtest":               bulkNeeds,
+	}
+	if wf.Jobs["kind-api"].Name != "Kind authenticated admin API" {
+		return fmt.Errorf("rule 3: kind-api name = %q, want %q", wf.Jobs["kind-api"].Name, "Kind authenticated admin API")
 	}
 	for _, name := range slices.Sorted(maps.Keys(wf.Jobs)) {
-		if name == "go-and-policy" {
-			continue // always(): the aggregate must observe every result.
+		if name == "go-and-policy" || name == "envtest" {
+			continue // go-and-policy uses always(); envtest is checked by validateEnvtestPolicy (rule 4).
 		}
 		job := wf.Jobs[name]
 		allowed, ok := barrier[name]
@@ -382,8 +463,62 @@ func validateCapacityEdges(wf *workflowFile, bulkNeeds []string) error {
 			}
 		}
 		if len(capacity) > 0 && !keepsRunningAfterFailure(job.If) {
-			return fmt.Errorf("job %q has capacity-only needs %v but its if %q lacks !cancelled() semantics; an unrelated earlier failure would skip it", name, capacity, job.If)
+			return fmt.Errorf("rule 3: job %q has capacity-only needs %v but its if %q lacks !cancelled() semantics; an unrelated earlier failure would skip it", name, capacity, job.If)
 		}
+	}
+	return nil
+}
+
+func validateEnvtestPolicy(wf *workflowFile, wantFoundations []string) error {
+	envtest := wf.Jobs["envtest"]
+	cond := normalizeSpace(envtest.If)
+	if strings.Contains(cond, "go-policy-checks") {
+		return fmt.Errorf("rule 4: envtest if condition must not reference go-policy-checks result (a Go/policy failure must not skip envtest): %s", cond)
+	}
+	if strings.Contains(cond, "success()") || !strings.HasPrefix(cond, "${{ !cancelled() && ") {
+		return fmt.Errorf("rule 4: envtest if condition must use !cancelled() and not bare success() (a Go/policy failure must not skip envtest): %s", cond)
+	}
+	for _, forbiddenFn := range []string{"failure()", "always()"} {
+		if strings.Contains(cond, forbiddenFn) {
+			return fmt.Errorf("rule 4: envtest if condition contains forbidden status function %q: %s", forbiddenFn, cond)
+		}
+	}
+	for _, f := range wantFoundations {
+		req := fmt.Sprintf("needs.%s.result == 'success'", f)
+		if !strings.Contains(cond, req) {
+			return fmt.Errorf("rule 4: envtest if condition must require foundation %q (%s): %s", f, req, cond)
+		}
+	}
+	resultRe := regexp.MustCompile(`needs\.([A-Za-z0-9_-]+)\.result`)
+	for _, m := range resultRe.FindAllStringSubmatch(cond, -1) {
+		if !slices.Contains(wantFoundations, m[1]) {
+			return fmt.Errorf("rule 4: envtest if condition references non-foundation result needs.%s.result: %s", m[1], cond)
+		}
+	}
+	for _, f := range wantFoundations {
+		if !slices.Contains(envtest.Needs, f) {
+			return fmt.Errorf("rule 4: envtest needs %v omits foundation job %q", envtest.Needs, f)
+		}
+	}
+	for _, n := range envtest.Needs {
+		if !slices.Contains(wantFoundations, n) && n != "go-policy-checks" {
+			return fmt.Errorf("rejected-list job \"envtest\" needs non-foundation job %q", n)
+		}
+	}
+	return nil
+}
+
+func validateRuling4GraphPins(wf *workflowFile, wantFoundations []string) error {
+	if v3Cap := wf.Jobs["kind-install-admission-v3"].Strategy.MaxParallel; v3Cap != 3 {
+		return fmt.Errorf("rule 2: kind-install-admission-v3 strategy.max-parallel = %v, want 3", v3Cap)
+	}
+	wantAPINeeds := []string{"classify", "installer-diagnostics", "envtest"}
+	if !slices.Equal(wf.Jobs["kind-api"].Needs, wantAPINeeds) {
+		return fmt.Errorf("rule 3: kind-api needs = %v, want %v (envtest capacity edge required)", wf.Jobs["kind-api"].Needs, wantAPINeeds)
+	}
+	wantEnvtestNeeds := append(slices.Clone(wantFoundations), "go-policy-checks")
+	if !slices.Equal(wf.Jobs["envtest"].Needs, wantEnvtestNeeds) {
+		return fmt.Errorf("rule 4: envtest needs = %v, want %v (go-policy-checks capacity edge required)", wf.Jobs["envtest"].Needs, wantEnvtestNeeds)
 	}
 	return nil
 }
@@ -1203,13 +1338,14 @@ func validateFairness(body []byte) (*fairnessReport, error) {
 	for _, phase := range report.phases {
 		report.max = max(report.max, phase.sum)
 	}
-	if report.max > maxConcurrentHostedJobs {
-		worst := report.phases[0]
-		var terms []string
-		for _, name := range worst.jobs {
-			terms = append(terms, fmt.Sprintf("%s %d", name, report.jobs[name].weight))
+	for i, phase := range report.phases {
+		if phase.sum > maxConcurrentHostedJobs {
+			var terms []string
+			for _, name := range phase.jobs {
+				terms = append(terms, fmt.Sprintf("%s %d", name, report.jobs[name].weight))
+			}
+			return report, fmt.Errorf("phase %d worst-case concurrent hosted jobs = %d > %d: %s", i+1, phase.sum, maxConcurrentHostedJobs, strings.Join(terms, " + "))
 		}
-		return report, fmt.Errorf("worst-case concurrent hosted jobs = %d > %d: %s", report.max, maxConcurrentHostedJobs, strings.Join(terms, " + "))
 	}
 	return report, nil
 }
@@ -2233,10 +2369,34 @@ func TestWorkflowPolicy(t *testing.T) {
 			t.Fatalf("read override workflow %q: %v", override, err)
 		}
 		if _, err := validateAll(t, body); err != nil {
-			// Also report independent A/B/C failures when evaluating an override
-			// (such as pre-change fe9b6bd) so all failing checks are recorded.
+			// Also report independent rule failures when evaluating an override
+			// (such as pre-change 6136fe9) so all failing checks are recorded.
 			var wf workflowFile
 			if yaml.Unmarshal(body, &wf) == nil {
+				wantBulkNeeds := []string{
+					"classify", "installer-diagnostics", "kind-install-gc", "kind-install-admission",
+					"kind-install-admission-v3", "kind-install-auth", "kind-install-baseline", "kind-install-precontroller",
+				}
+				if err1 := validateGoPolicyIndependence(&wf); err1 != nil {
+					t.Logf("R7 rule 1 (go-policy-checks independence) failure: %v", err1)
+				}
+				if v3Cap := wf.Jobs["kind-install-admission-v3"].Strategy.MaxParallel; v3Cap != 3 {
+					t.Logf("R7 rule 2 (v3 max-parallel) failure: rule 2: kind-install-admission-v3 strategy.max-parallel = %v, want 3", v3Cap)
+				}
+				if err3 := validateCapacityEdges(&wf, wantBulkNeeds); err3 != nil {
+					t.Logf("R7 rule 3 (capacity edges) failure: %v", err3)
+				} else if wantAPINeeds := []string{"classify", "installer-diagnostics", "envtest"}; !slices.Equal(wf.Jobs["kind-api"].Needs, wantAPINeeds) {
+					t.Logf("R7 rule 3 (kind-api needs) failure: rule 3: kind-api needs = %v, want %v (envtest capacity edge required)", wf.Jobs["kind-api"].Needs, wantAPINeeds)
+				}
+				if err4 := validateEnvtestPolicy(&wf, wantBulkNeeds); err4 != nil {
+					t.Logf("R7 rule 4 (envtest policy) failure: %v", err4)
+				}
+				if wantEnvtestNeeds := append(slices.Clone(wantBulkNeeds), "go-policy-checks"); !slices.Equal(wf.Jobs["envtest"].Needs, wantEnvtestNeeds) {
+					t.Logf("R7 rule 4 (envtest needs) failure: rule 4: envtest needs = %v, want %v (go-policy-checks capacity edge required)", wf.Jobs["envtest"].Needs, wantEnvtestNeeds)
+				}
+				if _, err5 := validateFairness(body); err5 != nil {
+					t.Logf("R7 rule 5 (fairness) failure: %v", err5)
+				}
 				if errA := validateConcurrency(&wf); errA != nil {
 					t.Logf("A (concurrency) failure: %v", errA)
 				}
@@ -2488,7 +2648,7 @@ func TestWorkflowPolicy(t *testing.T) {
 			mutate: func(s string) string {
 				return regexpInJob(s, "kind-install-admission", `needs: \[[^\]]*\]`, "needs: [classify, installer-diagnostics]")
 			},
-			wantErr: "worst-case concurrent hosted jobs = 12 > 10",
+			wantErr: "worst-case concurrent hosted jobs = 13 > 10",
 		},
 		{
 			name: "(c2) drop recovery envtest capacity edge",
@@ -2740,6 +2900,91 @@ func TestWorkflowPolicy(t *testing.T) {
 				return replaceInJob(s, "classify", "actions/workflows/{workflow_id}/runs", "actions/runs")
 			},
 			wantErr: "stub API contract violation: HTTP 404: unsupported stub endpoint",
+		},
+		// Round 7 (Atlas ruling 4): go-policy-checks runs early without envtest,
+		// v3 max-parallel 3, kind-api waits on envtest (!cancelled()), and
+		// envtest waits on go-policy-checks with !cancelled() + explicit
+		// foundation result == 'success' checks.
+		{
+			name: "r7-(a) v3 max-parallel back to 4",
+			mutate: func(s string) string {
+				return regexpInJob(s, "kind-install-admission-v3", `max-parallel: \d+`, "max-parallel: 4")
+			},
+			wantErr: "worst-case concurrent hosted jobs = 11 > 10",
+		},
+		{
+			name: "r7-(a2) v3 max-parallel lowered to 2",
+			mutate: func(s string) string {
+				return regexpInJob(s, "kind-install-admission-v3", `max-parallel: \d+`, "max-parallel: 2")
+			},
+			wantErr: "rule 2: kind-install-admission-v3 strategy.max-parallel = 2, want 3",
+		},
+		{
+			name: "r7-(b) kind-api envtest edge removed",
+			mutate: func(s string) string {
+				return regexpInJob(s, "kind-api", `needs: \[[^\]]*\]`, "needs: [classify, installer-diagnostics]")
+			},
+			wantErr: "worst-case concurrent hosted jobs = 11 > 10",
+		},
+		{
+			name: "r7-(c) go-policy-checks needs envtest again",
+			mutate: func(s string) string {
+				return regexpInJob(s, "go-policy-checks", `needs: \[[^\]]*\]`, "needs: [classify, installer-diagnostics, envtest]")
+			},
+			wantErr: "Go/policy must not depend on envtest",
+		},
+		{
+			name: "r7-(c2) go-policy-checks transitively depends on envtest",
+			mutate: func(s string) string {
+				return regexpInJob(s, "go-policy-checks", `needs: \[[^\]]*\]`, "needs: [classify, installer-diagnostics, kind-recovery]")
+			},
+			wantErr: "Go/policy must not depend on envtest",
+		},
+		{
+			name: "r7-(c3) go-policy-checks depends on a Kind job",
+			mutate: func(s string) string {
+				return regexpInJob(s, "go-policy-checks", `needs: \[[^\]]*\]`, "needs: [classify, installer-diagnostics, kind-install-gc]")
+			},
+			wantErr: "Go/policy must not depend on any Kind, race or envtest job",
+		},
+		{
+			name: "r7-(d) envtest edge on go-policy-checks removed",
+			mutate: func(s string) string {
+				return replaceInJob(s, "envtest", ", go-policy-checks]", "]")
+			},
+			wantErr: "worst-case concurrent hosted jobs = 11 > 10",
+		},
+		{
+			name: "r7-(e) envtest if back to bare success() with the policy edge",
+			mutate: func(s string) string {
+				oldIf := "    if: >-\n      ${{ !cancelled() && needs.classify.result == 'success' && needs.installer-diagnostics.result == 'success' &&\n          needs.kind-install-gc.result == 'success' && needs.kind-install-admission.result == 'success' &&\n          needs.kind-install-admission-v3.result == 'success' && needs.kind-install-auth.result == 'success' &&\n          needs.kind-install-baseline.result == 'success' && needs.kind-install-precontroller.result == 'success' &&\n          needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}"
+				newIf := "    if: ${{ success() && needs.classify.outputs.scope != 'docs' && needs.classify.outputs.scope != 'idle' && needs.classify.outputs.scope != 'cheap' }}"
+				return replaceInJob(s, "envtest", oldIf, newIf)
+			},
+			wantErr: "rule 4: envtest if condition must use !cancelled() and not bare success()",
+		},
+		{
+			name: "r7-(f) kind-api if with success() instead of !cancelled()",
+			mutate: func(s string) string {
+				return replaceInJob(s, "kind-api", "if: ${{ !cancelled() &&", "if: ${{ success() &&")
+			},
+			wantErr: "rule 3: job \"kind-api\" has capacity-only needs [envtest]",
+		},
+		{
+			name: "r7-(g) envtest if referencing needs.go-policy-checks.result == 'success'",
+			mutate: func(s string) string {
+				return replaceInJob(s, "envtest",
+					"needs.kind-install-precontroller.result == 'success' &&",
+					"needs.kind-install-precontroller.result == 'success' && needs.go-policy-checks.result == 'success' &&")
+			},
+			wantErr: "rule 4: envtest if condition must not reference go-policy-checks result",
+		},
+		{
+			name: "r7-(g2) envtest if omits a foundation result == 'success'",
+			mutate: func(s string) string {
+				return replaceInJob(s, "envtest", "needs.kind-install-gc.result == 'success' && ", "")
+			},
+			wantErr: "rule 4: envtest if condition must require foundation \"kind-install-gc\"",
 		},
 	}
 
