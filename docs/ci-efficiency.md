@@ -15,17 +15,29 @@ merges with linear history: the merged tree is the tested PR head tree.
 Changing that merge policy requires revisiting this optimization.
 
 The complete proof set runs on main nightly at **9:00 PM EDT / 8:00 PM EST
-(01:00 UTC)** when main has a commit in the last 24 hours. A cheap guard uses
-only the default `GITHUB_TOKEN` with `contents: read`: it verifies the API's
-main HEAD matches the scheduled SHA, checks its committer timestamp, and
-confirms the recent-commits API returns an empty list before skipping. Main's
-squash-only policy makes these committer dates the merge/landing dates. An API
-error, timeout, malformed response, missing timestamp or moved/unexpected HEAD
-runs the full set. An unchanged-main skip logs a clear notice, skips checkout
-and every proof, and leaves a green aggregate that verifies those skips.
-`workflow_dispatch` bypasses the freshness guard and always runs the complete
-set on the selected ref on demand. Event-specific concurrency groups prevent a
-main push or manual run from cancelling a nightly; only superseded PR runs are
+(01:00 UTC)** unless that exact main SHA already passed a complete scheduled
+or manually dispatched CI run on main. The guard uses the default
+`GITHUB_TOKEN`; only the classifier job adds `actions: read` to `contents: read`.
+It checks main still matches the scheduled SHA, identifies the current CI
+workflow, and queries successful runs of that workflow on main for that SHA.
+It examines up to five newest eligible previous runs, using each run's exact
+attempt. A run qualifies only when its complete jobs response includes exactly
+one successful `Kind lifecycle` and `Go and policy`, and every returned job
+completed successfully. A successful run whose lifecycle was skipped cannot
+justify another skip. Commit age has no bearing on coverage, so cron delays
+cannot strand an untested SHA outside a rolling time window.
+
+Any API error, timeout, malformed/inconsistent response, moved/unexpected HEAD,
+missing proof or pagination uncertainty runs the full set. Run/job responses
+must contain fewer than 100 entries with matching `total_count` and unique
+IDs; larger histories/pages fall back to full rather than assuming coverage.
+The five-candidate bound keeps API time within the classifier's five-minute
+budget; not finding proof in that bounded history also runs full. A proven
+same-SHA skip logs a notice, skips checkout and every proof, and leaves a green
+aggregate that verifies those skips. `workflow_dispatch` bypasses this guard
+and always runs the complete set on the selected ref on demand.
+Event-specific concurrency groups prevent a main push or manual run from
+cancelling a nightly; only superseded PR runs are
 automatically cancelled. Schedule and main-push runs are not cancelled in
 progress.
 
@@ -36,8 +48,15 @@ base/head SHAs, or a main push's `before`/`after` SHAs. It uses a NUL-delimited
 `git diff --no-renames` so deletions and both sides of a rename count. Only
 Markdown files (including root Markdown), `docs/**`, root `LICENSE`,
 `LICENSE.txt`, `NOTICE`, `NOTICE.txt`, `.golangci.yml`, `.golangci.yaml`,
-`.editorconfig`, and root `.markdownlint*` qualify. `.github/**`, `hack/**` and
-`config/**` always require proofs, even if the changed file is Markdown.
+`.editorconfig`, and root `.markdownlint*` qualify. `.github/**`, `hack/**`,
+`config/**` and `docs/generated/**` always require proofs, even if the changed
+file is Markdown. Generated CLI reference/completions in `docs/generated/cli/`
+are checked by `hack/verify-generated.sh`. Other generator outputs already
+require proofs: `api/v1alpha1/zz_generated.deepcopy.go`, `api/admin/v1/openapi.json`,
+`config/crd/bases/**`, `config/rbac/**`, `config/install/anchors.yaml` and
+`config/install/controller.yaml`. The runtime-assets verifier's Dockerfiles,
+shell helpers, `.dockerignore` and `licenses/restic-LICENSE` also fall outside
+the allowlist. Root LICENSE/NOTICE text remains the explicit docs exception.
 
 For a qualifying PR or push, only the classifier and aggregate run. `Kind
 lifecycle` is skipped, which satisfies its required check; `Go and policy`
@@ -50,7 +69,10 @@ encoding, empty diff, or more than **300 files** defaults to the full set.
 This conservative fallback can run the full set even on a main push; ordinary
 verified main pushes use the cheap set. A failed classifier job cannot produce
 a passing aggregate. Dispatches always select the full set; schedules use the
-separate unchanged-main guard described above.
+separate same-SHA coverage guard described above. The aggregate independently
+checks the event/ref: `cheap` is accepted only for a push to `refs/heads/main`,
+`idle` only for a schedule on that ref, and `docs` only for a pull request or a
+push to main. Any mismatch fails, even when every proof result matches its scope.
 
 ## Retry only failed jobs
 
@@ -163,8 +185,10 @@ merge-day, 14 nightlies cost **15,626.8 minutes**; compared with daily runs on
 all 27 days (**30,137.4 minutes**), the guard avoids about **14.5k minutes**.
 Item 4 therefore models about **2.1k additional minutes net**, rather than a
 net saving (15,626.8 + 892.8 - 14,404). This sum-of-medians estimate is not an
-observed whole-run cost. ET calendar days approximate the actual 9 PM EDT
-(01:00 UTC) rolling 24-hour windows; schedule delays, API fail-safe full runs
-and manual dispatches can change the total. No guaranteed total saving is
-claimed. The watchdog saves nothing on the historical logging cohort above;
+observed whole-run cost. Merge-days are only a cost scenario, not the guard's
+criterion: the guard requires successful full coverage of the exact SHA.
+Failed/incomplete runs, bounded history or API uncertainty can add full runs;
+a successful manual main run for the same SHA can avoid a nightly. Schedule
+jitter changes which main SHA is selected, without a commit-age coverage gap.
+No guaranteed total saving is claimed. The watchdog saves nothing on the historical logging cohort above;
 timeout, early-exit, retry and cache savings overlap and need observation.

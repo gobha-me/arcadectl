@@ -21,10 +21,13 @@ jobs:
     name: Classify CI scope
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     outputs:
       scope: ${{ steps.scope.outputs.scope }}
     steps:
-      - name: Check scheduled main freshness (fail safe to full)
+      - name: Check for a successful full run of scheduled main SHA (fail safe to full)
         id: nightly
         if: github.event_name == 'schedule'
         env:
@@ -32,9 +35,9 @@ jobs:
           CI_REPOSITORY: ${{ github.repository }}
           CI_SHA: ${{ github.sha }}
           CI_REF: ${{ github.ref }}
+          CI_RUN_ID: ${{ github.run_id }}
         run: |
           python3 - <<'PYCODE'
-          import datetime
           import json
           import os
           import re
@@ -44,8 +47,17 @@ jobs:
           def lookup(endpoint):
               raw = subprocess.check_output(
                   ["gh", "api", "--method", "GET", endpoint],
-                  stderr=subprocess.DEVNULL, timeout=30)
+                  stderr=subprocess.DEVNULL, timeout=20)
               return json.loads(raw)
+
+          def complete_page(response, key):
+              # Never infer absence or coverage from a truncated/ambiguous page.
+              count, entries = response["total_count"], response[key]
+              if (type(count) is not int or not isinstance(entries, list)
+                      or not 0 <= count < 100 or len(entries) != count
+                      or len({entry["id"] for entry in entries}) != count):
+                  raise ValueError("incomplete or ambiguous Actions API page")
+              return entries
 
           skip = False
           try:
@@ -53,28 +65,54 @@ jobs:
               if os.environ["CI_REF"] != "refs/heads/main" or not re.fullmatch(r"[0-9a-f]{40}", sha):
                   raise ValueError("unexpected scheduled ref")
               repo = os.environ["CI_REPOSITORY"]
-              head = lookup(f"repos/{repo}/commits/main")
-              if head["sha"] != sha:
+              if lookup(f"repos/{repo}/commits/main")["sha"] != sha:
                   raise ValueError("main moved since the scheduled event")
-              now = datetime.datetime.now(datetime.timezone.utc)
-              cutoff = now - datetime.timedelta(hours=24)
-              committed = datetime.datetime.strptime(
-                  head["commit"]["committer"]["date"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
-              if committed < cutoff:
-                  # Main is squash-only: its committer dates mark landed commits.
-                  since = urllib.parse.quote(cutoff.strftime("%Y-%m-%dT%H:%M:%SZ"), safe="")
-                  recent = lookup(f"repos/{repo}/commits?sha={sha}&since={since}&per_page=1")
-                  if not isinstance(recent, list):
-                      raise ValueError("unexpected commits response")
-                  skip = recent == []
+              run_id = int(os.environ["CI_RUN_ID"])
+              current = lookup(f"repos/{repo}/actions/runs/{run_id}")
+              if (current["id"] != run_id or current["head_sha"] != sha
+                      or current["head_branch"] != "main" or current["event"] != "schedule"):
+                  raise ValueError("unexpected current run")
+              workflow_id = current["workflow_id"]
+              if type(workflow_id) is not int or workflow_id <= 0:
+                  raise ValueError("invalid workflow identity")
+              query = urllib.parse.urlencode({
+                  "branch": "main", "head_sha": sha, "status": "success", "per_page": 100})
+              runs = complete_page(lookup(
+                  f"repos/{repo}/actions/workflows/{workflow_id}/runs?{query}"), "workflow_runs")
+              candidates = []
+              for run in runs:
+                  if (run["workflow_id"] != workflow_id or run["head_sha"] != sha
+                          or run["head_branch"] != "main" or run["status"] != "completed"
+                          or run["conclusion"] != "success"):
+                      raise ValueError("inconsistent run search result")
+                  if run["id"] < run_id and run["event"] in ("schedule", "workflow_dispatch"):
+                      candidates.append(run)
+              # Bound API time within this job's five-minute budget. More history
+              # may cause an extra full run, never an unproven skip.
+              for run in sorted(candidates, key=lambda run: run["id"], reverse=True)[:5]:
+                  attempt = run["run_attempt"]
+                  if type(attempt) is not int or attempt < 1:
+                      raise ValueError("invalid run attempt")
+                  jobs = complete_page(lookup(
+                      f"repos/{repo}/actions/runs/{run['id']}/attempts/{attempt}/jobs?per_page=100"), "jobs")
+                  if any(job["run_id"] != run["id"] or job["head_sha"] != sha for job in jobs):
+                      raise ValueError("job identity mismatch")
+                  # A successful idle/docs/cheap run has lifecycle skipped. The
+                  # full-run sentinel and aggregate must both actually succeed.
+                  names = [job["name"] for job in jobs]
+                  if (names.count("Kind lifecycle") == 1 and names.count("Go and policy") == 1
+                          and all(job["status"] == "completed" and job["conclusion"] == "success"
+                                  for job in jobs)):
+                      skip = True
+                      break
           except Exception:
-              print("::notice::Nightly freshness lookup uncertain; running full CI")
+              print("::notice::Previous full-run lookup uncertain; running full CI")
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write("skip=" + str(skip).lower() + "\n")
           if skip:
-              print("::notice::No commit landed on main in the last 24 h; skipping the full nightly proof set")
+              print("::notice::Same main SHA already passed a full scheduled/manual CI run; skipping nightly proofs")
           else:
-              print("Nightly freshness guard: running the full proof set")
+              print("Nightly coverage guard: running the full proof set")
           PYCODE
       - name: Check out exact source
         if: steps.nightly.outputs.skip != 'true'
@@ -134,7 +172,7 @@ jobs:
 
               def allowed(path):
                   # These directories always require proofs, even for .md files.
-                  if path.startswith((".github/", "hack/", "config/")):
+                  if path.startswith((".github/", "hack/", "config/", "docs/generated/")):
                       return False
                   return (path.endswith(".md") or path.startswith("docs/")
                           or path in ("LICENSE", "LICENSE.txt", "NOTICE", "NOTICE.txt",
@@ -764,6 +802,8 @@ jobs:
         env:
           CLASSIFY_RESULT: ${{ needs.classify.result }}
           CI_SCOPE: ${{ needs.classify.outputs.scope }}
+          CI_EVENT_NAME: ${{ github.event_name }}
+          CI_REF: ${{ github.ref }}
           INSTALLER_DIAGNOSTICS_RESULT: ${{ needs.installer-diagnostics.result }}
           ENGINE_RACE_RESULT: ${{ needs.install-engine-race.result }}
           INSTALL_ADMISSION_RESULT: ${{ needs.kind-install-admission.result }}
@@ -781,6 +821,15 @@ jobs:
         run: |
           test "$CLASSIFY_RESULT" = success
           case "$CI_SCOPE" in
+            cheap) test "$CI_EVENT_NAME" = push && test "$CI_REF" = refs/heads/main || exit 1 ;;
+            idle) test "$CI_EVENT_NAME" = schedule && test "$CI_REF" = refs/heads/main || exit 1 ;;
+            docs)
+              test "$CI_EVENT_NAME" = pull_request || {
+                test "$CI_EVENT_NAME" = push && test "$CI_REF" = refs/heads/main
+              } || exit 1
+              ;;
+          esac
+          case "$CI_SCOPE" in
             docs|idle)
               # Both protected checks pass: lifecycle is intentionally skipped.
               for result in "$INSTALLER_DIAGNOSTICS_RESULT" "$GO_POLICY_CHECKS_RESULT" \
@@ -791,7 +840,7 @@ jobs:
                 test "$result" = skipped
               done
               if [[ "$CI_SCOPE" == idle ]]; then
-                echo 'Unchanged main in the last 24 h: full nightly proof set intentionally skipped; required CI gate passes.'
+                echo 'Same main SHA already passed full scheduled/manual CI: nightly proofs intentionally skipped; required CI gate passes.'
               else
                 echo 'Documentation/lint-config-only change: required CI gate passes.'
               fi
