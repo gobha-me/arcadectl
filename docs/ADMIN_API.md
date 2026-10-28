@@ -94,13 +94,15 @@ does not establish a host isolation boundary or replace API authentication.
 in Infra's night window, recording times in ET first (EDT), with UTC in parentheses.
 All commands below are operator instructions for the intended, reviewed cluster
 context.
+Every command must use the same reviewed context and be run by Infra Lead;
+agents never run these commands.
 
 Gate before apply (all conditions must hold):
 
 1. Canal/Calico policy enforcement is running.
-2. `kubectl -n arcadectl-system get pods -l app.kubernetes.io/name=arcadectl-api`
+2. `kubectl --context YOUR_REVIEWED_CONTEXT -n arcadectl-system get pods -l app.kubernetes.io/name=arcadectl-api`
    returns at least one pod, and every returned pod is an API pod.
-3. `kubectl -n arcadectl-system get networkpolicy` shows no other policy selecting
+3. `kubectl --context YOUR_REVIEWED_CONTEXT -n arcadectl-system get networkpolicy` shows no other policy selecting
    these API pods; inspect the selectors, including any selecting all pods.
 4. Establish the pre-apply baseline: API pods are Ready, and an authorized
    port-forward request to `/v1/auth/self` with a valid credential returns HTTP
@@ -128,7 +130,7 @@ Verify after apply:
 Rollback (Infra Lead, immediately if readiness drops):
 
 ```sh
-kubectl -n arcadectl-system delete networkpolicy arcadectl-api-ingress
+kubectl --context YOUR_REVIEWED_CONTEXT -n arcadectl-system delete networkpolicy arcadectl-api-ingress
 ```
 
 This removes only the policy; it does not remove any PVC or data. Recheck the
