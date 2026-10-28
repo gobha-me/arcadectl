@@ -388,17 +388,429 @@ func validateCapacityEdges(wf *workflowFile, bulkNeeds []string) error {
 	return nil
 }
 
+type ghEvalContext struct {
+	Workflow  string
+	EventName string
+	Ref       string
+	RunID     string
+	PRNumber  string
+}
+
+func (c ghEvalContext) lookup(ident string) (string, error) {
+	switch ident {
+	case "github.workflow":
+		return c.Workflow, nil
+	case "github.event_name":
+		return c.EventName, nil
+	case "github.ref":
+		return c.Ref, nil
+	case "github.run_id":
+		return c.RunID, nil
+	case "github.event.pull_request.number":
+		return c.PRNumber, nil
+	default:
+		return "", fmt.Errorf("unsupported or unknown context lookup %q", ident)
+	}
+}
+
+type ghTokenKind int
+
+const (
+	ghTokEOF ghTokenKind = iota
+	ghTokString
+	ghTokIdent
+	ghTokLParen
+	ghTokRParen
+	ghTokComma
+	ghTokEq
+	ghTokNe
+	ghTokAnd
+	ghTokOr
+)
+
+type ghToken struct {
+	kind ghTokenKind
+	text string
+}
+
+func lexGitHubExpr(input string) ([]ghToken, error) {
+	var tokens []ghToken
+	i := 0
+	for i < len(input) {
+		ch := input[i]
+		if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
+			i++
+			continue
+		}
+		switch {
+		case ch == '(':
+			tokens = append(tokens, ghToken{kind: ghTokLParen, text: "("})
+			i++
+		case ch == ')':
+			tokens = append(tokens, ghToken{kind: ghTokRParen, text: ")"})
+			i++
+		case ch == ',':
+			tokens = append(tokens, ghToken{kind: ghTokComma, text: ","})
+			i++
+		case strings.HasPrefix(input[i:], "=="):
+			tokens = append(tokens, ghToken{kind: ghTokEq, text: "=="})
+			i += 2
+		case strings.HasPrefix(input[i:], "!="):
+			tokens = append(tokens, ghToken{kind: ghTokNe, text: "!="})
+			i += 2
+		case strings.HasPrefix(input[i:], "&&"):
+			tokens = append(tokens, ghToken{kind: ghTokAnd, text: "&&"})
+			i += 2
+		case strings.HasPrefix(input[i:], "||"):
+			tokens = append(tokens, ghToken{kind: ghTokOr, text: "||"})
+			i += 2
+		case ch == '\'':
+			i++
+			var sb strings.Builder
+			closed := false
+			for i < len(input) {
+				if input[i] == '\'' {
+					if i+1 < len(input) && input[i+1] == '\'' {
+						sb.WriteByte('\'')
+						i += 2
+						continue
+					}
+					i++
+					closed = true
+					break
+				}
+				sb.WriteByte(input[i])
+				i++
+			}
+			if !closed {
+				return nil, fmt.Errorf("unterminated string literal in expression %q", input)
+			}
+			tokens = append(tokens, ghToken{kind: ghTokString, text: sb.String()})
+		case (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_':
+			start := i
+			for i < len(input) {
+				c := input[i]
+				if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '.' {
+					i++
+				} else {
+					break
+				}
+			}
+			tokens = append(tokens, ghToken{kind: ghTokIdent, text: input[start:i]})
+		default:
+			return nil, fmt.Errorf("unexpected character %q in expression %q", ch, input)
+		}
+	}
+	tokens = append(tokens, ghToken{kind: ghTokEOF})
+	return tokens, nil
+}
+
+type ghVal struct {
+	isBool bool
+	b      bool
+	s      string
+}
+
+func (v ghVal) truthy() bool {
+	if v.isBool {
+		return v.b
+	}
+	return v.s != ""
+}
+
+func (v ghVal) str() string {
+	if v.isBool {
+		if v.b {
+			return "true"
+		}
+		return "false"
+	}
+	return v.s
+}
+
+type ghParser struct {
+	tokens []ghToken
+	pos    int
+	ctx    ghEvalContext
+}
+
+func (p *ghParser) peek() ghToken {
+	return p.tokens[p.pos]
+}
+
+func (p *ghParser) next() ghToken {
+	tok := p.tokens[p.pos]
+	if tok.kind != ghTokEOF {
+		p.pos++
+	}
+	return tok
+}
+
+func (p *ghParser) parseOr() (ghVal, error) {
+	left, err := p.parseAnd()
+	if err != nil {
+		return ghVal{}, err
+	}
+	for p.peek().kind == ghTokOr {
+		p.next()
+		right, err := p.parseAnd()
+		if err != nil {
+			return ghVal{}, err
+		}
+		if !left.truthy() {
+			left = right
+		}
+	}
+	return left, nil
+}
+
+func (p *ghParser) parseAnd() (ghVal, error) {
+	left, err := p.parseEq()
+	if err != nil {
+		return ghVal{}, err
+	}
+	for p.peek().kind == ghTokAnd {
+		p.next()
+		right, err := p.parseEq()
+		if err != nil {
+			return ghVal{}, err
+		}
+		if left.truthy() {
+			left = right
+		} else {
+			left = ghVal{isBool: true, b: false}
+		}
+	}
+	return left, nil
+}
+
+func (p *ghParser) parseEq() (ghVal, error) {
+	left, err := p.parsePrimary()
+	if err != nil {
+		return ghVal{}, err
+	}
+	if p.peek().kind == ghTokEq || p.peek().kind == ghTokNe {
+		op := p.next().kind
+		right, err := p.parsePrimary()
+		if err != nil {
+			return ghVal{}, err
+		}
+		eq := left.str() == right.str()
+		if op == ghTokNe {
+			eq = !eq
+		}
+		return ghVal{isBool: true, b: eq}, nil
+	}
+	return left, nil
+}
+
+func (p *ghParser) parsePrimary() (ghVal, error) {
+	tok := p.peek()
+	switch tok.kind {
+	case ghTokString:
+		p.next()
+		return ghVal{s: tok.text}, nil
+	case ghTokLParen:
+		p.next()
+		val, err := p.parseOr()
+		if err != nil {
+			return ghVal{}, err
+		}
+		if p.next().kind != ghTokRParen {
+			return ghVal{}, fmt.Errorf("missing closing ')'")
+		}
+		return val, nil
+	case ghTokIdent:
+		p.next()
+		if p.peek().kind == ghTokLParen {
+			p.next()
+			if tok.text != "format" {
+				return ghVal{}, fmt.Errorf("unsupported function %q", tok.text)
+			}
+			var args []ghVal
+			for p.peek().kind != ghTokRParen {
+				if len(args) > 0 {
+					if p.next().kind != ghTokComma {
+						return ghVal{}, fmt.Errorf("expected ',' in format() arguments")
+					}
+				}
+				arg, err := p.parseOr()
+				if err != nil {
+					return ghVal{}, err
+				}
+				args = append(args, arg)
+			}
+			p.next() // consume ')'
+			if len(args) < 2 {
+				return ghVal{}, fmt.Errorf("format() requires a template and at least one replacement argument")
+			}
+			out, err := applyGitHubFormat(args[0].str(), args[1:])
+			if err != nil {
+				return ghVal{}, err
+			}
+			return ghVal{s: out}, nil
+		}
+		val, err := p.ctx.lookup(tok.text)
+		if err != nil {
+			return ghVal{}, err
+		}
+		return ghVal{s: val}, nil
+	default:
+		return ghVal{}, fmt.Errorf("unexpected token %q", tok.text)
+	}
+}
+
+func applyGitHubFormat(tmpl string, args []ghVal) (string, error) {
+	used := make([]bool, len(args))
+	var sb strings.Builder
+	for i := 0; i < len(tmpl); {
+		if tmpl[i] == '{' {
+			end := strings.IndexByte(tmpl[i+1:], '}')
+			if end < 0 {
+				return "", fmt.Errorf("unclosed '{' in format template %q", tmpl)
+			}
+			idxStr := tmpl[i+1 : i+1+end]
+			idx, err := strconv.Atoi(idxStr)
+			if err != nil || idx < 0 || idx >= len(args) {
+				return "", fmt.Errorf("invalid format placeholder {%s} for %d args in %q", idxStr, len(args), tmpl)
+			}
+			used[idx] = true
+			sb.WriteString(args[idx].str())
+			i += end + 2
+			continue
+		}
+		if tmpl[i] == '}' {
+			return "", fmt.Errorf("unmatched '}' in format template %q", tmpl)
+		}
+		sb.WriteByte(tmpl[i])
+		i++
+	}
+	for idx, u := range used {
+		if !u {
+			return "", fmt.Errorf("unused format argument %d in %q", idx, tmpl)
+		}
+	}
+	return sb.String(), nil
+}
+
+func evalGitHubExpr(expr string, ctx ghEvalContext) (ghVal, error) {
+	tokens, err := lexGitHubExpr(expr)
+	if err != nil {
+		return ghVal{}, err
+	}
+	parser := &ghParser{tokens: tokens, ctx: ctx}
+	val, err := parser.parseOr()
+	if err != nil {
+		return ghVal{}, err
+	}
+	if parser.peek().kind != ghTokEOF {
+		return ghVal{}, fmt.Errorf("unexpected trailing token %q in expression %q", parser.peek().text, expr)
+	}
+	return val, nil
+}
+
+func evalGitHubTemplate(raw string, ctx ghEvalContext) (string, error) {
+	if !strings.Contains(raw, "${{") {
+		return "", fmt.Errorf("template %q contains no ${{ ... }} expression", raw)
+	}
+	var sb strings.Builder
+	rest := raw
+	for len(rest) > 0 {
+		start := strings.Index(rest, "${{")
+		if start < 0 {
+			if strings.Contains(rest, "}}") {
+				return "", fmt.Errorf("unmatched '}}' in template %q", raw)
+			}
+			sb.WriteString(rest)
+			break
+		}
+		if strings.Contains(rest[:start], "}}") {
+			return "", fmt.Errorf("unmatched '}}' in template %q", raw)
+		}
+		sb.WriteString(rest[:start])
+		rest = rest[start+3:]
+		end := strings.Index(rest, "}}")
+		if end < 0 {
+			return "", fmt.Errorf("unclosed '${{' in template %q", raw)
+		}
+		val, err := evalGitHubExpr(rest[:end], ctx)
+		if err != nil {
+			return "", err
+		}
+		sb.WriteString(val.str())
+		rest = rest[end+2:]
+	}
+	return sb.String(), nil
+}
+
 func validateConcurrency(wf *workflowFile) error {
-	const wantGroup = "ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}"
 	const wantCancel = "${{ github.event_name == 'pull_request' }}"
 	if len(wf.Concurrency) != 2 {
 		return fmt.Errorf("workflow concurrency must have exactly group and cancel-in-progress, got %v", wf.Concurrency)
 	}
-	if group, ok := wf.Concurrency["group"].(string); !ok || group != wantGroup {
-		return fmt.Errorf("workflow concurrency group = %#v, want %q", wf.Concurrency["group"], wantGroup)
+	groupExpr, ok := wf.Concurrency["group"].(string)
+	if !ok || strings.TrimSpace(groupExpr) == "" {
+		return fmt.Errorf("workflow concurrency group must be a non-empty expression string, got %#v", wf.Concurrency["group"])
 	}
-	if cancel, ok := wf.Concurrency["cancel-in-progress"].(string); !ok || cancel != wantCancel {
+	cancelExpr, ok := wf.Concurrency["cancel-in-progress"].(string)
+	if !ok || cancelExpr != wantCancel {
 		return fmt.Errorf("workflow concurrency cancel-in-progress = %#v, want %q", wf.Concurrency["cancel-in-progress"], wantCancel)
+	}
+	innerCancel := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(cancelExpr), "${{"), "}}")
+
+	// A.1) pull_request: group evaluates to ci-<workflow>-<PR number>, same
+	// across runs of the same PR, without run_id; cancel-in-progress is true.
+	pr140Run1 := ghEvalContext{Workflow: "CI", EventName: "pull_request", Ref: "refs/pull/140/merge", RunID: "9001", PRNumber: "140"}
+	pr140Run2 := ghEvalContext{Workflow: "CI", EventName: "pull_request", Ref: "refs/pull/140/merge", RunID: "9002", PRNumber: "140"}
+	pr141Run1 := ghEvalContext{Workflow: "CI", EventName: "pull_request", Ref: "refs/pull/141/merge", RunID: "9003", PRNumber: "141"}
+	prOtherWF := ghEvalContext{Workflow: "Other", EventName: "pull_request", Ref: "refs/pull/140/merge", RunID: "9004", PRNumber: "140"}
+
+	gPR1, err := evalGitHubTemplate(groupExpr, pr140Run1)
+	if err != nil {
+		return fmt.Errorf("workflow concurrency group failed evaluation on PR #140 run 1: %w", err)
+	}
+	gPR2, err := evalGitHubTemplate(groupExpr, pr140Run2)
+	if err != nil {
+		return fmt.Errorf("workflow concurrency group failed evaluation on PR #140 run 2: %w", err)
+	}
+	if gPR1 != "ci-CI-140" || gPR2 != "ci-CI-140" || gPR1 != gPR2 {
+		return fmt.Errorf("workflow concurrency group on PR #140 runs 1/2 = (%q, %q), want both %q without run_id", gPR1, gPR2, "ci-CI-140")
+	}
+	if strings.Contains(gPR1, pr140Run1.RunID) || strings.Contains(gPR2, pr140Run2.RunID) {
+		return fmt.Errorf("workflow concurrency PR group must not include run_id, got %q", gPR1)
+	}
+	if gPR141, err := evalGitHubTemplate(groupExpr, pr141Run1); err != nil || gPR141 != "ci-CI-141" {
+		return fmt.Errorf("workflow concurrency group on PR #141 = %q (%v), want %q", gPR141, err, "ci-CI-141")
+	}
+	if gOther, err := evalGitHubTemplate(groupExpr, prOtherWF); err != nil || gOther != "ci-Other-140" {
+		return fmt.Errorf("workflow concurrency group on workflow Other PR #140 = %q (%v), want %q", gOther, err, "ci-Other-140")
+	}
+	if cancelVal, err := evalGitHubExpr(innerCancel, pr140Run1); err != nil || !cancelVal.isBool || !cancelVal.b {
+		return fmt.Errorf("workflow concurrency cancel-in-progress on pull_request evaluated to %v (%v), want true", cancelVal, err)
+	}
+
+	// A.2) push / schedule / workflow_dispatch: group includes github.run_id so
+	// two runs on refs/heads/main never share a group; cancel-in-progress is false.
+	for _, eventName := range []string{"push", "schedule", "workflow_dispatch"} {
+		ctx1 := ghEvalContext{Workflow: "CI", EventName: eventName, Ref: "refs/heads/main", RunID: "9101"}
+		ctx2 := ghEvalContext{Workflow: "CI", EventName: eventName, Ref: "refs/heads/main", RunID: "9102"}
+		g1, err := evalGitHubTemplate(groupExpr, ctx1)
+		if err != nil {
+			return fmt.Errorf("workflow concurrency group failed evaluation on %s run 1: %w", eventName, err)
+		}
+		g2, err := evalGitHubTemplate(groupExpr, ctx2)
+		if err != nil {
+			return fmt.Errorf("workflow concurrency group failed evaluation on %s run 2: %w", eventName, err)
+		}
+		if !strings.Contains(g1, ctx1.RunID) || !strings.Contains(g2, ctx2.RunID) {
+			return fmt.Errorf("workflow concurrency group on %s must include github.run_id, got run1=%q run2=%q", eventName, g1, g2)
+		}
+		if g1 == g2 {
+			return fmt.Errorf("workflow concurrency group on %s produced identical group %q for distinct run_ids", eventName, g1)
+		}
+		if cancelVal, err := evalGitHubExpr(innerCancel, ctx1); err != nil || !cancelVal.isBool || cancelVal.b {
+			return fmt.Errorf("workflow concurrency cancel-in-progress on %s evaluated to %v (%v), want false", eventName, cancelVal, err)
+		}
 	}
 	return nil
 }
@@ -802,14 +1214,14 @@ func validateFairness(body []byte) (*fairnessReport, error) {
 	return report, nil
 }
 
-// matrixLegs expands a literal strategy.matrix the way GitHub does: the
-// Cartesian product of its list keys, minus exclude entries that match on
-// every key they name, plus each include entry that cannot be merged into an
-// existing combination without overwriting an original matrix value.
-func matrixLegs(job string, matrix any) (int, error) {
+// expandMatrixCombos expands a literal strategy.matrix the way GitHub does:
+// the Cartesian product of its list keys, minus exclude entries that match on
+// every key they name, plus each include entry (merged into matching legs or
+// appended when it cannot be merged without overwriting an original matrix key).
+func expandMatrixCombos(job string, matrix any) ([]map[string]string, error) {
 	m, ok := matrix.(map[string]any)
 	if !ok {
-		return 0, fmt.Errorf("job %q strategy.matrix must be a literal mapping to bound its size, got %T", job, matrix)
+		return nil, fmt.Errorf("job %q strategy.matrix must be a literal mapping to bound its size, got %T", job, matrix)
 	}
 	canon := func(v any) string { return fmt.Sprint(v) }
 	var keys []string
@@ -826,7 +1238,7 @@ func matrixLegs(job string, matrix any) (int, error) {
 	for _, key := range keys {
 		values, ok := m[key].([]any)
 		if !ok || len(values) == 0 {
-			return 0, fmt.Errorf("job %q matrix key %q must be a non-empty literal list", job, key)
+			return nil, fmt.Errorf("job %q matrix key %q must be a non-empty literal list", job, key)
 		}
 		var next []map[string]string
 		for _, combo := range combos {
@@ -859,12 +1271,12 @@ func matrixLegs(job string, matrix any) (int, error) {
 	}
 	excludes, err := entries("exclude")
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	for _, ex := range excludes {
 		for key := range ex {
 			if !slices.Contains(keys, key) {
-				return 0, fmt.Errorf("job %q matrix exclude names unknown key %q", job, key)
+				return nil, fmt.Errorf("job %q matrix exclude names unknown key %q", job, key)
 			}
 		}
 		combos = slices.DeleteFunc(combos, func(c map[string]string) bool {
@@ -878,9 +1290,9 @@ func matrixLegs(job string, matrix any) (int, error) {
 	}
 	includes, err := entries("include")
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	added := 0
+	var added []map[string]string
 	for _, inc := range includes {
 		merged := false
 		for _, c := range combos {
@@ -890,22 +1302,151 @@ func matrixLegs(job string, matrix any) (int, error) {
 					compatible = false
 				}
 			}
-			merged = merged || compatible
+			if compatible {
+				for key, value := range inc {
+					c[key] = canon(value)
+				}
+				merged = true
+			}
 		}
 		if !merged {
-			added++
+			c := map[string]string{}
+			for key, value := range inc {
+				c[key] = canon(value)
+			}
+			added = append(added, c)
 		}
 	}
-	legs := len(combos) + added
-	if legs == 0 {
-		return 0, fmt.Errorf("job %q matrix expands to zero legs", job)
+	combos = append(combos, added...)
+	if len(combos) == 0 {
+		return nil, fmt.Errorf("job %q matrix expands to zero legs", job)
 	}
-	return legs, nil
+	return combos, nil
+}
+
+func matrixLegs(job string, matrix any) (int, error) {
+	combos, err := expandMatrixCombos(job, matrix)
+	if err != nil {
+		return 0, err
+	}
+	return len(combos), nil
+}
+
+// expandWorkflowJobNames derives the full-run job name->count multiset from
+// the workflow's jobs and matrix expansion (job `name:` templates expanded over
+// matrix legs).
+func expandWorkflowJobNames(body []byte, wf *workflowFile) (map[string]int, error) {
+	var raw struct {
+		Jobs map[string]struct {
+			Strategy *struct {
+				Matrix any `yaml:"matrix"`
+			} `yaml:"strategy"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("expandWorkflowJobNames: unmarshal: %w", err)
+	}
+	counts := map[string]int{}
+	for _, jobID := range slices.Sorted(maps.Keys(wf.Jobs)) {
+		job := wf.Jobs[jobID]
+		tmpl := strings.TrimSpace(job.Name)
+		if tmpl == "" {
+			tmpl = jobID
+		}
+		rawJob := raw.Jobs[jobID]
+		if rawJob.Strategy == nil || rawJob.Strategy.Matrix == nil {
+			if strings.Contains(tmpl, "${{") {
+				return nil, fmt.Errorf("non-matrix job %q name %q contains unexpanded expression", jobID, tmpl)
+			}
+			counts[tmpl]++
+			continue
+		}
+		combos, err := expandMatrixCombos(jobID, rawJob.Strategy.Matrix)
+		if err != nil {
+			return nil, err
+		}
+		for _, combo := range combos {
+			name := tmpl
+			for _, key := range slices.Sorted(maps.Keys(combo)) {
+				name = strings.ReplaceAll(name, "${{ matrix."+key+" }}", combo[key])
+			}
+			if strings.Contains(name, "${{") {
+				return nil, fmt.Errorf("matrix job %q expanded name %q retains unexpanded expression", jobID, name)
+			}
+			counts[name]++
+		}
+	}
+	return counts, nil
+}
+
+// extractNightlyExpectedJobs parses and evaluates the expected_jobs table
+// embedded in the classify job's nightly step Python.
+func extractNightlyExpectedJobs(wf *workflowFile) (map[string]int, error) {
+	script, err := extractStepPython(wf, "nightly")
+	if err != nil {
+		return nil, err
+	}
+	const extractor = `import ast, json, sys
+tree = ast.parse(sys.argv[1])
+found = None
+for node in tree.body:
+    if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) and node.targets[0].id == "expected_jobs":
+        found = node.value
+        break
+if found is None:
+    sys.stderr.write("classify nightly step does not define expected_jobs\n")
+    sys.exit(2)
+expr = ast.Expression(body=found)
+ast.fix_missing_locations(expr)
+val = eval(compile(expr, "<expected_jobs>", "eval"), {"__builtins__": {"range": range, "map": map, "str": str}}, {})
+if not isinstance(val, dict) or not val or any(not isinstance(k, str) or type(v) is not int or v <= 0 for k, v in val.items()):
+    sys.stderr.write("expected_jobs is not a non-empty str->positive-int dict\n")
+    sys.exit(3)
+sys.stdout.write(json.dumps(val))
+`
+	cmd := exec.Command("python3", "-c", extractor, script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("nightly expected_jobs sync: %v (%s)", err, strings.TrimSpace(string(out)))
+	}
+	var got map[string]int
+	if err := json.Unmarshal(out, &got); err != nil {
+		return nil, fmt.Errorf("nightly expected_jobs sync: unmarshal: %w", err)
+	}
+	return got, nil
+}
+
+// verifyNightlyExpectedJobsSync asserts that the nightly step's embedded
+// expected_jobs table matches the workflow's expanded job-name multiset.
+func verifyNightlyExpectedJobsSync(body []byte, wf *workflowFile) error {
+	want, err := expandWorkflowJobNames(body, wf)
+	if err != nil {
+		return err
+	}
+	got, err := extractNightlyExpectedJobs(wf)
+	if err != nil {
+		return err
+	}
+	if !maps.Equal(got, want) {
+		allKeys := map[string]bool{}
+		for k := range want {
+			allKeys[k] = true
+		}
+		for k := range got {
+			allKeys[k] = true
+		}
+		for _, k := range slices.Sorted(maps.Keys(allKeys)) {
+			if got[k] != want[k] {
+				return fmt.Errorf("nightly expected_jobs out of sync with workflow jobs for %q: expected_jobs has %d, workflow expands to %d (total expected_jobs=%d, workflow=%d)", k, got[k], want[k], len(got), len(want))
+			}
+		}
+	}
+	return nil
 }
 
 // nightlyTimeTokens would indicate a time-window freshness heuristic
 // instead of proof by the same main SHA.
-var nightlyTimeTokens = []string{"datetime", "timedelta", "time.time", "import time", "strptime", "fromisoformat", "utcnow", "created_at", "updated_at", "run_started_at", "created=", "\"created\"", "hours", "date -", "date +"}
+var nightlyTimeTokens = []string{"datetime", "timedelta", "time.time", "strptime", "fromisoformat", "utcnow", "created_at", "updated_at", "run_started_at", "created=", "\"created\"", "hours", "date -", "date +"}
 
 func findStep(job workflowJob, id string) (int, *workflowStep) {
 	for i := range job.Steps {
@@ -1098,11 +1639,10 @@ func verifyClassifierFailSafe(t *testing.T, wf *workflowFile) error {
 	})
 
 	type scenario struct {
-		name      string
-		files     map[string]string
-		eventName string
-		wantPR    string
-		wantPush  string
+		name     string
+		files    map[string]string
+		wantPR   string
+		wantPush string
 	}
 	scenarios := []scenario{
 		{
@@ -1265,15 +1805,25 @@ func verifyClassifierFailSafe(t *testing.T, wf *workflowFile) error {
 	return nil
 }
 
-// ghStub emulates the read-only subset of the GitHub REST API that a
-// same-SHA nightly coverage guard can use, from a JSON fixture. It logs every
-// argv, refuses anything but GET and time-window ("created") filters, and
-// exits non-zero (like gh on HTTP errors) for failures and unknown endpoints.
+// ghStub emulates the read-only GitHub REST API subset allowed by ruling 3:
+//   - commits/main
+//   - actions/runs/{current_run_id}
+//   - contents/.github/workflows/ci.yml?ref={head_sha}
+//   - actions/workflows/{workflow_id}/runs?branch=main&head_sha={sha}&status=success&per_page=100
+//   - actions/runs/{candidate_id}/attempts/1/jobs?per_page=100
+//
+// Any non-GET request or unknown endpoint records a test violation in
+// GH_STUB_VIOLATION and exits non-zero, rather than silently returning data.
 const ghStub = `#!/usr/bin/env python3
 import json, os, re, sys, urllib.parse
 
 args = sys.argv[1:]
-with open(os.environ["GH_STUB_LOG"], "a") as log:
+log_path = os.environ["GH_STUB_LOG"]
+prior_calls = []
+if os.path.exists(log_path):
+    with open(log_path) as log_in:
+        prior_calls = [json.loads(line) for line in log_in if line.strip()]
+with open(log_path, "a") as log:
     log.write(json.dumps(args) + "\n")
 with open(os.environ["GH_STUB_FIXTURE"]) as f:
     fx = json.load(f)
@@ -1282,6 +1832,13 @@ def fail(msg):
     sys.stderr.write(msg + "\n")
     sys.exit(1)
 
+def violate(msg):
+    vpath = os.environ.get("GH_STUB_VIOLATION")
+    if vpath:
+        with open(vpath, "a") as vf:
+            vf.write(msg + "\n")
+    fail(msg)
+
 def out(obj):
     sys.stdout.write(json.dumps(obj))
     sys.exit(0)
@@ -1289,7 +1846,7 @@ def out(obj):
 if fx.get("fail_all"):
     fail("HTTP 502: stub outage")
 if not args or args[0] != "api":
-    fail("stub supports only gh api")
+    violate("stub supports only gh api")
 method, endpoint, fields, i = "GET", None, {}, 1
 while i < len(args):
     a = args[i]
@@ -1305,100 +1862,105 @@ while i < len(args):
         endpoint = a
     i += 1
 if method.upper() != "GET" or endpoint is None:
-    fail("stub refuses non-GET requests")
+    violate("stub refuses non-GET requests: " + str(args))
 path, _, query = endpoint.lstrip("/").partition("?")
-params = dict(urllib.parse.parse_qsl(query))
+params = dict(urllib.parse.parse_qsl(query, keep_blank_values=True))
 params.update(fields)
 if "created" in params:
-    fail("time-window filters are not supported")
+    violate("time-window filters are not supported")
 prefix = "repos/" + fx["repo"] + "/"
 if not path.startswith(prefix):
-    fail("HTTP 404")
+    violate("endpoint missing repos/{repo}/ prefix: " + path)
 path = path[len(prefix):]
 failing = set(fx.get("fail", []))
 runs = fx["runs"]
 by_id = {str(r["id"]): r for r in runs}
+allowed_content_paths = {".github/workflows/ci.yml"} | {r.get("path", "") for r in runs if r.get("path")}
 
-if path in ("commits/main", "commits/heads/main", "commits/refs/heads/main",
-            "branches/main", "git/ref/heads/main", "git/refs/heads/main"):
+if path == "commits/main" and not params:
     if "commit" in failing:
         fail("HTTP 502")
-    sha = fx["main_sha"]
-    if path.startswith("commits/"):
-        out({"sha": sha})
-    if path.startswith("branches/"):
-        out({"name": "main", "commit": {"sha": sha}})
-    out({"ref": "refs/heads/main", "object": {"type": "commit", "sha": sha}})
+    out({"sha": fx["main_sha"]})
 
 m = re.fullmatch(r"actions/runs/(\d+)", path)
-if m:
+if m and not params:
     if "run" in failing:
         fail("HTTP 502")
     if m.group(1) not in by_id:
         fail("HTTP 404")
     out(by_id[m.group(1)])
 
-m = re.fullmatch(r"actions/runs/(\d+)(?:/attempts/(\d+))?/jobs", path)
-if m:
-    if "jobs" in failing:
+if path.startswith("contents/"):
+    content_path = urllib.parse.unquote(path[len("contents/"):])
+    if content_path not in allowed_content_paths or set(params.keys()) != {"ref"} or not params["ref"]:
+        violate("unsupported contents endpoint or query: " + endpoint)
+    if "contents" in failing:
         fail("HTTP 502")
-    run = by_id.get(m.group(1))
-    if run is None:
-        fail("HTTP 404")
-    jobs = fx["jobs"].get(m.group(1), [])
-    if m.group(2) is not None and int(m.group(2)) != run["run_attempt"]:
-        jobs = []
-    per_page, page = int(params.get("per_page", "30")), int(params.get("page", "1"))
-    out({"total_count": fx.get("jobs_total", len(jobs)),
-         "jobs": jobs[(page - 1) * per_page: page * per_page]})
+    prior_contents = sum(
+        1 for call in prior_calls
+        if any(isinstance(tok, str) and "/contents/" in tok for tok in call)
+    )
+    blob_sha = fx["blob_sha"]
+    if prior_contents >= 1 and "candidate_blob_sha" in fx:
+        blob_sha = fx["candidate_blob_sha"]
+    out({"sha": blob_sha, "type": "file", "path": content_path})
 
-m = re.fullmatch(r"actions/(?:workflows/([^/]+)/)?runs", path)
-if m:
+m = re.fullmatch(r"actions/workflows/(\d+)/runs", path)
+if m and set(params.keys()) == {"branch", "head_sha", "status", "per_page"} and params["branch"] == "main" and params["status"] == "success" and params["per_page"] == "100":
     if "runs" in failing:
         fail("HTTP 502")
-    workflow, selected = m.group(1), []
-    for r in runs:
-        if workflow is not None and workflow not in (str(r["workflow_id"]), r["path"].rsplit("/", 1)[-1]):
-            continue
-        if "branch" in params and r["head_branch"] != params["branch"]:
-            continue
-        if "head_sha" in params and r["head_sha"] != params["head_sha"]:
-            continue
-        if "event" in params and r["event"] != params["event"]:
-            continue
-        if "status" in params:
-            want = params["status"]
-            if want in ("completed", "in_progress", "queued", "requested", "waiting", "pending"):
-                if r["status"] != want:
-                    continue
-            elif r["conclusion"] != want:
-                continue
-        selected.append(r)
+    current_id = fx.get("current_id")
+    selected = [r for r in runs if r["id"] != current_id]
     selected.sort(key=lambda r: r["id"], reverse=True)
-    per_page, page = int(params.get("per_page", "30")), int(params.get("page", "1"))
+    per_page = int(params["per_page"])
     out({"total_count": fx.get("runs_total", len(selected)),
-         "workflow_runs": selected[(page - 1) * per_page: page * per_page]})
+         "workflow_runs": selected[:per_page]})
 
-fail("HTTP 404: unsupported stub endpoint " + path)
+m = re.fullmatch(r"actions/runs/(\d+)/attempts/1/jobs", path)
+if m and set(params.keys()) == {"per_page"} and params["per_page"] == "100":
+    if "jobs" in failing:
+        fail("HTTP 502")
+    if m.group(1) not in by_id:
+        fail("HTTP 404")
+    jobs = fx["jobs"].get(m.group(1), [])
+    per_page = int(params["per_page"])
+    out({"total_count": fx.get("jobs_total", len(jobs)),
+         "jobs": jobs[:per_page]})
+
+violate("HTTP 404: unsupported stub endpoint " + endpoint)
 `
 
 // verifyNightlyGuard runs the nightly step's own Python with a stub gh on
 // PATH (never the real gh or network) and requires fail-safe skip=false
-// unless a prior successful schedule run of the same SHA proves every job,
-// including exactly one "Kind lifecycle" and one "Go and policy", succeeded.
-func verifyNightlyGuard(t *testing.T, wf *workflowFile) error {
+// unless a prior successful first-attempt full run (schedule or
+// workflow_dispatch) of the same workflow file and workflow blob SHA on the
+// exact main commit proves every expanded workflow job succeeded once.
+func verifyNightlyGuard(t *testing.T, wf *workflowFile, body []byte) error {
 	t.Helper()
 	script, err := extractStepPython(wf, "nightly")
 	if err != nil {
 		return err
 	}
+	expandedCounts, err := expandWorkflowJobNames(body, wf)
+	if err != nil {
+		return err
+	}
+	var fullJobNames []string
+	for _, name := range slices.Sorted(maps.Keys(expandedCounts)) {
+		for range expandedCounts[name] {
+			fullJobNames = append(fullJobNames, name)
+		}
+	}
+
 	_, step := findStep(wf.Jobs["classify"], "nightly")
 	const (
-		repo       = "gobha-me/arcadectl"
-		sha        = "0123456789abcdef0123456789abcdef01234567"
-		otherSHA   = "89abcdef0123456789abcdef0123456789abcdef"
-		workflowID = 77
-		currentID  = 5000
+		repo         = "gobha-me/arcadectl"
+		sha          = "0123456789abcdef0123456789abcdef01234567"
+		otherSHA     = "89abcdef0123456789abcdef0123456789abcdef"
+		blobSHA      = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		otherBlobSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		workflowID   = 77
+		currentID    = 5000
 	)
 	fakeContext := map[string]string{
 		"${{ github.token }}":         "stub-token-not-a-secret",
@@ -1433,17 +1995,17 @@ func verifyNightlyGuard(t *testing.T, wf *workflowFile) error {
 			"run_attempt": 1, "run_number": id, "created_at": longAgo, "updated_at": longAgo, "run_started_at": longAgo,
 		}
 	}
-	current := run(currentID, "schedule", "in_progress", "", sha, "main")
-	fullJobNames := []string{
-		"Classify CI scope", "Installer CLI and diagnostic controls", "Kind signed installer binary 137 transition",
-		"Kind recovery failure safety", "Installer engine race shard 0", "API-server lifecycle transitions base-packages",
-		"Go and policy checks", "Kind lifecycle", "Go and policy",
+	runWith := func(base map[string]any, key string, val any) map[string]any {
+		c := maps.Clone(base)
+		c[key] = val
+		return c
 	}
+	current := run(currentID, "schedule", "in_progress", "", sha, "main")
 	jobs := func(runID int, runSHA string, mutate func([]map[string]any) []map[string]any) []map[string]any {
 		var out []map[string]any
 		for i, name := range fullJobNames {
 			out = append(out, map[string]any{
-				"id": runID*100 + i, "run_id": runID, "run_attempt": 1, "head_sha": runSHA, "name": name,
+				"id": runID*100 + i + 1, "run_id": runID, "run_attempt": 1, "head_sha": runSHA, "name": name,
 				"status": "completed", "conclusion": "success", "started_at": longAgo, "completed_at": longAgo,
 			})
 		}
@@ -1472,7 +2034,7 @@ func verifyNightlyGuard(t *testing.T, wf *workflowFile) error {
 			for _, j := range js {
 				if j["name"] == name {
 					c := maps.Clone(j)
-					c["id"] = j["id"].(int) + 50
+					c["id"] = j["id"].(int) + 500
 					return append(js, c)
 				}
 			}
@@ -1485,12 +2047,17 @@ func verifyNightlyGuard(t *testing.T, wf *workflowFile) error {
 			jobsJSON[strconv.Itoa(id)] = js
 		}
 		return map[string]any{
-			"repo": repo, "main_sha": sha, "runs": append([]map[string]any{current}, prior...), "jobs": jobsJSON,
+			"repo": repo, "main_sha": sha, "blob_sha": blobSHA, "current_id": currentID,
+			"runs": append([]map[string]any{current}, prior...), "jobs": jobsJSON,
 		}
 	}
 	goodPrior := run(4000, "schedule", "completed", "success", sha, "main")
+	goodDispatch := run(4000, "workflow_dispatch", "completed", "success", sha, "main")
 	proven := func() map[string]any {
 		return fixture([]map[string]any{goodPrior}, map[int][]map[string]any{4000: jobs(4000, sha, nil)})
+	}
+	provenDispatch := func() map[string]any {
+		return fixture([]map[string]any{goodDispatch}, map[int][]map[string]any{4000: jobs(4000, sha, nil)})
 	}
 	with := func(fx map[string]any, key string, value any) map[string]any {
 		fx[key] = value
@@ -1508,24 +2075,35 @@ func verifyNightlyGuard(t *testing.T, wf *workflowFile) error {
 		wantSkip bool
 	}
 	scenarios := []scenario{
+		// Unhappy paths first: API errors (6), truncated pages (ii), single-field negatives (1)-(5), push/PR only (v).
 		{"(i) gh api errors on every call", with(proven(), "fail_all", true), false},
 		{"(i-b) gh api errors listing jobs", with(proven(), "fail", []string{"jobs"}), false},
 		{"(i-c) gh api errors listing runs", with(proven(), "fail", []string{"runs"}), false},
+		{"(i-d) gh api errors fetching workflow contents blob", with(proven(), "fail", []string{"contents"}), false},
 		{"(ii) truncated run page total_count>=100", with(fixture(append(slices.Clone(page), goodPrior), map[int][]map[string]any{4000: jobs(4000, sha, nil)}), "runs_total", 150), false},
 		{"(ii-b) truncated jobs page total_count>=100", with(proven(), "jobs_total", 120), false},
-		{"(iii) prior successful schedule run of same SHA, every job success", proven(), true},
+		{"(1a) different workflow file (candidate path differs)", fixture([]map[string]any{runWith(goodPrior, "path", ".github/workflows/other.yml")}, map[int][]map[string]any{4000: jobs(4000, sha, nil)}), false},
+		{"(1b) different workflow file (candidate workflow_id differs)", fixture([]map[string]any{runWith(goodPrior, "workflow_id", 999)}, map[int][]map[string]any{4000: jobs(4000, sha, nil)}), false},
+		{"(2) different workflow blob sha (contents sha differs for candidate)", with(proven(), "candidate_blob_sha", otherBlobSHA), false},
+		{"(3a) different commit (candidate head_sha differs)", fixture([]map[string]any{
+			run(4003, "schedule", "completed", "success", otherSHA, "main"),
+		}, map[int][]map[string]any{4003: jobs(4003, otherSHA, nil)}), false},
+		{"(3b) different commit (main moved since scheduled SHA)", with(proven(), "main_sha", otherSHA), false},
+		{"(4a) unsuccessful run (candidate conclusion failure)", fixture([]map[string]any{runWith(goodPrior, "conclusion", "failure")}, map[int][]map[string]any{4000: jobs(4000, sha, nil)}), false},
+		{"(4b) prior run with one failed job", fixture([]map[string]any{goodPrior}, map[int][]map[string]any{4000: jobs(4000, sha, setConclusion("Installer engine race shard 0", "failure"))}), false},
+		{"(5a) partial run (candidate run_attempt 2)", fixture([]map[string]any{runWith(goodPrior, "run_attempt", 2)}, map[int][]map[string]any{4000: jobs(4000, sha, nil)}), false},
 		{"(iv) prior run with Kind lifecycle skipped", fixture([]map[string]any{goodPrior}, map[int][]map[string]any{4000: jobs(4000, sha, setConclusion("Kind lifecycle", "skipped"))}), false},
 		{"(iv-b) prior run without a Kind lifecycle job", fixture([]map[string]any{goodPrior}, map[int][]map[string]any{4000: jobs(4000, sha, drop("Kind lifecycle"))}), false},
 		{"(iv-c) prior run with two Kind lifecycle jobs", fixture([]map[string]any{goodPrior}, map[int][]map[string]any{4000: jobs(4000, sha, duplicate("Kind lifecycle"))}), false},
 		{"(iv-d) prior run without the Go and policy job", fixture([]map[string]any{goodPrior}, map[int][]map[string]any{4000: jobs(4000, sha, drop("Go and policy"))}), false},
-		{"(iv-e) prior run with one failed job", fixture([]map[string]any{goodPrior}, map[int][]map[string]any{4000: jobs(4000, sha, setConclusion("Installer engine race shard 0", "failure"))}), false},
+		{"(5b) partial run missing one race shard job", fixture([]map[string]any{goodPrior}, map[int][]map[string]any{4000: jobs(4000, sha, drop("Installer engine race shard 31"))}), false},
 		{"(v) only push/PR runs of the same SHA", fixture([]map[string]any{
 			run(4001, "push", "completed", "success", sha, "main"),
 			run(4002, "pull_request", "completed", "success", sha, "topic"),
 		}, map[int][]map[string]any{4001: jobs(4001, sha, nil), 4002: jobs(4002, sha, nil)}), false},
-		{"(vi) prior successful schedule run of a different SHA", fixture([]map[string]any{
-			run(4003, "schedule", "completed", "success", otherSHA, "main"),
-		}, map[int][]map[string]any{4003: jobs(4003, otherSHA, nil)}), false},
+		// Positive cases: prior schedule full run and prior workflow_dispatch full run.
+		{"(iii) prior successful schedule run of same SHA and workflow blob, every job success", proven(), true},
+		{"(iii-b) prior successful workflow_dispatch run of same SHA and workflow blob, every job success", provenDispatch(), true},
 	}
 
 	stubDir := t.TempDir()
@@ -1538,7 +2116,10 @@ func verifyNightlyGuard(t *testing.T, wf *workflowFile) error {
 		if err != nil {
 			return err
 		}
-		fixturePath, logPath, outputPath := filepath.Join(dir, "fixture.json"), filepath.Join(dir, "gh.log"), filepath.Join(dir, "github_output")
+		fixturePath := filepath.Join(dir, "fixture.json")
+		logPath := filepath.Join(dir, "gh.log")
+		violationPath := filepath.Join(dir, "gh.violation")
+		outputPath := filepath.Join(dir, "github_output")
 		if err := os.WriteFile(fixturePath, raw, 0o600); err != nil {
 			return err
 		}
@@ -1550,9 +2131,13 @@ func verifyNightlyGuard(t *testing.T, wf *workflowFile) error {
 			"GITHUB_OUTPUT=" + outputPath,
 			"GH_STUB_FIXTURE=" + fixturePath,
 			"GH_STUB_LOG=" + logPath,
+			"GH_STUB_VIOLATION=" + violationPath,
 		}, stepEnv...)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("nightly guard %s: must exit 0 and fail safe, got %v\n%s", sc.name, err, out)
+		}
+		if vBytes, err := os.ReadFile(violationPath); err == nil && len(strings.TrimSpace(string(vBytes))) > 0 {
+			return fmt.Errorf("nightly guard %s: stub API contract violation: %s", sc.name, strings.TrimSpace(string(vBytes)))
 		}
 		output, err := os.ReadFile(outputPath)
 		if err != nil {
@@ -1603,17 +2188,21 @@ func verifyNightlyGuard(t *testing.T, wf *workflowFile) error {
 var workflowOverrideEnv = []string{"WORKFLOW_POLICY_CI_YML", "ARCADECTL_TEST_WORKFLOW_FILE"}
 
 // validateAll runs every ci.yml policy: static/structural checks and gate
-// execution, then the classifier and nightly guard Python with fixtures.
+// execution, expected_jobs sync, then the classifier and nightly guard Python
+// with fixtures.
 func validateAll(t *testing.T, body []byte) (*workflowFile, error) {
 	t.Helper()
 	wf, err := validateCIWorkflowBytes(body)
 	if err != nil {
 		return nil, err
 	}
+	if err := verifyNightlyExpectedJobsSync(body, wf); err != nil {
+		return nil, err
+	}
 	if err := verifyClassifierFailSafe(t, wf); err != nil {
 		return nil, fmt.Errorf("classifier: %w", err)
 	}
-	if err := verifyNightlyGuard(t, wf); err != nil {
+	if err := verifyNightlyGuard(t, wf, body); err != nil {
 		return nil, fmt.Errorf("nightly guard: %w", err)
 	}
 	return wf, nil
@@ -1644,6 +2233,20 @@ func TestWorkflowPolicy(t *testing.T) {
 			t.Fatalf("read override workflow %q: %v", override, err)
 		}
 		if _, err := validateAll(t, body); err != nil {
+			// Also report independent A/B/C failures when evaluating an override
+			// (such as pre-change fe9b6bd) so all failing checks are recorded.
+			var wf workflowFile
+			if yaml.Unmarshal(body, &wf) == nil {
+				if errA := validateConcurrency(&wf); errA != nil {
+					t.Logf("A (concurrency) failure: %v", errA)
+				}
+				if errC := verifyNightlyExpectedJobsSync(body, &wf); errC != nil {
+					t.Logf("C (expected_jobs sync) failure: %v", errC)
+				}
+				if errB := verifyNightlyGuard(t, &wf, body); errB != nil {
+					t.Logf("B (nightly guard) failure: %v", errB)
+				}
+			}
 			t.Fatalf("workflow policy violation in %s: %v", override, err)
 		}
 		logFairness(t, body)
@@ -1685,10 +2288,13 @@ func TestWorkflowPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("real ci.yml failed policy check: %v", err)
 	}
+	if err := verifyNightlyExpectedJobsSync(ciBody, wf); err != nil {
+		t.Fatalf("real ci.yml nightly expected_jobs out of sync: %v", err)
+	}
 	if err := verifyClassifierFailSafe(t, wf); err != nil {
 		t.Fatalf("real ci.yml classifier failed fail-safe verification: %v", err)
 	}
-	if err := verifyNightlyGuard(t, wf); err != nil {
+	if err := verifyNightlyGuard(t, wf, ciBody); err != nil {
 		t.Fatalf("real ci.yml nightly guard failed fail-safe verification: %v", err)
 	}
 	logFairness(t, ciBody)
@@ -1894,7 +2500,9 @@ func TestWorkflowPolicy(t *testing.T) {
 		{
 			name: "(d) concurrency group back to event_name-ref form",
 			mutate: func(s string) string {
-				return strings.Replace(s, "group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}", "group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}", 1)
+				return strings.Replace(s,
+					"  group: ${{ github.event_name == 'pull_request' && format('ci-{0}-{1}', github.workflow, github.event.pull_request.number) || format('ci-{0}-{1}-{2}', github.workflow, github.ref, github.run_id) }}",
+					"  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}", 1)
 			},
 			wantErr: "workflow concurrency group",
 		},
@@ -2006,30 +2614,132 @@ func TestWorkflowPolicy(t *testing.T) {
 		{
 			name: "nightly guard adds time-window logic",
 			mutate: func(s string) string {
-				return replaceInJob(s, "classify", "          import json\n          import os\n          import re\n          import subprocess\n          import urllib.parse\n", "          import datetime\n          import json\n          import os\n          import re\n          import subprocess\n          import urllib.parse\n")
+				return replaceInJob(s, "classify", "          import json\n", "          import datetime\n          import json\n")
 			},
 			wantErr: "time-window logic token \"datetime\"",
 		},
 		{
 			name: "nightly guard trusts a truncated page",
 			mutate: func(s string) string {
-				return replaceInJob(s, "classify", "\n                      or not 0 <= count < 100 or len(entries) != count\n                      or len({entry[\"id\"] for entry in entries}) != count)", ")")
+				return replaceInJob(s, "classify",
+					"\n                      or not 0 <= count < 100 or len(entries) != count\n                      or any(not isinstance(entry, dict) for entry in entries)\n                      or len({positive_int(entry[\"id\"]) for entry in entries}) != count):",
+					"):")
 			},
 			wantErr: "nightly guard (ii) truncated run page total_count>=100: skip=true, want false",
 		},
 		{
 			name: "nightly guard skips on API error",
 			mutate: func(s string) string {
-				return replaceInJob(s, "classify", `print("::notice::Previous full-run lookup uncertain; running full CI")`, "skip = True")
+				return replaceInJob(s, "classify", `print("::notice::Identical-commit/workflow full-run proof uncertain; running full CI")`, "skip = True")
 			},
 			wantErr: "nightly guard (i) gh api errors on every call: skip=true, want false",
 		},
 		{
 			name: "nightly guard does not require a Kind lifecycle job",
 			mutate: func(s string) string {
-				return replaceInJob(s, "classify", `names.count("Kind lifecycle") == 1 and `, "")
+				return replaceInJob(s, "classify",
+					"if (len(jobs) == sum(expected_jobs.values())\n                          and Counter(job[\"name\"] for job in jobs) == expected_jobs",
+					"if (Counter(job[\"name\"] for job in jobs if job[\"name\"] != \"Kind lifecycle\") == {k: v for k, v in expected_jobs.items() if k != \"Kind lifecycle\"}")
 			},
 			wantErr: "nightly guard (iv-b) prior run without a Kind lifecycle job: skip=true, want false",
+		},
+		// Round 6 (Atlas rulings 2 & 3): concurrency run_id/PR group semantics,
+		// workflow path and blob SHA checks, run_attempt=1, expected_jobs sync,
+		// and run/job conclusion checks.
+		{
+			name: "r6-(a) run_id dropped from non-PR concurrency group",
+			mutate: func(s string) string {
+				return strings.Replace(s,
+					"format('ci-{0}-{1}-{2}', github.workflow, github.ref, github.run_id)",
+					"format('ci-{0}-{1}', github.workflow, github.ref)", 1)
+			},
+			wantErr: "must include github.run_id",
+		},
+		{
+			name: "r6-(b) PR concurrency group includes run_id",
+			mutate: func(s string) string {
+				return strings.Replace(s,
+					"format('ci-{0}-{1}', github.workflow, github.event.pull_request.number)",
+					"format('ci-{0}-{1}-{2}', github.workflow, github.event.pull_request.number, github.run_id)", 1)
+			},
+			wantErr: "workflow concurrency group on PR #140 runs 1/2",
+		},
+		{
+			name: "r6-(d) old concurrency group expression without run_id restored",
+			mutate: func(s string) string {
+				return strings.Replace(s,
+					"  group: ${{ github.event_name == 'pull_request' && format('ci-{0}-{1}', github.workflow, github.event.pull_request.number) || format('ci-{0}-{1}-{2}', github.workflow, github.ref, github.run_id) }}",
+					"  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}", 1)
+			},
+			wantErr: "must include github.run_id",
+		},
+		{
+			name: "r6-(e) nightly guard workflow path check removed",
+			mutate: func(s string) string {
+				s = replaceInJob(s, "classify", "              if path != \".github/workflows/ci.yml\":\n                  raise ValueError(\"unexpected workflow path or @ref suffix\")\n", "")
+				return replaceInJob(s, "classify", ` or run["path"] != current["path"]`, "")
+			},
+			wantErr: "nightly guard (1a) different workflow file (candidate path differs): skip=true, want false",
+		},
+		{
+			name: "r6-(f1) nightly guard workflow blob-sha comparison removed",
+			mutate: func(s string) string {
+				return replaceInJob(s, "classify", "                  if workflow_blob(run) != current_blob:\n                      raise ValueError(\"workflow blob mismatch\")\n", "")
+			},
+			wantErr: "nightly guard (2) different workflow blob sha (contents sha differs for candidate): skip=true, want false",
+		},
+		{
+			name: "r6-(f2) nightly guard workflow blob-sha comparison inverted",
+			mutate: func(s string) string {
+				return replaceInJob(s, "classify", "if workflow_blob(run) != current_blob:", "if workflow_blob(run) == current_blob:")
+			},
+			wantErr: "nightly guard (2) different workflow blob sha (contents sha differs for candidate): skip=true, want false",
+		},
+		{
+			name: "r6-(g) nightly guard run_attempt check removed",
+			mutate: func(s string) string {
+				return replaceInJob(s, "classify", "                  if run[\"run_attempt\"] != 1:\n                      continue\n", "")
+			},
+			wantErr: "nightly guard (5a) partial run (candidate run_attempt 2): skip=true, want false",
+		},
+		{
+			name: "r6-(h) nightly guard expected_jobs table missing one race shard",
+			mutate: func(s string) string {
+				return replaceInJob(s, "classify",
+					`**{f"Installer engine race shard {shard}": 1 for shard in range(32)},`,
+					`**{f"Installer engine race shard {shard}": 1 for shard in range(31)},`)
+			},
+			wantErr: "nightly expected_jobs out of sync with workflow jobs for \"Installer engine race shard 31\"",
+		},
+		{
+			name: "r6-(i) nightly guard expected_jobs count check removed (accepts subset)",
+			mutate: func(s string) string {
+				return replaceInJob(s, "classify",
+					"                  if (len(jobs) == sum(expected_jobs.values())\n                          and Counter(job[\"name\"] for job in jobs) == expected_jobs",
+					"                  if (set(job[\"name\"] for job in jobs) <= set(expected_jobs)")
+			},
+			wantErr: "nightly guard (iv-b) prior run without a Kind lifecycle job: skip=true, want false",
+		},
+		{
+			name: "r6-(j1) nightly guard run conclusion check removed",
+			mutate: func(s string) string {
+				return replaceInJob(s, "classify", `or run["conclusion"] != "success" `, "")
+			},
+			wantErr: "nightly guard (4a) unsuccessful run (candidate conclusion failure): skip=true, want false",
+		},
+		{
+			name: "r6-(j2) nightly guard job conclusion check removed",
+			mutate: func(s string) string {
+				return replaceInJob(s, "classify", ` and job["conclusion"] == "success"`, "")
+			},
+			wantErr: "nightly guard (4b) prior run with one failed job: skip=true, want false",
+		},
+		{
+			name: "r6-stub-unknown-endpoint rejected by stub contract",
+			mutate: func(s string) string {
+				return replaceInJob(s, "classify", "actions/workflows/{workflow_id}/runs", "actions/runs")
+			},
+			wantErr: "stub API contract violation: HTTP 404: unsupported stub endpoint",
 		},
 	}
 
@@ -2158,6 +2868,54 @@ func TestFairnessAntichainArithmetic(t *testing.T) {
 	} {
 		if _, err := validateFairness([]byte(bad)); err == nil {
 			t.Fatalf("validateFairness accepted %q", bad)
+		}
+	}
+}
+
+func TestConcurrencyExpressionEvaluator(t *testing.T) {
+	const expr = "${{ github.event_name == 'pull_request' && format('ci-{0}-{1}', github.workflow, github.event.pull_request.number) || format('ci-{0}-{1}-{2}', github.workflow, github.ref, github.run_id) }}"
+	pr1 := ghEvalContext{Workflow: "CI", EventName: "pull_request", Ref: "refs/pull/140/merge", RunID: "1001", PRNumber: "140"}
+	pr2 := ghEvalContext{Workflow: "CI", EventName: "pull_request", Ref: "refs/pull/140/merge", RunID: "1002", PRNumber: "140"}
+	push1 := ghEvalContext{Workflow: "CI", EventName: "push", Ref: "refs/heads/main", RunID: "2001"}
+	push2 := ghEvalContext{Workflow: "CI", EventName: "push", Ref: "refs/heads/main", RunID: "2002"}
+
+	gPR1, err := evalGitHubTemplate(expr, pr1)
+	if err != nil || gPR1 != "ci-CI-140" {
+		t.Fatalf("PR run 1 = %q, %v; want ci-CI-140", gPR1, err)
+	}
+	gPR2, err := evalGitHubTemplate(expr, pr2)
+	if err != nil || gPR2 != gPR1 {
+		t.Fatalf("PR run 2 = %q, %v; want %q", gPR2, err, gPR1)
+	}
+	gPush1, err := evalGitHubTemplate(expr, push1)
+	if err != nil || gPush1 != "ci-CI-refs/heads/main-2001" {
+		t.Fatalf("push run 1 = %q, %v; want ci-CI-refs/heads/main-2001", gPush1, err)
+	}
+	gPush2, err := evalGitHubTemplate(expr, push2)
+	if err != nil || gPush2 != "ci-CI-refs/heads/main-2002" || gPush1 == gPush2 {
+		t.Fatalf("push run 2 = %q, %v; want distinct ci-CI-refs/heads/main-2002", gPush2, err)
+	}
+
+	// Reject anything outside the supported expression subset rather than passing.
+	for _, unparseable := range []string{
+		"static-group-without-expression",
+		"${{ }}",
+		"${{ github.workflow ",
+		"ci-${{ github.workflow }} }}",
+		"${{ github.unknown_field }}",
+		"${{ runner.os }}",
+		"${{ !github.event_name }}",
+		"${{ github.event_name == 'pull_request' && }}",
+		"${{ format('ci-{0}', github.workflow, github.ref) }}",
+		"${{ format('ci-{2}', github.workflow) }}",
+		"${{ format('ci-{0', github.workflow) }}",
+		"${{ format('ci-0}', github.workflow) }}",
+		"${{ join(github.workflow, '-') }}",
+		"${{ 'unterminated }}",
+		"${{ github.workflow extra }}",
+	} {
+		if got, err := evalGitHubTemplate(unparseable, pr1); err == nil {
+			t.Fatalf("evalGitHubTemplate accepted invalid/unsupported expression %q -> %q", unparseable, got)
 		}
 	}
 }
