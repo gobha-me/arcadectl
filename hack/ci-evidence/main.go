@@ -82,18 +82,20 @@ type check struct {
 }
 
 type report struct {
-	Schema       string   `json:"schema"`
-	Repository   string   `json:"repository"`
-	SHA          string   `json:"sha"`
-	RunID        int64    `json:"run_id"`
-	Attempt      int      `json:"attempt"`
-	Event        string   `json:"event"`
-	URL          string   `json:"url"`
-	WorkflowBlob string   `json:"workflow_blob"`
-	Expected     int      `json:"expected_jobs"`
-	Verdict      string   `json:"verdict"`
-	Reasons      []string `json:"reasons"`
-	Checks       []check  `json:"checks"`
+	Schema        string   `json:"schema"`
+	Repository    string   `json:"repository"`
+	SHA           string   `json:"sha"`
+	RunID         int64    `json:"run_id"`
+	Attempt       int      `json:"attempt"`
+	Event         string   `json:"event"`
+	RunStatus     string   `json:"run_status"`
+	RunConclusion string   `json:"run_conclusion"`
+	URL           string   `json:"url"`
+	WorkflowBlob  string   `json:"workflow_blob"`
+	Expected      int      `json:"expected_jobs"`
+	Verdict       string   `json:"verdict"`
+	Reasons       []string `json:"reasons"`
+	Checks        []check  `json:"checks"`
 }
 
 type command func(context.Context, string, ...string) ([]byte, error)
@@ -203,8 +205,16 @@ func expectedJobs(body []byte) (string, []string, error) {
 
 func validate(request request, run runMetadata, names []string, jobs []job, blob string) report {
 	result := report{Schema: "arcadectl.ci-evidence/v1", Repository: request.Repository, SHA: request.SHA, RunID: request.RunID, Attempt: run.Attempt, Event: run.Event,
+		RunStatus: run.Status, RunConclusion: run.Conclusion,
 		URL: fmt.Sprintf("https://github.com/%s/actions/runs/%d", request.Repository, request.RunID), WorkflowBlob: blob, Expected: len(names), Verdict: "pass", Reasons: []string{}, Checks: []check{}}
 	reasons := map[string]bool{}
+	if !slices.Contains([]string{"queued", "in_progress", "waiting", "pending", "requested", "completed"}, run.Status) {
+		result.RunStatus = "unknown"
+	}
+	if !slices.Contains([]string{"", "success", "failure", "cancelled", "timed_out", "skipped", "neutral", "action_required", "stale", "startup_failure"}, run.Conclusion) {
+		result.RunConclusion = "unknown"
+		reasons["unknown-run-conclusion"] = true
+	}
 	if len(names) == 0 {
 		reasons["empty-workflow"] = true
 	}
