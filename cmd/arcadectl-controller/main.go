@@ -123,17 +123,22 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	lifecycle := ctrl.SetupSignalHandler()
+	if err := prepareReadinessInformers(lifecycle, manager.GetCache(), controllerMode); err != nil {
+		setupLog.Error(err, "prepare controller readiness dependencies")
+		os.Exit(1)
+	}
 	if err := manager.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "register health check")
 		os.Exit(1)
 	}
-	if err := manager.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+	if err := manager.AddReadyzCheck("readyz", controllerReadiness(lifecycle, manager.GetCache().WaitForCacheSync)); err != nil {
 		setupLog.Error(err, "register readiness check")
 		os.Exit(1)
 	}
 
 	setupLog.Info("starting controller manager")
-	if err := manager.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := manager.Start(lifecycle); err != nil {
 		setupLog.Error(err, "manager stopped")
 		os.Exit(1)
 	}

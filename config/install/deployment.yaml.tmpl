@@ -56,6 +56,13 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 2
             failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 2
+            timeoutSeconds: 1
+            failureThreshold: 30
           readinessProbe:
             httpGet:
               path: /readyz
@@ -136,6 +143,13 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 2
             failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 2
+            timeoutSeconds: 1
+            failureThreshold: 30
           readinessProbe:
             httpGet:
               path: /readyz
