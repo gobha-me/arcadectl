@@ -44,6 +44,7 @@ type DefinitionCatalog interface {
 // disposable runtime resources.
 type GameServerReconciler struct {
 	client.Client
+	telemetry *lifecycleTelemetry
 	APIReader client.Reader
 	Scheme    *runtime.Scheme
 	Catalog   DefinitionCatalog

@@ -37,6 +37,7 @@ const (
 // Admission credentials are historical audit evidence, never re-authenticated.
 type ArcadeOperationReconciler struct {
 	client.Client
+	telemetry *lifecycleTelemetry
 	APIReader client.Reader
 	Scheme    *runtime.Scheme
 	Catalog   DefinitionCatalog
@@ -183,6 +184,7 @@ func (r *ArcadeOperationReconciler) operationStatus(ctx context.Context, o *arca
 	if err := r.Status().Update(ctx, copy); err != nil {
 		return errors.New("persist operation journal failed")
 	}
+	r.telemetry.observeOperation("receipt", string(copy.Spec.Action), string(o.Status.Phase), string(copy.Status.Phase), copy.Status.StartedAt, copy.Status.CompletedAt)
 	return nil
 }
 

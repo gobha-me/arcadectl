@@ -80,6 +80,7 @@ func restoreWorkerResultGraceExpired(job *batchv1.Job, now time.Time) bool {
 // leases. It never writes, replaces, or deletes the previous world claims.
 type GameRestoreReconciler struct {
 	client.Client
+	telemetry   *lifecycleTelemetry
 	APIReader   client.Reader
 	Scheme      *runtime.Scheme
 	Catalog     DefinitionCatalog
@@ -1780,6 +1781,7 @@ func (r *GameRestoreReconciler) writeRestoreStatus(ctx context.Context, restore 
 	if err := r.Status().Update(ctx, updated); err != nil {
 		return errors.New("update GameRestore status failed")
 	}
+	r.telemetry.observeOperation("restore", "", string(restore.Status.Phase), string(updated.Status.Phase), updated.Status.StartedAt, updated.Status.CompletedAt)
 	return nil
 }
 

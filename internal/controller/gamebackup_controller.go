@@ -51,6 +51,7 @@ var backupConditionOrder = []string{
 // source PVCs. Leave-stopped success records a durable cold-provenance marker.
 type GameBackupReconciler struct {
 	client.Client
+	telemetry   *lifecycleTelemetry
 	APIReader   client.Reader
 	Scheme      *runtime.Scheme
 	Catalog     DefinitionCatalog
@@ -1343,6 +1344,7 @@ func (r *GameBackupReconciler) writeStatus(ctx context.Context, backup *arcadev1
 	if err := r.Status().Update(ctx, updated); err != nil {
 		return errors.New("update GameBackup status failed; inspect Kubernetes API availability")
 	}
+	r.telemetry.observeOperation("backup", "", string(backup.Status.Phase), string(updated.Status.Phase), updated.Status.StartedAt, updated.Status.CompletedAt)
 	return nil
 }
 
