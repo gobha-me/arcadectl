@@ -47,6 +47,8 @@ func TestEvidenceCannotTurnFailedOrIncompleteProofIntoPass(t *testing.T) {
 		{"future-job-attempt", "fail", func(_ *request, _ *runMetadata, _ *[]string, j *[]job) { (*j)[1].Attempt++ }},
 		{"failed-run-with-successful-jobs", "fail", func(_ *request, r *runMetadata, _ *[]string, _ *[]job) { r.Conclusion = "failure" }},
 		{"unknown-event", "fail", func(_ *request, r *runMetadata, _ *[]string, _ *[]job) { r.Event = "PRIVATE-EVIDENCE-CANARY" }},
+		{"unknown-run-state", "fail", func(_ *request, r *runMetadata, _ *[]string, _ *[]job) { r.Status = "PRIVATE-EVIDENCE-CANARY" }},
+		{"unknown-run-conclusion", "fail", func(_ *request, r *runMetadata, _ *[]string, _ *[]job) { r.Conclusion = "PRIVATE-EVIDENCE-CANARY" }},
 		{"unknown-job-state", "fail", func(_ *request, _ *runMetadata, _ *[]string, j *[]job) { (*j)[1].Status = "PRIVATE-EVIDENCE-CANARY" }},
 		{"unknown-job-conclusion", "fail", func(_ *request, _ *runMetadata, _ *[]string, j *[]job) {
 			(*j)[1].Conclusion = "PRIVATE-EVIDENCE-CANARY"
@@ -80,6 +82,9 @@ func TestEvidenceCannotTurnFailedOrIncompleteProofIntoPass(t *testing.T) {
 			result := validate(q, r, names, jobs, strings.Repeat("c", 40))
 			if result.Verdict != test.verdict {
 				t.Fatalf("verdict=%s want=%s reasons=%v", result.Verdict, test.verdict, result.Reasons)
+			}
+			if r.Status == "completed" && r.Conclusion == "failure" && (result.RunStatus != "completed" || result.RunConclusion != "failure") {
+				t.Fatal("actual failed run result was replaced by the collector's policy verdict")
 			}
 			body, err := json.Marshal(result)
 			if err != nil || bytes.Contains(body, []byte("PRIVATE")) {
