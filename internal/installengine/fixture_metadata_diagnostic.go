@@ -85,6 +85,7 @@ func beginTypedMetadataScopedDiagnostic(ctx context.Context) func(string, metav1
 						break
 					}
 				}
+				recorder.detail.Store(0)
 				recorder.value.Store(kindID<<8 | field)
 				if scope >= -1 && scope < fixtureMaxSlots {
 					order := uint32(0)
