@@ -33,7 +33,9 @@ func TestControllerReadinessHTTPDoesNotReportEarlySuccess(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer response.Body.Close()
+		if err := response.Body.Close(); err != nil {
+			t.Fatal("readiness response close failed")
+		}
 		if gotReady := response.StatusCode >= 200 && response.StatusCode < 300; gotReady != wantReady {
 			t.Fatalf("HTTP readiness status=%d ready=%t want=%t", response.StatusCode, gotReady, wantReady)
 		}
@@ -110,8 +112,14 @@ func TestReadinessRegistersAllWatchedFamiliesBeforeCacheStart(t *testing.T) {
 	if prepareReadinessInformers(ctx, source, "normal") != errControllerNotReady || len(source.objects) != 1 {
 		t.Fatal("canceled preparation continued registering informers")
 	}
-	if prepareReadinessInformers(t.Context(), source, "unknown") != errControllerNotReady || prepareReadinessInformers(nil, source, "normal") != errControllerNotReady || prepareReadinessInformers(t.Context(), nil, "normal") != errControllerNotReady {
-		t.Fatal("invalid readiness configuration was accepted")
+	for _, invalid := range []struct {
+		ctx    context.Context
+		source readinessInformers
+		mode   string
+	}{{t.Context(), source, "unknown"}, {nil, source, "normal"}, {t.Context(), nil, "normal"}} {
+		if prepareReadinessInformers(invalid.ctx, invalid.source, invalid.mode) != errControllerNotReady {
+			t.Fatal("invalid readiness configuration was accepted")
+		}
 	}
 }
 
@@ -137,7 +145,8 @@ func TestControllerReadinessRequiresCacheSyncAndStopsOnShutdown(t *testing.T) {
 	if check(request) != errControllerNotReady || calls.Load() != before {
 		t.Fatal("stopped manager reported ready or started a new cache wait")
 	}
-	for _, check := range []func(*http.Request) error{controllerReadiness(nil, nil), controllerReadiness(t.Context(), nil)} {
+	for _, lifecycle := range []context.Context{nil, t.Context()} {
+		check := controllerReadiness(lifecycle, nil)
 		if check(nil) != errControllerNotReady {
 			t.Fatal("incomplete checker configuration reported ready")
 		}
