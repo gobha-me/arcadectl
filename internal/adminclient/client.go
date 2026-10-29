@@ -283,7 +283,7 @@ func fixedRoute(method, path string) (adminv1.Route, bool) {
 }
 func responseLimit(schema string) int64 {
 	switch schema {
-	case "Self":
+	case "Self", "ComponentVersion":
 		return 2048
 	case "Server":
 		return 128 * 1024

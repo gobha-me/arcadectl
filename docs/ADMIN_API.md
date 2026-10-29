@@ -291,3 +291,14 @@ Accepted stdout writes do not prove durable collection. Configure access-control
 durable log collection and Kubernetes API-server audit retention before real-world
 administrative use; both are explicit operator prerequisites. This foundation
 does not silently claim hosted-service compliance or production readiness.
+
+## Authenticated component version
+
+`GET /v1/version` uses the `system.read` administrator action and the same
+bearer authentication, authorization, synchronous audit and no-cache boundary
+as other reads. Its bounded v1 response reports API source SHA/epoch, compiler,
+and target OS/architecture. It reads no Kubernetes resource and grants no new
+Kubernetes permission. Unknown source identity is the literal `unknown` paired
+with epoch zero. Dirty Docker builds withhold source identity. Embedded source
+fields are build claims, not signatures, running-image digest authentication,
+compatibility certification or release approval.

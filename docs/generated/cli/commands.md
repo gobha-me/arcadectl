@@ -462,6 +462,7 @@ Available Commands:
   create       Create a server stopped by default
   decommission Remove the server object while retaining its exact world identities
   destroy      Prepare a backup-gated destroy preview; this command never confirms deletion
+  diagnose     Collect partial redacted server status and build claims without mutation
   restart      Restart without overlapping workloads
   restore      Restore to new claims; leave stopped by default
   start        Start without resetting a world
@@ -575,6 +576,21 @@ Usage:
 
 Flags:
       --backup string   Exact successful native backup name (not its operation receipt)
+
+Global Flags:
+      --context string     Use a saved administrator context
+      --no-wait            Return after receipt admission without waiting for completion
+      --output string      Output format: human or json (default "human")
+      --timeout duration   Bounded request, lock, confirmation, and observation timeout; does not cancel admitted work (default 30m0s)
+```
+
+## arcadectl server diagnose
+
+Collect partial redacted server status and build claims without mutation
+
+```text
+Usage:
+  arcadectl server diagnose NAME [flags]
 
 Global Flags:
       --context string     Use a saved administrator context

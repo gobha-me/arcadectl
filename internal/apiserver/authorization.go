@@ -18,6 +18,7 @@ type Action string
 
 const (
 	ActionAuthSelf            Action = "auth.self"
+	ActionSystemRead          Action = "system.read"
 	ActionServerRead          Action = "server.read"
 	ActionOperationRead       Action = "operation.read"
 	ActionServerCreate        Action = "server.create"
@@ -57,7 +58,7 @@ func (AdministratorAuthorizer) Authorize(_ context.Context, principal adminauth.
 }
 
 func isReadAction(action Action) bool {
-	return action == ActionAuthSelf || action == ActionServerRead || action == ActionOperationRead
+	return action == ActionAuthSelf || action == ActionSystemRead || action == ActionServerRead || action == ActionOperationRead
 }
 
 func isMutationAction(action Action) bool {

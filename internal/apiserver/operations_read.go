@@ -13,6 +13,7 @@ import (
 
 	adminv1 "github.com/gobha-me/arcadectl/api/admin/v1"
 	arcadev1 "github.com/gobha-me/arcadectl/api/v1alpha1"
+	"github.com/gobha-me/arcadectl/internal/buildinfo"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -151,6 +152,9 @@ func (api *operationAPI) read(w http.ResponseWriter, r *http.Request) {
 	key := types.NamespacedName{Namespace: api.server.namespace, Name: r.PathValue("name")}
 	state := ctx.Value(requestStateKey{}).(*requestState)
 	switch state.route {
+	case "/v1/version":
+		build := buildinfo.Current()
+		operationJSON(w, 200, adminv1.ComponentVersion{Version: "v1", SourceSHA: build.SourceSHA, SourceEpoch: build.SourceEpoch, GoVersion: build.GoVersion, OS: build.OS, Arch: build.Arch})
 	case "/v1/servers":
 		list := &arcadev1.GameServerList{}
 		if err := api.store.List(ctx, list, client.InNamespace(api.server.namespace), client.Limit(100)); err != nil {

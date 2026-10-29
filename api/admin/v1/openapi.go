@@ -15,7 +15,7 @@ import (
 // settings schemas come from the curated catalog, never caller input.
 func OpenAPI() ([]byte, error) {
 	components := map[string]any{}
-	types := []any{Self{}, Compute{}, Storage{}, Image{}, ExactReference{}, RetainedSelector{}, CreateRequest{}, ConfigureRequest{}, EmptyRequest{}, UpdateRequest{}, BackupRequest{}, RestoreRequest{}, DestroyRequest{}, ConfirmRequest{}, CancelRequest{}, Error{}, Condition{}, Endpoint{}, Server{}, ServerList{}, OperationChild{}, Failure{}, DestroyTarget{}, DestroyPreview{}, Operation{}, OperationList{}, RetainedClaim{}, RetainedWorld{}, NativeOperation{}}
+	types := []any{ComponentVersion{}, Self{}, Compute{}, Storage{}, Image{}, ExactReference{}, RetainedSelector{}, CreateRequest{}, ConfigureRequest{}, EmptyRequest{}, UpdateRequest{}, BackupRequest{}, RestoreRequest{}, DestroyRequest{}, ConfirmRequest{}, CancelRequest{}, Error{}, Condition{}, Endpoint{}, Server{}, ServerList{}, OperationChild{}, Failure{}, DestroyTarget{}, DestroyPreview{}, Operation{}, OperationList{}, RetainedClaim{}, RetainedWorld{}, NativeOperation{}}
 	for _, value := range types {
 		typ := reflect.TypeOf(value)
 		components[typ.Name()] = schema(typ, "")
