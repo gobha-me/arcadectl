@@ -653,7 +653,7 @@ func (f *fixtureLedger) phaseGCRowsWithAccounts(o *installobserve.Observation, o
 // Closed, same-attempt diagnostics only. Neither a diagnostic nor an unsealed
 // projection supplies accepted observation, owner closure or mutation authority.
 func (f *fixtureLedger) phaseGCRowsWithAccountsTrace(ctx context.Context, o *installobserve.Observation, objects [fixtureMaxSlots]*unstructured.Unstructured, gc fixtureGCRows, refreshed map[installstate.Key]*coordinationv1.Lease, accounts *phaseServiceAccounts) error {
-	recordMismatch := beginTypedMetadataDiagnostic(ctx)
+	recordMismatch := beginTypedMetadataScopedDiagnostic(ctx)
 	traceAdmissionPhase(ctx, admissionPhaseOwnerBinding, -1)
 	if f == nil || !validFixtureRecipe(f.document) || gc == nil || gc.Journal() == nil || !gc.Journal().MatchesJournalBytes(f.document.Journal) || gc.Journal().ResourceVersion() != f.document.JournalResourceVersion {
 		return ErrFixtures
@@ -724,7 +724,17 @@ func (f *fixtureLedger) phaseGCRowsWithAccountsTrace(ctx context.Context, o *ins
 			traceAdmissionPhase(ctx, admissionPhaseOwnerTypedMetadata, -1)
 			wanted := fixtureGCMetadata(m)
 			if !reflect.DeepEqual(matches[0].Metadata, wanted) {
-				recordMismatch(collection.kind, matches[0].Metadata, wanted)
+				scope := -1
+				for slot, entry := range f.document.Entries {
+					if entry.Key == key {
+						scope = -2
+						if entry.State == fixtureOriginal && entry.OriginalUID == m.GetUID() {
+							scope = slot
+						}
+						break
+					}
+				}
+				recordMismatch(collection.kind, matches[0].Metadata, wanted, scope)
 				return ErrFixtures
 			}
 			traceAdmissionPhase(ctx, admissionPhaseOwnerTyped, -1)
