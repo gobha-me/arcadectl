@@ -41,6 +41,7 @@ type Server struct {
 	auditMu       sync.Mutex
 	auditHealthy  atomic.Bool
 	auditTimeout  time.Duration
+	telemetry     *requestTelemetry
 }
 
 var opaqueID = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,64}$`)
@@ -64,7 +65,7 @@ func New(config Config) (*Server, error) {
 	server := &Server{
 		authenticator: config.Authenticator, authorizer: config.Authorizer,
 		audit: config.Audit, namespace: config.Namespace, clock: config.Clock,
-		mux: http.NewServeMux(), auditTimeout: config.AuditTimeout,
+		mux: http.NewServeMux(), auditTimeout: config.AuditTimeout, telemetry: newRequestTelemetry(),
 	}
 	server.auditHealthy.Store(true)
 	if err := server.HandleAuthenticatedRead(http.MethodGet, "/v1/auth/self", ActionAuthSelf, http.HandlerFunc(server.self)); err != nil {
@@ -141,6 +142,7 @@ type requestState struct {
 }
 
 func (server *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	metricStarted := time.Now()
 	writer.Header().Set("Cache-Control", "no-store")
 	writer.Header().Set("X-Content-Type-Options", "nosniff")
 	state := &requestState{started: server.clock(), route: "unmatched", action: "unmatched"}
@@ -172,7 +174,8 @@ func (server *Server) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 		}
 		// Never turn an already-applied mutation into a fictional error response
 		// when its outcome audit fails. Latch unhealthy and fence later requests.
-		_ = server.record(state, request.Method, "outcome", state.outcome, status)
+		acknowledged := server.record(state, request.Method, "outcome", state.outcome, status)
+		server.telemetry.observe(state.action, state.outcome, acknowledged, time.Since(metricStarted))
 	}()
 	if !server.auditHealthy.Load() {
 		state.outcome = "unavailable"
@@ -288,7 +291,8 @@ func (server *Server) Ready() bool {
 }
 
 // HealthHandler is served on a separate, non-Service port. It has no mutation
-// handlers and never exposes credential state beyond readiness availability.
+// handlers. Its metrics expose only fixed request-result vocabularies, and its
+// readiness exposes credential availability without credential material.
 func (server *Server) HealthHandler() http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Cache-Control", "no-store")
@@ -297,6 +301,8 @@ func (server *Server) HealthHandler() http.Handler {
 			return
 		}
 		switch request.URL.Path {
+		case "/metrics":
+			server.telemetry.handler.ServeHTTP(writer, request)
 		case "/livez":
 			writer.WriteHeader(http.StatusOK)
 		case "/readyz":

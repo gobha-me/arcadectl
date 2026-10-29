@@ -135,6 +135,46 @@ labels. Log delivery is best effort and can be lost after a committed status
 write; the durable object status and API audit remain authoritative. No
 Kubernetes Event object or additional Kubernetes permission is created.
 
-The #38 Kubernetes Events, API authorization metrics, and integration with the
-complete redacted diagnostics bundle remain acceptance work. Health and
-lifecycle telemetry alone do not complete that issue.
+## Private API request metrics
+
+The API's existing private health listener also serves `GET /metrics` (and
+`HEAD`). It has no public Service route. Keep this port in the administrative
+network boundary; do not expose it as a player or public endpoint. Scrapes
+require no administrator token and cannot invoke API operations. The ordinary
+TLS API listener retains authentication and never serves the scrape handler.
+
+| Family | Labels | Meaning |
+| --- | --- | --- |
+| `arcadectl_api_requests_total` | `action`, `result`, `audit` | Requests reaching the guarded handler's outcome boundary. |
+| `arcadectl_api_request_duration_seconds` | `action`, `result`, `audit` | Handler time including the bounded outcome-audit wait. |
+
+Actions are the enumerated API actions, or `unmatched` before an authenticated
+route is selected. Authentication failures cannot disclose which resource or
+action the caller requested. Results are `unauthenticated`, `unavailable`,
+`forbidden`, `succeeded`, `rejected`, `internal`, or the defensive `unknown`.
+The audit label is `acknowledged` or `unavailable`, describing the outcome
+record's acknowledgement separately from the response already sent. A failed
+outcome audit after an applied mutation therefore retains `succeeded` alongside
+`audit="unavailable"`; it does not imply that the mutation can be replayed.
+Subsequent requests remain fenced by the existing audit guard.
+
+No URL, method, principal, credential ID, namespace, object name, request ID,
+body, token, error text or arbitrary route pattern becomes a label. Each API
+boundary has an isolated registry containing only these two families, without
+Go/process collectors or custom caller-provided collectors. Scrapes are not
+counted as API requests. Process restarts reset counters. Failure to obtain the
+initial random request ID occurs before this outcome boundary and is not
+counted. Missing scrapes and crashes can lose observations.
+
+Duration buckets are 0.005, 0.025, 0.1, 0.5, 1, 2, 5 and 15 seconds, plus
+infinity. This is HTTP handler latency, not the duration or success of an
+asynchronous admitted operation. Use operation receipts and the separate
+lifecycle metric families for completion evidence. Authentication rejections,
+authorization rejections and unavailable dependencies remain distinguishable;
+an increase warrants private audit/health inspection, never weaker checks.
+Audit acknowledgement is not durable external audit storage. The metric schema
+and migration rules above apply to these families as well.
+
+The #38 Kubernetes Events and integration with the complete redacted diagnostics
+bundle remain acceptance work. Health and telemetry alone do not complete that
+issue.
