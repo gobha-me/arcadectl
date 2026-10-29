@@ -28,11 +28,14 @@ def visible_lines(text):
         if fence:
             if marker and marker[0][0] == fence and len(marker[0]) >= width and not stripped[len(marker[0]):].strip():
                 fence = ''
+            yield number, ''
             continue
         if marker:
             fence, width = marker[0][0], len(marker[0])
+            yield number, ''
             continue
         if line.startswith('    ') or line.startswith('\t'):
+            yield number, ''
             continue
         result = ''
         while line:
