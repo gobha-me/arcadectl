@@ -7,14 +7,14 @@ export LC_ALL=C TZ=UTC
 
 fail() { printf 'artifact build refused: %s\n' "$1" >&2; exit 1; }
 [[ $# == 1 ]] || fail 'one new output-directory argument is required'
-readonly artifact_root="$(git rev-parse --show-toplevel)"
+readonly artifact_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && git rev-parse --show-toplevel)"
 cd "$artifact_root"
 [[ -z "$(git status --porcelain --untracked-files=no)" ]] || fail 'tracked source is dirty'
 readonly artifact_sha="$(git rev-parse --verify HEAD^{commit})"
 readonly artifact_epoch="$(git show -s --format=%ct "$artifact_sha")"
 [[ "$artifact_sha" =~ ^[0-9a-f]{40}$ && "$artifact_epoch" =~ ^[1-9][0-9]*$ ]] || fail 'invalid source identity'
 readonly artifact_required_go="go$(sed -n 's/^go \([0-9][0-9.]*\)$/\1/p' go.mod)"
-readonly artifact_go="$(go env GOROOT)/bin/go"
+readonly artifact_go="$(go env GOROOT 2>/dev/null)/bin/go"
 export GOTOOLCHAIN=local GOWORK=off GOFLAGS= GOENV=off GO111MODULE=on CGO_ENABLED=0
 export GOEXPERIMENT= GOAMD64=v1 GOARM64=v8.0
 [[ "$("$artifact_go" env GOVERSION)" == "$artifact_required_go" ]] || fail 'use the exact go.mod toolchain'
@@ -31,8 +31,8 @@ for artifact_arch in amd64 arm64; do
     GOOS=linux GOARCH="$artifact_arch" GOMAXPROCS=2 GOMEMLIMIT=1GiB \
       "$artifact_go" build -p=1 -mod=readonly -trimpath -buildvcs=false -ldflags "$artifact_ldflags" \
       -o "$artifact_work/build/arcadectl-$artifact_arch" ./cmd/arcadectl
-  )
-  "$artifact_go" version -m -json "$artifact_work/build/arcadectl-$artifact_arch" > "$artifact_work/build/modules-$artifact_arch.json"
+  ) > "$artifact_work/build/compiler-$artifact_arch.log" 2>&1 || fail 'CLI compilation failed; private compiler output withheld'
+  "$artifact_go" version -m -json "$artifact_work/build/arcadectl-$artifact_arch" > "$artifact_work/build/modules-$artifact_arch.json" 2>/dev/null || fail 'binary inventory failed'
 done
 python3 "$artifact_work/source/hack/pack-cli-artifacts.py" \
   "$artifact_work" "$artifact_output" "$artifact_sha" "$artifact_epoch" "$artifact_required_go"
