@@ -35,15 +35,25 @@ type Server struct {
 	Conditions         []adminv1.Condition `json:"conditions"`
 }
 
+// Component also uses an explicit projection: expanding API/build DTOs must
+// never silently expand support-bundle output.
+type Component struct {
+	SourceSHA   string `json:"sourceSha"`
+	SourceEpoch int64  `json:"sourceEpoch"`
+	GoVersion   string `json:"goVersion"`
+	OS          string `json:"os"`
+	Arch        string `json:"arch"`
+}
+
 type Bundle struct {
-	SchemaVersion string                    `json:"schemaVersion"`
-	Scope         string                    `json:"scope"`
-	Partial       bool                      `json:"partial"`
-	Namespace     string                    `json:"namespace"`
-	CLI           buildinfo.Info            `json:"cli"`
-	API           *adminv1.ComponentVersion `json:"api"`
-	Server        Server                    `json:"server"`
-	Omissions     []string                  `json:"omissions"`
+	SchemaVersion string     `json:"schemaVersion"`
+	Scope         string     `json:"scope"`
+	Partial       bool       `json:"partial"`
+	Namespace     string     `json:"namespace"`
+	CLI           Component  `json:"cli"`
+	API           *Component `json:"api"`
+	Server        Server     `json:"server"`
+	Omissions     []string   `json:"omissions"`
 }
 
 // Collect closes the server UID/generation around independent version reads.
@@ -55,7 +65,7 @@ func Collect(ctx context.Context, reader Reader, namespace, name string) (Bundle
 		return Bundle{}, err
 	}
 	omissions := []string{"controller_versions_not_collected", "events_not_collected", "logs_not_collected", "running_image_identity_not_collected"}
-	var api *adminv1.ComponentVersion
+	var api *Component
 	version := new(adminv1.ComponentVersion)
 	if _, err := reader.Read(ctx, "/v1/version", version); err != nil {
 		var remote *adminclient.Error
@@ -64,7 +74,7 @@ func Collect(ctx context.Context, reader Reader, namespace, name string) (Bundle
 		}
 		omissions = append(omissions, "api_version_not_supported")
 	} else {
-		api = version
+		api = &Component{SourceSHA: version.SourceSHA, SourceEpoch: version.SourceEpoch, GoVersion: version.GoVersion, OS: version.OS, Arch: version.Arch}
 		if api.SourceSHA == "unknown" {
 			omissions = append(omissions, "api_source_unknown")
 		}
@@ -90,7 +100,7 @@ func Collect(ctx context.Context, reader Reader, namespace, name string) (Bundle
 	}
 	sort.Strings(omissions)
 	return Bundle{SchemaVersion: "arcadectl.support/v1", Scope: "server-status-and-build-claims", Partial: true, Namespace: namespace,
-		CLI: cli, API: api, Omissions: omissions,
+		CLI: Component{SourceSHA: cli.SourceSHA, SourceEpoch: cli.SourceEpoch, GoVersion: cli.GoVersion, OS: cli.OS, Arch: cli.Arch}, API: api, Omissions: omissions,
 		Server: Server{Name: after.Name, UID: after.UID, Generation: after.Generation, ObservedGeneration: after.ObservedGeneration,
 			DesiredState: after.DesiredState, Phase: after.Phase, RequestedImage: after.ImageDigest, Conditions: conditions}}, nil
 }
