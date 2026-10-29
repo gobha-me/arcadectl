@@ -184,6 +184,9 @@ func (app *application) emit(value any) error {
 				break
 			}
 			_, err = fmt.Fprintf(app.options.Out, "condition=%s status=%s reason=%s observed=%d\n", condition.Type, condition.Status, condition.Reason, condition.ObservedGeneration)
+			if _, action := adminv1.ConditionGuidance(condition.Reason); err == nil && action != "" {
+				_, err = fmt.Fprintln(app.options.Out, action)
+			}
 		}
 		for _, endpoint := range v.Endpoints {
 			if err != nil {

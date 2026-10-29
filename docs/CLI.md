@@ -158,3 +158,23 @@ cancellation success. See [DESTROY.md](DESTROY.md).
 
 Errors and progress use fixed guidance/reason codes, not raw transport errors,
 request bodies, server diagnostics, tokens, or verifier digests.
+
+
+## Safe condition guidance
+
+`arcadectl server status NAME` reports the controller's fixed condition reasons
+and safe next actions for storage provisioning, missing or conflicting retained
+data, workload scheduling, endpoint provisioning, and ownership collisions.
+JSON retains the existing v1 condition shape and stable `reason` codes. Human
+output adds fixed guidance for actionable reasons. Compare `observedGeneration`
+with the server generation before treating a condition as current.
+
+Messages, Kubernetes errors, annotations, worker output, and repository
+credentials are never used to construct this guidance. Unknown reasons remain
+`Unknown` and receive generic inspection guidance. Existing successful reasons
+do not imply that every other condition is successful.
+
+This is read-only runtime diagnosis for issue #28. It does not certify
+environmental preflight, collect logs/events, or produce a complete support
+bundle with component versions. Mandatory environmental checks and that bundle
+remain outstanding; status reads do not authorize mutation or data deletion.

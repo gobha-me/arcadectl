@@ -52,11 +52,7 @@ func conditionOutput(input []metav1.Condition) []adminv1.Condition {
 		if condition.Status != metav1.ConditionTrue && condition.Status != metav1.ConditionFalse && condition.Status != metav1.ConditionUnknown {
 			continue
 		}
-		reason := "Unknown"
-		switch condition.Reason {
-		case "Ready", "RuntimeStopped", "InvalidSpec", "Valid", "ClaimsReady", "ClaimsProvisioning", "StoragePending", "Succeeded", "Cancelled", "VerificationFailed", "WorkerFailed", "Blocked", "DataOperationActive", "PreflightVerified", "CandidatesReady", "OperationComplete":
-			reason = condition.Reason
-		}
+		reason, _ := adminv1.ConditionGuidance(condition.Reason)
 		output = append(output, adminv1.Condition{Type: condition.Type, Status: string(condition.Status), Reason: reason, ObservedGeneration: condition.ObservedGeneration})
 	}
 	return output
