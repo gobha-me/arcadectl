@@ -434,7 +434,9 @@ jobs:
       - name: Reject new findings even when they duplicate baseline source
         env:
           LINT_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: bash hack/lint-new-findings.sh
+        run: |
+          ARCADECTL_REQUIRE_LINT_TOOL=1 go test ./hack/lintpolicy -count=1
+          bash hack/lint-new-findings.sh
 
   go-and-policy:
     name: Go and policy
