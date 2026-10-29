@@ -283,7 +283,7 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 		}
 	}
 	newFindings := lintJob.Steps[3]
-	if newFindings.If != "" || newFindings.ContinueOnError != nil || newFindings.Uses != "" || len(newFindings.Env) != 1 || newFindings.Env["LINT_BASE_SHA"] != "${{ github.event.pull_request.base.sha || github.event.before }}" || newFindings.Run != "bash hack/lint-new-findings.sh" {
+	if newFindings.If != "" || newFindings.ContinueOnError != nil || newFindings.Uses != "" || len(newFindings.Env) != 1 || newFindings.Env["LINT_BASE_SHA"] != "${{ github.event.pull_request.base.sha || github.event.before }}" || newFindings.Run != "ARCADECTL_REQUIRE_LINT_TOOL=1 go test ./hack/lintpolicy -count=1\nbash hack/lint-new-findings.sh\n" {
 		t.Fatal("new findings must use the exclusion-free ratchet and exact event base without skip or failure tolerance")
 	}
 	if gate.Name != "Go and policy" || gate.RunsOn != "ubuntu-24.04" || len(gate.Steps) != 2 || gate.Steps[0].Uses != "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" || gate.Steps[0].Run != "" || gate.Steps[0].If != "" || gate.Steps[0].ContinueOnError != nil || len(gate.Steps[0].Env) != 0 {
@@ -594,7 +594,7 @@ func TestGolangciLintRatchetGateInvariants(t *testing.T) {
 		t.Fatal("golangci-lint action step altered SHA/version pinning, only-new-issues=false or fail-closed args")
 	}
 	diffStep := lint.Steps[3]
-	if diffStep.If != "" || diffStep.ContinueOnError != nil || diffStep.Uses != "" || len(diffStep.Env) != 1 || diffStep.Env["LINT_BASE_SHA"] != "${{ github.event.pull_request.base.sha || github.event.before }}" || diffStep.Run != "bash hack/lint-new-findings.sh" {
+	if diffStep.If != "" || diffStep.ContinueOnError != nil || diffStep.Uses != "" || len(diffStep.Env) != 1 || diffStep.Env["LINT_BASE_SHA"] != "${{ github.event.pull_request.base.sha || github.event.before }}" || diffStep.Run != "ARCADECTL_REQUIRE_LINT_TOOL=1 go test ./hack/lintpolicy -count=1\nbash hack/lint-new-findings.sh\n" {
 		t.Fatal("exclusion-free diff ratchet must run with the exact event base and fail closed")
 	}
 	gate, gateOK := ci.Jobs["go-and-policy"]

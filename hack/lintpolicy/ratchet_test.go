@@ -52,7 +52,7 @@ func TestIdenticalNewErrcheckLineCannotHideInBaseline(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, name := range []string{".golangci.yml", ".golangci-new.yml"} {
+	for _, name := range []string{".golangci.yml", ".golangci-new.yml", "hack/lint-new-findings.sh"} {
 		body, err := os.ReadFile(filepath.Join(root, name))
 		if err != nil {
 			t.Fatal(err)
@@ -76,12 +76,12 @@ func TestIdenticalNewErrcheckLineCannotHideInBaseline(t *testing.T) {
 	run(false, "git", "add", ".")
 	run(false, "git", "commit", "--quiet", "-m", "lint fixture baseline", "-m", "Co-authored-by: Codex (gpt-6.1-sol) <agents@noreply.invalid>\nAgent-Role: tests (Codex, needs non-author re-make)")
 	base := strings.TrimSpace(run(false, "git", "rev-parse", "HEAD"))
-	run(false, linter, "run", "--config=.golangci-new.yml", "--new-from-merge-base="+base, "./...")
+	run(false, "env", "LINT_BASE_SHA="+base, "bash", "hack/lint-new-findings.sh")
 	write(path, existing+strings.ReplaceAll(function, "NAME", "Added"))
 	// This confirms the original masking defect, rather than just testing a
 	// new source string that the existing anchored exclusions already reject.
 	run(false, linter, "run", "--config=.golangci.yml", "./...")
-	output := run(true, linter, "run", "--config=.golangci-new.yml", "--new-from-merge-base="+base, "./...")
+	output := run(true, "env", "LINT_BASE_SHA="+base, "bash", "hack/lint-new-findings.sh")
 	if !strings.Contains(output, "cmd/arcadectl-api/main_test.go") || !strings.Contains(output, "errcheck") {
 		t.Fatal("new identical-line finding was not reported as errcheck in the baselined file")
 	}
