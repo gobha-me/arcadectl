@@ -16,12 +16,12 @@ import (
 )
 
 type bundleReader struct {
-	server      adminv1.Server
-	paths       []string
-	serverReads int
-	oldAPI      bool
-	failVersion bool
-	change      func(*adminv1.Server)
+	server       adminv1.Server
+	paths        []string
+	serverReads  int
+	oldAPI       bool
+	versionError error
+	change       func(*adminv1.Server)
 }
 
 func newBundleReader() *bundleReader {
@@ -53,8 +53,8 @@ func (r *bundleReader) Read(ctx context.Context, path string, out any) (string, 
 		if r.oldAPI {
 			return "", &adminclient.Error{HTTPStatus: 404, Code: "not_found"}
 		}
-		if r.failVersion {
-			return "", &adminclient.Error{HTTPStatus: 401, Code: "unauthenticated"}
+		if r.versionError != nil {
+			return "", r.versionError
 		}
 		*out.(*adminv1.ComponentVersion) = adminv1.ComponentVersion{Version: "v1", SourceSHA: "unknown", GoVersion: "go1.26.10", OS: "linux", Arch: "amd64"}
 	default:
@@ -107,10 +107,12 @@ func TestSupportBundleRefusesChangedTargetAndAuthenticationFailure(t *testing.T)
 			t.Fatal("identity drift emitted a misleading partial result")
 		}
 	}
-	reader := newBundleReader()
-	reader.failVersion = true
-	if got, err := Collect(context.Background(), reader, "games", "factory"); err == nil || got.SchemaVersion != "" || len(reader.paths) != 2 {
-		t.Fatal("authentication failure became an old-API omission")
+	for _, remote := range []*adminclient.Error{{HTTPStatus: 401, Code: "unauthenticated"}, {HTTPStatus: 404, Code: "invalid_response"}} {
+		reader := newBundleReader()
+		reader.versionError = remote
+		if got, err := Collect(context.Background(), reader, "games", "factory"); err == nil || got.SchemaVersion != "" || len(reader.paths) != 2 {
+			t.Fatal("authentication or malformed-404 failure became an old-API omission")
+		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
