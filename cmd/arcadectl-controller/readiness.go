@@ -46,9 +46,12 @@ func prepareReadinessInformers(ctx context.Context, informers readinessInformers
 		if ctx.Err() != nil {
 			return errControllerNotReady
 		}
-		if _, err := informers.GetInformer(ctx, object, cache.BlockUntilSynced(false)); err != nil {
+		if informer, err := informers.GetInformer(ctx, object, cache.BlockUntilSynced(false)); err != nil || informer == nil {
 			return errControllerNotReady
 		}
+	}
+	if ctx.Err() != nil {
+		return errControllerNotReady
 	}
 	return nil
 }
