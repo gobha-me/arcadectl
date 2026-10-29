@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gobha-me/arcadectl/internal/adminclient"
+	"github.com/gobha-me/arcadectl/internal/buildinfo"
 	"github.com/spf13/cobra"
 )
 
@@ -60,6 +61,9 @@ func NewCommand(options Options) *cobra.Command {
 		return nil
 	}
 	root.AddCommand(app.loginCommand(), app.contextCommand(), app.serverCommand(), app.retainedCommand(), app.destroyCommand(), app.operationCommand())
+	root.AddCommand(&cobra.Command{Use: "version", Short: "Read local build identity without credentials or network access", Args: exactArgs(0), RunE: func(*cobra.Command, []string) error {
+		return app.emit(buildinfo.Current())
+	}})
 	return root
 }
 

@@ -12,6 +12,7 @@ import (
 
 	adminv1 "github.com/gobha-me/arcadectl/api/admin/v1"
 	"github.com/gobha-me/arcadectl/internal/adminclient"
+	"github.com/gobha-me/arcadectl/internal/buildinfo"
 	"github.com/gobha-me/arcadectl/internal/cliattempt"
 	"github.com/gobha-me/arcadectl/internal/clidestroy"
 	"github.com/gobha-me/arcadectl/internal/clilifecycle"
@@ -177,6 +178,8 @@ func (app *application) emit(value any) error {
 	}
 	var err error
 	switch v := value.(type) {
+	case buildinfo.Info:
+		_, err = fmt.Fprintf(app.options.Out, "arcadectl source=%s epoch=%d go=%s platform=%s/%s\n", v.SourceSHA, v.SourceEpoch, v.GoVersion, v.OS, v.Arch)
 	case adminv1.Server:
 		_, err = fmt.Fprintf(app.options.Out, "server %s %s desired=%s uid=%s generation=%d observed=%d\n", v.Name, v.Phase, v.DesiredState, v.UID, v.Generation, v.ObservedGeneration)
 		for _, condition := range v.Conditions {
