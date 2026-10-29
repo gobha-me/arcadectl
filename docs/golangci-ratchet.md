@@ -72,11 +72,21 @@ The ratchet targets zero exclusions:
    limits disabled so new diagnostics cannot be hidden by reporting caps.
 
 A new line whose text is byte-identical to a baselined line in the same file
-with the same finding is still masked; changes only to surrounding whitespace
-are also ignored. Golangci-lint has no line anchor, so source anchors cannot
-distinguish these occurrences. Review changes to baselined files for this case.
-The full fix is burning the baseline down or using `issues.new-from-merge-base`.
-The latter needs a CI checkout change owned by the separate CI workstream.
+with the same finding is still masked by the baseline scan; changes only to
+surrounding whitespace are also ignored. CI therefore also runs a diff ratchet
+with `.golangci-new.yml`, which enables the same linters without any baseline
+exclusions. `hack/lint-new-findings.sh` compares against the merge base of the
+exact PR base SHA, or the before-push SHA for a main push. The checkout includes
+full history, and a missing or malformed base fails the check. New findings on
+added lines are reported even if their path, message, and source text match an
+old exclusion. Existing debt remains covered by the separate baseline scan.
+
+To run both checks locally, select the intended base commit explicitly:
+
+```sh
+golangci-lint run ./...
+LINT_BASE_SHA=$(git rev-parse origin/main) bash hack/lint-new-findings.sh
+```
 To audit all remaining debt, bypass the baseline and reporting limits under the
 same shared-worker lock:
 
