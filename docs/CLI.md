@@ -213,3 +213,8 @@ protocol and other read failures abort collection. Ordinary development builds
 report unknown source identity. Source fields are build claims, not signatures
 or artifact authentication. Mandatory environmental preflight and complete
 support-bundle acceptance in #28 remain outstanding.
+
+The older router's exact plain-text `404 page not found` response is recognized
+only for the optional version GET. Different text, statuses, endpoints, encoded
+responses or malformed JSON remain protocol errors. This compatibility exception
+does not apply to mutation responses or turn an uncertain intent into rejection.

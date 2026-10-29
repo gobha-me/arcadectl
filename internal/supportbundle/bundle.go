@@ -69,7 +69,7 @@ func Collect(ctx context.Context, reader Reader, namespace, name string) (Bundle
 	version := new(adminv1.ComponentVersion)
 	if _, err := reader.Read(ctx, "/v1/version", version); err != nil {
 		var remote *adminclient.Error
-		if !errors.As(err, &remote) || remote.HTTPStatus != 404 {
+		if !errors.As(err, &remote) || remote.HTTPStatus != 404 || remote.Code != "not_found" {
 			return Bundle{}, err
 		}
 		omissions = append(omissions, "api_version_not_supported")
