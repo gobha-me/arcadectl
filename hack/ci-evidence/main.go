@@ -205,6 +205,15 @@ func validate(request request, run runMetadata, names []string, jobs []job, blob
 	result := report{Schema: "arcadectl.ci-evidence/v1", Repository: request.Repository, SHA: request.SHA, RunID: request.RunID, Attempt: run.Attempt, Event: run.Event,
 		URL: fmt.Sprintf("https://github.com/%s/actions/runs/%d", request.Repository, request.RunID), WorkflowBlob: blob, Expected: len(names), Verdict: "pass", Reasons: []string{}, Checks: []check{}}
 	reasons := map[string]bool{}
+	if len(names) == 0 {
+		reasons["empty-workflow"] = true
+	}
+	switch run.Event {
+	case "pull_request", "push", "schedule", "workflow_dispatch":
+	default:
+		result.Event = "unknown"
+		reasons["unknown-run-event"] = true
+	}
 	if run.ID != request.RunID || run.SHA != request.SHA || run.Repository.Name != request.Repository || run.Path != workflowPath || run.Attempt < 1 {
 		reasons["run-identity-mismatch"] = true
 	}
@@ -265,6 +274,9 @@ func validate(request request, run runMetadata, names []string, jobs []job, blob
 				pending = true
 			}
 		}
+	}
+	if run.Status != "completed" && run.Conclusion != "" {
+		reasons["inconsistent-run-state"] = true
 	}
 	if run.Status == "completed" {
 		if run.Conclusion != "success" {
