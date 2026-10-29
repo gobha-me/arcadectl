@@ -153,6 +153,7 @@ func (r *GameDestroyReconciler) status(ctx context.Context, d *arcade.GameDestro
 		return err
 	}
 	r.telemetry.observeOperation("destroy", "", string(d.Status.Phase), string(copy.Status.Phase), copy.Status.StartedAt, copy.Status.CompletedAt)
+	logOperationStatus("destroy", "", string(d.Status.Phase), string(copy.Status.Phase), copy.UID)
 	return nil
 }
 

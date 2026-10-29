@@ -185,6 +185,7 @@ func (r *ArcadeOperationReconciler) operationStatus(ctx context.Context, o *arca
 		return errors.New("persist operation journal failed")
 	}
 	r.telemetry.observeOperation("receipt", string(copy.Spec.Action), string(o.Status.Phase), string(copy.Status.Phase), copy.Status.StartedAt, copy.Status.CompletedAt)
+	logOperationStatus("receipt", string(copy.Spec.Action), string(o.Status.Phase), string(copy.Status.Phase), copy.UID)
 	return nil
 }
 

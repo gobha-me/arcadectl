@@ -67,21 +67,28 @@ func metricAction(input string) string {
 	}
 }
 
+func fixedOperationAction(kind, action string) (string, bool) {
+	switch kind {
+	case "receipt":
+		return metricAction(action), true
+	case "backup":
+		return "world.backup", true
+	case "restore":
+		return "world.restore", true
+	case "destroy":
+		return "world.destroy.confirm", true
+	default:
+		return "", false
+	}
+}
+
 func (t *lifecycleTelemetry) observeOperation(kind, action, before, after string, start, end *metav1.Time) {
 	result := terminalMetricResult(after)
 	if result == "" || terminalMetricResult(before) != "" {
 		return
 	}
-	switch kind {
-	case "receipt":
-		action = metricAction(action)
-	case "backup":
-		action = "world.backup"
-	case "restore":
-		action = "world.restore"
-	case "destroy":
-		action = "world.destroy.confirm"
-	default:
+	action, known := fixedOperationAction(kind, action)
+	if !known {
 		return
 	}
 	if t == nil {

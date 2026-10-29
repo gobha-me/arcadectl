@@ -1345,6 +1345,7 @@ func (r *GameBackupReconciler) writeStatus(ctx context.Context, backup *arcadev1
 		return errors.New("update GameBackup status failed; inspect Kubernetes API availability")
 	}
 	r.telemetry.observeOperation("backup", "", string(backup.Status.Phase), string(updated.Status.Phase), updated.Status.StartedAt, updated.Status.CompletedAt)
+	logOperationStatus("backup", "", string(backup.Status.Phase), string(updated.Status.Phase), updated.UID)
 	return nil
 }
 

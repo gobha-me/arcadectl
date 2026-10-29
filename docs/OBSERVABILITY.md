@@ -105,6 +105,36 @@ its counting boundary requires dashboard/alert migration and a documented
 compatibility decision. Never add object identifiers or raw reason strings as
 labels to improve drill-down.
 
-The #38 structured event/log correlation schema, API authorization metrics, and
-integration with the complete redacted diagnostics bundle remain acceptance
-work. Health and lifecycle telemetry alone do not complete that issue.
+## Structured lifecycle log schema
+
+Successfully persisted operation completions and current server condition
+changes also emit structured Info records through a dedicated `lifecycle`
+process logger. The logger deliberately does not inherit per-request object
+names, namespace names or arbitrary context fields. Records contain no raw
+errors, condition messages, annotations, settings, Secret data or credentials.
+
+All records use `schema: arcadectl.lifecycle-log/v1`. The `operation_completed`
+event includes fixed `kind`, `action` and `result` vocabularies matching the
+metrics. The `server_condition_changed` event includes a canonical `condition`,
+fixed `status`, diagnostic `class`, generation and a closed reason code.
+Unrecognized reason text becomes `Unknown`. Only successfully persisted
+transitions emit records; unchanged or stale observations do not become events.
+
+The `correlation` field is the first 32 lowercase hexadecimal characters of
+SHA-256 over the object's UTF-8 UID, or `unknown` for an absent UID. Compute the
+same value from a server/operation/native-child UID returned by the CLI/API to
+find its records. Receipt and child UIDs identify different boundaries; follow
+the exact child reference rather than assuming their correlation fields match.
+Correlation is a diagnostic key, not an authorization token or proof of object
+ownership. Hashing also prevents a malformed input UID from becoming raw log
+text. No UID, correlation or object name is a metric label.
+
+Process timestamps and logger framing are outside this event schema. Event
+fields and counting boundaries have the same migration expectations as metric
+labels. Log delivery is best effort and can be lost after a committed status
+write; the durable object status and API audit remain authoritative. No
+Kubernetes Event object or additional Kubernetes permission is created.
+
+The #38 Kubernetes Events, API authorization metrics, and integration with the
+complete redacted diagnostics bundle remain acceptance work. Health and
+lifecycle telemetry alone do not complete that issue.

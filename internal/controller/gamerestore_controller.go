@@ -1782,6 +1782,7 @@ func (r *GameRestoreReconciler) writeRestoreStatus(ctx context.Context, restore 
 		return errors.New("update GameRestore status failed")
 	}
 	r.telemetry.observeOperation("restore", "", string(restore.Status.Phase), string(updated.Status.Phase), updated.Status.StartedAt, updated.Status.CompletedAt)
+	logOperationStatus("restore", "", string(restore.Status.Phase), string(updated.Status.Phase), updated.UID)
 	return nil
 }
 
