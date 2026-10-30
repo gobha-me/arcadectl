@@ -211,7 +211,7 @@ func (w *fixtureWire) observePhaseLocked(ctx context.Context) (*fixturePhaseObse
 	// interval. Preserve ALL three explicit local checks of reads.current,
 	// including the middle fresh durability/WAL check and short-circuit order.
 	localBarrier := func() bool {
-		return !phaseGateFailed(ctx, phaseGateLocalBarrier, !(reads.local(ctx, w) == nil && w.localCurrent() == nil && reads.local(ctx, w) == nil))
+		return !phaseGateFailed(ctx, phaseGateLocalBarrier, reads.local(ctx, w) != nil || w.localCurrent() != nil || reads.local(ctx, w) != nil)
 	}
 	a, request := w.actors.admission, w.actors.request
 	traceAdmissionPhase(ctx, admissionPhaseConfigured, -1)

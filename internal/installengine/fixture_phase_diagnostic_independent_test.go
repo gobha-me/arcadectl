@@ -210,7 +210,7 @@ func TestPhaseGateTraceResetsAcrossOuterStepPhaseAndCheckpoint(t *testing.T) {
 
 	// traceAdmission resets phaseGate only on valid outer step transitions.
 	phaseGateFailed(ctx, phaseGateRemote, true)
-	traceAdmission(nil, admissionCaseProbe, 0)
+	traceAdmission(nil, admissionCaseProbe, 0) //nolint:staticcheck // SA1012: Deliberately probe nil-context refusal without clearing the recorded gate.
 	traceAdmission(ctx, admissionStep(255), 0)
 	traceAdmission(ctx, admissionCaseProbe, 999)
 	if got := trace.phaseGateSnapshot(); got != phaseGateRemote {
@@ -319,7 +319,7 @@ func TestObservePhaseRefusalGateAttributionAndNamedSlots(t *testing.T) {
 
 	newPhase := fixturePhaseFactory(t)
 	control := newPhase(t)
-	if obs, err := control.f.wire.observePhase(nil); obs != nil || err != ErrFixtures {
+	if obs, err := control.f.wire.observePhase(nil); obs != nil || err != ErrFixtures { //nolint:staticcheck // SA1012: A nil input must refuse without returning an observation.
 		t.Fatalf("nil context observePhase = (%v, %v), want (nil, ErrFixtures)", obs, err)
 	}
 	controlTrace := &admissionTrace{}
@@ -791,7 +791,7 @@ func TestObservePhaseV3AndLeadersGateAttribution(t *testing.T) {
 					lease.ResourceVersion = "102"
 					renew := metav1.NewMicroTime(time.Now().UTC().Truncate(time.Microsecond))
 					lease.Spec.RenewTime = &renew
-					managed := metav1.NewTime(renew.Time.Truncate(time.Second))
+					managed := metav1.NewTime(renew.Truncate(time.Second))
 					lease.ManagedFields[0].Time = &managed
 					object.Object = servingObject(t, lease).Object
 				}
