@@ -12,6 +12,7 @@ import (
 
 	adminv1 "github.com/gobha-me/arcadectl/api/admin/v1"
 	"github.com/gobha-me/arcadectl/internal/adminclient"
+	"github.com/gobha-me/arcadectl/internal/buildinfo"
 	"github.com/gobha-me/arcadectl/internal/cliattempt"
 	"github.com/gobha-me/arcadectl/internal/clidestroy"
 	"github.com/gobha-me/arcadectl/internal/clilifecycle"
@@ -226,6 +227,8 @@ func (app *application) emit(value any) error {
 				return err
 			}
 		}
+	case buildinfo.Info:
+		_, err = fmt.Fprintf(app.options.Out, "arcadectl source=%s epoch=%d go=%s platform=%s/%s\n", v.SourceSHA, v.SourceEpoch, v.GoVersion, v.OS, v.Arch)
 	default:
 		_, err = fmt.Fprintln(app.options.Out, "completed")
 	}

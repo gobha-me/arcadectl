@@ -2,6 +2,11 @@
 
 CANONICAL_CONTROLLER_IMAGE := ghcr.io/gobha-me/arcadectl-controller@sha256:0000000000000000000000000000000000000000000000000000000000000000
 
+.PHONY: build-cli-artifacts
+build-cli-artifacts:
+	@test -n "$(ARTIFACT_DIR)" || (echo "ARTIFACT_DIR=<new local directory> is required" >&2; exit 2)
+	./hack/build-cli-artifacts.sh "$(ARTIFACT_DIR)"
+
 generate:
 	go tool controller-gen object:headerFile=hack/boilerplate.go.txt crd:crdVersions=v1 paths=./api/... output:crd:artifacts:config=config/crd/bases
 	go tool controller-gen rbac:roleName=arcadectl-controller paths=./internal/controller/... output:rbac:artifacts:config=config/rbac

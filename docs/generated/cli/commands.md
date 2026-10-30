@@ -19,6 +19,7 @@ Available Commands:
   operation      Inspect, wait on, or explicitly resume durable operations
   retained-world Inspect or deliberately destroy worlds after server-object removal
   server         Create, configure, inspect, and operate servers; ordinary removal retains worlds
+  version        Read local build identity without credentials or network access
 
 Flags:
       --context string     Use a saved administrator context
@@ -673,6 +674,21 @@ Usage:
 Flags:
       --image-digest string    Immutable adapter image digest
       --image-version string   Curated adapter image version; mutually exclusive with digest
+
+Global Flags:
+      --context string     Use a saved administrator context
+      --no-wait            Return after receipt admission without waiting for completion
+      --output string      Output format: human or json (default "human")
+      --timeout duration   Bounded request, lock, confirmation, and observation timeout; does not cancel admitted work (default 30m0s)
+```
+
+## arcadectl version
+
+Read local build identity without credentials or network access
+
+```text
+Usage:
+  arcadectl version [flags]
 
 Global Flags:
       --context string     Use a saved administrator context
