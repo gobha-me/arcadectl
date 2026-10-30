@@ -7,7 +7,7 @@ set -euo pipefail
 # baseline must remain explicit and must precede the checked-out source.
 if [[ -z ${LINT_BASE_SHA:-} ]] &&
    [[ ${GITHUB_EVENT_NAME:-} == schedule || ${GITHUB_EVENT_NAME:-} == workflow_dispatch ]]; then
-  if ! LINT_BASE_SHA=$(sed -n 's/^# source-baseline: \([0-9a-f]\{40\}\)$/\1/p' .golangci-new.yml) ||
+  if ! LINT_BASE_SHA=$(sed -n 's/^# source-baseline:[[:space:]]*//p' .golangci-new.yml) ||
      [[ ! $LINT_BASE_SHA =~ ^[0-9a-f]{40}$ ]] ||
      ! git merge-base --is-ancestor "$LINT_BASE_SHA" HEAD; then
     echo 'Scheduled/manual lint requires one available ancestral source baseline' >&2
