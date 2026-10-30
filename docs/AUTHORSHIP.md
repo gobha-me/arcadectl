@@ -34,7 +34,7 @@ the repository owner's identity. This maintenance run uses
 an explicit role on each commit:
 
 ```text
-Co-authored-by: Codex (gpt-6.1-sol) <agents@noreply.invalid>
+Agent: Codex (via Projects Lead)
 Agent-Role: change
 ```
 
@@ -42,9 +42,16 @@ Tests written by the same agent belong in separate commits and disclose the
 remaining independent-author requirement:
 
 ```text
-Co-authored-by: Codex (gpt-6.1-sol) <agents@noreply.invalid>
+Agent: Codex (via Projects Lead)
 Agent-Role: tests (Codex, needs non-author re-make)
 ```
+
+The agent/role lines disclose who performed the work without claiming joint
+authorship. A reviewer, test executor, or planned second author must not receive
+a co-author trailer for work they did not write. New remediation commits in this
+maintenance pass carry no co-author trailers. Preserve already published
+history; a false historical trailer requires an explicit correction during the
+eventual owner-controlled squash, not a force push.
 
 Executing another author's tests does not make the executor their author.
 Executing one's own tests does not establish independent verification. Preserve
