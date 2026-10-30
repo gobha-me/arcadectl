@@ -566,4 +566,7 @@ func runKindAPILifecycle(t *testing.T, f kindAPILifecycleFixture) {
 	})
 	assertWorld()
 	t.Log("real HTTP lifecycle passed: one admitted create, configure/start/stop/restart/update/decommission; exact retained PVC/PV and marker SHA preserved; API native/core writes forbidden")
+	t.Logf("cli-journey candidate_sha=%s source_dirty=%s controller_image=%s game_digest_a=%s game_digest_b=%s", sha, dirty, controllerImage, digestA, digestB)
+	runKindCLIJourney(t, f, decommission.OperationID, serverUID, digestA, digestB, settingsName,
+		assertWorld, func() { verifyBytes(false, true) })
 }
