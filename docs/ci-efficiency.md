@@ -1,5 +1,40 @@
 # CI operation and budgets
 
+## Integration status and required owner decisions
+
+The behavior and measurements below describe this standalone change. They do
+not certify the combined policy after the other open CI changes land. Integrate
+this PR last and obtain a first-attempt full scheduled/manual run on the exact
+integrated main SHA; docs, cheap, and idle results are not release proof.
+
+- Retain #125/#130's full-tree lint gate, #144's exclusion-free diff ratchet,
+  and the repaired #131 mutation gate as required aggregate prerequisites.
+  Reconcile their workflow and existing gate-test conflicts explicitly; a
+  standalone passing run does not resolve those conflicts.
+- After #148 adds `make verify-doc-links`, run it in a lightweight mandatory
+  job for docs scope as well as other non-idle scopes, and require its result
+  before the aggregate's docs early exit. This head skips `go-policy-checks`
+  for docs, so placing link verification only in `verify-generated` would
+  otherwise let a broken Markdown-only change pass.
+- Schedule/manual events have no PR base or push-before SHA. The repaired
+  #144 script uses its committed, validated source baseline for those events;
+  retain full checkout history and both lint scans. Do not substitute HEAD
+  for a missing base, which would hide new findings.
+- Preserve #143's unique non-PR run groups in both workflows, with PR-only
+  cancellation. The policy test understands the companion SHA/run-id
+  expression; merge conflicts must not restore shared ref-only grouping.
+- Recompute the nightly expected job-name multiset from the final jobs and
+  complete matrices, update aggregate scope assertions, and recheck the
+  ten-job antichain bound and main-only cache writers. New quality jobs must
+  not be silently omitted from coverage proof. Re-measure timing after any
+  scheduling barriers; the standalone wall-clock estimates exclude that work.
+
+`hack/workflowpolicy` now checks prerequisite files when present and rejects
+missing, skipped, unwired, or failure-tolerant integrated proofs by executing
+the aggregate's own Bash. Its synthetic integration cases validate the policy
+checker; they do not represent a hosted run of the future combined workflow.
+`CONTRIBUTING.md` conflicts with #148 remain with that file's maintainer.
+
 Ordinary pull requests run every existing proof: both Kubernetes profiles,
 all cold/warm admission legs, all three signed-installer legs, recovery,
 32 race shards and 33 envtest parts. Race uses max-parallel 4, envtest 3,
