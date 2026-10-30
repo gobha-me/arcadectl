@@ -267,20 +267,24 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 	}
 	// Independently derived golangci-lint baseline ratchet invariants (#106).
 	lintJob, lintExists := workflow.Jobs["golangci-lint"]
-	if !lintExists || lintJob.Name != "Golangci-lint baseline ratchet" || lintJob.RunsOn != "ubuntu-24.04" || lintJob.TimeoutMinutes != 20 || len(lintJob.Permissions) != 0 || len(lintJob.Env) != 2 || lintJob.Env["GOMAXPROCS"] != "2" || lintJob.Env["GOMEMLIMIT"] != "1GiB" || lintJob.Strategy.FailFast != nil || lintJob.Strategy.MaxParallel != 0 || len(lintJob.Strategy.Matrix.Shard) != 0 || len(lintJob.Strategy.Matrix.Part) != 0 || len(lintJob.Strategy.Matrix.Profile) != 0 || len(lintJob.Strategy.Matrix.Mode) != 0 || len(lintJob.Strategy.Matrix.Exclude) != 0 || len(lintJob.Steps) != 3 {
+	if !lintExists || lintJob.Name != "Golangci-lint baseline ratchet" || lintJob.RunsOn != "ubuntu-24.04" || lintJob.TimeoutMinutes != 20 || len(lintJob.Permissions) != 0 || len(lintJob.Env) != 2 || lintJob.Env["GOMAXPROCS"] != "2" || lintJob.Env["GOMEMLIMIT"] != "1GiB" || lintJob.Strategy.FailFast != nil || lintJob.Strategy.MaxParallel != 0 || len(lintJob.Strategy.Matrix.Shard) != 0 || len(lintJob.Strategy.Matrix.Part) != 0 || len(lintJob.Strategy.Matrix.Profile) != 0 || len(lintJob.Strategy.Matrix.Mode) != 0 || len(lintJob.Strategy.Matrix.Exclude) != 0 || len(lintJob.Steps) != 4 {
 		t.Fatal("golangci-lint ratchet altered its job identity, read-only permissions, bounded worker or strategy")
 	}
-	if lintJob.Steps[0].Name != "Check out exact source" || lintJob.Steps[0].Uses != "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" || len(lintJob.Steps[0].With) != 1 || lintJob.Steps[0].With["ref"] != "${{ github.event.pull_request.head.sha || github.sha }}" || lintJob.Steps[1].Name != "Set up Go" || lintJob.Steps[1].Uses != "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e" || len(lintJob.Steps[1].With) != 2 || lintJob.Steps[1].With["go-version-file"] != "go.mod" || lintJob.Steps[1].With["cache"] != true {
+	if lintJob.Steps[0].Name != "Check out exact source" || lintJob.Steps[0].Uses != "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" || len(lintJob.Steps[0].With) != 2 || lintJob.Steps[0].With["fetch-depth"] != 0 || lintJob.Steps[0].With["ref"] != "${{ github.event.pull_request.head.sha || github.sha }}" || lintJob.Steps[1].Name != "Set up Go" || lintJob.Steps[1].Uses != "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e" || len(lintJob.Steps[1].With) != 2 || lintJob.Steps[1].With["go-version-file"] != "go.mod" || lintJob.Steps[1].With["cache"] != true {
 		t.Fatal("golangci-lint ratchet altered exact source checkout or pinned Go setup")
 	}
 	ratchetAction := lintJob.Steps[2]
 	if ratchetAction.Name != "Fail on findings outside the committed baseline" || ratchetAction.Uses != "golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a" || strings.Count(string(body), "uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0") != 1 || len(ratchetAction.With) != 4 || ratchetAction.With["version"] != "v2.15.0" || ratchetAction.With["verify"] != true || ratchetAction.With["only-new-issues"] != false || ratchetAction.With["args"] != "--config=.golangci.yml --issues-exit-code=1 ./..." {
 		t.Fatal("golangci-lint ratchet must use SHA-pinned v9.3.0 action with v2.15.0, verify=true, only-new-issues=false and fail-closed whole-tree args")
 	}
-	for stepIdx, step := range lintJob.Steps {
+	for stepIdx, step := range lintJob.Steps[:3] {
 		if step.If != "" || step.ContinueOnError != nil || len(step.Env) != 0 || step.Run != "" {
 			t.Fatalf("golangci-lint step %d can be conditionally skipped, tolerate failure or override env/run", stepIdx)
 		}
+	}
+	newFindings := lintJob.Steps[3]
+	if newFindings.If != "" || newFindings.ContinueOnError != nil || newFindings.Uses != "" || len(newFindings.Env) != 1 || newFindings.Env["LINT_BASE_SHA"] != "${{ github.event.pull_request.base.sha || github.event.before }}" || newFindings.Run != "ARCADECTL_REQUIRE_LINT_TOOL=1 go test ./hack/lintpolicy -count=1\nbash hack/lint-new-findings.sh\n" {
+		t.Fatal("new findings must use the exclusion-free ratchet and exact event base without skip or failure tolerance")
 	}
 	if gate.Name != "Go and policy" || gate.RunsOn != "ubuntu-24.04" || len(gate.Steps) != 2 || gate.Steps[0].Uses != "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" || gate.Steps[0].Run != "" || gate.Steps[0].If != "" || gate.Steps[0].ContinueOnError != nil || len(gate.Steps[0].Env) != 0 {
 		t.Fatal("protected aggregate changed its name, exact checkout or assertion-only scope")
@@ -574,20 +578,24 @@ func TestGolangciLintRatchetGateInvariants(t *testing.T) {
 		t.Fatal("workflow permissions are not read-only")
 	}
 	lint, ok := ci.Jobs["golangci-lint"]
-	if !ok || lint.Name != "Golangci-lint baseline ratchet" || len(lint.Permissions) != 0 || !diagnosticOrderingOnly(lint.Needs, lint.If, lint.ContinueOnError) || lint.RunsOn != "ubuntu-24.04" || lint.TimeoutMinutes != 20 || len(lint.Env) != 2 || lint.Env["GOMAXPROCS"] != "2" || lint.Env["GOMEMLIMIT"] != "1GiB" || len(lint.Steps) != 3 {
+	if !ok || lint.Name != "Golangci-lint baseline ratchet" || len(lint.Permissions) != 0 || !diagnosticOrderingOnly(lint.Needs, lint.If, lint.ContinueOnError) || lint.RunsOn != "ubuntu-24.04" || lint.TimeoutMinutes != 20 || len(lint.Env) != 2 || lint.Env["GOMAXPROCS"] != "2" || lint.Env["GOMEMLIMIT"] != "1GiB" || len(lint.Steps) != 4 {
 		t.Fatal("golangci-lint job missing or altered its identity, permissions, ordering barrier or worker bounds")
 	}
-	for i, step := range lint.Steps {
+	for i, step := range lint.Steps[:3] {
 		if step.If != "" || step.ContinueOnError != nil || len(step.Env) != 0 || step.Run != "" {
 			t.Fatalf("golangci-lint step %d permits conditional skip, failure tolerance or custom run/env", i)
 		}
 	}
-	if lint.Steps[0].Name != "Check out exact source" || lint.Steps[0].Uses != "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" || len(lint.Steps[0].With) != 1 || lint.Steps[0].With["ref"] != "${{ github.event.pull_request.head.sha || github.sha }}" || lint.Steps[1].Name != "Set up Go" || lint.Steps[1].Uses != "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e" || len(lint.Steps[1].With) != 2 || lint.Steps[1].With["go-version-file"] != "go.mod" || lint.Steps[1].With["cache"] != true {
+	if lint.Steps[0].Name != "Check out exact source" || lint.Steps[0].Uses != "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" || len(lint.Steps[0].With) != 2 || lint.Steps[0].With["fetch-depth"] != 0 || lint.Steps[0].With["ref"] != "${{ github.event.pull_request.head.sha || github.sha }}" || lint.Steps[1].Name != "Set up Go" || lint.Steps[1].Uses != "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e" || len(lint.Steps[1].With) != 2 || lint.Steps[1].With["go-version-file"] != "go.mod" || lint.Steps[1].With["cache"] != true {
 		t.Fatal("golangci-lint setup steps altered exact-source checkout or pinned Go toolchain")
 	}
 	actionStep := lint.Steps[2]
 	if actionStep.Name != "Fail on findings outside the committed baseline" || actionStep.Uses != "golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a" || strings.Count(string(body), "uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0") != 1 || len(actionStep.With) != 4 || actionStep.With["version"] != "v2.15.0" || actionStep.With["verify"] != true || actionStep.With["only-new-issues"] != false || actionStep.With["args"] != "--config=.golangci.yml --issues-exit-code=1 ./..." {
 		t.Fatal("golangci-lint action step altered SHA/version pinning, only-new-issues=false or fail-closed args")
+	}
+	diffStep := lint.Steps[3]
+	if diffStep.If != "" || diffStep.ContinueOnError != nil || diffStep.Uses != "" || len(diffStep.Env) != 1 || diffStep.Env["LINT_BASE_SHA"] != "${{ github.event.pull_request.base.sha || github.event.before }}" || diffStep.Run != "ARCADECTL_REQUIRE_LINT_TOOL=1 go test ./hack/lintpolicy -count=1\nbash hack/lint-new-findings.sh\n" {
+		t.Fatal("exclusion-free diff ratchet must run with the exact event base and fail closed")
 	}
 	gate, gateOK := ci.Jobs["go-and-policy"]
 	if !gateOK || !slices.Contains(gate.Needs, "golangci-lint") || len(gate.Steps) != 2 || gate.Steps[1].If != "" || gate.Steps[1].ContinueOnError != nil || gate.Steps[1].Env["GOLANGCI_LINT_RESULT"] != "${{ needs.golangci-lint.result }}" {
