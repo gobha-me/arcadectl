@@ -35,6 +35,10 @@ func TestKindSoakRunnerBoundariesAndEvidence(t *testing.T) {
 		{name: "short", ci: "true", evidence: "valid", wantRounds: 1},
 		{name: "long", ci: "true", args: []string{"long"}, evidence: "valid", wantRounds: 12},
 		{name: "upgrade", ci: "true", args: []string{"upgrade"}, wantRounds: 1},
+		{name: "upgrade-empty", ci: "true", args: []string{"upgrade"}, wantCode: 1, wantRounds: 1},
+		{name: "upgrade-skipped", ci: "true", args: []string{"upgrade"}, wantCode: 1, wantRounds: 1},
+		{name: "upgrade-duplicate", ci: "true", args: []string{"upgrade"}, wantCode: 1, wantRounds: 1},
+		{name: "upgrade-failed", ci: "true", args: []string{"upgrade"}, childExit: "43", wantCode: 43, wantRounds: 1},
 		{name: "changed-source", ci: "true", evidence: "valid", wantCode: 1, wantRounds: 1},
 		{name: "child-timeout", ci: "true", childExit: "124", wantCode: 124, wantRounds: 1},
 		{name: "child-failed", ci: "true", childExit: "43", wantCode: 43, wantRounds: 1},
@@ -87,6 +91,14 @@ exec "$@"
 			write(filepath.Join(bin, "go"), `#!/bin/sh
 [ "${KUBECONFIG+x}" != x ] || exit 93
 printf '%s\n' "$*" >> "$SOAK_LOG"
+if [ "${SOAK_EXIT:-0}" = 0 ]; then
+ case "$SOAK_UPGRADE_PROOF" in
+  empty) : ;;
+  skipped) printf '        --- SKIP: TestKindSignedInstallerBinaryLifecycle/kubernetes-1.37.0/transition (0.00s)\n' ;;
+  *) printf '        --- PASS: TestKindSignedInstallerBinaryLifecycle/kubernetes-1.37.0/transition (0.00s)\n'
+     if [ "$SOAK_UPGRADE_PROOF" = duplicate ]; then printf '        --- PASS: TestKindSignedInstallerBinaryLifecycle/kubernetes-1.37.0/transition (0.00s)\n'; fi ;;
+ esac
+fi
 exit "${SOAK_EXIT:-0}"
 `)
 			write(filepath.Join(hack, "test-kind-factorio.sh"), `#!/usr/bin/env bash
@@ -113,8 +125,10 @@ overlap=1
 				}
 			}
 			log := filepath.Join(root, "children.log")
+			upgrade := len(test.args) > 0 && test.args[0] == "upgrade"
+			proof := strings.TrimPrefix(test.name, "upgrade-")
 			bound := "25m"
-			if test.name == "upgrade" {
+			if upgrade {
 				bound = "345m"
 			}
 			timeoutLog := filepath.Join(root, "timeouts.log")
@@ -125,7 +139,7 @@ overlap=1
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, "bash", append([]string{filepath.Join(hack, "test-kind-soak.sh")}, test.args...)...)
-			cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "CI="+test.ci, "SOAK_LOG="+log, "SOAK_EXIT="+code, "SOAK_EVIDENCE="+test.evidence, "SOAK_DIRTY="+strconv.FormatBool(test.dirty), "KUBECONFIG=ambient-must-not-be-used", "SOAK_BOUND="+bound, "SOAK_TIMEOUT_LOG="+timeoutLog, "SOAK_CHANGE="+strconv.FormatBool(test.name == "changed-source"), "SOAK_GIT_READS="+filepath.Join(root, "git-reads"), "SOAK_STATUS_FAIL="+strconv.FormatBool(test.name == "status-unavailable"))
+			cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "CI="+test.ci, "SOAK_LOG="+log, "SOAK_EXIT="+code, "SOAK_EVIDENCE="+test.evidence, "SOAK_DIRTY="+strconv.FormatBool(test.dirty), "KUBECONFIG=ambient-must-not-be-used", "SOAK_BOUND="+bound, "SOAK_TIMEOUT_LOG="+timeoutLog, "SOAK_CHANGE="+strconv.FormatBool(test.name == "changed-source"), "SOAK_GIT_READS="+filepath.Join(root, "git-reads"), "SOAK_STATUS_FAIL="+strconv.FormatBool(test.name == "status-unavailable"), "SOAK_UPGRADE_PROOF="+proof)
 			output, err := cmd.CombinedOutput()
 			got := 0
 			if err != nil {
@@ -158,7 +172,7 @@ overlap=1
 			if err != nil || strings.Count(string(timeouts), "\n") != test.wantRounds {
 				t.Fatal("child lacked exact outer deadline")
 			}
-			if test.name == "upgrade" && string(body) != "test -tags=kindinstall -p 1 -timeout=340m -v ./internal/installengine -run ^TestKindSignedInstallerBinaryLifecycle$/^kubernetes-1[.]37[.]0$/^transition$ -count=1\n" {
+			if upgrade && string(body) != "test -tags=kindinstall -p 1 -timeout=340m -v ./internal/installengine -run ^TestKindSignedInstallerBinaryLifecycle$/^kubernetes-1[.]37[.]0$/^transition$ -count=1\n" {
 				t.Fatalf("upgrade target changed: %s", body)
 			}
 			summaries, err := filepath.Glob(filepath.Join(root, "artifacts", "lifecycle-soak", "run.*", "summary.tsv"))
@@ -168,6 +182,16 @@ overlap=1
 			summary, err := os.ReadFile(summaries[0])
 			if err != nil || strings.Count(string(summary), "\n") != test.wantRounds+1 {
 				t.Fatalf("incomplete summary: %s %v", summary, err)
+			}
+			if upgrade {
+				marker, markerErr := os.ReadFile(filepath.Join(filepath.Dir(summaries[0]), "round-1", "transition.txt"))
+				if test.wantCode == 0 {
+					if markerErr != nil || string(marker) != "signed-transition=passed\n" {
+						t.Fatal("successful upgrade omitted exact-case proof")
+					}
+				} else if !os.IsNotExist(markerErr) {
+					t.Fatal("unsuccessful upgrade manufactured a proof marker")
+				}
 			}
 			rows := strings.Split(strings.TrimSpace(string(summary)), "\n")
 			fields := strings.Split(rows[len(rows)-1], "\t")

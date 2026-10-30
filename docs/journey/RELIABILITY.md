@@ -30,8 +30,10 @@ real cluster or locally while the heavy-run hold is in effect.
 
 The upgrade mode additionally needs the exact historical installer commits
 and provenance checks described in [INSTALLATION_PACKAGE.md](../INSTALLATION_PACKAGE.md).
-It retains only the numeric wrapper summary and the existing sanitized Go
-job output; it does not manufacture Factorio world evidence for that mode.
+It requires one exact transition-leaf PASS plus a successful Go process; empty,
+skipped or duplicate results refuse. It retains a literal `transition.txt`
+proof marker, the numeric wrapper summary and the existing sanitized Go job
+output; it does not manufacture Factorio world evidence for that mode.
 
 A nonzero child stops the sequence immediately, preserving its exit status.
 There is no success-through-retry. No later round runs after failed evidence

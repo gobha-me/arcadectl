@@ -81,9 +81,25 @@ for ((round=1; round<=rounds; round++)); do
   started=$SECONDS
   status=0
   if [[ "$mode" == upgrade ]]; then
-    timeout --foreground --kill-after=30s "$bound" \
+    # Go succeeds when no test matches. Require one exact leaf PASS as well
+    # as a successful process, retaining only a literal proof marker.
+    if timeout --foreground --kill-after=30s "$bound" \
       go test -tags=kindinstall -p 1 -timeout=340m -v ./internal/installengine \
-      -run '^TestKindSignedInstallerBinaryLifecycle$/^kubernetes-1[.]37[.]0$/^transition$' -count=1 || status=$?
+      -run '^TestKindSignedInstallerBinaryLifecycle$/^kubernetes-1[.]37[.]0$/^transition$' -count=1 \
+      | awk -v proof="$round_root/transition.txt" '
+          /^[[:space:]]*--- PASS: TestKindSignedInstallerBinaryLifecycle\/kubernetes-1[.]37[.]0\/transition \([0-9]+[.][0-9]+s\)$/ { passed++ }
+          { print; fflush() }
+          END { if (passed != 1) exit 1; print "signed-transition=passed" > proof; if (close(proof) != 0) exit 1 }
+        '; then
+      status=0
+    else
+      transition_status=("${PIPESTATUS[@]}")
+      status=${transition_status[0]}
+      if [[ "$status" == 0 ]]; then
+        status=1
+        echo 'required exact signed transition did not pass; inspect the selected test and CI output' >&2
+      fi
+    fi
   else
     timeout --foreground --kill-after=30s "$bound" bash "$repository_root/hack/test-kind-factorio.sh" || status=$?
     if [[ "$status" == 0 ]]; then verify_factorio_evidence "$round_root" || status=1; fi
