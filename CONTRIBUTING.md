@@ -18,6 +18,8 @@ Documentation-only pull requests must also run `make verify-doc-links`. CI scope
 selection must keep this lightweight check mandatory even when Go, image, or
 Kind jobs are skipped. A passing code-scope gate does not replace this check.
 
+## Contribution workflow
+
 Contributions should:
 
 - preserve the game-neutral platform boundary;
