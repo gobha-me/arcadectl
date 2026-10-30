@@ -5,8 +5,8 @@
 """Enforce Gremlins v0.6.0 metrics and require conclusive mutant results.
 
 Viper returns float flags as strings; Gremlins' typed configuration getter
-therefore reads the CLI thresholds as zero. Check the reported JSON metrics
-and count every mutation separately: timeouts are never kills. Exit codes:
+therefore reads the CLI thresholds as zero. Derive metrics from mutation
+statuses and reconcile the reported summaries: timeouts are never kills. Exit codes:
 0 = PASS, 1 = FAIL (including invalid reports), 2 = INCONCLUSIVE (>20% timed
 out). Both non-zero codes fail the gate. An optional fourth argument labels
 the package; otherwise the report filename is used.
@@ -87,18 +87,22 @@ def check_report(report, efficacy, mcover, package):
                 f"invalid {key}: expected {expected} from mutation statuses"
             )
 
+    # Match v0.6.0 report.go: zero denominators yield zero; unresolved
+    # mutants contribute to neither metric and are rejected below.
+    covered = counts["KILLED"] + counts["LIVED"]
+    coverable = covered + counts["NOT COVERED"]
     metrics = (
-        (
-            "test_efficacy",
-            percentage(report["test_efficacy"], "test_efficacy"),
-            efficacy,
-        ),
-        (
-            "mutations_coverage",
-            percentage(report["mutations_coverage"], "mutations_coverage"),
-            mcover,
-        ),
+        ("test_efficacy", counts["KILLED"] / covered * 100 if covered else 0, efficacy),
+        ("mutations_coverage", covered / coverable * 100 if coverable else 0, mcover),
     )
+    for name, expected, _ in metrics:
+        reported = percentage(report[name], name)
+        # Permit only floating-point calculation noise, not rounded summaries.
+        # Thresholds below always use the derived value, never this tolerance.
+        if not math.isclose(reported, expected, rel_tol=1e-12, abs_tol=1e-12):
+            raise ValueError(
+                f"invalid {name}: expected {expected:g} from mutation statuses"
+            )
     total = sum(counts.values())
     timeout_share = counts["TIMED OUT"] / total * 100
     inconclusive = counts["TIMED OUT"] * 5 > total
