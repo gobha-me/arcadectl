@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -250,6 +251,50 @@ func TestCollectorRejectsOversizedProviderPage(t *testing.T) {
 				}
 			} else if err == nil {
 				t.Fatal("provider page larger than the requested 64 rows was accepted")
+			}
+		})
+	}
+}
+
+func TestCollectorRetainsCapacityAndRejectsOversizedTotals(t *testing.T) {
+	q, metadata, _, _ := evidenceFixture()
+	var source strings.Builder
+	source.WriteString("name: CI\njobs:\n")
+	rows := make([]job, 2048)
+	for i := range rows {
+		_, _ = fmt.Fprintf(&source, "  proof%04d: {name: Proof%04d}\n", i, i)
+		rows[i] = job{ID: int64(i + 1), RunID: q.RunID, Attempt: 1, SHA: q.SHA, Name: fmt.Sprintf("Proof%04d", i), Status: "completed", Conclusion: "success"}
+	}
+	for _, total := range []int{2048, 2049} {
+		t.Run(fmt.Sprint(total), func(t *testing.T) {
+			runReads, pages := 0, 0
+			execute := func(_ context.Context, executable string, args ...string) ([]byte, error) {
+				key := executable + " " + strings.Join(args, " ")
+				switch key {
+				case "git show " + q.SHA + ":" + workflowPath:
+					return []byte(source.String()), nil
+				case "git rev-parse " + q.SHA + ":" + workflowPath:
+					return []byte(strings.Repeat("c", 40)), nil
+				case "gh api --hostname github.com repos/gobha-me/arcadectl/actions/runs/42":
+					runReads++
+					return json.Marshal(metadata)
+				}
+				const prefix = "gh api --hostname github.com repos/gobha-me/arcadectl/actions/runs/42/jobs?filter=latest&per_page=64&page="
+				page, err := strconv.Atoi(strings.TrimPrefix(key, prefix))
+				if err != nil || key != prefix+strconv.Itoa(page) || page < 1 || page > 32 {
+					t.Fatalf("collector attempted an unexpected command: %s", key)
+				}
+				pages++
+				start := (page - 1) * 64
+				return json.Marshal(map[string]any{"total_count": total, "jobs": rows[start : start+64]})
+			}
+			result, err := collect(t.Context(), q, execute)
+			if total == 2048 {
+				if err != nil || result.Verdict != "pass" || len(result.Checks) != 2048 || pages != 32 || runReads != 2 {
+					t.Fatal("64-row pages lost the complete 2048-job capacity", err)
+				}
+			} else if err == nil || pages != 1 || runReads != 1 {
+				t.Fatal("oversized total was not refused on the first jobs page")
 			}
 		})
 	}
