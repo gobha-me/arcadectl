@@ -74,7 +74,7 @@ func TestIdenticalNewErrcheckLineCannotHideInBaseline(t *testing.T) {
 	run(false, "git", "config", "user.name", "Projects Lead (agent)")
 	run(false, "git", "config", "user.email", "agents@noreply.invalid")
 	run(false, "git", "add", ".")
-	run(false, "git", "commit", "--quiet", "-m", "lint fixture baseline", "-m", "Co-authored-by: Codex (gpt-6.1-sol) <agents@noreply.invalid>\nAgent-Role: tests (Codex, needs non-author re-make)")
+	run(false, "git", "commit", "--quiet", "-m", "lint fixture baseline", "-m", "Agent: Codex (via Projects Lead)\nAgent-Role: tests (Codex, needs non-author re-make)")
 	base := strings.TrimSpace(run(false, "git", "rev-parse", "HEAD"))
 	run(false, "env", "LINT_BASE_SHA="+base, "bash", "hack/lint-new-findings.sh")
 	write(path, existing+strings.ReplaceAll(function, "NAME", "Added"))
