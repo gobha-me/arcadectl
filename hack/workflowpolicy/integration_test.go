@@ -202,6 +202,9 @@ func TestIntegratedProofsRejectBypasses(t *testing.T) {
 	if err := validateIntegratedProofs(integratedCandidate(t), integratedProofs); err != nil {
 		t.Fatal("positive gate control refused:", err)
 	}
+	if err := verifyGateBehavior(integratedCandidate(t)); err != nil {
+		t.Fatal("integrated result tables refused the positive gate control:", err)
+	}
 	for _, bad := range []string{"missing-needs", "skipped-docs", "tolerated-step", "unwired-result", "aggregate-bypass"} {
 		t.Run(bad, func(t *testing.T) {
 			wf := integratedCandidate(t)

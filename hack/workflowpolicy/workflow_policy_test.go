@@ -1013,6 +1013,13 @@ func verifyGateBehavior(wf *workflowFile) error {
 		return fmt.Errorf("gate step env must bind CI_REF=${{ github.ref }}, got %q", step.Env["CI_REF"])
 	}
 	cheapJobs := []string{"installer-diagnostics", "go-policy-checks"}
+	var qualityJobs []string
+	for _, proof := range integratedProofs {
+		if _, present := wf.Jobs[proof.job]; present {
+			qualityJobs = append(qualityJobs, proof.job)
+			cheapJobs = append(cheapJobs, proof.job)
+		}
+	}
 	var proofJobs []string // everything except the classifier
 	for _, job := range gate.Needs {
 		if job != "classify" {
@@ -1100,7 +1107,7 @@ func verifyGateBehavior(wf *workflowFile) error {
 		return err
 	}
 	for _, job := range proofJobs {
-		for _, bad := range []string{"failure", "cancelled"} {
+		for _, bad := range []string{"failure", "cancelled", ""} {
 			if err := mustFail(fmt.Sprintf("cheap scope with %s=%s", job, bad), "cheap", with(cheap, job, bad)); err != nil {
 				return err
 			}
@@ -1112,13 +1119,23 @@ func verifyGateBehavior(wf *workflowFile) error {
 		}
 	}
 
+	docsResults := uniform("success", "skipped")
+	for _, job := range qualityJobs {
+		docsResults[job] = "success"
+	}
 	for _, scope := range []string{"docs", "idle"} {
 		skipped := uniform("success", "skipped")
+		if scope == "docs" {
+			skipped = maps.Clone(docsResults)
+		}
 		if err := mustPass(scope+" scope, every proof skipped", scope, skipped); err != nil {
 			return err
 		}
 		for _, job := range proofJobs {
-			for _, other := range []string{"failure", "cancelled", "success"} {
+			for _, other := range []string{"failure", "cancelled", "success", "skipped", ""} {
+				if other == skipped[job] {
+					continue
+				}
 				if err := mustFail(fmt.Sprintf("%s scope with %s=%s", scope, job, other), scope, with(skipped, job, other)); err != nil {
 					return err
 				}
@@ -1136,7 +1153,7 @@ func verifyGateBehavior(wf *workflowFile) error {
 	scopeGreen := map[string]map[string]string{
 		"cheap": cheap,
 		"idle":  uniform("success", "skipped"),
-		"docs":  uniform("success", "skipped"),
+		"docs":  docsResults,
 	}
 	pairs := []eventRef{
 		{"pull_request", "refs/pull/1/merge"}, {"pull_request", "refs/heads/main"},
