@@ -527,6 +527,7 @@ type ghEvalContext struct {
 	Workflow  string
 	EventName string
 	Ref       string
+	SHA       string
 	RunID     string
 	PRNumber  string
 }
@@ -539,6 +540,8 @@ func (c ghEvalContext) lookup(ident string) (string, error) {
 		return c.EventName, nil
 	case "github.ref":
 		return c.Ref, nil
+	case "github.sha":
+		return c.SHA, nil
 	case "github.run_id":
 		return c.RunID, nil
 	case "github.event.pull_request.number":
@@ -890,6 +893,9 @@ func validateConcurrency(wf *workflowFile) error {
 	cancelExpr, ok := wf.Concurrency["cancel-in-progress"].(string)
 	if !ok || cancelExpr != wantCancel {
 		return fmt.Errorf("workflow concurrency cancel-in-progress = %#v, want %q", wf.Concurrency["cancel-in-progress"], wantCancel)
+	}
+	if groupExpr == companionConcurrencyGroup {
+		return validateCompanionConcurrency(wf)
 	}
 	innerCancel := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(cancelExpr), "${{"), "}}")
 
