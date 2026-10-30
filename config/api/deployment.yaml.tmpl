@@ -66,13 +66,6 @@ spec:
             port: health
           periodSeconds: 10
           timeoutSeconds: 1
-        startupProbe:
-          httpGet:
-            path: /livez
-            port: health
-          periodSeconds: 2
-          timeoutSeconds: 1
-          failureThreshold: 30
         volumeMounts:
         - name: verifier
           mountPath: /var/run/arcadectl/auth

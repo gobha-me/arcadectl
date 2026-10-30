@@ -4,14 +4,23 @@
 package install
 
 import (
+	"reflect"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
-func TestControlPlaneStartupProbesUsePrivateLivenessEndpoints(t *testing.T) {
+func TestControlPlaneHealthProbesKeepOriginalStartupBudget(t *testing.T) {
 	want := map[string]string{"arcadectl-controller": "/healthz", "arcadectl-destroy-controller": "/healthz", "arcadectl-api": "/livez"}
 	seen := map[string]bool{}
+	probe := func(path string, initial, period, timeout, failures int32) *corev1.Probe {
+		return &corev1.Probe{
+			ProbeHandler:        corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: path, Port: intstr.FromString("health")}},
+			InitialDelaySeconds: initial, PeriodSeconds: period, TimeoutSeconds: timeout, FailureThreshold: failures,
+		}
+	}
 	objects := append(decodeObjects(t, renderController(t, testControllerImage)), decodeObjects(t, renderAPI(t, testAPIImage))...)
 	for _, object := range objects {
 		if object.GetKind() != "Deployment" {
@@ -25,12 +34,19 @@ func TestControlPlaneStartupProbesUsePrivateLivenessEndpoints(t *testing.T) {
 		}
 		seen[deployment.Name] = true
 		container := deployment.Spec.Template.Spec.Containers[0]
-		probe := container.StartupProbe
-		if probe == nil || probe.HTTPGet == nil || probe.HTTPGet.Path != path || probe.HTTPGet.Port.StrVal != "health" || probe.HTTPGet.Host != "" || len(probe.HTTPGet.HTTPHeaders) != 0 || probe.PeriodSeconds != 2 || probe.TimeoutSeconds != 1 || probe.FailureThreshold != 30 || container.ReadinessProbe == nil || container.LivenessProbe == nil {
-			t.Fatal("startup probe changed its bounded private liveness contract")
+		if container.StartupProbe != nil {
+			t.Fatal("startup probe delays the original liveness/readiness schedule")
+		}
+		live, ready := probe(path, 2, 10, 2, 3), probe("/readyz", 2, 10, 2, 3)
+		if deployment.Name == "arcadectl-api" {
+			// The API manifest retains Kubernetes' default failure threshold.
+			live, ready = probe(path, 0, 10, 1, 0), probe("/readyz", 0, 2, 1, 0)
+		}
+		if !reflect.DeepEqual(container.LivenessProbe, live) || !reflect.DeepEqual(container.ReadinessProbe, ready) {
+			t.Fatal("private health probes changed the original startup failure budget")
 		}
 	}
 	if len(seen) != len(want) {
-		t.Fatal("control-plane startup probe coverage is incomplete")
+		t.Fatal("control-plane health probe coverage is incomplete")
 	}
 }

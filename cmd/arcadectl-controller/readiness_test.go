@@ -156,7 +156,9 @@ func TestControllerReadinessRequiresCacheSyncAndStopsOnShutdown(t *testing.T) {
 func TestControllerReadinessWaitUsesRequestAndManagerCancellation(t *testing.T) {
 	for _, cancelManager := range []bool{false, true} {
 		lifecycle, stopManager := context.WithCancel(t.Context())
+		defer stopManager()
 		requestCtx, stopRequest := context.WithCancel(t.Context())
+		defer stopRequest()
 		entered := make(chan struct{})
 		finished := make(chan error, 1)
 		check := controllerReadiness(lifecycle, func(ctx context.Context) bool {
@@ -168,7 +170,13 @@ func TestControllerReadinessWaitUsesRequestAndManagerCancellation(t *testing.T) 
 			return true // cancellation must still override a late positive result
 		})
 		go func() { finished <- check(httptest.NewRequest("GET", "/readyz", nil).WithContext(requestCtx)) }()
-		<-entered
+		select {
+		case <-entered:
+		case err := <-finished:
+			t.Fatalf("readiness returned before invoking the cache wait: %v", err)
+		case <-time.After(2 * time.Second):
+			t.Fatal("readiness did not enter the cache wait")
+		}
 		if cancelManager {
 			stopManager()
 		} else {

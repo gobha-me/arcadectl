@@ -20,11 +20,11 @@ its authentication dependencies; a process responding to liveness alone is not
 ready for administration. The private health ports are not player endpoints or
 public Service ports.
 
-Both controller modes and the API have a startup probe against their process
-liveness endpoint, with 30 attempts at two-second intervals and a one-second
-per-request timeout. This lets the process start before ordinary liveness and
-readiness probing begins. Failure to synchronize caches keeps readiness false;
-it does not convert a dependency failure into a process-liveness failure.
+Both controller modes and the API use their original liveness and readiness
+probe schedules from startup, without an additional startup-probe grace period.
+Controllers retain the two-second initial delay and ten-second liveness period;
+the API retains its ten-second liveness period. Failure to synchronize caches
+keeps readiness false while process liveness retains its existing meaning.
 
 Initial operator signals:
 
@@ -178,3 +178,8 @@ and migration rules above apply to these families as well.
 The #38 Kubernetes Events and integration with the complete redacted diagnostics
 bundle remain acceptance work. Health and telemetry alone do not complete that
 issue.
+
+The opt-in API ingress policy in `config/networkpolicy` denies pod-network
+metrics scrapes on health port 8081 as well as admin API ingress. Monitoring
+collectors require a separately reviewed ingress allowance; kubelet probe and
+CRI port-forward behavior do not grant a generic monitoring-pod path.
