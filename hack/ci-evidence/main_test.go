@@ -164,15 +164,15 @@ func TestCollectorPaginatesAllJobsAndRejectsChangingSnapshots(t *testing.T) {
 						copy.Name = "Diagnostic"
 					}
 					return json.Marshal(copy)
-				case "gh api --hostname github.com repos/gobha-me/arcadectl/actions/runs/42/jobs?filter=latest&per_page=100&page=1":
+				case "gh api --hostname github.com repos/gobha-me/arcadectl/actions/runs/42/jobs?filter=latest&per_page=64&page=1":
 					pages++
 					if fault == "remote-error" {
 						return nil, errors.New("PRIVATE-EVIDENCE-CANARY")
 					}
-					return json.Marshal(map[string]any{"total_count": 120, "jobs": all[:100]})
-				case "gh api --hostname github.com repos/gobha-me/arcadectl/actions/runs/42/jobs?filter=latest&per_page=100&page=2":
+					return json.Marshal(map[string]any{"total_count": 120, "jobs": all[:64]})
+				case "gh api --hostname github.com repos/gobha-me/arcadectl/actions/runs/42/jobs?filter=latest&per_page=64&page=2":
 					pages++
-					total, tail := 120, all[100:]
+					total, tail := 120, all[64:]
 					if fault == "changing-total" {
 						total++
 					}
@@ -214,5 +214,43 @@ func TestCollectorCLIRejectsInvalidArgumentsAndWithholdsProviderErrors(t *testin
 	})
 	if code != 2 || strings.Contains(stdout.String()+stderr.String(), "PRIVATE") || !strings.Contains(stdout.String(), `"verdict":"unavailable"`) {
 		t.Fatal("unavailable evidence did not remain distinct from a pass, or leaked provider text")
+	}
+}
+
+func TestCollectorRejectsOversizedProviderPage(t *testing.T) {
+	for _, count := range []int{2, 65} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			q, metadata, _, jobs := evidenceFixture()
+			workflow := []byte("name: CI\njobs:\n  foundation: {name: Foundation}\n  native: {name: Native proof}\n")
+			rows := make([]job, count)
+			for i := range rows {
+				rows[i] = jobs[i%len(jobs)]
+				rows[i].ID = int64(i + 1)
+			}
+			execute := func(_ context.Context, executable string, args ...string) ([]byte, error) {
+				key := executable + " " + strings.Join(args, " ")
+				switch key {
+				case "git show " + q.SHA + ":" + workflowPath:
+					return workflow, nil
+				case "git rev-parse " + q.SHA + ":" + workflowPath:
+					return []byte(strings.Repeat("c", 40)), nil
+				case "gh api --hostname github.com repos/gobha-me/arcadectl/actions/runs/42":
+					return json.Marshal(metadata)
+				case "gh api --hostname github.com repos/gobha-me/arcadectl/actions/runs/42/jobs?filter=latest&per_page=64&page=1":
+					return json.Marshal(map[string]any{"total_count": count, "jobs": rows})
+				default:
+					t.Fatalf("collector attempted an unexpected command: %s", key)
+					return nil, errEvidence
+				}
+			}
+			result, err := collect(t.Context(), q, execute)
+			if count == 2 {
+				if err != nil || result.Verdict != "pass" || len(result.Checks) != 2 {
+					t.Fatal("complete control evidence did not pass", err)
+				}
+			} else if err == nil {
+				t.Fatal("provider page larger than the requested 64 rows was accepted")
+			}
+		})
 	}
 }

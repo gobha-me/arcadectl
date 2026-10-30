@@ -58,6 +58,11 @@ Archive earlier failures separately rather than erasing their history.
 program's exit status. Build the binary if automation needs the exact numeric
 exit values above. Always retain and inspect the versioned JSON verdict.
 
+The collector requests 64 jobs per page and verifies the declared total across
+at most 32 pages (2,048 jobs). This limits individual API response sizes while
+preserving complete enumeration and the two-minute collection deadline. An API
+retrieval error remains `unavailable`, including for an otherwise successful run.
+
 The collector is deliberately strict. Dynamic matrices, matrix `include`,
 unresolved name expressions, implicit matrix display names, ambiguous duplicate
 names, excessive expansion, and incomplete pagination are unsupported evidence,

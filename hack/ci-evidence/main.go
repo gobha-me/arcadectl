@@ -26,6 +26,9 @@ import (
 
 const workflowPath = ".github/workflows/ci.yml"
 
+// Keep each jobs response bounded while retaining 32 pages / 2,048 jobs.
+const jobsPerPage = 64
+
 var errEvidence = errors.New("CI evidence is unavailable or inconsistent")
 var fullSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 var repositoryName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]+$`)
@@ -339,12 +342,12 @@ func collect(ctx context.Context, request request, execute command) (report, err
 	var jobs []job
 	total := -1
 	for page := 1; page <= 32; page++ {
-		body, err := execute(ctx, "gh", "api", "--hostname", "github.com", fmt.Sprintf("%s/jobs?filter=latest&per_page=100&page=%d", endpoint, page))
+		body, err := execute(ctx, "gh", "api", "--hostname", "github.com", fmt.Sprintf("%s/jobs?filter=latest&per_page=%d&page=%d", endpoint, jobsPerPage, page))
 		var data struct {
 			Total int   `json:"total_count"`
 			Jobs  []job `json:"jobs"`
 		}
-		if err != nil || json.Unmarshal(body, &data) != nil || data.Total < 0 || data.Total > 2048 || len(data.Jobs) > 100 || total >= 0 && data.Total != total {
+		if err != nil || json.Unmarshal(body, &data) != nil || data.Total < 0 || data.Total > 2048 || len(data.Jobs) > jobsPerPage || total >= 0 && data.Total != total {
 			return report{}, errEvidence
 		}
 		total = data.Total
