@@ -283,7 +283,7 @@ func fixedRoute(method, path string) (adminv1.Route, bool) {
 }
 func responseLimit(schema string) int64 {
 	switch schema {
-	case "Self":
+	case "Self", "ComponentVersion":
 		return 2048
 	case "Server":
 		return 128 * 1024
@@ -456,6 +456,18 @@ func (c *Client) request(ctx context.Context, method, path string, body []byte, 
 	}
 	media, _, e := mime.ParseMediaType(response.Header.Get("Content-Type"))
 	if e != nil || media != "application/json" {
+		// The older authenticated router uses net/http's exact plain-text 404
+		// for an unknown version endpoint. This typed negative capability is
+		// limited to this optional read; it supplies no mutation evidence.
+		if !mutation && method == http.MethodGet && path == "/v1/version" && response.StatusCode == http.StatusNotFound && e == nil && media == "text/plain" {
+			legacy, readErr := io.ReadAll(io.LimitReader(response.Body, 128))
+			if readErr != nil && requestInterrupted(readErr) {
+				return response.StatusCode, nil, nil, requestFailure(readErr, false)
+			}
+			if readErr == nil && bytes.Equal(legacy, []byte("404 page not found\n")) {
+				return response.StatusCode, nil, nil, &Error{Code: "not_found", HTTPStatus: http.StatusNotFound}
+			}
+		}
 		return response.StatusCode, nil, nil, &Error{Code: "invalid_response", Ambiguous: mutation}
 	}
 	contents, e := io.ReadAll(io.LimitReader(response.Body, max+1))

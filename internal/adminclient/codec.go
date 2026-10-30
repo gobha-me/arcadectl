@@ -129,6 +129,9 @@ func decodeResponse(body []byte, out any) error {
 }
 func destinationMatches(schema string, out any) bool {
 	switch schema {
+	case "ComponentVersion":
+		_, ok := out.(*adminv1.ComponentVersion)
+		return ok
 	case "Self":
 		_, ok := out.(*adminv1.Self)
 		return ok
@@ -246,6 +249,10 @@ func validPreview(v *adminv1.DestroyPreview) bool {
 func validateResponse(out any) error {
 	valid := false
 	switch v := out.(type) {
+	case *adminv1.ComponentVersion:
+		knownSource := regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(v.SourceSHA) && v.SourceEpoch > 0 && v.SourceEpoch <= 253402300799
+		unknownSource := v.SourceSHA == "unknown" && v.SourceEpoch == 0
+		valid = v.Version == "v1" && (knownSource || unknownSource) && regexp.MustCompile(`^go[0-9]{1,3}\.[0-9]{1,3}(\.[0-9]{1,3})?((rc|beta)[0-9]{1,3})?$`).MatchString(v.GoVersion) && regexp.MustCompile(`^[a-z0-9]{1,16}$`).MatchString(v.OS) && regexp.MustCompile(`^[a-z0-9]{1,16}$`).MatchString(v.Arch)
 	case *adminv1.Self:
 		valid = v.Version == "v1" && v.PrincipalID == "admin" && uidPattern.MatchString(v.CredentialID) && labelPattern.MatchString(v.Namespace) && validTime(v.ExpiresAt, false)
 	case *adminv1.Server:

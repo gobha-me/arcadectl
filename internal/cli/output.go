@@ -15,6 +15,7 @@ import (
 	"github.com/gobha-me/arcadectl/internal/cliattempt"
 	"github.com/gobha-me/arcadectl/internal/clidestroy"
 	"github.com/gobha-me/arcadectl/internal/clilifecycle"
+	"github.com/gobha-me/arcadectl/internal/supportbundle"
 )
 
 type cliFailure struct {
@@ -36,6 +37,9 @@ func classify(err error) *cliFailure {
 	}
 	if errors.Is(err, context.Canceled) {
 		return failure("interrupted", 130)
+	}
+	if errors.Is(err, supportbundle.ErrTargetChanged) {
+		return failure("diagnostic_target_changed", 4)
 	}
 	var remote *adminclient.Error
 	if errors.As(err, &remote) {
@@ -114,6 +118,8 @@ func safeReason(code string) string {
 
 func guidance(code string) string {
 	switch code {
+	case "diagnostic_target_changed":
+		return "Read the current server identity and collect a new diagnostic."
 	case "admitted_receipt_missing":
 		return "The previously admitted receipt is missing. Inspect the original endpoint and audit evidence; never resubmit or replace this intent."
 	case "outcome_unknown":
@@ -177,6 +183,18 @@ func (app *application) emit(value any) error {
 	}
 	var err error
 	switch v := value.(type) {
+	case supportbundle.Bundle:
+		_, err = fmt.Fprintf(app.options.Out, "partial support bundle server=%s uid=%s generation=%d scope=%s\n", v.Server.Name, v.Server.UID, v.Server.Generation, v.Scope)
+		for _, omission := range v.Omissions {
+			if err != nil {
+				break
+			}
+			_, err = fmt.Fprintf(app.options.Out, "omitted=%s\n", omission)
+		}
+		if err == nil {
+			return app.emit(adminv1.Server{Name: v.Server.Name, UID: v.Server.UID, Generation: v.Server.Generation, ObservedGeneration: v.Server.ObservedGeneration,
+				DesiredState: v.Server.DesiredState, Phase: v.Server.Phase, Conditions: v.Server.Conditions})
+		}
 	case adminv1.Server:
 		_, err = fmt.Fprintf(app.options.Out, "server %s %s desired=%s uid=%s generation=%d observed=%d\n", v.Name, v.Phase, v.DesiredState, v.UID, v.Generation, v.ObservedGeneration)
 		for _, condition := range v.Conditions {
@@ -184,6 +202,9 @@ func (app *application) emit(value any) error {
 				break
 			}
 			_, err = fmt.Fprintf(app.options.Out, "condition=%s status=%s reason=%s observed=%d\n", condition.Type, condition.Status, condition.Reason, condition.ObservedGeneration)
+			if reason, action := adminv1.ConditionGuidance(condition.Reason); err == nil && reason == condition.Reason && action != "" {
+				_, err = fmt.Fprintln(app.options.Out, action)
+			}
 		}
 		for _, endpoint := range v.Endpoints {
 			if err != nil {
