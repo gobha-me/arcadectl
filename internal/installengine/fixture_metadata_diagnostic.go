@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strconv"
 	"sync/atomic"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -15,7 +16,8 @@ import (
 // Only numeric labels survive the already-refused comparison. This recorder
 // retains no object, identity, metadata, context, callback or provider error.
 type typedMetadataDiagnostic struct {
-	value atomic.Uint32
+	value  atomic.Uint32
+	detail atomic.Uint32
 }
 
 var typedMetadataKinds = [...]string{
@@ -60,11 +62,18 @@ func typedMetadataMismatchField(observed, wanted metav1.ObjectMeta) uint32 {
 // Every correlation invocation installs a new recorder. A late completion
 // writes only its own recorder and cannot republish it after a reset.
 func beginTypedMetadataDiagnostic(ctx context.Context) func(string, metav1.ObjectMeta, metav1.ObjectMeta) {
+	record := beginTypedMetadataScopedDiagnostic(ctx)
+	return func(kind string, observed, wanted metav1.ObjectMeta) { record(kind, observed, wanted, -2) }
+}
+
+// scope is -1 for a nonfixture row, or the fixed original fixture slot. -2
+// leaves the optional detail absent. No object, ledger or address is retained.
+func beginTypedMetadataScopedDiagnostic(ctx context.Context) func(string, metav1.ObjectMeta, metav1.ObjectMeta, int) {
 	if ctx != nil {
 		if trace, ok := ctx.Value(admissionTraceKey{}).(*admissionTrace); ok && trace != nil {
 			recorder := &typedMetadataDiagnostic{}
 			trace.typedMetadata.Store(recorder)
-			return func(kind string, observed, wanted metav1.ObjectMeta) {
+			return func(kind string, observed, wanted metav1.ObjectMeta, scope int) {
 				field := typedMetadataMismatchField(observed, wanted)
 				if field == 0 {
 					return
@@ -76,11 +85,64 @@ func beginTypedMetadataDiagnostic(ctx context.Context) func(string, metav1.Objec
 						break
 					}
 				}
+				recorder.detail.Store(0)
 				recorder.value.Store(kindID<<8 | field)
+				if scope >= -1 && scope < fixtureMaxSlots {
+					order := uint32(0)
+					gcRV, gcErr := strconv.ParseUint(observed.ResourceVersion, 10, 64)
+					typedRV, typedErr := strconv.ParseUint(wanted.ResourceVersion, 10, 64)
+					if gcErr == nil && typedErr == nil && fixtureRV(observed.ResourceVersion) && fixtureRV(wanted.ResourceVersion) {
+						switch {
+						case gcRV < typedRV:
+							order = 1
+						case gcRV == typedRV:
+							order = 2
+						default:
+							order = 3
+						}
+					}
+					metadata := uint32(2)
+					copy := observed
+					copy.ResourceVersion = wanted.ResourceVersion
+					if reflect.DeepEqual(copy, wanted) {
+						metadata = 1
+					}
+					recorder.detail.Store(uint32(scope+2) | order<<8 | metadata<<16)
+				}
 			}
 		}
 	}
-	return func(string, metav1.ObjectMeta, metav1.ObjectMeta) {}
+	return func(string, metav1.ObjectMeta, metav1.ObjectMeta, int) {}
+}
+
+func (trace *admissionTrace) typedMetadataDetailSnapshot() string {
+	if trace == nil || trace.typedMetadataSnapshot() == "" {
+		return ""
+	}
+	recorder := trace.typedMetadata.Load()
+	if recorder == nil {
+		return ""
+	}
+	value := recorder.detail.Load()
+	scope, order, metadata := value&255, value>>8&255, value>>16
+	if scope < 1 || scope > fixtureMaxSlots+1 || order > 3 || metadata < 1 || metadata > 2 {
+		return ""
+	}
+	label, slot := "nonfixture", -1
+	if scope > 1 {
+		label, slot = "fixture", int(scope)-2
+	}
+	return fmt.Sprintf("scope=%s slot=%d gc-rv-order=%s metadata=%s", label, slot,
+		[...]string{"unknown", "less", "equal", "greater"}[order], [...]string{"", "rv-only", "beyond-rv"}[metadata])
+}
+
+// TypedMetadataDetailSnapshot classifies an already-refused comparison. RV
+// ordering is a numeric comparison, not chronology, harmlessness or authority.
+func (d *LifecycleDiagnostic) TypedMetadataDetailSnapshot() string {
+	if d == nil {
+		return ""
+	}
+	return d.admission.typedMetadataDetailSnapshot()
 }
 
 func (trace *admissionTrace) typedMetadataSnapshot() string {

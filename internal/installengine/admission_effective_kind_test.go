@@ -37,7 +37,11 @@ func TestKindAdmissionEffectiveV3WithBaseline(t *testing.T) {
 func kindAdmissionMatrixFailureSummary(trace *admissionTrace) string {
 	stage, index := trace.snapshot()
 	phase, slot := trace.phaseSnapshot()
-	return fmt.Sprintf("diagnostic stage=%s index=%d phase=%s slot=%d typed-metadata=%q phase-floor=%q phase-floor-pod=%q", stage, index, phase, slot, trace.typedMetadataSnapshot(), trace.phaseFloorSnapshot(), trace.phaseFloorPodSnapshot())
+	message := fmt.Sprintf("diagnostic stage=%s index=%d phase=%s slot=%d typed-metadata=%q phase-floor=%q phase-floor-pod=%q", stage, index, phase, slot, trace.typedMetadataSnapshot(), trace.phaseFloorSnapshot(), trace.phaseFloorPodSnapshot())
+	if detail := trace.typedMetadataDetailSnapshot(); detail != "" {
+		message += fmt.Sprintf(" typed-metadata-detail=%q", detail)
+	}
+	return message
 }
 
 func proveKindAdmissionMatrix(t *testing.T, recipe string) {

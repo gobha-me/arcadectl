@@ -15,7 +15,23 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+func TestKindAdmissionMatrixFailureSummaryRetainsMetadataDetail(t *testing.T) {
+	ctx, diagnostic := WithLifecycleDiagnostic(t.Context())
+	traceAdmission(ctx, admissionCasePostObservation, 19)
+	traceAdmissionPhase(ctx, admissionPhaseOwnerTypedMetadata, -1)
+	beginTypedMetadataScopedDiagnostic(ctx)("Pod", metav1.ObjectMeta{ResourceVersion: "92"}, metav1.ObjectMeta{ResourceVersion: "91"}, fixturePlainPod)
+	detail := diagnostic.TypedMetadataDetailSnapshot()
+	if detail == "" || !strings.HasSuffix(kindAdmissionMatrixFailureSummary(&diagnostic.admission), " typed-metadata-detail="+strconv.Quote(detail)) {
+		t.Fatal("native refusal summary omitted the optional same-attempt metadata detail")
+	}
+	traceAdmissionPhase(ctx, admissionPhaseOriginal, -1)
+	if strings.Contains(kindAdmissionMatrixFailureSummary(&diagnostic.admission), "typed-metadata-detail") {
+		t.Fatal("next attempt retained earlier metadata context")
+	}
+}
 
 func TestKindAdmissionMatrixFailureSummary(t *testing.T) {
 	testKindAdmissionMatrixFailureSummary(t)
