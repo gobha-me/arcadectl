@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -138,6 +139,13 @@ func TestAdminAPIRefusesHTTP2ClientPrefaceOverTLS(t *testing.T) {
 	if len(response) == 0 {
 		if readErr == nil {
 			t.Fatal("expected HTTP/1.1 error response or connection close, got empty nil-error read")
+		}
+		var networkError net.Error
+		if errors.As(readErr, &networkError) && networkError.Timeout() {
+			t.Fatal("server stalled instead of rejecting the HTTP/2 preface")
+		}
+		if !errors.Is(readErr, io.EOF) && !errors.Is(readErr, syscall.ECONNRESET) {
+			t.Fatalf("expected a closed connection, got read error: %v", readErr)
 		}
 		return
 	}
