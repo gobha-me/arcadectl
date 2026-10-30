@@ -17,13 +17,10 @@ func TestArgusVerifierBundleRejectsCaseFoldedDuplicateKeys(t *testing.T) {
 		"exact duplicate (control)": base + `,"tokenSha256":"` + argusDigestB + `"}`,
 		"upper-case duplicate":      base + `,"TOKENSHA256":"` + argusDigestB + `"}`,
 		"long-s fold of serial":     base + `,"ſerial":7}`,
-		"kelvin-sign fold":          strings.Replace(base, `"version":"v1"`, `"version":"v1","\u212Aeep":1`, 1) + `}`,
+		"kelvin-sign fold":          base + `,"to\u212AenSha256":"` + argusDigestB + `"}`,
 	}
 	for name, input := range cases {
 		bundle, err := ParseVerifierBundle([]byte(input))
-		if name == "kelvin-sign fold" {
-			continue // unknown field; only a sanity case, not asserted
-		}
 		if err == nil {
 			t.Errorf("%s: accepted duplicate key; parsed serial=%d tokenSha256=%s…", name, bundle.Serial, bundle.TokenSHA256[:8])
 		}
