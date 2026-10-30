@@ -95,6 +95,7 @@ func TestInstallerHistoricalSourceAcquisitionSurvivesSquash(t *testing.T) {
 				Name string
 				If   string
 				Run  string
+				Env  map[string]string
 			}
 		}
 	}
@@ -111,6 +112,12 @@ test "$(git rev-parse '%s^')" = %s
 test "$(git rev-parse '%s^{tree}')" = %s
 test "$(git rev-parse '%s^')" = %s
 test "$(git rev-parse '%s^{tree}')" = %s`, binaryHistoricalInstallerSource, binaryHistoricalInstallerSource, binaryHistoricalInstallerSource, binaryHistoricalInstallerSource, binaryHistoricalInstallerTree, binaryHistoricalInstallerSource, binaryHistoricalInstallerDiagnosticBase, binaryHistoricalInstallerDiagnosticBase, binaryHistoricalInstallerDiagnosticBaseTree, binaryHistoricalInstallerDiagnosticBase, binaryHistoricalInstallerBase, binaryHistoricalInstallerBase, binaryHistoricalInstallerBaseTree)
+	const wantBinaryRun = `if [[ "$INSTALL_BINARY_MODE" == transition ]]; then
+  bash ./hack/ci-no-progress-watchdog.sh 30 "137 transition" \
+    make test-kind-install-binary INSTALL_BINARY_PROFILE="$INSTALL_BINARY_PROFILE" INSTALL_BINARY_MODE="$INSTALL_BINARY_MODE"
+else
+  make test-kind-install-binary INSTALL_BINARY_PROFILE="$INSTALL_BINARY_PROFILE" INSTALL_BINARY_MODE="$INSTALL_BINARY_MODE"
+fi`
 	count, binaryRuns, acquired := 0, 0, false
 	for _, step := range workflow.Jobs["kind-install-binary"].Steps {
 		if step.Name == "Acquire exact historical installer source" {
@@ -122,7 +129,7 @@ test "$(git rev-parse '%s^{tree}')" = %s`, binaryHistoricalInstallerSource, bina
 		}
 		if strings.Contains(step.Run, "make test-kind-install-binary") {
 			binaryRuns++
-			if !acquired || strings.TrimSpace(step.Run) != "make test-kind-install-binary INSTALL_BINARY_PROFILE='${{ matrix.profile }}' INSTALL_BINARY_MODE='${{ matrix.mode }}'" {
+			if !acquired || step.If != "" || len(step.Env) != 2 || step.Env["INSTALL_BINARY_PROFILE"] != "${{ matrix.profile }}" || step.Env["INSTALL_BINARY_MODE"] != "${{ matrix.mode }}" || strings.TrimSpace(step.Run) != wantBinaryRun {
 				t.Fatal("native transition command changed or can run before authentic historical source acquisition")
 			}
 		}
