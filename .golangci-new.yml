@@ -1,4 +1,5 @@
 # Diff ratchet for #114. Deliberately contains no baseline exclusions.
+# source-baseline: 0225dc4a1da171b3aa07028ab8e94e7e77ea8cf5
 version: "2"
 
 run:

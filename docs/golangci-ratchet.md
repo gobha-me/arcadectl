@@ -81,6 +81,19 @@ full history, and a missing or malformed base fails the check. New findings on
 added lines are reported even if their path, message, and source text match an
 old exclusion. Existing debt remains covered by the separate baseline scan.
 
+Scheduled and manual runs have neither a PR base nor a before-push SHA. When
+their `LINT_BASE_SHA` is empty, the script uses the single `# source-baseline:`
+SHA in `.golangci-new.yml`: `0225dc4a1da171b3aa07028ab8e94e7e77ea8cf5`, the
+source tree whose debt was inventoried above. The commit must be available and
+an ancestor of the checked-out source. This anchor stays fixed across runs;
+changing it is a lint-policy change requiring independent review, since
+advancing it could hide new identical-line findings. Missing, duplicate,
+malformed, unavailable, or non-ancestral anchors fail closed. This policy lets
+the scheduled/manual triggers proposed in #140 use the same exclusion-free
+ratchet without a workflow change. PRs, pushes, unknown events, and local calls
+still require an explicit valid base; a malformed explicit value is never
+replaced by the scheduled/manual fallback.
+
 To run both checks locally, select the intended base commit explicitly:
 
 ```sh
