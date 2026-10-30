@@ -120,6 +120,8 @@ func (r *GameServerReconciler) updateStatusWithData(ctx context.Context, server 
 	if err := r.Status().Update(ctx, updated); err != nil {
 		return errors.New("update GameServer status failed; inspect Kubernetes API availability")
 	}
+	r.telemetry.observeServer(server, updated)
+	logServerStatus(server, updated)
 	return nil
 }
 

@@ -44,6 +44,7 @@ const (
 // lifecycle controllers, that identity is allowed to delete managed PVCs.
 type GameDestroyReconciler struct {
 	client.Client
+	telemetry   *lifecycleTelemetry
 	APIReader   client.Reader
 	Scheme      *runtime.Scheme
 	Catalog     DefinitionCatalog
@@ -148,7 +149,12 @@ func (r *GameDestroyReconciler) status(ctx context.Context, d *arcade.GameDestro
 		}
 		meta.SetStatusCondition(&copy.Status.Conditions, metav1.Condition{Type: arcade.ConditionOperationComplete, Status: state, Reason: reason, Message: message, ObservedGeneration: d.Generation, LastTransitionTime: r.now()})
 	}
-	return r.Status().Update(ctx, copy)
+	if err := r.Status().Update(ctx, copy); err != nil {
+		return err
+	}
+	r.telemetry.observeOperation("destroy", "", string(d.Status.Phase), string(copy.Status.Phase), copy.Status.StartedAt, copy.Status.CompletedAt)
+	logOperationStatus("destroy", "", string(d.Status.Phase), string(copy.Status.Phase), copy.UID)
+	return nil
 }
 
 func (r *GameDestroyReconciler) hold(ctx context.Context, d *arcade.GameDestroy, reason, message string) (ctrl.Result, error) {
