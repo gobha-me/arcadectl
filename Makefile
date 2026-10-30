@@ -98,9 +98,10 @@ test-kind-recovery:
 	go test -timeout=2m ./cmd/arcadectl-controller
 	timeout --foreground 90m ./hack/test-kind-recovery.sh
 
-verify-generated:
+# Run the offline documentation check before invoking Go generators.
+# verify-doc-links remains a standalone target for mandatory docs-scope CI.
+verify-generated: verify-doc-links
 	./hack/verify-generated.sh
-	$(MAKE) verify-doc-links
 
 verify-doc-links:
 	python3 -B -m unittest discover -s hack -p 'test_doc_links.py'
