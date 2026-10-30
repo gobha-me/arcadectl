@@ -86,6 +86,15 @@ status phase is `Stopped`, and let every `GameBackup`, `GameRestore`, and
 ./hack/uninstall.sh
 ```
 
+On success the script prints recovery guidance: preserve the namespace, claims,
+admission protections and backup repository; reinstall the same compatible
+digest-pinned controller before new lifecycle operations; and explicitly pin
+every retained claim's name and UID when reattaching a decommissioned server.
+Follow [the retained-world recovery procedure](LIFECYCLE.md#retained-world-discovery-and-reattachment).
+Deleting the namespace deletes its claims. World deletion remains a separate,
+backup-gated destroy operation. A failed uninstall does not print success or
+claim that controller removal completed.
+
 The script refuses to proceed while an API Deployment or API ServiceAccount Pod
 exists, or any receipt is deleting, non-terminal, stale, or still finalized;
 while any server is deleting or is not both
