@@ -53,3 +53,30 @@ func TestDiagnoseUsesRealAuthenticatedAPIWithoutMutationOrState(t *testing.T) {
 		t.Fatal("unchanged real API reads were not deterministic")
 	}
 }
+
+func TestDiagnoseHumanOutputKeepsPartialReadOnlyRedaction(t *testing.T) {
+	fixture := newIntegrationFixture(t)
+	server := &arcade.GameServer{}
+	key := client.ObjectKey{Namespace: integrationNamespace, Name: "factory"}
+	if err := fixture.store.Get(t.Context(), key, server); err != nil {
+		t.Fatal(err)
+	}
+	server.Spec.Settings = runtime.RawExtension{Raw: []byte(`{"password":"PRIVATE-DIAGNOSTIC-SETTINGS-CANARY"}`)}
+	server.Annotations = map[string]string{"private": integrationRawCanary}
+	if err := fixture.store.Update(t.Context(), server); err != nil {
+		t.Fatal(err)
+	}
+	code, out, stderr := fixture.run(t, "server", "diagnose", "factory")
+	if code != 0 || stderr != "" || !strings.HasPrefix(out, "partial support bundle server=factory uid=server-uid ") || !strings.Contains(out, "omitted=") {
+		t.Fatal("human diagnostic lost its identity or explicit partial scope")
+	}
+	if strings.Contains(out, integrationRawCanary) || strings.Contains(out, "PRIVATE-DIAGNOSTIC-SETTINGS-CANARY") {
+		t.Fatal("human diagnostic disclosed private server inputs")
+	}
+	if fixture.mutationCount() != 0 || len(fixture.store.receipts()) != 0 {
+		t.Fatal("human diagnostics submitted a lifecycle intent")
+	}
+	if _, err := os.Stat(fixture.state); !os.IsNotExist(err) {
+		t.Fatal("human diagnostics created local mutation-attempt state")
+	}
+}
