@@ -28,30 +28,31 @@ Later commits in #128 removed the original code-author tests and introduced
 independently written tests. Review the final PR tree and its exact CI head;
 the mapping above does not certify either current correctness or CI success.
 
-For new agent contributions, keep author and committer identity separate from
-the repository owner's identity. This maintenance run uses
-`Projects Lead (agent) <agents@noreply.invalid>`, with an agent attribution and
-an explicit role on each commit:
+For new agent contributions, use the author and committer identity
+`Projects Lead (agent) <agents@noreply.invalid>`, separate from the repository
+owner's identity. The subject must summarize the change; never use an `Agent:`
+line as the subject. Explain the work in the body, then end with these trailers
+in this order:
 
 ```text
-Agent: Codex (via Projects Lead)
 Agent-Role: change
+Agent: Codex (gpt-6.1-sol)
+Co-authored-by: Codex (gpt-6.1-sol) <agents@noreply.invalid>
 ```
 
-Tests written by the same agent belong in separate commits and disclose the
-remaining independent-author requirement:
+Use the role that describes the work, such as `change` or
+`tests (non-author test lane)`. Include the authoring agent and its exact model
+in the `Agent:` trailer, exactly once, followed by its `Co-authored-by:` trailer.
+The block above shows the required convention for Codex (gpt-6.1-sol).
+A reviewer, test executor, or planned second author must not receive a co-author
+trailer for work they did not write.
 
-```text
-Agent: Codex (via Projects Lead)
-Agent-Role: tests (Codex, needs non-author re-make)
-```
-
-The agent/role lines disclose who performed the work without claiming joint
-authorship. A reviewer, test executor, or planned second author must not receive
-a co-author trailer for work they did not write. New remediation commits in this
-maintenance pass carry no co-author trailers. Preserve already published
-history; a false historical trailer requires an explicit correction during the
-eventual owner-controlled squash, not a force push.
+Older commits predate this convention and can lack an `Agent:` trailer. In this
+PR's original range, `0225dc4..d46c6a7`, `5dbed74` has co-author and role trailers
+but no `Agent:` trailer, and `d46c6a7` has no trailers. Preserve published history;
+apply the required trailer block in the eventual owner-controlled squash message
+rather than rewriting those commits. Correct any false historical attribution
+explicitly in that squash message.
 
 Executing another author's tests does not make the executor their author.
 Executing one's own tests does not establish independent verification. Preserve
