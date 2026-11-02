@@ -1,0 +1,538 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: /config/.local/bin/heavy-run bash --noprofile --norc -e -o pipefail {0}
+
+env:
+  HEAVY_WAIT: "30"
+  CMAKE_BUILD_PARALLEL_LEVEL: "2"
+  MAKEFLAGS: -j2
+  GOFLAGS: -p=2
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.sha }}-${{ github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  installer-diagnostics:
+    name: Installer CLI and diagnostic controls
+    runs-on: ci-build
+    timeout-minutes: 20
+    env:
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 1GiB
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test the actual CLI boundary with race detection
+        run: go test -race -p 1 -timeout=5m ./cmd/arcadectl-installer -count=1
+      - name: Test pure diagnostic controls without a cluster
+        run: go test -race -tags=kindinstall -p 1 -timeout=5m ./internal/installengine -run '^(TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate|TestEnvtestPartitionsCompleteCompiledUnion|TestEnvtestPartitionsRefuseInvalidInputs|TestEnvtestPartitionsAllPartsAndFailures|TestInstallerBinaryProgressCapture|TestInstallerBinaryRequestPipelineCapture|TestInstallerBinaryParentContext|TestLifecycleCostsBoundedCommandAndInvocationIsolation|TestLifecycleCostsConcurrentRefusalsAndCancellation)$' -count=1
+      - name: Test fresh discovery and bounded authorization ownership and refusals
+        run: go test -race -p 1 -timeout=5m -v ./internal/installengine -run '^(TestDiscoveryReplyMemo.*|TestProofDiscovery.*|TestBaselineContainment.*|TestBaselineDenied(EightLanes|Index).*)$' -count=1
+      - name: Test closed observation and settlement diagnostics before native proofs
+        run: |
+          go test -race -p 1 -timeout=5m ./internal/installobserve -run '^TestCollectionDiagnostic.*$' -count=1
+          go test -race -p 1 -timeout=5m ./internal/installengine -run '^(TestFixtureTypedCollectionDiagnostic.*|TestFixtureObservationDiagnostic.*|TestFixtureAdmissionSettle.*)$' -count=1
+      - name: Measure pure conversion and descriptor membership costs
+        run: go test -p 1 -timeout=2m ./internal/installengine -run '^$' -bench '^(BenchmarkDiscoveryReplyConversion|BenchmarkBaselineDeniedDescriptorMembership)$' -benchmem -benchtime=250ms -count=1
+      - name: Measure complete synthetic installer wrappers without raw profile artifacts
+        run: |
+          go test -race -p 1 -timeout=1m ./hack/profile-installer-wrappers -count=1
+          go run -p 1 ./hack/profile-installer-wrappers '${{ github.event.pull_request.head.sha || github.sha }}'
+      - name: Vet the CLI and tagged diagnostic harness
+        run: go vet -tags=kindinstall -p 1 ./cmd/arcadectl-installer ./internal/installengine ./internal/installobserve
+
+  kind-install-baseline:
+    name: Kind installation security baseline ${{ matrix.profile }}
+    needs: [installer-diagnostics]
+    if: ${{ !cancelled() }}
+    runs-on: ci-kind
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [135, 137]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Prove native baseline typechecking and original prerequisite effects
+        run: make test-kind-install-baseline INSTALL_BASELINE_PROFILE='${{ matrix.profile }}'
+
+  kind-install-gc:
+    name: Kind baseline native foreground GC 137
+    needs: [installer-diagnostics]
+    if: ${{ !cancelled() }}
+    runs-on: ci-kind
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Prove combined historical runtime and native foreground GC boundary
+        run: make test-kind-install-gc
+
+  kind-install-precontroller:
+    name: Kind pre-controller runtime ${{ matrix.profile }}
+    needs: [installer-diagnostics]
+    if: ${{ !cancelled() }}
+    runs-on: ci-kind
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [135, 137]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Prove genuine pre-controller originals and retained runtime barriers
+        run: make test-kind-install-precontroller INSTALL_PRECONTROLLER_PROFILE='${{ matrix.profile }}'
+
+  kind-install-binary-135-fresh:
+    name: Kind signed installer binary 135 fresh
+    # Keep each complete lifecycle under the runner's three-hour task limit.
+    needs: [installer-diagnostics]
+    runs-on: ci-kind
+    timeout-minutes: 170
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0 # exact declared predecessor source must be locally available
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Prove actual signed installer fresh install and retaining lifecycle
+        run: make test-kind-install-binary INSTALL_BINARY_PROFILE=135 INSTALL_BINARY_MODE=fresh
+
+  kind-install-binary-137-fresh:
+    name: Kind signed installer binary 137 fresh
+    # Keep each complete lifecycle under the runner's three-hour task limit.
+    needs: [installer-diagnostics]
+    runs-on: ci-kind
+    timeout-minutes: 170
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0 # exact declared predecessor source must be locally available
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Prove actual signed installer fresh install and retaining lifecycle
+        run: make test-kind-install-binary INSTALL_BINARY_PROFILE=137 INSTALL_BINARY_MODE=fresh
+
+  kind-install-binary-137-transition:
+    name: Kind signed installer binary 137 transition
+    # Keep each complete lifecycle under the runner's three-hour task limit.
+    needs: [installer-diagnostics]
+    runs-on: ci-kind
+    timeout-minutes: 170
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0 # exact declared predecessor source must be locally available
+      - name: Acquire exact historical installer source
+        run: |
+          git fetch --no-tags --no-recurse-submodules --no-write-fetch-head \
+            https://github.com/gobha-me/arcadectl.git \
+            '+refs/pull/62/head:refs/arcadectl-fixtures/pr62'
+          test "$(git rev-parse '2106372de2f2c8bb636e2369a04b1d2ccaeaca48^{commit}')" = 2106372de2f2c8bb636e2369a04b1d2ccaeaca48
+          git merge-base --is-ancestor 2106372de2f2c8bb636e2369a04b1d2ccaeaca48 refs/arcadectl-fixtures/pr62
+          test "$(git rev-parse '2106372de2f2c8bb636e2369a04b1d2ccaeaca48^{tree}')" = 77589f36c0840e1266878eb35ce38146d2761e6a
+          test "$(git rev-parse '2106372de2f2c8bb636e2369a04b1d2ccaeaca48^')" = 15c63004cd1ddab3f561acaf783348faf72b7ee7
+          test "$(git rev-parse '15c63004cd1ddab3f561acaf783348faf72b7ee7^{tree}')" = f6ed281f6bfb2896e2dab14297cdf4e37e5f970c
+          test "$(git rev-parse '15c63004cd1ddab3f561acaf783348faf72b7ee7^')" = 2e897ca3b76617ac63c4a294d7ba8c908dcc368b
+          test "$(git rev-parse '2e897ca3b76617ac63c4a294d7ba8c908dcc368b^{tree}')" = 6ba09e173b112c60a7c38d78cebf62e6d2859ec9
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Prove actual signed installer fresh install and retaining lifecycle
+        run: make test-kind-install-binary INSTALL_BINARY_PROFILE=137 INSTALL_BINARY_MODE=transition
+
+  kind-install-admission:
+    name: Kind installer full admission ${{ matrix.profile }} ${{ matrix.mode }}
+    needs: [installer-diagnostics]
+    if: ${{ !cancelled() }}
+    runs-on: ci-kind
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [135, 137]
+        mode: [cold, warm]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Prove full production admission, original cleanup and retirement
+        run: make test-kind-install-admission INSTALL_ADMISSION_PROFILE='${{ matrix.profile }}' INSTALL_ADMISSION_MODE='${{ matrix.mode }}'
+
+  kind-install-admission-v3:
+    name: Kind baseline-active v3 admission ${{ matrix.profile }} ${{ matrix.mode }}
+    needs: [installer-diagnostics]
+    if: ${{ !cancelled() }}
+    runs-on: ci-kind
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [135, 137]
+        mode: [cold, warm]
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Prove full v3 matrix and original cleanup with security active
+        run: make test-kind-install-admission-v3 INSTALL_ADMISSION_PROFILE='${{ matrix.profile }}' INSTALL_ADMISSION_MODE='${{ matrix.mode }}'
+
+  kind-install-auth:
+    name: Kind installer native authentication
+    needs: [installer-diagnostics]
+    if: ${{ !cancelled() }}
+    runs-on: ci-kind
+    timeout-minutes: 50
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Prove native authentication and inert fixtures on both profiles
+        run: make test-kind-install-auth
+
+  kind-api:
+    name: Kind authenticated admin API
+    needs: [installer-diagnostics]
+    if: ${{ !cancelled() }}
+    runs-on: ci-kind
+    timeout-minutes: 40
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Prove isolated authenticated API and HTTP Factorio lifecycle
+        run: make test-kind-api
+
+  kind-recovery:
+    name: Kind recovery failure safety
+    needs: [installer-diagnostics]
+    if: ${{ !cancelled() }}
+    runs-on: ci-kind
+    timeout-minutes: 100
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Prove real Factorio recovery and isolated failure safety
+        env:
+          GOMAXPROCS: "2"
+          GOMEMLIMIT: 1GiB
+        run: make test-kind-recovery
+      - name: Upload sanitized recovery evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kind-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/kind-recovery/
+          if-no-files-found: ignore
+          retention-days: 3
+
+  install-engine-race:
+    name: Installer engine race shard ${{ matrix.shard }}
+    # Let native foundations finish before the bulk worker burst. Failure is
+    # ordering-only here: every independent tree still runs unless cancelled.
+    needs: [installer-diagnostics, kind-install-gc, kind-install-admission, kind-install-admission-v3,
+            kind-install-auth, kind-install-baseline, kind-install-precontroller]
+    if: ${{ !cancelled() }}
+    runs-on: ci-build
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+                16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+    env:
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 1GiB
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Discover and run every assigned race test
+        run: bash ./hack/test-installengine-race-shard.sh '${{ matrix.shard }}'
+
+  envtest:
+    name: API-server lifecycle transitions ${{ matrix.part }}
+    needs: [installer-diagnostics, kind-install-gc, kind-install-admission, kind-install-admission-v3,
+            kind-install-auth, kind-install-baseline, kind-install-precontroller]
+    if: ${{ !cancelled() }}
+    runs-on: ci-build
+    # The full tagged engine union exceeds one 30m package process. Partition
+    # compiled whole trees, not a native-test prefix or an ordinary-test omission.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        part: [base-packages, "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31"]
+    env:
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 1GiB
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test API-server lifecycle transitions
+        run: make test-envtest-part ENVTEST_PART='${{ matrix.part }}'
+
+  go-policy-checks:
+    name: Go and policy checks
+    # These checks consume no native job artifacts. Run them alongside native
+    # proofs, including after diagnostic failure, not after the long lifecycle.
+    needs: [installer-diagnostics]
+    if: ${{ !cancelled() }}
+    runs-on: ci-build
+    timeout-minutes: 45
+    env:
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 1GiB
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify module
+        run: go mod verify
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+      - name: Verify generated API artifacts
+        run: make verify-generated
+      - name: Verify pinned runtime assets
+        run: make verify-runtime-assets
+      - name: Vet
+        run: go vet -p 1 ./...
+      - name: Test with race detector
+        run: |
+          discovered=$(go list ./...)
+          mapfile -t packages < <(printf '%s\n' "$discovered" | awk '$0 != "github.com/gobha-me/arcadectl/internal/installengine"')
+          test "${#packages[@]}" -gt 0
+          go test -race -p 1 -timeout=15m "${packages[@]}"
+      - name: Build reproducible controller image
+        run: |
+          for tag in first second; do
+            docker build --no-cache \
+              --build-arg VCS_REF="$(git rev-parse HEAD)" \
+              --build-arg SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" \
+              --tag "arcadectl-controller:ci-$tag" \
+              .
+          done
+          first_id=$(docker image inspect --format '{{.Id}}' arcadectl-controller:ci-first)
+          second_id=$(docker image inspect --format '{{.Id}}' arcadectl-controller:ci-second)
+          if [ "$first_id" != "$second_id" ]; then
+            docker image inspect arcadectl-controller:ci-first arcadectl-controller:ci-second \
+              --format 'id={{.Id}} created={{.Created}} layers={{json .RootFS.Layers}}'
+            echo "Independent clean builds produced different controller images" >&2
+            exit 1
+          fi
+      - name: Build and inspect reproducible API image
+        run: |
+          for tag in first second; do
+            docker build --no-cache --file Dockerfile.api \
+              --build-arg VCS_REF="$(git rev-parse HEAD)" \
+              --build-arg SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" \
+              --tag "arcadectl-api:ci-$tag" .
+          done
+          first_id=$(docker image inspect --format '{{.Id}}' arcadectl-api:ci-first)
+          second_id=$(docker image inspect --format '{{.Id}}' arcadectl-api:ci-second)
+          test "$first_id" = "$second_id"
+          test "$(docker image inspect --format '{{.Config.User}}' arcadectl-api:ci-first)" = '65532:65532'
+          test "$(docker image inspect --format '{{json .Config.Entrypoint}}' arcadectl-api:ci-first)" = '["/arcadectl-api"]'
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' arcadectl-api:ci-first)" = "$(git rev-parse HEAD)"
+
+  go-and-policy:
+    name: Go and policy
+    needs: [installer-diagnostics, install-engine-race, kind-install-admission, kind-install-admission-v3,
+            kind-install-binary-135-fresh, kind-install-binary-137-fresh,
+            kind-install-binary-137-transition, kind-install-baseline, kind-install-gc,
+            kind-install-precontroller, kind-install-auth, kind-api, kind-recovery, envtest,
+            kind-lifecycle, go-policy-checks]
+    # Do not turn failed/cancelled dependencies into a skipped passing gate.
+    # Whole-workflow cancellation can cancel this gate too; it is never green.
+    if: ${{ always() }}
+    runs-on: ci-light
+    timeout-minutes: 45
+    env:
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 1GiB
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Require every foundation, lifecycle and Go/policy proof
+        env:
+          INSTALLER_DIAGNOSTICS_RESULT: ${{ needs.installer-diagnostics.result }}
+          ENGINE_RACE_RESULT: ${{ needs.install-engine-race.result }}
+          INSTALL_ADMISSION_RESULT: ${{ needs.kind-install-admission.result }}
+          INSTALL_BINARY_RESULT: ${{ needs.kind-install-binary-137-transition.result }}
+          INSTALL_BINARY_135_FRESH_RESULT: ${{ needs.kind-install-binary-135-fresh.result }}
+          INSTALL_BINARY_137_FRESH_RESULT: ${{ needs.kind-install-binary-137-fresh.result }}
+          INSTALL_BASELINE_RESULT: ${{ needs.kind-install-baseline.result }}
+          INSTALL_GC_RESULT: ${{ needs.kind-install-gc.result }}
+          INSTALL_ADMISSION_V3_RESULT: ${{ needs.kind-install-admission-v3.result }}
+          INSTALL_PRECONTROLLER_RESULT: ${{ needs.kind-install-precontroller.result }}
+          INSTALL_AUTH_RESULT: ${{ needs.kind-install-auth.result }}
+          API_RESULT: ${{ needs.kind-api.result }}
+          RECOVERY_RESULT: ${{ needs.kind-recovery.result }}
+          ENVTEST_RESULT: ${{ needs.envtest.result }}
+          LIFECYCLE_RESULT: ${{ needs.kind-lifecycle.result }}
+          GO_POLICY_CHECKS_RESULT: ${{ needs.go-policy-checks.result }}
+        run: |
+          test "$INSTALLER_DIAGNOSTICS_RESULT" = success
+          test "$ENGINE_RACE_RESULT" = success
+          test "$INSTALL_ADMISSION_RESULT" = success
+          test "$INSTALL_BINARY_RESULT" = success
+          test "$INSTALL_BINARY_135_FRESH_RESULT" = success
+          test "$INSTALL_BINARY_137_FRESH_RESULT" = success
+          test "$INSTALL_BASELINE_RESULT" = success
+          test "$INSTALL_GC_RESULT" = success
+          test "$INSTALL_ADMISSION_V3_RESULT" = success
+          test "$INSTALL_PRECONTROLLER_RESULT" = success
+          test "$INSTALL_AUTH_RESULT" = success
+          test "$API_RESULT" = success
+          test "$RECOVERY_RESULT" = success
+          test "$ENVTEST_RESULT" = success
+          test "$LIFECYCLE_RESULT" = success
+          test "$GO_POLICY_CHECKS_RESULT" = success
+
+  kind-lifecycle:
+    name: Kind lifecycle
+    needs: [installer-diagnostics]
+    if: ${{ !cancelled() }}
+    runs-on: ci-kind
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Prove isolated-cluster lifecycle
+        run: make test-kind-lifecycle
+      - name: Prove certified Factorio lifecycle
+        run: make test-kind-factorio
+      - name: Upload sanitized failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kind-lifecycle-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/kind-lifecycle/
+          if-no-files-found: ignore
+          retention-days: 3
+      - name: Upload sanitized Factorio lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: factorio-lifecycle-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/factorio-lifecycle/
+          if-no-files-found: ignore
+          retention-days: 3
