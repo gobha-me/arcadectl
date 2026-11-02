@@ -9,7 +9,7 @@ on:
 
 defaults:
   run:
-    shell: /config/.local/bin/heavy-run bash --noprofile --norc -e -o pipefail {0}
+    shell: /config/.local/bin/heavy-run bash --noprofile --norc -e -o pipefail -c 'umask 022; exec bash --noprofile --norc -e -o pipefail "$1"' -- {0}
 
 env:
   HEAVY_WAIT: "30"

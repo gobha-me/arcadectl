@@ -24,7 +24,8 @@ cannot replace each other. Each workflow still sets cancel-in-progress.
 
 Infra Lead must provision the runner environment, repository mirror, Docker,
 Go tooling and the shared `/config/.local/bin/heavy-run` lock wrapper before
-enabling these workflows. Shell steps use that wrapper with `HEAVY_WAIT=30`;
+enabling these workflows. Shell steps use that wrapper with `HEAVY_WAIT=30` and normalize umask to `022`,
+matching the existing safe/unsafe fixture assumptions;
 exit 75 is a capacity/quiet-hours refusal and exit 78 is an accounting/config
 refusal, neither is passing test evidence. Retry capacity refusals later; route
 configuration failures to Infra Lead. Runner environments must honor the two

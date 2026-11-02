@@ -42,7 +42,7 @@ func TestForgeCIPolicy(t *testing.T) {
 			if err := yaml.Unmarshal(body, &workflow); err != nil {
 				t.Fatal(err)
 			}
-			if workflow.Env["HEAVY_WAIT"] != "30" || workflow.Defaults.Run.Shell != "/config/.local/bin/heavy-run bash --noprofile --norc -e -o pipefail {0}" {
+			if workflow.Env["HEAVY_WAIT"] != "30" || workflow.Defaults.Run.Shell != `/config/.local/bin/heavy-run bash --noprofile --norc -e -o pipefail -c 'umask 022; exec bash --noprofile --norc -e -o pipefail "$1"' -- {0}` {
 				t.Fatal("heavy shell steps bypass resource admission")
 			}
 			if len(workflow.On) != 3 {
