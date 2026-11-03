@@ -83,6 +83,9 @@ func scanCoreNeutrality(root string) (coreNeutralityScan, error) {
 			if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
 				return nil
 			}
+			if entry.Type()&fs.ModeSymlink != 0 {
+				return fmt.Errorf("production Go source is a symlink: %s", rel)
+			}
 			contents, err := os.ReadFile(path)
 			if err != nil {
 				return err
@@ -217,5 +220,24 @@ func TestCoreNeutralityWalkerBoundaries(t *testing.T) {
 func TestCoreNeutralityWalkerRefusesMissingRoot(t *testing.T) {
 	if _, err := scanCoreNeutrality(t.TempDir()); err == nil {
 		t.Fatal("missing production roots accepted")
+	}
+}
+
+func TestCoreNeutralityWalkerRefusesSourceSymlinks(t *testing.T) {
+	root := t.TempDir()
+	for _, tree := range []string{"internal", "cmd", "api"} {
+		if err := os.Mkdir(filepath.Join(root, tree), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	outside := filepath.Join(t.TempDir(), "outside.go")
+	if err := os.WriteFile(outside, []byte("package outside\n// factorio\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "internal", "escape.go")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := scanCoreNeutrality(root); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("source symlink was not refused: %v", err)
 	}
 }
