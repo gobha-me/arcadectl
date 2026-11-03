@@ -38,8 +38,8 @@ storage. [chmod(2)](https://man7.org/linux/man-pages/man2/chmod.2.html) (accesse
 2026-11-03) requires the owning effective UID or privilege to change these mode
 bits. An unrelated unprivileged UID cannot induce this transition by chmod on
 our owned file. A hostile process with the same UID, a compromised owner, root
-or filesystem control is outside this boundary: such a principal already has
-access to `0600` bytes and can interfere with the process or storage. The
+or filesystem control is outside this boundary: such a principal can read, or grant themselves access to, the protected bytes
+and can interfere with private storage. The
 `0700` directory is a separate access boundary; an intermediate file-mode change
 alone does not grant another UID traversal through it.
 
