@@ -66,8 +66,10 @@ arbitrary delay or unreviewed event-watcher lifetime is introduced here.
 ## Tests and the stronger-contract counterexample
 
 `TestSameTickProtectionRestorationBoundary` uses real chmod/read/confirmation
-calls. It searches a bounded number of immediate transitions for unchanged
-identity, with no sleep and no requirement that a timestamp advance. On a host
+calls. It searches a bounded number of immediate transitions with unchanged
+device, inode, digest and ctime, with no sleep and no requirement that a
+timestamp advance. A future additional identity signal does not disable the
+stronger-contract probe by changing its fixture precondition. On a host
 where no same-tick pair is observed it skips with an explicit reason. On a host
 where a pair exists, it asserts the documented confirmation result for both
 confirmation implementations. Separate tests still require refusal while the

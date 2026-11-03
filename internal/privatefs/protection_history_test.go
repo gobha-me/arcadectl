@@ -55,7 +55,9 @@ func sameTickProtectionHistory(t *testing.T) (*Store, FileIdentity, []byte) {
 		if !bytes.Equal(after, body) {
 			t.Fatal("mode transition changed fixture bytes")
 		}
-		if restored == id {
+		// Keep the old four identity signals equal, even if a future fix adds
+		// another signal. Such a fix must exercise the probe, not skip it.
+		if restored.changeTime == id.changeTime && restored.device == id.device && restored.inode == id.inode && restored.digest == id.digest {
 			t.Logf("same-tick counterexample observed after %d immediate attempts", attempt+1)
 			return s, id, body
 		}
