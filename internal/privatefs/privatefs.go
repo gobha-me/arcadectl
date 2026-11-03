@@ -42,7 +42,9 @@ const (
 	TrustedPublic
 )
 
-// FileIdentity is opaque, comparable and not serializable.
+// FileIdentity is opaque, comparable and not serializable. It records observed
+// state, not every intermediate chmod: a restored mode within one ctime tick
+// may leave the same identity. See docs/PRIVATE_STORAGE.md for the trust boundary.
 type FileIdentity struct {
 	device, inode uint64
 	digest        [32]byte
