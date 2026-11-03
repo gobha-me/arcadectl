@@ -85,7 +85,7 @@ func historicalInstallerDiagnosticDeclarationsMatch(sources map[string][]byte) b
 }
 
 func TestInstallerHistoricalSourceAcquisitionSurvivesSquash(t *testing.T) {
-	body, err := os.ReadFile("../../.github/workflows/ci.yml")
+	body, err := os.ReadFile("../../.gitea/workflows/ci.yml")
 	if err != nil {
 		t.Fatal("required installer CI unavailable")
 	}
@@ -112,17 +112,17 @@ test "$(git rev-parse '%s^{tree}')" = %s
 test "$(git rev-parse '%s^')" = %s
 test "$(git rev-parse '%s^{tree}')" = %s`, binaryHistoricalInstallerSource, binaryHistoricalInstallerSource, binaryHistoricalInstallerSource, binaryHistoricalInstallerSource, binaryHistoricalInstallerTree, binaryHistoricalInstallerSource, binaryHistoricalInstallerDiagnosticBase, binaryHistoricalInstallerDiagnosticBase, binaryHistoricalInstallerDiagnosticBaseTree, binaryHistoricalInstallerDiagnosticBase, binaryHistoricalInstallerBase, binaryHistoricalInstallerBase, binaryHistoricalInstallerBaseTree)
 	count, binaryRuns, acquired := 0, 0, false
-	for _, step := range workflow.Jobs["kind-install-binary"].Steps {
+	for _, step := range workflow.Jobs["kind-install-binary-137-transition"].Steps {
 		if step.Name == "Acquire exact historical installer source" {
 			count++
-			if step.If != "matrix.mode == 'transition'" || strings.TrimSpace(step.Run) != want {
+			if step.If != "" || strings.TrimSpace(step.Run) != want {
 				t.Fatal("historical acquisition changed authority, exact source/tree or transition scope")
 			}
 			acquired = true
 		}
 		if strings.Contains(step.Run, "make test-kind-install-binary") {
 			binaryRuns++
-			if !acquired || strings.TrimSpace(step.Run) != "make test-kind-install-binary INSTALL_BINARY_PROFILE='${{ matrix.profile }}' INSTALL_BINARY_MODE='${{ matrix.mode }}'" {
+			if !acquired || strings.TrimSpace(step.Run) != "make test-kind-install-binary INSTALL_BINARY_PROFILE=137 INSTALL_BINARY_MODE=transition" {
 				t.Fatal("native transition command changed or can run before authentic historical source acquisition")
 			}
 		}

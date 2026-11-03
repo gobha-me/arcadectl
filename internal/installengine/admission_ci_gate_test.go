@@ -35,7 +35,7 @@ func binaryDiagnosticsPrerequisite(needs []string, condition string, tolerate an
 }
 
 func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
-	body, err := os.ReadFile("../../.github/workflows/ci.yml")
+	body, err := os.ReadFile("../../.gitea/workflows/ci.yml")
 	if err != nil {
 		t.Fatal("CI source unavailable")
 	}
@@ -79,7 +79,7 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	// Identical PR-merge/head trees do not have identical source SHA/epoch.
 	// Signed packages, image revision labels and lifecycle evidence must use
 	// the requested head (or exact main push), not a synthetic merge identity.
-	for _, name := range []string{"installer-diagnostics", "kind-install-binary", "kind-install-baseline", "kind-install-gc", "kind-install-precontroller", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-api", "kind-recovery", "install-engine-race", "envtest", "go-policy-checks", "go-and-policy", "kind-lifecycle"} {
+	for _, name := range []string{"installer-diagnostics", "kind-install-binary-135-fresh", "kind-install-binary-137-fresh", "kind-install-binary-137-transition", "kind-install-baseline", "kind-install-gc", "kind-install-precontroller", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-api", "kind-recovery", "install-engine-race", "envtest", "go-policy-checks", "go-and-policy", "kind-lifecycle"} {
 		if _, present := workflow.Jobs[name]; !present {
 			t.Errorf("required exact-source CI job %s is absent", name)
 		}
@@ -192,7 +192,7 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 		fullRun = fullRun || step.Run == "make test-kind-install-admission INSTALL_ADMISSION_PROFILE='${{ matrix.profile }}' INSTALL_ADMISSION_MODE='${{ matrix.mode }}'"
 	}
 	gate := workflow.Jobs["go-and-policy"]
-	if !slices.Equal(gate.Needs, []string{"installer-diagnostics", "install-engine-race", "kind-install-admission", "kind-install-admission-v3", "kind-install-binary", "kind-install-baseline", "kind-install-gc", "kind-install-precontroller", "kind-install-auth", "kind-api", "kind-recovery", "envtest", "kind-lifecycle", "go-policy-checks"}) || gate.ContinueOnError != nil {
+	if !slices.Equal(gate.Needs, []string{"installer-diagnostics", "install-engine-race", "kind-install-admission", "kind-install-admission-v3", "kind-install-binary-135-fresh", "kind-install-binary-137-fresh", "kind-install-binary-137-transition", "kind-install-baseline", "kind-install-gc", "kind-install-precontroller", "kind-install-auth", "kind-api", "kind-recovery", "envtest", "kind-lifecycle", "go-policy-checks"}) || gate.ContinueOnError != nil {
 		t.Fatal("required gate omitted, tolerated or substituted a complete proof")
 	}
 	if len(gate.Needs) != len(workflow.Jobs)-1 {
@@ -245,7 +245,7 @@ test "$(docker image inspect --format '{{json .Config.Entrypoint}}' arcadectl-ap
 test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' arcadectl-api:ci-first)" = "$(git rev-parse HEAD)"
 `,
 	}
-	if checks.Name != "Go and policy checks" || checks.RunsOn != "ubuntu-24.04" || checks.TimeoutMinutes != 45 || len(checks.Env) != 2 || checks.Env["GOMAXPROCS"] != "2" || checks.Env["GOMEMLIMIT"] != "1GiB" || len(checks.Steps) != 10 {
+	if checks.Name != "Go and policy checks" || checks.RunsOn != "ci-build" || checks.TimeoutMinutes != 45 || len(checks.Env) != 2 || checks.Env["GOMAXPROCS"] != "2" || checks.Env["GOMEMLIMIT"] != "1GiB" || len(checks.Steps) != 10 {
 		t.Fatal("independent policy checks changed their runner, budget, environment or complete step set")
 	}
 	if checks.Steps[0].Uses != "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" || len(checks.Steps[0].With) != 1 || checks.Steps[1].Uses != "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e" || checks.Steps[1].With["go-version-file"] != "go.mod" || checks.Steps[1].With["cache"] != true || len(checks.Steps[1].With) != 2 {
@@ -256,7 +256,7 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 			t.Fatal("moved policy commands changed, became conditional or tolerated failures", index)
 		}
 	}
-	if gate.Name != "Go and policy" || gate.RunsOn != "ubuntu-24.04" || len(gate.Steps) != 2 || gate.Steps[0].Uses != "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" || gate.Steps[0].Run != "" || gate.Steps[0].If != "" || gate.Steps[0].ContinueOnError != nil || len(gate.Steps[0].Env) != 0 {
+	if gate.Name != "Go and policy" || gate.RunsOn != "ci-light" || len(gate.Steps) != 2 || gate.Steps[0].Uses != "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" || gate.Steps[0].Run != "" || gate.Steps[0].If != "" || gate.Steps[0].ContinueOnError != nil || len(gate.Steps[0].Env) != 0 {
 		t.Fatal("protected aggregate changed its name, exact checkout or assertion-only scope")
 	}
 	diagnostics := workflow.Jobs["installer-diagnostics"]
@@ -342,7 +342,7 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 	if !precontrollerRun || precontroller.TimeoutMinutes != 40 || precontroller.Strategy.FailFast == nil || *precontroller.Strategy.FailFast || !slices.Equal(precontroller.Strategy.Matrix.Profile, []int{135, 137}) || len(precontroller.Strategy.Matrix.Exclude) != 0 || len(precontroller.Strategy.Matrix.Mode) != 0 || !slices.Contains(gate.Needs, "kind-install-precontroller") || !strings.Contains(string(makefile), "^TestKindBaselinePrecontrollerRuntimeNative$$/") {
 		t.Fatal("genuine pre-controller profile or required dependency omitted")
 	}
-	binary := workflow.Jobs["kind-install-binary"]
+	binary := workflow.Jobs["kind-install-binary-137-transition"]
 	if !binaryDiagnosticsPrerequisite(binary.Needs, binary.If, binary.ContinueOnError) {
 		t.Fatal("long signed lifecycle proofs delay independent work or bypass successful diagnostics")
 	}
@@ -426,19 +426,19 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 	binaryRun := false
 	binaryHistory := false
 	for _, step := range binary.Steps {
-		binaryRun = binaryRun || step.Run == "make test-kind-install-binary INSTALL_BINARY_PROFILE='${{ matrix.profile }}' INSTALL_BINARY_MODE='${{ matrix.mode }}'"
+		binaryRun = binaryRun || step.Run == "make test-kind-install-binary INSTALL_BINARY_PROFILE=137 INSTALL_BINARY_MODE=transition"
 		if strings.HasPrefix(step.Uses, "actions/checkout@") {
 			depth, present := step.With["fetch-depth"]
 			binaryHistory = present && depth == 0
 		}
 	}
 	binaryMatrix := binary.Strategy.Matrix
-	if !fullRun || !binaryRun || !binaryHistory || !slices.Equal(binaryMatrix.Profile, []int{135, 137}) || !slices.Equal(binaryMatrix.Mode, []string{"fresh", "transition"}) || len(binaryMatrix.Exclude) != 1 || binaryMatrix.Exclude[0].Profile != 135 || binaryMatrix.Exclude[0].Mode != "transition" || gate.If != "${{ always() }}" || !slices.Contains(gate.Needs, "install-engine-race") || !slices.Contains(gate.Needs, "kind-install-admission") || !slices.Contains(gate.Needs, "kind-install-binary") {
+	if !fullRun || !binaryRun || !binaryHistory || len(binaryMatrix.Profile) != 0 || len(binaryMatrix.Mode) != 0 || len(binaryMatrix.Exclude) != 0 || binary.TimeoutMinutes != 170 || gate.If != "${{ always() }}" || !slices.Contains(gate.Needs, "install-engine-race") || !slices.Contains(gate.Needs, "kind-install-admission") || !slices.Contains(gate.Needs, "kind-install-binary-137-transition") {
 		t.Fatal("required gate bypasses full native admission or engine races")
 	}
 	var command string
 	for _, step := range gate.Steps {
-		if step.Env["INSTALLER_DIAGNOSTICS_RESULT"] == "${{ needs.installer-diagnostics.result }}" && step.Env["ENGINE_RACE_RESULT"] == "${{ needs.install-engine-race.result }}" && step.Env["INSTALL_ADMISSION_RESULT"] == "${{ needs.kind-install-admission.result }}" && step.Env["INSTALL_BINARY_RESULT"] == "${{ needs.kind-install-binary.result }}" && step.Env["INSTALL_BASELINE_RESULT"] == "${{ needs.kind-install-baseline.result }}" && step.Env["INSTALL_ADMISSION_V3_RESULT"] == "${{ needs.kind-install-admission-v3.result }}" && step.Env["INSTALL_PRECONTROLLER_RESULT"] == "${{ needs.kind-install-precontroller.result }}" && step.Env["INSTALL_GC_RESULT"] == "${{ needs.kind-install-gc.result }}" && step.Env["INSTALL_AUTH_RESULT"] == "${{ needs.kind-install-auth.result }}" && step.Env["API_RESULT"] == "${{ needs.kind-api.result }}" && step.Env["RECOVERY_RESULT"] == "${{ needs.kind-recovery.result }}" && step.Env["ENVTEST_RESULT"] == "${{ needs.envtest.result }}" && step.Env["LIFECYCLE_RESULT"] == "${{ needs.kind-lifecycle.result }}" && step.Env["GO_POLICY_CHECKS_RESULT"] == "${{ needs.go-policy-checks.result }}" {
+		if step.Env["INSTALLER_DIAGNOSTICS_RESULT"] == "${{ needs.installer-diagnostics.result }}" && step.Env["ENGINE_RACE_RESULT"] == "${{ needs.install-engine-race.result }}" && step.Env["INSTALL_ADMISSION_RESULT"] == "${{ needs.kind-install-admission.result }}" && step.Env["INSTALL_BINARY_RESULT"] == "${{ needs.kind-install-binary-137-transition.result }}" && step.Env["INSTALL_BASELINE_RESULT"] == "${{ needs.kind-install-baseline.result }}" && step.Env["INSTALL_ADMISSION_V3_RESULT"] == "${{ needs.kind-install-admission-v3.result }}" && step.Env["INSTALL_PRECONTROLLER_RESULT"] == "${{ needs.kind-install-precontroller.result }}" && step.Env["INSTALL_GC_RESULT"] == "${{ needs.kind-install-gc.result }}" && step.Env["INSTALL_AUTH_RESULT"] == "${{ needs.kind-install-auth.result }}" && step.Env["API_RESULT"] == "${{ needs.kind-api.result }}" && step.Env["RECOVERY_RESULT"] == "${{ needs.kind-recovery.result }}" && step.Env["ENVTEST_RESULT"] == "${{ needs.envtest.result }}" && step.Env["LIFECYCLE_RESULT"] == "${{ needs.kind-lifecycle.result }}" && step.Env["GO_POLICY_CHECKS_RESULT"] == "${{ needs.go-policy-checks.result }}" {
 			if step.If != "" || step.ContinueOnError != nil {
 				t.Fatal("required dependency assertion can be skipped or tolerate failure")
 			}
@@ -458,7 +458,7 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 					for _, v3 := range []string{"success", "failure", "cancelled", "skipped", ""} {
 						for _, precontroller := range []string{"success", "failure", "cancelled", "skipped", ""} {
 							c := exec.Command("sh", "-e", "-c", command)
-							c.Env = append(os.Environ(), "INSTALLER_DIAGNOSTICS_RESULT=success", "ENGINE_RACE_RESULT="+races, "INSTALL_ADMISSION_RESULT="+native, "INSTALL_BINARY_RESULT="+binary, "INSTALL_BASELINE_RESULT="+baseline, "INSTALL_ADMISSION_V3_RESULT="+v3, "INSTALL_PRECONTROLLER_RESULT="+precontroller, "INSTALL_GC_RESULT=success", "INSTALL_AUTH_RESULT=success", "API_RESULT=success", "RECOVERY_RESULT=success", "ENVTEST_RESULT=success", "LIFECYCLE_RESULT=success", "GO_POLICY_CHECKS_RESULT=success")
+							c.Env = append(os.Environ(), "INSTALLER_DIAGNOSTICS_RESULT=success", "ENGINE_RACE_RESULT="+races, "INSTALL_ADMISSION_RESULT="+native, "INSTALL_BINARY_135_FRESH_RESULT=success", "INSTALL_BINARY_137_FRESH_RESULT=success", "INSTALL_BINARY_RESULT="+binary, "INSTALL_BASELINE_RESULT="+baseline, "INSTALL_ADMISSION_V3_RESULT="+v3, "INSTALL_PRECONTROLLER_RESULT="+precontroller, "INSTALL_GC_RESULT=success", "INSTALL_AUTH_RESULT=success", "API_RESULT=success", "RECOVERY_RESULT=success", "ENVTEST_RESULT=success", "LIFECYCLE_RESULT=success", "GO_POLICY_CHECKS_RESULT=success")
 							passed := c.Run() == nil
 							if passed != (races == "success" && native == "success" && binary == "success" && baseline == "success" && v3 == "success" && precontroller == "success") {
 								t.Fatal("failed/cancelled/skipped/absent dependency became a green required gate")
@@ -473,14 +473,14 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 	// Separately exercise every GC outcome while all earlier proofs succeeded.
 	for _, result := range []string{"success", "failure", "cancelled", "skipped", ""} {
 		c := exec.Command("sh", "-e", "-c", command)
-		c.Env = append(os.Environ(), "INSTALLER_DIAGNOSTICS_RESULT=success", "ENGINE_RACE_RESULT=success", "INSTALL_ADMISSION_RESULT=success", "INSTALL_BINARY_RESULT=success", "INSTALL_BASELINE_RESULT=success", "INSTALL_ADMISSION_V3_RESULT=success", "INSTALL_PRECONTROLLER_RESULT=success", "INSTALL_GC_RESULT="+result, "INSTALL_AUTH_RESULT=success", "API_RESULT=success", "RECOVERY_RESULT=success", "ENVTEST_RESULT=success", "LIFECYCLE_RESULT=success", "GO_POLICY_CHECKS_RESULT=success")
+		c.Env = append(os.Environ(), "INSTALLER_DIAGNOSTICS_RESULT=success", "ENGINE_RACE_RESULT=success", "INSTALL_ADMISSION_RESULT=success", "INSTALL_BINARY_135_FRESH_RESULT=success", "INSTALL_BINARY_137_FRESH_RESULT=success", "INSTALL_BINARY_RESULT=success", "INSTALL_BASELINE_RESULT=success", "INSTALL_ADMISSION_V3_RESULT=success", "INSTALL_PRECONTROLLER_RESULT=success", "INSTALL_GC_RESULT="+result, "INSTALL_AUTH_RESULT=success", "API_RESULT=success", "RECOVERY_RESULT=success", "ENVTEST_RESULT=success", "LIFECYCLE_RESULT=success", "GO_POLICY_CHECKS_RESULT=success")
 		if passed := c.Run() == nil; passed != (result == "success") {
 			t.Fatal("failed/cancelled/skipped/absent GC proof became a green required gate")
 		}
 	}
 	// Independently exercise every added prerequisite outcome while the others
 	// succeed, preserving all original combinations without multiplying them.
-	added := []string{"INSTALL_AUTH_RESULT", "API_RESULT", "RECOVERY_RESULT", "INSTALLER_DIAGNOSTICS_RESULT", "ENVTEST_RESULT", "LIFECYCLE_RESULT", "GO_POLICY_CHECKS_RESULT"}
+	added := []string{"INSTALL_AUTH_RESULT", "API_RESULT", "RECOVERY_RESULT", "INSTALLER_DIAGNOSTICS_RESULT", "ENVTEST_RESULT", "LIFECYCLE_RESULT", "GO_POLICY_CHECKS_RESULT", "INSTALL_BINARY_135_FRESH_RESULT", "INSTALL_BINARY_137_FRESH_RESULT"}
 	for _, variable := range added {
 		for _, result := range []string{"success", "failure", "cancelled", "skipped", ""} {
 			c := exec.Command("sh", "-e", "-c", command)
