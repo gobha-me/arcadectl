@@ -386,8 +386,8 @@ func TestConfirmComparingOperandBoundsAndFirstReadPrecedence(t *testing.T) {
 		if confirm("../record", id, body) != ErrUnsafe || s.confirmDurableComparingBounded("record", id, body, MaxFileBytes+1) != ErrUnsafe {
 			t.Fatal("invalid path or open-ended limit accepted")
 		}
-		// Protection injection changed ctime; even original bytes cannot bind
-		// the old identity after restoration.
+		// This refusal requires a distinct observed ctime after injection; mode
+		// restoration alone does not guarantee it on a coarse clock (#161/#174).
 		if confirm("record", id, body) != ErrChanged {
 			t.Fatal("ctime drift accepted after restoring mode")
 		}
