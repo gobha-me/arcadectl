@@ -407,8 +407,8 @@ func TestConfirmComparingOperandBoundsAndFirstReadPrecedence(t *testing.T) {
 			}
 			time.Sleep(time.Millisecond)
 		}
-		// Protection injection changed ctime; even original bytes cannot bind
-		// the old identity after restoration.
+		// The fixture established a changed ctime; even original bytes cannot
+		// bind the old identity after restoration. Same-tick changes are #174.
 		if confirm("record", id, body) != ErrChanged {
 			t.Fatal("ctime drift accepted after restoring mode")
 		}
