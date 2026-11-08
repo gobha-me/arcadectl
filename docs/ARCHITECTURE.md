@@ -50,6 +50,8 @@ direct operator or Kubernetes access. See [ADMIN_API.md](ADMIN_API.md) and
 
 ## Game adapter contract
 
+The existing settings subset has a bounded [option metadata contract](ADAPTER_OPTIONS.md).
+
 A game definition supplies only constrained data:
 
 - stable identity and display metadata;

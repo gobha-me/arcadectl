@@ -52,6 +52,7 @@ func Definition() game.Definition {
 		// Events or the generic platform contract.
 		ReadinessEndpoint: "rcon",
 		ReadinessMode:     game.ReadinessPrivateExec,
+		Options:           optionMetadata(),
 		SettingsSchema: []byte(`{
   "type": "object",
   "additionalProperties": false,
