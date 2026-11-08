@@ -36,6 +36,10 @@ inventory remains in [PR #175](https://github.com/gobha-me/arcadectl/pull/175).
   references, dependency expressions, unknown keywords and executable extensions
   are refused. This restriction applies when metadata is present; it does not
   broaden the platform's existing schema contract.
+- Numeric metadata literals have at most 64 bytes and decimal exponents between
+  -128 and 128. Bounds use exact rational comparisons, preserving distinct JSON
+  integers above 2^53 and refusing integer intervals containing no integer.
+  These are metadata representation limits, not new accepted game settings.
 - Presentation text may change additively. Removing or reassigning an ID,
   narrowing accepted values, changing omission semantics or changing lifecycle
   meaning needs explicit compatibility review. An incompatible representation

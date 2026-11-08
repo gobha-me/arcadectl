@@ -53,6 +53,10 @@ func TestOptionMetadataRefusals(t *testing.T) {
 		{"wrong omitted type", "omission", func(d *Definition) { d.Options.Supported[1].OmittedValue = json.RawMessage(`"no"`) }},
 		{"invalid default", "omission", func(d *Definition) { d.Options.Supported[0].Default = json.RawMessage(`"c"`) }},
 		{"schema mismatch", "schema", func(d *Definition) { d.Options.Supported[1].Schema = json.RawMessage(`{"type":"string"}`) }},
+		{"precise schema mismatch", "schema", func(d *Definition) {
+			d.SettingsSchema = json.RawMessage(strings.ReplaceAll(string(d.SettingsSchema), `"minimum":1,"maximum":10`, `"minimum":9007199254740993,"maximum":9007199254740994`))
+			d.Options.Supported[2].Schema = json.RawMessage(`{"type":"number","minimum":9007199254740992,"maximum":9007199254740994}`)
+		}},
 		{"unknown expression", "schema", func(d *Definition) {
 			d.SettingsSchema = json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"mode":{"type":"string","maxLength":1,"dependencies":{"exec":"canary"}},"enabled":{"type":"boolean"},"capacity":{"type":"number","minimum":1,"maximum":10}},"required":["mode"]}`)
 			d.Options.Supported[0].Schema = json.RawMessage(`{"type":"string","maxLength":1,"dependencies":{"exec":"canary"}}`)
@@ -91,11 +95,17 @@ func TestOptionMetadataSchemaSubset(t *testing.T) {
 		{"enum type", `{"type":"string","enum":[true]}`, "schema"},
 		{"duplicate enum", `{"type":"string","enum":["a","a"]}`, "schema"},
 		{"empty enum", `{"type":"boolean","enum":[]}`, "schema"},
+		{"numeric equivalent enum", `{"type":"number","minimum":0,"maximum":2,"enum":[1,1.0]}`, "schema"},
+		{"quoted numeric bound", `{"type":"number","minimum":"0","maximum":2}`, "schema"},
 		{"enum outside bound", `{"type":"string","maxLength":1,"enum":["aa"]}`, "schema"},
 		{"crossed constraints", `{"type":"boolean","maximum":1}`, "schema"},
 		{"unknown dependency", `{"type":"boolean","dependentSchemas":{}}`, "schema"},
 		{"unbounded number", `{"type":"number","minimum":0}`, "bounds"},
 		{"no integer in interval", `{"type":"integer","minimum":1.2,"maximum":1.8}`, "bounds"},
+		{"precise reversed bounds", `{"type":"number","minimum":9007199254740993,"maximum":9007199254740992}`, "bounds"},
+		{"precise empty integer interval", `{"type":"integer","minimum":0.999999999999999999999,"maximum":0.999999999999999999999}`, "bounds"},
+		{"negative empty integer interval", `{"type":"integer","minimum":-0.1,"maximum":-0.1}`, "bounds"},
+		{"bounded exponent", `{"type":"number","minimum":0,"maximum":1e129}`, "bounds"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			d := optionFixture()

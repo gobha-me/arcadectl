@@ -6,7 +6,7 @@ package game
 import (
 	"bytes"
 	"encoding/json"
-	"math"
+	"math/big"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -116,16 +116,17 @@ func optionText(s string, limit int) bool {
 type optionSchema struct {
 	Type      string            `json:"type"`
 	Enum      []json.RawMessage `json:"enum,omitempty"`
-	Minimum   *float64          `json:"minimum,omitempty"`
-	Maximum   *float64          `json:"maximum,omitempty"`
+	Minimum   *json.Number      `json:"minimum,omitempty"`
+	Maximum   *json.Number      `json:"maximum,omitempty"`
 	MinLength *int              `json:"minLength,omitempty"`
 	MaxLength *int              `json:"maxLength,omitempty"`
 	Pattern   string            `json:"pattern,omitempty"`
 }
 
 func validateOptionSchema(o SettingOption, property json.RawMessage, required bool) error {
-	var actual, declared any
-	if json.Unmarshal(property, &actual) != nil || json.Unmarshal(o.Schema, &declared) != nil || !reflect.DeepEqual(actual, declared) {
+	actual, actualErr := jsonschema.UnmarshalJSON(bytes.NewReader(property))
+	declared, declaredErr := jsonschema.UnmarshalJSON(bytes.NewReader(o.Schema))
+	if actualErr != nil || declaredErr != nil || !reflect.DeepEqual(actual, declared) {
 		return optionError("schema")
 	}
 	keywords, ok := actual.(map[string]any)
@@ -140,6 +141,11 @@ func validateOptionSchema(o SettingOption, property json.RawMessage, required bo
 			}
 		default:
 			return optionError("schema")
+		}
+		if key == "minimum" || key == "maximum" {
+			if _, ok := value.(json.Number); !ok {
+				return optionError("schema")
+			}
 		}
 	}
 	if values, exists := keywords["enum"]; exists {
@@ -167,20 +173,20 @@ func validateOptionSchema(o SettingOption, property json.RawMessage, required bo
 	}
 	var seen []any
 	for _, value := range s.Enum {
-		var instance any
-		if json.Unmarshal(value, &instance) != nil || compiled.Validate(instance) != nil {
+		instance, err := jsonschema.UnmarshalJSON(bytes.NewReader(value))
+		if err != nil || !optionValueType(instance, s.Type) || compiled.Validate(instance) != nil {
 			return optionError("schema")
 		}
 		for _, prior := range seen {
-			if reflect.DeepEqual(prior, instance) {
+			if sameOptionValue(prior, instance) {
 				return optionError("schema")
 			}
 		}
 		seen = append(seen, instance)
 	}
 	if len(o.Default) > 0 {
-		var value any
-		if json.Unmarshal(o.Default, &value) != nil || compiled.Validate(value) != nil {
+		value, err := jsonschema.UnmarshalJSON(bytes.NewReader(o.Default))
+		if err != nil || !optionValueType(value, s.Type) || compiled.Validate(value) != nil {
 			return optionError("omission")
 		}
 	}
@@ -192,8 +198,8 @@ func validateOptionSchema(o SettingOption, property json.RawMessage, required bo
 	}
 	// Renderer omission may intentionally be outside explicit-input bounds (for
 	// example a zero sentinel). It must still have the declared scalar type.
-	var omitted any
-	if o.Omission != OptionRendererValue || json.Unmarshal(o.OmittedValue, &omitted) != nil || !optionValueType(omitted, s.Type) {
+	omitted, err := jsonschema.UnmarshalJSON(bytes.NewReader(o.OmittedValue))
+	if o.Omission != OptionRendererValue || err != nil || !optionValueType(omitted, s.Type) {
 		return optionError("omission")
 	}
 	return nil
@@ -228,10 +234,15 @@ func (s optionSchema) validate() error {
 		if s.MinLength != nil || s.MaxLength != nil || s.Pattern != "" {
 			return optionError("schema")
 		}
-		if s.Minimum == nil || s.Maximum == nil || *s.Minimum > *s.Maximum {
+		if s.Minimum == nil || s.Maximum == nil {
 			return optionError("bounds")
 		}
-		if s.Type == "integer" && math.Ceil(*s.Minimum) > math.Floor(*s.Maximum) {
+		minimum, minOK := optionNumber(*s.Minimum)
+		maximum, maxOK := optionNumber(*s.Maximum)
+		if !minOK || !maxOK || minimum.Cmp(maximum) > 0 {
+			return optionError("bounds")
+		}
+		if s.Type == "integer" && roundedOptionNumber(minimum, true).Cmp(roundedOptionNumber(maximum, false)) > 0 {
 			return optionError("bounds")
 		}
 	case "boolean":
@@ -253,10 +264,55 @@ func optionValueType(v any, kind string) bool {
 		_, ok := v.(string)
 		return ok
 	case "number", "integer":
-		n, ok := v.(float64)
-		return ok && (kind != "integer" || n == math.Trunc(n))
+		n, ok := v.(json.Number)
+		if !ok {
+			return false
+		}
+		rational, valid := optionNumber(n)
+		return valid && (kind != "integer" || rational.IsInt())
 	}
 	return false
+}
+
+func sameOptionValue(a, b any) bool {
+	x, xOK := a.(json.Number)
+	y, yOK := b.(json.Number)
+	if xOK && yOK {
+		left, leftOK := optionNumber(x)
+		right, rightOK := optionNumber(y)
+		return leftOK && rightOK && left.Cmp(right) == 0
+	}
+	return reflect.DeepEqual(a, b)
+}
+
+// Limit both literal length and exponent before allocating exact arithmetic.
+// Float conversion would collapse distinct JSON bounds above 2^53 or near an
+// integer, incorrectly accepting reversed or empty intervals.
+func optionNumber(n json.Number) (*big.Rat, bool) {
+	text := n.String()
+	if len(text) > 64 {
+		return nil, false
+	}
+	if i := strings.IndexAny(text, "eE"); i >= 0 {
+		exponent, err := strconv.Atoi(text[i+1:])
+		if err != nil || exponent < -128 || exponent > 128 {
+			return nil, false
+		}
+	}
+	return new(big.Rat).SetString(text)
+}
+
+func roundedOptionNumber(n *big.Rat, ceiling bool) *big.Int {
+	quotient, remainder := new(big.Int), new(big.Int)
+	quotient.QuoRem(n.Num(), n.Denom(), remainder)
+	if remainder.Sign() != 0 {
+		if ceiling && n.Sign() > 0 {
+			quotient.Add(quotient, big.NewInt(1))
+		} else if !ceiling && n.Sign() < 0 {
+			quotient.Sub(quotient, big.NewInt(1))
+		}
+	}
+	return quotient
 }
 
 func (d Definition) validateAvailability(a OptionAvailability) error {
