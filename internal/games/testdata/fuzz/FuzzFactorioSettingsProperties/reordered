@@ -1,0 +1,2 @@
+go test fuzz v1
+string("{ \"visibility\" : \"lan\", \"maxPlayers\": 1, \"description\": \"\", \"name\": \"Factory\" }")

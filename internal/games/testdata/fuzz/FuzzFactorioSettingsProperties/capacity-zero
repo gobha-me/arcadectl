@@ -1,0 +1,2 @@
+go test fuzz v1
+string("{\"name\":\"x\",\"maxPlayers\":0,\"visibility\":\"private\"}")
