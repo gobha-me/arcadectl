@@ -1,0 +1,2 @@
+# Fake JWT in the authenticator replacement test fixture (Argus audit).
+30ed42e24a0a9b0d370841c7d43b0198054a84ff:internal/apiserver/server_test.go:jwt:149
