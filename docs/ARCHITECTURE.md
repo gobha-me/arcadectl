@@ -152,3 +152,5 @@ Every adapter runs the shared conformance suite. A second real game is accepted
 only when it can be implemented without changing the core lifecycle controller.
 If the core must change, the missing platform capability is designed and tested
 generically before the adapter is added.
+
+See the [Seven Days to Die requirements inventory](SEVEN_DAYS_TO_DIE.md) for the second-game capability audit.
