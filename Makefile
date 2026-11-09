@@ -2,6 +2,34 @@
 
 CANONICAL_CONTROLLER_IMAGE := ghcr.io/gobha-me/arcadectl-controller@sha256:0000000000000000000000000000000000000000000000000000000000000000
 
+# Require 90% efficacy and mutant coverage with adminauth adversarial tests.
+# Count all mutation statuses; any TIMED OUT or NOT VIABLE fails the gate.
+# Checker exits 0=PASS, 1=FAIL (also malformed/inconsistent reports), or
+# 2=INCONCLUSIVE when >20% of all mutants time out; both non-zero codes fail.
+GREMLINS_EFFICACY := 90
+GREMLINS_MCOVER := 90
+# Includes mutant compilation: warm coverage takes 61-100ms, while a mutant
+# invocation takes 330ms or more. See the issue #108 timeout investigation.
+GREMLINS_TIMEOUT_COEFFICIENT := 10
+
+.PHONY: mutation-gate
+mutation-gate:
+	@report_dir=$$(mktemp -d) || exit 1; \
+	trap 'rm -rf "$$report_dir"' EXIT; \
+	failed=0; \
+	for package in ./internal/adminauth ./internal/receiptid ./internal/catalog; do \
+		echo "Gremlins mutation gate: $$package"; \
+		report="$$report_dir/$${package##*/}.json"; \
+		GOMAXPROCS=2 GOMEMLIMIT=1GiB gremlins unleash "$$package" \
+			--threshold-efficacy $(GREMLINS_EFFICACY) \
+			--threshold-mcover $(GREMLINS_MCOVER) \
+			--timeout-coefficient $(GREMLINS_TIMEOUT_COEFFICIENT) \
+			--workers 2 --output "$$report" || failed=1; \
+		python3 hack/check-mutation-report.py "$$report" \
+			$(GREMLINS_EFFICACY) $(GREMLINS_MCOVER) "$$package" || failed=1; \
+	done; \
+	exit $$failed
+
 generate:
 	go tool controller-gen object:headerFile=hack/boilerplate.go.txt crd:crdVersions=v1 paths=./api/... output:crd:artifacts:config=config/crd/bases
 	go tool controller-gen rbac:roleName=arcadectl-controller paths=./internal/controller/... output:rbac:artifacts:config=config/rbac

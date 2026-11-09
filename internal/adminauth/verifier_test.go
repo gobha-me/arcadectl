@@ -102,6 +102,11 @@ func TestFileVerifierRunReloadsAndStops(t *testing.T) {
 	go func() { done <- verifier.Run(ctx, time.Millisecond) }()
 	deadline := time.Now().Add(time.Second)
 	for !verifier.Ready() && time.Now().Before(deadline) {
+		select {
+		case err := <-done:
+			t.Fatalf("periodic verifier exited before becoming ready: %v", err)
+		default:
+		}
 		time.Sleep(time.Millisecond)
 	}
 	if !verifier.Ready() {

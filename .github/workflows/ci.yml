@@ -403,12 +403,34 @@ jobs:
           test "$(docker image inspect --format '{{json .Config.Entrypoint}}' arcadectl-api:ci-first)" = '["/arcadectl-api"]'
           test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' arcadectl-api:ci-first)" = "$(git rev-parse HEAD)"
 
+  mutation-gate:
+    name: Gremlins mutation gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 1GiB
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install pinned Gremlins release
+        run: go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
+      - name: Enforce each package's mutation thresholds
+        run: make mutation-gate
+
   go-and-policy:
     name: Go and policy
     needs: [installer-diagnostics, install-engine-race, kind-install-admission, kind-install-admission-v3,
             kind-install-binary, kind-install-baseline, kind-install-gc,
             kind-install-precontroller, kind-install-auth, kind-api, kind-recovery, envtest,
-            kind-lifecycle, go-policy-checks]
+            kind-lifecycle, go-policy-checks, mutation-gate]
     # Do not turn failed/cancelled dependencies into a skipped passing gate.
     # Whole-workflow cancellation can cancel this gate too; it is never green.
     if: ${{ always() }}
@@ -438,6 +460,7 @@ jobs:
           ENVTEST_RESULT: ${{ needs.envtest.result }}
           LIFECYCLE_RESULT: ${{ needs.kind-lifecycle.result }}
           GO_POLICY_CHECKS_RESULT: ${{ needs.go-policy-checks.result }}
+          MUTATION_GATE_RESULT: ${{ needs.mutation-gate.result }}
         run: |
           test "$INSTALLER_DIAGNOSTICS_RESULT" = success
           test "$ENGINE_RACE_RESULT" = success
@@ -453,6 +476,7 @@ jobs:
           test "$ENVTEST_RESULT" = success
           test "$LIFECYCLE_RESULT" = success
           test "$GO_POLICY_CHECKS_RESULT" = success
+          test "$MUTATION_GATE_RESULT" = success
 
   kind-lifecycle:
     name: Kind lifecycle
