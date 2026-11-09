@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	adminv1 "github.com/gobha-me/arcadectl/api/admin/v1"
@@ -157,8 +158,11 @@ func duplicateTopLevelKey(contents []byte) bool {
 		if err != nil || !ok {
 			return true
 		}
-		if _, exists := seen[key]; exists {
-			return true
+		// Match encoding/json's Unicode case folding on decoded field names.
+		for previous := range seen {
+			if strings.EqualFold(previous, key) {
+				return true
+			}
 		}
 		seen[key] = struct{}{}
 		var value any
