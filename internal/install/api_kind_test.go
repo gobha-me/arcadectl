@@ -389,8 +389,23 @@ func TestKindAuthenticatedAdmin(t *testing.T) {
 			"GOMAXPROCS=2", "GOMEMLIMIT=1GiB"}
 		stdout, stderr := &privateOutputCapture{}, &privateOutputCapture{}
 		command.Stdout, command.Stderr = stdout, stderr
-		if command.Run() != nil || stdout.truncated || stderr.truncated {
-			t.Fatalf("ordinary CLI fixture failed (fixed stage %s); private output withheld", nativeCLIStage(args))
+		started := time.Now()
+		commandErr := command.Run()
+		if commandErr != nil || stdout.truncated || stderr.truncated {
+			exit := -1
+			if command.ProcessState != nil {
+				exit = command.ProcessState.ExitCode()
+			}
+			diagnostic := nativeCLICompletionDiagnostic(ctx, time.Since(started), exit, stderr.contents, stdout.truncated, stderr.truncated)
+			if nativeCLIStage(args) == "operation-wait" && len(args) == 3 {
+				// One later read of the exact requested receipt, never a retry of
+				// the CLI or an effect. It cannot explain or cure the child exit.
+				readCtx, stopRead := context.WithTimeout(ctx, 5*time.Second)
+				result := kindAPIRequest(readCtx, httpClient, strings.TrimSuffix(endpoint, "/v1/auth/self"), recovered.Token, "GET", "/v1/operations/"+args[2], "", "", nil)
+				stopRead()
+				t.Logf("CLI wait scope=post-exit-observation %s %s", result.diagnostic(), nativeCLIOperationDiagnostic(result.operation.Phase, result.operation.Generation, result.operation.ObservedGeneration, result.operation.CompletedAt != ""))
+			}
+			t.Fatalf("ordinary CLI fixture failed (fixed stage %s; %s); private output withheld", nativeCLIStage(args), diagnostic)
 		}
 		credentialOutputs = append(credentialOutputs, stdout.contents, stderr.contents)
 		return stdout.contents
