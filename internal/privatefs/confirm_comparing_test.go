@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -386,8 +387,28 @@ func TestConfirmComparingOperandBoundsAndFirstReadPrecedence(t *testing.T) {
 		if confirm("../record", id, body) != ErrUnsafe || s.confirmDurableComparingBounded("record", id, body, MaxFileBytes+1) != ErrUnsafe {
 			t.Fatal("invalid path or open-ended limit accepted")
 		}
-		// Protection injection changed ctime; even original bytes cannot bind
-		// the old identity after restoration.
+		// Establish an actually changed generation witness: Linux can assign
+		// multiple immediate chmod calls the same coarse ctime. Keep the
+		// original refusal assertion, and refuse an inconclusive fixture.
+		deadline := time.Now().Add(time.Second)
+		for {
+			if unix.Fchmodat(s.fd, "record", 0600, 0) != nil {
+				t.Fatal("mode restoration failed")
+			}
+			var stat unix.Stat_t
+			if unix.Fstatat(s.fd, "record", &stat, unix.AT_SYMLINK_NOFOLLOW) != nil {
+				t.Fatal("generation fixture stat failed")
+			}
+			if stat.Ctim != id.changeTime {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("could not establish a changed ctime fixture")
+			}
+			time.Sleep(time.Millisecond)
+		}
+		// The fixture established a changed ctime; even original bytes cannot
+		// bind the old identity after restoration. Same-tick changes are #174.
 		if confirm("record", id, body) != ErrChanged {
 			t.Fatal("ctime drift accepted after restoring mode")
 		}

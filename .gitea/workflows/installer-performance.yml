@@ -3,19 +3,31 @@ name: Installer performance lab
 on:
   push:
     branches: [perf/installer-ci-runtime]
+  schedule:
+    - cron: "30 9 * * *"
   workflow_dispatch:
+
+defaults:
+  run:
+    shell: /config/.local/bin/heavy-run bash --noprofile --norc -e -o pipefail -c 'umask 022; exec bash --noprofile --norc -e -o pipefail "$1"' -- {0}
+
+env:
+  HEAVY_WAIT: "1800"
+  CMAKE_BUILD_PARALLEL_LEVEL: "2"
+  MAKEFLAGS: -j2
+  GOFLAGS: -p=2
 
 permissions:
   contents: read
 
 concurrency:
-  group: installer-performance-${{ github.ref }}
+  group: installer-performance-${{ github.workflow }}-${{ github.ref }}-${{ github.sha }}-${{ github.run_id }}
   cancel-in-progress: true
 
 jobs:
   descriptor-membership:
     name: Fresh authorization catalog controls (${{ matrix.shard }})
-    runs-on: ubuntu-24.04
+    runs-on: ci-build
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -35,7 +47,7 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Verify fresh request ownership and complete catalog refusals
-        shell: bash
+        shell: /config/.local/bin/heavy-run bash --noprofile --norc -e -o pipefail -c 'umask 022; exec bash --noprofile --norc -e -o pipefail "$1"' -- {0}
         run: |
           set -euo pipefail
           controls_shard='${{ matrix.shard }}'
@@ -63,7 +75,7 @@ jobs:
   descriptor-measurements:
     name: Fresh catalog measurements and vet
     needs: [descriptor-membership]
-    runs-on: ubuntu-24.04
+    runs-on: ci-build
     timeout-minutes: 20
     env:
       GOMAXPROCS: "2"
@@ -85,7 +97,7 @@ jobs:
 
   phase-barriers:
     name: Complete read-only phase and durability controls
-    runs-on: ubuntu-24.04
+    runs-on: ci-build
     timeout-minutes: 20
     env:
       GOMAXPROCS: "2"
@@ -106,7 +118,7 @@ jobs:
   native-configuration:
     name: Native v3 cold matrix (${{ matrix.revision }})
     needs: [descriptor-measurements, phase-barriers]
-    runs-on: ubuntu-24.04
+    runs-on: ci-kind
     timeout-minutes: 50
     strategy:
       fail-fast: false

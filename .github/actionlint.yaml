@@ -1,0 +1,5 @@
+self-hosted-runner:
+  labels:
+    - ci-kind
+    - ci-build
+    - ci-light
