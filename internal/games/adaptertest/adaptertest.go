@@ -42,6 +42,10 @@ func Run(t *testing.T, c Case) {
 // returns contextual failures instead of requiring a testing.T, enabling the
 // kit's self-tests to exercise deliberately broken adapters.
 func Check(c Case) []error {
+	return check(c, game.Definition.Clone)
+}
+
+func check(c Case, cloneFn func(game.Definition) game.Definition) []error {
 	// Do not rely on Clone to isolate the caller: clone isolation is itself one
 	// of the contracts under test, including when a future Clone regresses.
 	d := detached(c.Definition)
@@ -103,7 +107,7 @@ func Check(c Case) []error {
 			failures = append(failures, fmt.Errorf("invalid[%d] renderer accepted invalid settings", i))
 		}
 	}
-	return append(failures, cloneIsolation(d, d.Clone())...)
+	return append(failures, cloneIsolation(d, cloneFn(d))...)
 }
 
 func detached(d game.Definition) game.Definition {
