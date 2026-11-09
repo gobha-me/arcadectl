@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 var (
@@ -156,10 +158,18 @@ func validateEndpoints(endpoints []Endpoint, readiness string, readinessMode Rea
 		return errors.New("at least one endpoint is required")
 	}
 	names := make(map[string]Endpoint, len(endpoints))
+	type portKey struct {
+		protocol Protocol
+		port     uint16
+	}
+	ports := make(map[portKey]string, len(endpoints))
 	hasPlayerEndpoint := false
 	for _, endpoint := range endpoints {
 		if !namePattern.MatchString(endpoint.Name) {
 			return fmt.Errorf("endpoint %q must have a lowercase DNS-label name", endpoint.Name)
+		}
+		if problems := validation.IsValidPortName(endpoint.Name); len(problems) != 0 {
+			return fmt.Errorf("endpoint %q must have a valid IANA service name: %s", endpoint.Name, strings.Join(problems, "; "))
 		}
 		if _, exists := names[endpoint.Name]; exists {
 			return fmt.Errorf("endpoint name %q is duplicated", endpoint.Name)
@@ -170,6 +180,11 @@ func validateEndpoints(endpoints []Endpoint, readiness string, readinessMode Rea
 		if endpoint.ContainerPort == 0 {
 			return fmt.Errorf("endpoint %q has an invalid zero port", endpoint.Name)
 		}
+		key := portKey{protocol: endpoint.Protocol, port: endpoint.ContainerPort}
+		if previous, exists := ports[key]; exists {
+			return fmt.Errorf("endpoint %q duplicates %s port %d of endpoint %q", endpoint.Name, endpoint.Protocol, endpoint.ContainerPort, previous)
+		}
+		ports[key] = endpoint.Name
 		switch endpoint.Scope {
 		case ScopePlayer:
 			hasPlayerEndpoint = true
