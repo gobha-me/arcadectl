@@ -15,6 +15,8 @@ deploy the matching API rather than an older four-field build. The namespace
 binds saved CLI contexts to the one managed installation, not to user-supplied
 per-request namespaces.
 
+The planned UI route and confirmation map is documented in [UI.md](UI.md).
+
 ## Identity, trust, and exposure
 
 The stable principal is `admin`; each rotation gets a new opaque credential ID.

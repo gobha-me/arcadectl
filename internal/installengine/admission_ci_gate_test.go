@@ -52,6 +52,7 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 				FailFast    *bool `yaml:"fail-fast"`
 				MaxParallel int   `yaml:"max-parallel"`
 				Matrix      struct {
+					Check   []string `yaml:"check"`
 					Shard   []int    `yaml:"shard"`
 					Part    []string `yaml:"part"`
 					Profile []int    `yaml:"profile"`
@@ -101,10 +102,13 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 	if t.Failed() {
 		t.FailNow()
 	}
-	for _, name := range []string{"kind-install-baseline", "kind-install-gc", "kind-install-precontroller", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-api", "kind-recovery", "kind-lifecycle", "go-policy-checks"} {
+	if job := workflow.Jobs["go-policy-checks"]; !diagnosticOrderingOnly(job.Needs, job.If, job.ContinueOnError) {
+		t.Fatal("CI job go-policy-checks competes with early diagnostics or skips independent coverage after their failure")
+	}
+	for _, name := range []string{"kind-install-baseline", "kind-install-gc", "kind-install-precontroller", "kind-install-admission", "kind-install-admission-v3", "kind-install-auth", "kind-api", "kind-recovery", "kind-lifecycle"} {
 		job := workflow.Jobs[name]
-		if !diagnosticOrderingOnly(job.Needs, job.If, job.ContinueOnError) {
-			t.Fatalf("CI job %s competes with early diagnostics or skips independent coverage after their failure", name)
+		if !slices.Equal(job.Needs, []string{"installer-diagnostics", "kind-images"}) || job.If != "${{ !cancelled() && needs.kind-images.result == 'success' }}" || job.ContinueOnError != nil {
+			t.Fatalf("CI job %s competes with early diagnostics, omits shared images or skips independent coverage after their failure", name)
 		}
 	}
 	for _, name := range []string{"install-engine-race", "envtest"} {
@@ -192,7 +196,7 @@ func TestInstallerAdmissionCIProfilesAndFailClosedRequiredGate(t *testing.T) {
 		fullRun = fullRun || step.Run == "make test-kind-install-admission INSTALL_ADMISSION_PROFILE='${{ matrix.profile }}' INSTALL_ADMISSION_MODE='${{ matrix.mode }}'"
 	}
 	gate := workflow.Jobs["go-and-policy"]
-	if !slices.Equal(gate.Needs, []string{"installer-diagnostics", "install-engine-race", "kind-install-admission", "kind-install-admission-v3", "kind-install-binary", "kind-install-baseline", "kind-install-gc", "kind-install-precontroller", "kind-install-auth", "kind-api", "kind-recovery", "envtest", "kind-lifecycle", "go-policy-checks"}) || gate.ContinueOnError != nil {
+	if !slices.Equal(gate.Needs, []string{"installer-diagnostics", "install-engine-race", "kind-install-admission", "kind-install-admission-v3", "kind-install-binary", "kind-install-baseline", "kind-install-gc", "kind-install-precontroller", "kind-install-auth", "kind-api", "kind-recovery", "envtest", "kind-lifecycle", "go-policy-checks", "kind-images"}) || gate.ContinueOnError != nil {
 		t.Fatal("required gate omitted, tolerated or substituted a complete proof")
 	}
 	if len(gate.Needs) != len(workflow.Jobs)-1 {
@@ -260,9 +264,14 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 		t.Fatal("protected aggregate changed its name, exact checkout or assertion-only scope")
 	}
 	diagnostics := workflow.Jobs["installer-diagnostics"]
+	wantDiagnosticChecks := []string{"cli", "controls", "discovery", "observation", "benchmarks", "wrappers", "vet"}
 	var diagnosticRuns []string
-	for _, step := range diagnostics.Steps {
-		if step.If != "" || step.ContinueOnError != nil || len(step.Env) != 0 {
+	for index, step := range diagnostics.Steps {
+		wantIf := ""
+		if index >= 2 && index-2 < len(wantDiagnosticChecks) {
+			wantIf = "matrix.check == '" + wantDiagnosticChecks[index-2] + "'"
+		}
+		if step.If != wantIf || step.ContinueOnError != nil || len(step.Env) != 0 {
 			t.Fatal("early diagnostic step can skip, tolerate failure or override bounded environment")
 		}
 		if step.Run != "" {
@@ -278,7 +287,7 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 		"go test -race -p 1 -timeout=1m ./hack/profile-installer-wrappers -count=1\ngo run -p 1 ./hack/profile-installer-wrappers '${{ github.event.pull_request.head.sha || github.sha }}'\n",
 		"go vet -tags=kindinstall -p 1 ./cmd/arcadectl-installer ./internal/installengine ./internal/installobserve",
 	}
-	if diagnostics.If != "" || diagnostics.ContinueOnError != nil || len(diagnostics.Needs) != 0 || diagnostics.TimeoutMinutes != 20 || diagnostics.Env["GOMAXPROCS"] != "2" || diagnostics.Env["GOMEMLIMIT"] != "1GiB" || !slices.Equal(diagnosticRuns, wantDiagnosticRuns) || !slices.Contains(gate.Needs, "installer-diagnostics") || len(diagnostics.Steps) != 9 {
+	if diagnostics.If != "" || diagnostics.ContinueOnError != nil || len(diagnostics.Needs) != 0 || diagnostics.TimeoutMinutes != 20 || diagnostics.Strategy.FailFast == nil || *diagnostics.Strategy.FailFast || !slices.Equal(diagnostics.Strategy.Matrix.Check, wantDiagnosticChecks) || diagnostics.Env["GOMAXPROCS"] != "2" || diagnostics.Env["GOMEMLIMIT"] != "1GiB" || !slices.Equal(diagnosticRuns, wantDiagnosticRuns) || !slices.Contains(gate.Needs, "installer-diagnostics") || len(diagnostics.Steps) != 9 {
 		t.Fatal("early CLI/diagnostic controls are missing, unbounded or gated behind native lifecycle")
 	}
 	if diagnostics.Steps[0].Uses != "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" || diagnostics.Steps[1].Uses != "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e" || diagnostics.Steps[1].With["go-version-file"] != "go.mod" || diagnostics.Steps[1].With["cache"] != true {
@@ -343,7 +352,7 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 		t.Fatal("genuine pre-controller profile or required dependency omitted")
 	}
 	binary := workflow.Jobs["kind-install-binary"]
-	if !binaryDiagnosticsPrerequisite(binary.Needs, binary.If, binary.ContinueOnError) {
+	if !slices.Equal(binary.Needs, []string{"installer-diagnostics", "kind-images"}) || !binaryDiagnosticsPrerequisite(binary.Needs[:1], binary.If, binary.ContinueOnError) {
 		t.Fatal("long signed lifecycle proofs delay independent work or bypass successful diagnostics")
 	}
 	if !binaryDiagnosticsPrerequisite([]string{"installer-diagnostics"}, "", nil) {
@@ -433,12 +442,12 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 		}
 	}
 	binaryMatrix := binary.Strategy.Matrix
-	if !fullRun || !binaryRun || !binaryHistory || !slices.Equal(binaryMatrix.Profile, []int{135, 137}) || !slices.Equal(binaryMatrix.Mode, []string{"fresh", "transition"}) || len(binaryMatrix.Exclude) != 1 || binaryMatrix.Exclude[0].Profile != 135 || binaryMatrix.Exclude[0].Mode != "transition" || gate.If != "${{ always() }}" || !slices.Contains(gate.Needs, "install-engine-race") || !slices.Contains(gate.Needs, "kind-install-admission") || !slices.Contains(gate.Needs, "kind-install-binary") {
+	if !fullRun || !binaryRun || !binaryHistory || !slices.Equal(binaryMatrix.Profile, []int{137, 135}) || !slices.Equal(binaryMatrix.Mode, []string{"transition", "fresh"}) || len(binaryMatrix.Exclude) != 1 || binaryMatrix.Exclude[0].Profile != 135 || binaryMatrix.Exclude[0].Mode != "transition" || gate.If != "${{ always() }}" || !slices.Contains(gate.Needs, "install-engine-race") || !slices.Contains(gate.Needs, "kind-install-admission") || !slices.Contains(gate.Needs, "kind-install-binary") {
 		t.Fatal("required gate bypasses full native admission or engine races")
 	}
 	var command string
 	for _, step := range gate.Steps {
-		if step.Env["INSTALLER_DIAGNOSTICS_RESULT"] == "${{ needs.installer-diagnostics.result }}" && step.Env["ENGINE_RACE_RESULT"] == "${{ needs.install-engine-race.result }}" && step.Env["INSTALL_ADMISSION_RESULT"] == "${{ needs.kind-install-admission.result }}" && step.Env["INSTALL_BINARY_RESULT"] == "${{ needs.kind-install-binary.result }}" && step.Env["INSTALL_BASELINE_RESULT"] == "${{ needs.kind-install-baseline.result }}" && step.Env["INSTALL_ADMISSION_V3_RESULT"] == "${{ needs.kind-install-admission-v3.result }}" && step.Env["INSTALL_PRECONTROLLER_RESULT"] == "${{ needs.kind-install-precontroller.result }}" && step.Env["INSTALL_GC_RESULT"] == "${{ needs.kind-install-gc.result }}" && step.Env["INSTALL_AUTH_RESULT"] == "${{ needs.kind-install-auth.result }}" && step.Env["API_RESULT"] == "${{ needs.kind-api.result }}" && step.Env["RECOVERY_RESULT"] == "${{ needs.kind-recovery.result }}" && step.Env["ENVTEST_RESULT"] == "${{ needs.envtest.result }}" && step.Env["LIFECYCLE_RESULT"] == "${{ needs.kind-lifecycle.result }}" && step.Env["GO_POLICY_CHECKS_RESULT"] == "${{ needs.go-policy-checks.result }}" {
+		if step.Env["INSTALLER_DIAGNOSTICS_RESULT"] == "${{ needs.installer-diagnostics.result }}" && step.Env["ENGINE_RACE_RESULT"] == "${{ needs.install-engine-race.result }}" && step.Env["INSTALL_ADMISSION_RESULT"] == "${{ needs.kind-install-admission.result }}" && step.Env["INSTALL_BINARY_RESULT"] == "${{ needs.kind-install-binary.result }}" && step.Env["INSTALL_BASELINE_RESULT"] == "${{ needs.kind-install-baseline.result }}" && step.Env["INSTALL_ADMISSION_V3_RESULT"] == "${{ needs.kind-install-admission-v3.result }}" && step.Env["INSTALL_PRECONTROLLER_RESULT"] == "${{ needs.kind-install-precontroller.result }}" && step.Env["INSTALL_GC_RESULT"] == "${{ needs.kind-install-gc.result }}" && step.Env["INSTALL_AUTH_RESULT"] == "${{ needs.kind-install-auth.result }}" && step.Env["API_RESULT"] == "${{ needs.kind-api.result }}" && step.Env["RECOVERY_RESULT"] == "${{ needs.kind-recovery.result }}" && step.Env["ENVTEST_RESULT"] == "${{ needs.envtest.result }}" && step.Env["LIFECYCLE_RESULT"] == "${{ needs.kind-lifecycle.result }}" && step.Env["GO_POLICY_CHECKS_RESULT"] == "${{ needs.go-policy-checks.result }}" && step.Env["KIND_IMAGES_RESULT"] == "${{ needs.kind-images.result }}" {
 			if step.If != "" || step.ContinueOnError != nil {
 				t.Fatal("required dependency assertion can be skipped or tolerate failure")
 			}
@@ -458,7 +467,7 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 					for _, v3 := range []string{"success", "failure", "cancelled", "skipped", ""} {
 						for _, precontroller := range []string{"success", "failure", "cancelled", "skipped", ""} {
 							c := exec.Command("sh", "-e", "-c", command)
-							c.Env = append(os.Environ(), "INSTALLER_DIAGNOSTICS_RESULT=success", "ENGINE_RACE_RESULT="+races, "INSTALL_ADMISSION_RESULT="+native, "INSTALL_BINARY_RESULT="+binary, "INSTALL_BASELINE_RESULT="+baseline, "INSTALL_ADMISSION_V3_RESULT="+v3, "INSTALL_PRECONTROLLER_RESULT="+precontroller, "INSTALL_GC_RESULT=success", "INSTALL_AUTH_RESULT=success", "API_RESULT=success", "RECOVERY_RESULT=success", "ENVTEST_RESULT=success", "LIFECYCLE_RESULT=success", "GO_POLICY_CHECKS_RESULT=success")
+							c.Env = append(os.Environ(), "INSTALLER_DIAGNOSTICS_RESULT=success", "ENGINE_RACE_RESULT="+races, "INSTALL_ADMISSION_RESULT="+native, "INSTALL_BINARY_RESULT="+binary, "INSTALL_BASELINE_RESULT="+baseline, "INSTALL_ADMISSION_V3_RESULT="+v3, "INSTALL_PRECONTROLLER_RESULT="+precontroller, "INSTALL_GC_RESULT=success", "INSTALL_AUTH_RESULT=success", "API_RESULT=success", "RECOVERY_RESULT=success", "ENVTEST_RESULT=success", "LIFECYCLE_RESULT=success", "GO_POLICY_CHECKS_RESULT=success", "KIND_IMAGES_RESULT=success")
 							passed := c.Run() == nil
 							if passed != (races == "success" && native == "success" && binary == "success" && baseline == "success" && v3 == "success" && precontroller == "success") {
 								t.Fatal("failed/cancelled/skipped/absent dependency became a green required gate")
@@ -473,14 +482,14 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 	// Separately exercise every GC outcome while all earlier proofs succeeded.
 	for _, result := range []string{"success", "failure", "cancelled", "skipped", ""} {
 		c := exec.Command("sh", "-e", "-c", command)
-		c.Env = append(os.Environ(), "INSTALLER_DIAGNOSTICS_RESULT=success", "ENGINE_RACE_RESULT=success", "INSTALL_ADMISSION_RESULT=success", "INSTALL_BINARY_RESULT=success", "INSTALL_BASELINE_RESULT=success", "INSTALL_ADMISSION_V3_RESULT=success", "INSTALL_PRECONTROLLER_RESULT=success", "INSTALL_GC_RESULT="+result, "INSTALL_AUTH_RESULT=success", "API_RESULT=success", "RECOVERY_RESULT=success", "ENVTEST_RESULT=success", "LIFECYCLE_RESULT=success", "GO_POLICY_CHECKS_RESULT=success")
+		c.Env = append(os.Environ(), "INSTALLER_DIAGNOSTICS_RESULT=success", "ENGINE_RACE_RESULT=success", "INSTALL_ADMISSION_RESULT=success", "INSTALL_BINARY_RESULT=success", "INSTALL_BASELINE_RESULT=success", "INSTALL_ADMISSION_V3_RESULT=success", "INSTALL_PRECONTROLLER_RESULT=success", "INSTALL_GC_RESULT="+result, "INSTALL_AUTH_RESULT=success", "API_RESULT=success", "RECOVERY_RESULT=success", "ENVTEST_RESULT=success", "LIFECYCLE_RESULT=success", "GO_POLICY_CHECKS_RESULT=success", "KIND_IMAGES_RESULT=success")
 		if passed := c.Run() == nil; passed != (result == "success") {
 			t.Fatal("failed/cancelled/skipped/absent GC proof became a green required gate")
 		}
 	}
 	// Independently exercise every added prerequisite outcome while the others
 	// succeed, preserving all original combinations without multiplying them.
-	added := []string{"INSTALL_AUTH_RESULT", "API_RESULT", "RECOVERY_RESULT", "INSTALLER_DIAGNOSTICS_RESULT", "ENVTEST_RESULT", "LIFECYCLE_RESULT", "GO_POLICY_CHECKS_RESULT"}
+	added := []string{"INSTALL_AUTH_RESULT", "API_RESULT", "RECOVERY_RESULT", "INSTALLER_DIAGNOSTICS_RESULT", "ENVTEST_RESULT", "LIFECYCLE_RESULT", "GO_POLICY_CHECKS_RESULT", "KIND_IMAGES_RESULT"}
 	for _, variable := range added {
 		for _, result := range []string{"success", "failure", "cancelled", "skipped", ""} {
 			c := exec.Command("sh", "-e", "-c", command)
