@@ -172,7 +172,9 @@ func MarshalVerifierBundle(bundle VerifierBundle) ([]byte, error) {
 // ParseVerifierBundle rejects unknown fields, duplicate keys, trailing values,
 // noncanonical timestamps, malformed digests, and oversized input.
 func ParseVerifierBundle(contents []byte) (VerifierBundle, error) {
-	if len(contents) == 0 || len(contents) > MaxVerifierBundleBytes || rejectDuplicateJSONKeys(contents) != nil {
+	// Keep the exact key allow-list in sync with verifierBundleWire's JSON tags.
+	if len(contents) == 0 || len(contents) > MaxVerifierBundleBytes ||
+		rejectInvalidJSONKeys(contents, "version", "credentialId", "serial", "expiresAt", "tokenSha256") != nil {
 		return VerifierBundle{}, errInvalidCredential
 	}
 	var wire verifierBundleWire
@@ -207,7 +209,9 @@ func MarshalClientCredential(credential ClientCredential) ([]byte, error) {
 
 // ParseClientCredential strictly parses a bounded private credential file.
 func ParseClientCredential(contents []byte) (ClientCredential, error) {
-	if len(contents) == 0 || len(contents) > MaxClientCredentialBytes || rejectDuplicateJSONKeys(contents) != nil {
+	// Keep the exact key allow-list in sync with clientCredentialWire's JSON tags.
+	if len(contents) == 0 || len(contents) > MaxClientCredentialBytes ||
+		rejectInvalidJSONKeys(contents, "version", "credentialId", "serial", "expiresAt", "token", "priorSecretUid", "priorResourceVersion") != nil {
 		return ClientCredential{}, errInvalidCredential
 	}
 	var wire clientCredentialWire
@@ -272,57 +276,45 @@ func decodeStrictJSON(contents []byte, destination any) error {
 	return nil
 }
 
-func rejectDuplicateJSONKeys(contents []byte) error {
+// rejectInvalidJSONKeys accepts only an object with unique, exact allowed keys.
+// Both credential wire types contain only scalar fields, so compound values
+// are rejected rather than allowing nested objects to bypass key validation.
+func rejectInvalidJSONKeys(contents []byte, allowedKeys ...string) error {
 	decoder := json.NewDecoder(bytes.NewReader(contents))
-	if err := inspectJSONValue(decoder); err != nil {
-		return err
-	}
-	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+	opening, err := decoder.Token()
+	if err != nil || opening != json.Delim('{') {
 		return errInvalidCredential
 	}
-	return nil
-}
-
-func inspectJSONValue(decoder *json.Decoder) error {
-	token, err := decoder.Token()
-	if err != nil {
-		return err
+	seen := make(map[string]bool, len(allowedKeys))
+	for _, key := range allowedKeys {
+		seen[key] = false
 	}
-	delimiter, compound := token.(json.Delim)
-	if !compound {
-		return nil
-	}
-	switch delimiter {
-	case '{':
-		seen := make(map[string]struct{})
-		for decoder.More() {
-			keyToken, err := decoder.Token()
-			if err != nil {
-				return err
-			}
-			key, ok := keyToken.(string)
-			if !ok {
-				return errInvalidCredential
-			}
-			if _, exists := seen[key]; exists {
-				return errInvalidCredential
-			}
-			seen[key] = struct{}{}
-			if err := inspectJSONValue(decoder); err != nil {
-				return err
-			}
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return err
 		}
-	case '[':
-		for decoder.More() {
-			if err := inspectJSONValue(decoder); err != nil {
-				return err
-			}
+		key, ok := keyToken.(string)
+		if !ok {
+			return errInvalidCredential
 		}
-	default:
-		return errInvalidCredential
+		if duplicate, allowed := seen[key]; !allowed || duplicate {
+			return errInvalidCredential
+		}
+		seen[key] = true
+		value, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if _, compound := value.(json.Delim); compound {
+			return errInvalidCredential
+		}
 	}
 	closing, err := decoder.Token()
-	if err != nil || closing != json.Delim(map[json.Delim]json.Delim{'{': '}', '[': ']'}[delimiter]) {
+	if err != nil || closing != json.Delim('}') {
+		return errInvalidCredential
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
 		return errInvalidCredential
 	}
 	return nil
