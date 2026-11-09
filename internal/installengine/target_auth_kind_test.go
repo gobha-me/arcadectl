@@ -259,13 +259,21 @@ func targetKindFixtureImagesWithOwnedNode(t *testing.T, nodeImage string, withCo
 			t.Fatal("owned image tag preflight failed")
 		}
 		images = append(images, ownedImage{tag: tag}) // cleanup armed before build
-		t.Log("building digest-pinned " + repository + " image with serialized, concurrency-limited Go build")
-		args := []string{"docker", "build", "--file", filepath.Join(sourceRoot, dockerfile), "--build-arg", "VCS_REF=" + sourceSHA, "--build-arg", "SOURCE_DATE_EPOCH=" + sourceEpoch, "--build-arg", "SOURCE_DIRTY=" + sourceDirty}
-		if dockerfile == "Dockerfile" {
-			args = append(args, "--build-arg", "LIFECYCLE_TEST=false")
+		t.Log("preparing digest-pinned " + repository + " image")
+		if sourceRoot == root {
+			role := "api"
+			if dockerfile == "Dockerfile" {
+				role = "controller"
+			}
+			public("", "bash", "./hack/kind-runtime-images.sh", "prepare", role, sourceRoot, sourceSHA, sourceEpoch, sourceDirty, tag)
+		} else {
+			args := []string{"docker", "build", "--file", filepath.Join(sourceRoot, dockerfile), "--build-arg", "VCS_REF=" + sourceSHA, "--build-arg", "SOURCE_DATE_EPOCH=" + sourceEpoch, "--build-arg", "SOURCE_DIRTY=" + sourceDirty}
+			if dockerfile == "Dockerfile" {
+				args = append(args, "--build-arg", "LIFECYCLE_TEST=false")
+			}
+			args = append(args, "--tag", tag, sourceRoot)
+			public("", args...)
 		}
-		args = append(args, "--tag", tag, sourceRoot)
-		public("", args...)
 		images[len(images)-1].id = public("", "docker", "image", "inspect", "--format", "{{.Id}}", tag)
 		if public("", "docker", "image", "inspect", "--format", "{{index .Config.Labels \"org.opencontainers.image.revision\"}}", tag) != sourceSHA || public("", "docker", "image", "inspect", "--format", "{{index .Config.Labels \"arcade.gobha.me/source-dirty\"}}", tag) != sourceDirty || public("", "docker", "image", "inspect", "--format", "{{.Config.User}}", tag) != "65532:65532" {
 			t.Fatal("owned image source/user metadata refused")
