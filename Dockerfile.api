@@ -21,8 +21,10 @@ RUN case "$VCS_REF" in ""|*[!0-9a-f]*) echo "VCS_REF must be a full lowercase Gi
     && test "${#VCS_REF}" -eq 40 \
     && case "$SOURCE_DATE_EPOCH" in ""|*[!0-9]*) echo "SOURCE_DATE_EPOCH must be a Unix timestamp" >&2; exit 1 ;; esac \
     && case "$SOURCE_DIRTY" in true|false) ;; *) echo "SOURCE_DIRTY must be true or false" >&2; exit 1 ;; esac \
+    && api_source_sha=unknown && api_source_epoch=0 \
+    && if [ "$SOURCE_DIRTY" = false ]; then api_source_sha="$VCS_REF"; api_source_epoch="$SOURCE_DATE_EPOCH"; fi \
     && CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
-       go build -trimpath -ldflags="-s -w -buildid=" -o /rootfs/arcadectl-api ./cmd/arcadectl-api \
+       go build -trimpath -ldflags="-s -w -buildid= -X github.com/gobha-me/arcadectl/internal/buildinfo.SourceSHA=$api_source_sha -X github.com/gobha-me/arcadectl/internal/buildinfo.SourceEpoch=$api_source_epoch" -o /rootfs/arcadectl-api ./cmd/arcadectl-api \
     && mkdir -p /rootfs/licenses /rootfs/etc/ssl/certs \
     && cp LICENSE NOTICE /rootfs/licenses/ \
     && cp /etc/ssl/certs/ca-certificates.crt /rootfs/etc/ssl/certs/ca-certificates.crt \

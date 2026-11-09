@@ -158,3 +158,63 @@ cancellation success. See [DESTROY.md](DESTROY.md).
 
 Errors and progress use fixed guidance/reason codes, not raw transport errors,
 request bodies, server diagnostics, tokens, or verifier digests.
+
+
+## Safe condition guidance
+
+`arcadectl server status NAME` reports the controller's fixed condition reasons
+and safe next actions for storage provisioning, missing or conflicting retained
+data, workload scheduling, endpoint provisioning, and ownership collisions.
+JSON retains the existing v1 condition shape and stable `reason` codes. Human
+output adds fixed guidance for actionable reasons. Compare `observedGeneration`
+with the server generation before treating a condition as current.
+
+Messages, Kubernetes errors, annotations, worker output, and repository
+credentials are never used to construct this guidance. Unknown reasons remain
+`Unknown` and receive generic inspection guidance. Existing successful reasons
+do not imply that every other condition is successful.
+
+This is read-only runtime diagnosis for issue #28. It does not certify
+environmental preflight, collect logs/events, or produce a complete support
+bundle with component versions. Mandatory environmental checks and that bundle
+remain outstanding; status reads do not authorize mutation or data deletion.
+
+## Partial redacted support bundle
+
+```sh
+arcadectl server diagnose factory --output json > factory-diagnostic.json
+```
+
+This command reads only the selected server and the authenticated API build
+version. It creates no lifecycle intent, operation receipt, Kubernetes object,
+or CLI mutation-attempt state. The server UID and generation must remain equal
+around the version read; a changed or replaced target fails with exit 4 before
+emitting a bundle. Status and API build data are independent observations,
+not an atomic snapshot or authorization for a subsequent action.
+
+The deterministic `arcadectl.support/v1` format includes selected object
+identity, generations, desired state, phase, closed condition reasons, the
+requested game image digest, and available CLI/API source/toolchain claims.
+It has no collection timestamp, so unchanged observations compare across
+retries. Canonical condition ordering and fixed omission codes make changes
+easy to inspect. The requested image is not proof of the image actually running.
+
+Settings, endpoints, annotations, arbitrary maps, condition messages,
+operation/destroy challenges, bearer tokens, credential files, Secret data,
+save contents, and unrelated servers/namespaces are excluded by construction.
+The command does not list operations, fetch Pod/Secret objects, read logs,
+collect events, or upload anything. Inspect the identity metadata before sharing
+a bundle; names and UIDs still identify the selected server.
+
+Every bundle says `partial: true`. Controller versions, actual running image
+identity, logs and events remain explicit omissions. Older APIs without the
+version endpoint have a fixed `api_version_not_supported` omission; authentication,
+protocol and other read failures abort collection. Ordinary development builds
+report unknown source identity. Source fields are build claims, not signatures
+or artifact authentication. Mandatory environmental preflight and complete
+support-bundle acceptance in #28 remain outstanding.
+
+The older router's exact plain-text `404 page not found` response is recognized
+only for the optional version GET. Different text, statuses, endpoints, encoded
+responses or malformed JSON remain protocol errors. This compatibility exception
+does not apply to mutation responses or turn an uncertain intent into rejection.

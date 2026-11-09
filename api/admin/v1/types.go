@@ -9,6 +9,16 @@ import "encoding/json"
 
 const Version = "v1"
 
+// ComponentVersion is a bounded build claim, not artifact authentication.
+type ComponentVersion struct {
+	Version     string `json:"version"`
+	SourceSHA   string `json:"sourceSha"`
+	SourceEpoch int64  `json:"sourceEpoch"`
+	GoVersion   string `json:"goVersion"`
+	OS          string `json:"os"`
+	Arch        string `json:"arch"`
+}
+
 // Self binds a verified client context to the stable administrator and namespace.
 type Self struct {
 	Version      string `json:"version"`

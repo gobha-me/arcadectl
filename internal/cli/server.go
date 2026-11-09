@@ -17,6 +17,7 @@ import (
 
 func (app *application) serverCommand() *cobra.Command {
 	root := &cobra.Command{Use: "server", Short: "Create, configure, inspect, and operate servers; ordinary removal retains worlds"}
+	root.AddCommand(app.diagnoseCommand())
 	root.AddCommand(&cobra.Command{Use: "status [NAME]", Short: "Inspect a server or list servers", Args: maximumArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, cancel := context.WithTimeout(cmd.Context(), app.timeout)
 		defer cancel()

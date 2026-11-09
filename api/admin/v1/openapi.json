@@ -71,6 +71,47 @@
         ],
         "type": "object"
       },
+      "ComponentVersion": {
+        "additionalProperties": false,
+        "properties": {
+          "arch": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "goVersion": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "os": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "sourceEpoch": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "sourceSha": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "version": {
+            "enum": [
+              "v1"
+            ],
+            "maxLength": 512,
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "sourceSha",
+          "sourceEpoch",
+          "goVersion",
+          "os",
+          "arch"
+        ],
+        "type": "object"
+      },
       "Compute": {
         "additionalProperties": false,
         "properties": {
@@ -6426,6 +6467,149 @@
           }
         ],
         "x-arcadectl-action": "server.update"
+      }
+    },
+    "/v1/version": {
+      "get": {
+        "operationId": "system_read__v1_version",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComponentVersion"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Versioned bounded response; no raw worker, credential or Kubernetes error output."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-arcadectl-action": "system.read"
       }
     }
   }

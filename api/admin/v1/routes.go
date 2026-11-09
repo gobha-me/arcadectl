@@ -10,6 +10,7 @@ type Route struct{ Method, Path, Action, RequestSchema, ResponseSchema string }
 func Routes() []Route {
 	return []Route{
 		{"GET", "/v1/auth/self", "auth.self", "", "Self"},
+		{"GET", "/v1/version", "system.read", "", "ComponentVersion"},
 		{"GET", "/v1/servers", "server.read", "", "ServerList"},
 		{"POST", "/v1/servers", "server.create", "CreateRequest", "Operation"},
 		{"GET", "/v1/servers/{name}", "server.read", "", "Server"},
