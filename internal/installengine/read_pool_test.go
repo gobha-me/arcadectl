@@ -47,6 +47,8 @@ func testDirectReadPoolGetNotFoundAtFixture(t *testing.T, fixture bool) {
 			key, object := accessObject()
 			var requests, got, reused, handshakes, sanitized atomic.Int32
 			release := make(chan struct{})
+			held, handlerDone := make(chan struct{}), make(chan struct{})
+			holdEOF := !scenario.reuse && scenario.name != "truncated"
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodGet || r.URL.Path != "/api/v1/namespaces/isolated-install/serviceaccounts/reviewed" || r.URL.RawQuery != "" || r.ProtoMajor != 1 || r.Header.Get("Authorization") != "Bearer TEST-ONLY-404-POOL" || r.Header.Get("Impersonate-User") != "" {
 					t.Error("absence read changed frozen identity, route or protocol")
@@ -99,15 +101,17 @@ func testDirectReadPoolGetNotFoundAtFixture(t *testing.T, fixture bool) {
 						body = body[:8193]
 					}
 					_, _ = w.Write(body)
-					if !scenario.reuse && scenario.name != "truncated" {
+					if holdEOF {
 						// Keep EOF unavailable until the client closes the native
 						// connection. Go transports may drain a small unread body
 						// on Close; a completed fixture cannot require non-reuse.
 						w.(http.Flusher).Flush()
+						close(held)
 						select {
 						case <-r.Context().Done():
 						case <-release:
 						}
+						close(handlerDone)
 					}
 					w.Header().Set("X-Private-Trailer", "PRIVATE-404-TRAILER-CANARY")
 					return
@@ -175,6 +179,20 @@ func testDirectReadPoolGetNotFoundAtFixture(t *testing.T, fixture bool) {
 					}
 				} else if err != nil || live == nil || live.GetName() != key.Name {
 					t.Fatal("surrounding original read refused")
+				}
+			}
+			if holdEOF {
+				select {
+				case <-held:
+				case <-time.After(5 * time.Second):
+					t.Fatal("non-reuse fixture never withheld native EOF")
+				}
+				// Cleanup has not closed release. The held handler can only
+				// finish now when the client discards its native connection.
+				select {
+				case <-handlerDone:
+				case <-time.After(5 * time.Second):
+					t.Fatal("discarded native response left its held handler running")
 				}
 			}
 			wantReuse, wantHandshakes := int32(1), int32(2)

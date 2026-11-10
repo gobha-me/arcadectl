@@ -389,16 +389,21 @@ func TestConfirmComparingOperandBoundsAndFirstReadPrecedence(t *testing.T) {
 		}
 		// Establish a changed generation witness before asserting refusal:
 		// immediate chmod calls can share a coarse filesystem ctime.
+		var before, changed unix.Stat_t
+		if unix.Fstatat(s.fd, "record", &before, unix.AT_SYMLINK_NOFOLLOW) != nil {
+			t.Fatal("generation fixture initial stat failed")
+		}
 		deadline := time.Now().Add(time.Second)
 		for {
-			if unix.Fchmodat(s.fd, "record", 0600, 0) != nil {
-				t.Fatal("mode restoration failed")
+			// Toggle permissions each time: a filesystem may optimize away
+			// a chmod that merely repeats the current mode.
+			if unix.Fchmodat(s.fd, "record", 0644, 0) != nil || unix.Fchmodat(s.fd, "record", 0600, 0) != nil {
+				t.Fatal("generation fixture mode toggle failed")
 			}
-			var stat unix.Stat_t
-			if unix.Fstatat(s.fd, "record", &stat, unix.AT_SYMLINK_NOFOLLOW) != nil {
+			if unix.Fstatat(s.fd, "record", &changed, unix.AT_SYMLINK_NOFOLLOW) != nil {
 				t.Fatal("generation fixture stat failed")
 			}
-			if stat.Ctim != id.changeTime {
+			if changed.Ctim != id.changeTime {
 				break
 			}
 			if time.Now().After(deadline) {
@@ -406,10 +411,22 @@ func TestConfirmComparingOperandBoundsAndFirstReadPrecedence(t *testing.T) {
 			}
 			time.Sleep(time.Millisecond)
 		}
+		unchanged := changed
+		unchanged.Ctim, unchanged.Atim = before.Ctim, before.Atim
+		if unchanged != before || !privateStat(&changed) {
+			t.Fatal("generation fixture changed metadata beyond ctime or lost private protection")
+		}
+		observed, fresh, err := s.Read("record", int64(len(body)))
+		if err != nil || !bytes.Equal(observed, body) || fresh.device != id.device || fresh.inode != id.inode || fresh.digest != id.digest || fresh.changeTime != changed.Ctim || fresh.changeTime == id.changeTime {
+			t.Fatal("generation fixture did not preserve original bytes and inode with a changed ctime")
+		}
 		// Protection injection changed ctime; even original bytes cannot bind
 		// the old identity after restoration.
 		if confirm("record", id, body) != ErrChanged {
 			t.Fatal("ctime drift accepted after restoring mode")
+		}
+		if confirm("record", fresh, body) != nil {
+			t.Fatal("fresh unchanged generation was rejected after stale identity refusal")
 		}
 	}
 }
