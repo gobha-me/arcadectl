@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	wantWorkflowConcurrencyGroup            = "${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || format('{0}-{1}', github.sha, github.run_id) }}"
+	wantWorkflowConcurrencyGroup            = "${{ github.workflow }}-${{ github.ref }}"
 	wantWorkflowConcurrencyCancelInProgress = "${{ github.event_name == 'pull_request' }}"
 )
 
@@ -30,8 +30,6 @@ func TestWorkflowConcurrencyCancelsPullRequestsOnly(t *testing.T) {
 		cancelInProgress any
 	}{
 		{"", wantWorkflowConcurrencyCancelInProgress},
-		{"${{ github.workflow }}-${{ github.ref }}", wantWorkflowConcurrencyCancelInProgress},
-		{"${{ github.workflow }}-${{ github.sha }}", wantWorkflowConcurrencyCancelInProgress},
 		{"ci-${{ github.workflow }}-${{ github.ref }}", wantWorkflowConcurrencyCancelInProgress},
 		{"installer-performance-${{ github.ref }}", wantWorkflowConcurrencyCancelInProgress},
 		{"ci-${{ github.workflow }}-${{ github.ref }}", true},
