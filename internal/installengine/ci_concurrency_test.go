@@ -5,6 +5,7 @@ package installengine
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	yaml "go.yaml.in/yaml/v3"
@@ -45,10 +46,19 @@ func TestWorkflowConcurrencyCancelsPullRequestsOnly(t *testing.T) {
 		}
 	}
 
-	for _, path := range []string{
-		"../../.github/workflows/ci.yml",
-		"../../.github/workflows/installer-performance.yml",
-	} {
+	const workflowDir = "../../.github/workflows"
+	entries, err := os.ReadDir(workflowDir)
+	if err != nil {
+		t.Fatalf("workflow directory %s unavailable: %v", workflowDir, err)
+	}
+	workflowCount := 0
+	for _, entry := range entries {
+		ext := filepath.Ext(entry.Name())
+		if entry.IsDir() || (ext != ".yml" && ext != ".yaml") {
+			continue
+		}
+		workflowCount++
+		path := filepath.Join(workflowDir, entry.Name())
 		body, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("workflow source %s unavailable: %v", path, err)
@@ -78,5 +88,8 @@ func TestWorkflowConcurrencyCancelsPullRequestsOnly(t *testing.T) {
 				t.Fatalf("workflow %s job %s overrides top-level concurrency: %v", path, name, job.Concurrency)
 			}
 		}
+	}
+	if workflowCount == 0 {
+		t.Fatal("no YAML workflows found")
 	}
 }
