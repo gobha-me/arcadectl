@@ -1,0 +1,2 @@
+go test fuzz v1
+string("{\"motd\": \"雪 \\\"quote\\\" \\\\ slash\", \"seed\": \"seed-1\"}")
