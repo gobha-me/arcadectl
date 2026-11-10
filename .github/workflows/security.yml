@@ -26,6 +26,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -49,6 +50,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
+          persist-credentials: false
       - name: Install verified gitleaks release
         run: |
           install_dir="$RUNNER_TEMP/gitleaks"
@@ -59,4 +61,27 @@ jobs:
           echo '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  '"$install_dir/gitleaks.tar.gz" | sha256sum --check --strict
           tar -xzf "$install_dir/gitleaks.tar.gz" -C "$install_dir" gitleaks
       - name: Scan full history with redaction
-        run: '"$RUNNER_TEMP/gitleaks/gitleaks" git --redact --exit-code 1'
+        run: |
+          report="$RUNNER_TEMP/gitleaks-report.json"
+          status=0
+          "$RUNNER_TEMP/gitleaks/gitleaks" git --redact --report-path "$report" --report-format json --exit-code 1 || status=$?
+          if [ -f "$report" ]; then
+            echo "Gitleaks redacted report (rule, file, commit only):"
+            if [ "$(jq 'length' "$report")" = "0" ]; then
+              echo "no findings"
+            else
+              jq -c '.[] | {rule: .RuleID, file: .File, commit: .Commit}' "$report"
+            fi
+            {
+              echo "### Gitleaks redacted report"
+              echo
+              echo "Fields: rule, file, commit. Secret values are not included."
+              echo
+              if [ "$(jq 'length' "$report")" = "0" ]; then
+                echo "no findings"
+              else
+                jq -r '.[] | "- rule: \(.RuleID)  file: \(.File)  commit: \(.Commit)"' "$report"
+              fi
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
