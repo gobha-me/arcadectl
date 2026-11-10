@@ -107,6 +107,7 @@ type Definition struct {
 	ReadinessEndpoint    string
 	ReadinessMode        ReadinessMode
 	SettingsSchema       json.RawMessage
+	Options              *OptionMetadata
 	ConfigurationTargets []ConfigurationTarget
 	RenderSettings       SettingsRenderer
 	RuntimeIdentity      RuntimeIdentity
@@ -125,5 +126,6 @@ func (d Definition) Clone() Definition {
 	clone.PersistentPaths = append([]PersistentPath(nil), d.PersistentPaths...)
 	clone.ConfigurationTargets = append([]ConfigurationTarget(nil), d.ConfigurationTargets...)
 	clone.SettingsSchema = append(json.RawMessage(nil), d.SettingsSchema...)
+	clone.Options = d.Options.clone()
 	return clone
 }

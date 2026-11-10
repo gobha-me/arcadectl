@@ -33,6 +33,7 @@ func Definition() game.Definition {
 		PersistentPaths:   []game.PersistentPath{{Name: "state", MountPath: "/srv/world"}},
 		ReadinessEndpoint: "players",
 		ReadinessMode:     game.ReadinessTCP,
+		Options:           optionMetadata(),
 		SettingsSchema: []byte(`{
   "type": "object",
   "additionalProperties": false,

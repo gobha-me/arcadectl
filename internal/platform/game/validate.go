@@ -64,6 +64,9 @@ func (d Definition) Validate() error {
 	if err := validateSettingsSchema(d.SettingsSchema); err != nil {
 		return err
 	}
+	if err := d.validateOptions(); err != nil {
+		return err
+	}
 	if err := validateConfigurationTargets(d.ConfigurationTargets, d.PersistentPaths); err != nil {
 		return err
 	}
