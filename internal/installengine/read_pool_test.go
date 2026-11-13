@@ -42,10 +42,13 @@ func testDirectReadPoolGetNotFoundAtFixture(t *testing.T, fixture bool) {
 	for _, scenario := range []struct {
 		name  string
 		reuse bool
-	}{{"empty-control", true}, {"native-status", true}, {"native-known-length", true}, {"exact-bound-known", true}, {"exact-bound-chunked", true}, {"oversize-known", false}, {"oversize-chunked", false}, {"truncated", false}, {"compressed", false}} {
+	}{{"empty-control", true}, {"native-status", true}, {"native-known-length", true}, {"exact-bound-known", true}, {"exact-bound-chunked", true}, {"oversize-known", false}, {"oversize-chunked", false}, {"truncated", false}, {"compressed", false}, {"compressed-chunked", false}} {
 		t.Run(scenario.name, func(t *testing.T) {
 			key, object := accessObject()
 			var requests, got, reused, handshakes, sanitized atomic.Int32
+			release := make(chan struct{})
+			held, handlerDone := make(chan struct{}), make(chan struct{})
+			holdEOF := !scenario.reuse && scenario.name != "truncated"
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodGet || r.URL.Path != "/api/v1/namespaces/isolated-install/serviceaccounts/reviewed" || r.URL.RawQuery != "" || r.ProtoMajor != 1 || r.Header.Get("Authorization") != "Bearer TEST-ONLY-404-POOL" || r.Header.Get("Impersonate-User") != "" {
 					t.Error("absence read changed frozen identity, route or protocol")
@@ -77,25 +80,46 @@ func testDirectReadPoolGetNotFoundAtFixture(t *testing.T, fixture bool) {
 						}
 					case "truncated":
 						w.Header().Set("Content-Length", "1000")
-					case "compressed":
+					case "compressed", "compressed-chunked":
 						var encoded bytes.Buffer
 						zip := gzip.NewWriter(&encoded)
 						_, _ = zip.Write(body)
 						_ = zip.Close()
 						body = encoded.Bytes()
 						w.Header().Set("Content-Encoding", "gzip")
-						w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+						if scenario.name == "compressed" {
+							w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+							body = body[:len(body)-1]
+						} else {
+							w.Header().Set("Trailer", "X-Private-Trailer")
+						}
 					default:
 						w.Header().Set("Trailer", "X-Private-Trailer")
 					}
 					w.WriteHeader(http.StatusNotFound)
+					if scenario.name == "oversize-known" || scenario.name == "oversize-chunked" {
+						body = body[:8193]
+					}
 					_, _ = w.Write(body)
+					if holdEOF {
+						// Keep EOF unavailable until the client closes the native
+						// connection. Go transports may drain a small unread body
+						// on Close; a completed fixture cannot require non-reuse.
+						w.(http.Flusher).Flush()
+						close(held)
+						select {
+						case <-r.Context().Done():
+						case <-release:
+						}
+						close(handlerDone)
+					}
 					w.Header().Set("X-Private-Trailer", "PRIVATE-404-TRAILER-CANARY")
 					return
 				}
 				_ = json.NewEncoder(w).Encode(object)
 			}))
 			t.Cleanup(server.Close)
+			t.Cleanup(func() { close(release) })
 			config := serverConfig(server)
 			config.BearerToken = "TEST-ONLY-404-POOL"
 			access, err := NewDirectHTTPAccess(config)
@@ -155,6 +179,20 @@ func testDirectReadPoolGetNotFoundAtFixture(t *testing.T, fixture bool) {
 					}
 				} else if err != nil || live == nil || live.GetName() != key.Name {
 					t.Fatal("surrounding original read refused")
+				}
+			}
+			if holdEOF {
+				select {
+				case <-held:
+				case <-time.After(5 * time.Second):
+					t.Fatal("non-reuse fixture never withheld native EOF")
+				}
+				// Cleanup has not closed release. The held handler can only
+				// finish now when the client discards its native connection.
+				select {
+				case <-handlerDone:
+				case <-time.After(5 * time.Second):
+					t.Fatal("discarded native response left its held handler running")
 				}
 			}
 			wantReuse, wantHandshakes := int32(1), int32(2)
