@@ -1,4 +1,4 @@
-.PHONY: generate generate-openapi generate-cli verify-cli render-api render-controller test-envtest test-envtest-part test-kind-api test-kind-install-auth test-kind-install-admission test-kind-install-admission-v3 test-kind-install-baseline test-kind-install-gc test-kind-install-precontroller test-kind-install-binary test-kind-factorio test-kind-lifecycle test-kind-recovery verify-generated verify-openapi verify-runtime-assets
+.PHONY: generate generate-openapi generate-cli verify-cli verify-doc-links render-api render-controller test-envtest test-envtest-part test-kind-api test-kind-install-auth test-kind-install-admission test-kind-install-admission-v3 test-kind-install-baseline test-kind-install-gc test-kind-install-precontroller test-kind-install-binary test-kind-factorio test-kind-lifecycle test-kind-recovery verify-generated verify-openapi verify-runtime-assets
 
 CANONICAL_CONTROLLER_IMAGE := ghcr.io/gobha-me/arcadectl-controller@sha256:0000000000000000000000000000000000000000000000000000000000000000
 
@@ -98,8 +98,14 @@ test-kind-recovery:
 	go test -timeout=2m ./cmd/arcadectl-controller
 	timeout --foreground 90m ./hack/test-kind-recovery.sh
 
-verify-generated:
+# Run the offline documentation check before invoking Go generators.
+# verify-doc-links remains a standalone target for mandatory docs-scope CI.
+verify-generated: verify-doc-links
 	./hack/verify-generated.sh
+
+verify-doc-links:
+	python3 -B -m unittest discover -s hack -p 'test_doc_links.py'
+	python3 -B hack/check-doc-links.py
 
 verify-runtime-assets:
 	./hack/verify-runtime-assets.sh
