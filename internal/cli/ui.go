@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/netip"
 	"strconv"
+	"strings"
 	"time"
 
 	adminv1 "github.com/gobha-me/arcadectl/api/admin/v1"
@@ -27,7 +28,7 @@ import (
 func (app *application) uiCommand() *cobra.Command {
 	address := "127.0.0.1:0"
 	command := &cobra.Command{
-		Use: "ui", Short: "Serve a read-only server status page on loopback until interrupted",
+		Use: "ui", Short: "Serve read-only server and operation status on loopback until interrupted",
 		Args: exactArgs(0),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if !validUIAddress(address) {
@@ -131,24 +132,68 @@ func (handler *uiHandler) ServeHTTP(w http.ResponseWriter, request *http.Request
 		writeUIError(w, request, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
 	}
-	if request.URL.Path != "/" || request.URL.RawPath != "" || request.URL.RawQuery != "" || request.URL.ForceQuery {
+	path := request.URL.Path
+	apiPath, allowed := uiReadRoute(path)
+	if !allowed || request.URL.RawPath != "" || request.URL.RawQuery != "" || request.URL.ForceQuery {
 		writeUIError(w, request, http.StatusNotFound, "not_found")
 		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), handler.timeout)
 	defer cancel()
-	var list adminv1.ServerList
-	if _, err := handler.client.Read(ctx, "/v1/servers", &list); err != nil {
-		writeUIError(w, request, http.StatusBadGateway, uiReadError(err))
+	var page bytes.Buffer
+	var readErr, renderErr error
+	switch path {
+	case "/":
+		var list adminv1.ServerList
+		_, readErr = handler.client.Read(ctx, apiPath, &list)
+		if readErr == nil {
+			renderErr = webui.RenderServerList(&page, list)
+		}
+	case "/operations":
+		var list adminv1.OperationList
+		_, readErr = handler.client.Read(ctx, apiPath, &list)
+		if readErr == nil {
+			renderErr = webui.RenderOperationList(&page, list)
+		}
+	default:
+		var operation adminv1.Operation
+		_, readErr = handler.client.Read(ctx, apiPath, &operation)
+		if readErr == nil && operation.OperationID != strings.TrimPrefix(path, "/operations/") {
+			readErr = &adminclient.Error{Code: "invalid_response"}
+		}
+		if readErr == nil {
+			renderErr = webui.RenderOperationDetail(&page, operation)
+		}
+	}
+	if readErr != nil {
+		code := uiReadError(readErr)
+		status := http.StatusBadGateway
+		if code == "not_found" {
+			status = http.StatusNotFound
+		}
+		writeUIError(w, request, status, code)
 		return
 	}
-	var page bytes.Buffer
-	if err := webui.RenderServerList(&page, list); err != nil {
+	if renderErr != nil {
 		writeUIError(w, request, http.StatusInternalServerError, "render_failed")
 		return
 	}
 	if request.Method != http.MethodHead {
 		_, _ = w.Write(page.Bytes())
+	}
+}
+
+func uiReadRoute(path string) (string, bool) {
+	switch path {
+	case "/":
+		return "/v1/servers", true
+	case "/operations":
+		return "/v1/operations", true
+	default:
+		if strings.HasPrefix(path, "/operations/") && receiptID.MatchString(strings.TrimPrefix(path, "/operations/")) {
+			return "/v1" + path, true
+		}
+		return "", false
 	}
 }
 

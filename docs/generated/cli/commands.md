@@ -19,7 +19,7 @@ Available Commands:
   operation      Inspect, wait on, or explicitly resume durable operations
   retained-world Inspect or deliberately destroy worlds after server-object removal
   server         Create, configure, inspect, and operate servers; ordinary removal retains worlds
-  ui             Serve a read-only server status page on loopback until interrupted
+  ui             Serve read-only server and operation status on loopback until interrupted
 
 Flags:
       --context string     Use a saved administrator context
@@ -684,7 +684,7 @@ Global Flags:
 
 ## arcadectl ui
 
-Serve a read-only server status page on loopback until interrupted
+Serve read-only server and operation status on loopback until interrupted
 
 ```text
 Usage:
