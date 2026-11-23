@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arcadectl operations</title>
+</head>
+<body>
+<a href="#main-content">Skip to operations</a>
+<main id="main-content">
+<h1>Operations</h1>
+<table>
+<caption>Operation status</caption>
+<thead><tr><th scope="col">Operation ID</th><th scope="col">Action</th><th scope="col">Phase</th><th scope="col">Started</th><th scope="col">Completed</th><th scope="col">Failure</th></tr></thead>
+<tbody>
+{{range .}}<tr><td>{{.OperationID}}</td><td>{{.Action}}</td><td>{{.Phase}}</td><td>{{if .StartedAt}}{{.StartedAt}}{{else}}Not recorded{{end}}</td><td>{{if .CompletedAt}}{{.CompletedAt}}{{else}}Not recorded{{end}}</td><td>{{with .Failure}}{{.Code}}; {{if .Retryable}}retryable{{else}}not retryable{{end}}{{if .SuggestedAction}}; {{.SuggestedAction}}{{end}}{{else}}None{{end}}</td></tr>
+{{else}}<tr><td colspan="6">No operations yet.</td></tr>
+{{end}}</tbody>
+</table>
+</main>
+</body>
+</html>
