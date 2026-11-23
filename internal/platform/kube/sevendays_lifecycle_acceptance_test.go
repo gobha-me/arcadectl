@@ -4,6 +4,7 @@
 package kube_test
 
 import (
+	"bytes"
 	"path"
 	"strings"
 	"testing"
@@ -85,9 +86,7 @@ func TestSevenDaysAcceptanceConfigurationWorldAndRuntimeIdentity(t *testing.T) {
 	t.Parallel()
 	plan, definition, server := sevenDaysAcceptanceBuild(t, sevenDaysAcceptanceSettings)
 	container := sevenDaysAcceptanceContainer(t, plan, definition, server)
-	if plan.Configuration == nil || len(plan.Configuration.Data) != 1 || plan.Configuration.Data["serverconfig"] == "" || len(plan.Configuration.BinaryData) != 0 {
-		t.Fatalf("configuration=%#v; want exactly one nonempty serverconfig key", plan.Configuration)
-	}
+	sevenDaysAcceptanceConfigurationBytes(t, plan)
 	if len(definition.ConfigurationTargets) != 1 || definition.ConfigurationTargets[0].Name != "serverconfig" {
 		t.Fatalf("adapter configuration targets=%#v; want the declared serverconfig target", definition.ConfigurationTargets)
 	}
@@ -185,10 +184,13 @@ func TestSevenDaysAcceptanceConfigurationHashUsesRenderedMeaning(t *testing.T) {
 	if originalHash == changedHash {
 		t.Error("changing only description did not change configuration hash")
 	}
-	if original.Configuration.Data["serverconfig"] != reencoded.Configuration.Data["serverconfig"] {
+	originalBytes := sevenDaysAcceptanceConfigurationBytes(t, original)
+	reencodedBytes := sevenDaysAcceptanceConfigurationBytes(t, reencoded)
+	changedBytes := sevenDaysAcceptanceConfigurationBytes(t, changed)
+	if !bytes.Equal(originalBytes, reencodedBytes) {
 		t.Error("semantically identical settings changed rendered serverconfig")
 	}
-	if original.Configuration.Data["serverconfig"] == changed.Configuration.Data["serverconfig"] {
+	if bytes.Equal(originalBytes, changedBytes) {
 		t.Error("changing only description did not change rendered serverconfig")
 	}
 }
@@ -259,4 +261,25 @@ func sevenDaysAcceptanceConfigurationHash(t *testing.T, plan platformkube.Plan) 
 		t.Fatal("configuration hash annotation is empty")
 	}
 	return hash
+}
+
+func sevenDaysAcceptanceConfigurationBytes(t *testing.T, plan platformkube.Plan) []byte {
+	t.Helper()
+	if plan.Configuration == nil {
+		t.Fatal("running plan has no configuration")
+	}
+	config := plan.Configuration
+	if len(config.Data)+len(config.BinaryData) != 1 {
+		t.Fatalf("ConfigMap key counts text=%d binary=%d; want exactly one nonempty serverconfig key", len(config.Data), len(config.BinaryData))
+	}
+	var contents []byte
+	if text, ok := config.Data["serverconfig"]; ok {
+		contents = []byte(text)
+	} else {
+		contents = config.BinaryData["serverconfig"]
+	}
+	if len(contents) == 0 {
+		t.Fatal("want exactly one nonempty serverconfig key")
+	}
+	return contents
 }
