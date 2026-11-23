@@ -212,7 +212,7 @@ func uiReadError(err error) string {
 
 var uiErrorTemplate = template.Must(template.New("error").Parse(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Arcadectl status unavailable</title></head>
-<body><a href="#main-content">Skip to status error</a><main id="main-content"><h1>Status unavailable</h1><p role="alert">Error: {{.}}</p><p>Check the trusted administrator context with <code>arcadectl server status</code>, then reload this page. This page cannot submit changes.</p></main></body></html>`))
+<body><a href="#main-content">Skip to status error</a><nav aria-label="Primary"><a href="/">Servers</a> <a href="/operations">Operations</a></nav><main id="main-content"><h1>Status unavailable</h1><p role="alert">Error: {{.}}</p><p>Check the trusted administrator context with <code>arcadectl server status</code>, then reload this page. This page cannot submit changes.</p></main></body></html>`))
 
 func writeUIError(w http.ResponseWriter, request *http.Request, status int, code string) {
 	w.WriteHeader(status)
