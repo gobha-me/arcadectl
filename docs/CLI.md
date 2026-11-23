@@ -158,3 +158,25 @@ cancellation success. See [DESTROY.md](DESTROY.md).
 
 Errors and progress use fixed guidance/reason codes, not raw transport errors,
 request bodies, server diagnostics, tokens, or verifier digests.
+
+## Local read-only status page
+
+After login, run `arcadectl --context evaluation ui` and open the printed local
+URL. The default `127.0.0.1:0` selects an available loopback port. To select one,
+use `arcadectl ui --listen 127.0.0.1:8080`; literal IPv6 loopback (`[::1]:0`) is
+also accepted. Hostnames, wildcard binds and non-loopback addresses are refused.
+`--output json` prints a versioned object containing the URL. The command serves
+until interrupted; `--timeout` bounds each API read, not the listener lifetime.
+
+The page reads only the saved context's authenticated `GET /v1/servers` contract.
+It shows status and player endpoints; reload to obtain a new snapshot. A TCP
+listener or a receipt alone does not establish a playable server. There are no
+forms, controls, live refresh, cookies, browser credentials or direct cluster
+access. The API bearer and private context paths stay in the CLI process.
+
+The local listener requires its exact bound Host and serves only `GET`/`HEAD`
+at `/`, with no-store, a restrictive content security policy, no framing and no
+referrer disclosure. It is intended for a trusted local browser and user account;
+loopback does not isolate hostile local processes or users. Do not expose it
+through a proxy or tunnel. Browser sessions and mutation admission require a
+separate security review before controls can be enabled. Stop it with Ctrl-C.

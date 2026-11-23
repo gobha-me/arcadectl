@@ -59,7 +59,7 @@ func NewCommand(options Options) *cobra.Command {
 		root.Annotations["validated"] = "true"
 		return nil
 	}
-	root.AddCommand(app.loginCommand(), app.contextCommand(), app.serverCommand(), app.retainedCommand(), app.destroyCommand(), app.operationCommand())
+	root.AddCommand(app.loginCommand(), app.contextCommand(), app.serverCommand(), app.retainedCommand(), app.destroyCommand(), app.operationCommand(), app.uiCommand())
 	return root
 }
 
