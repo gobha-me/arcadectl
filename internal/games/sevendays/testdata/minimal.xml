@@ -1,0 +1,11 @@
+<ServerSettings>
+  <property name="ServerName" value="Survival"></property>
+  <property name="ServerDescription" value=""></property>
+  <property name="ServerPort" value="26900"></property>
+  <property name="ServerVisibility" value="0"></property>
+  <property name="TelnetEnabled" value="false"></property>
+  <property name="WebDashboardEnabled" value="false"></property>
+  <property name="GameWorld" value="Navezgane"></property>
+  <property name="GameName" value="arcadectl-world"></property>
+  <property name="UserDataFolder" value="/sdtd"></property>
+</ServerSettings>
