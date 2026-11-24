@@ -1,13 +1,6 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Arcadectl server status</title>
-</head>
-<body>
-<a href="#main-content">Skip to server status</a>
-<main id="main-content">
+{{define "page-title"}}Arcadectl server status{{end}}
+{{define "skip-label"}}Skip to server status{{end}}
+{{define "page-content" -}}
 <h1>Servers</h1>
 <table>
 <caption>Server status</caption>
@@ -17,6 +10,4 @@
 {{else}}<tr><td colspan="6">No servers yet. Use <code>arcadectl server create</code> to create a server.</td></tr>
 {{end}}</tbody>
 </table>
-</main>
-</body>
-</html>
+{{end}}

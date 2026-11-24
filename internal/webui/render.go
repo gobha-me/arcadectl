@@ -16,10 +16,18 @@ import (
 	adminv1 "github.com/gobha-me/arcadectl/api/admin/v1"
 )
 
+//go:embed templates/layout.html.tmpl
+var pageLayoutSource string
+
 //go:embed templates/servers.html.tmpl
 var serverListSource string
 
-var serverListTemplate = template.Must(template.New("servers").Parse(serverListSource))
+var serverListTemplate = parsePageTemplate("servers", serverListSource)
+
+func parsePageTemplate(name, source string) *template.Template {
+	page := template.Must(template.New(name).Parse(pageLayoutSource))
+	return template.Must(page.Parse(source))
+}
 
 type serverRow struct {
 	Name, Game, Phase, DesiredState, Ready string

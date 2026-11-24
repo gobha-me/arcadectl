@@ -6,7 +6,6 @@ package webui
 import (
 	"cmp"
 	_ "embed"
-	"html/template"
 	"io"
 	"slices"
 	"time"
@@ -17,7 +16,7 @@ import (
 //go:embed templates/operations.html.tmpl
 var operationListSource string
 
-var operationListTemplate = template.Must(template.New("operations").Parse(operationListSource))
+var operationListTemplate = parsePageTemplate("operations", operationListSource)
 
 // operationRow deliberately contains only the read-only display allowlist.
 // In particular, the template never receives the full receipt or its challenge.
