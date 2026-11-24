@@ -114,7 +114,7 @@ func TestOperationListPublicCellsAndAccessibleLandmarks(t *testing.T) {
 		t.Fatal(err)
 	}
 	var rows [][]string
-	var mainIDs, linkTargets []string
+	var mainIDs, skipTargets []string
 	var h1s, captions, headers int
 	lang := ""
 	operationWalk(document, func(node *html.Node) {
@@ -126,7 +126,11 @@ func TestOperationListPublicCellsAndAccessibleLandmarks(t *testing.T) {
 		case "main":
 			mainIDs = append(mainIDs, operationAttr(node, "id"))
 		case "a":
-			linkTargets = append(linkTargets, operationAttr(node, "href"))
+			label := strings.ToLower(operationText(node))
+			skipLabel := label == "skip to operations" || label == "skip to main content" || label == "skip to content"
+			if len(mainIDs) == 0 && skipLabel {
+				skipTargets = append(skipTargets, operationAttr(node, "href"))
+			}
 		case "caption":
 			captions++
 			if operationText(node) == "" {
@@ -153,32 +157,30 @@ func TestOperationListPublicCellsAndAccessibleLandmarks(t *testing.T) {
 		t.Fatalf("accessibility landmarks: lang=%q h1=%d captions=%d headers=%d mainIDs=%q", lang, h1s, captions, headers, mainIDs)
 	}
 	foundSkip := false
-	for _, target := range linkTargets {
+	for _, target := range skipTargets {
 		foundSkip = foundSkip || target == "#"+mainIDs[0]
 	}
 	if !foundSkip {
-		t.Fatal("no skip link targets the main landmark")
+		t.Fatal("no descriptive skip link precedes and targets the main landmark")
 	}
 	if len(rows) != 3 {
 		t.Fatalf("data rows=%d, want 3", len(rows))
 	}
-	for i, operation := range []adminv1.Operation{items[2], items[0], items[1]} {
-		if len(rows[i]) != 6 {
-			t.Fatalf("row %d cells=%d, want 6", i, len(rows[i]))
+	wantRows := [][]string{
+		{"newest", "server.backup", "Failed", "2026-11-23T12:00:02Z", "2026-11-23T12:00:03Z", "backup_unavailable; retryable; Inspect the backup target."},
+		{"middle", "server.stop", "Running", "2026-11-23T12:00:01Z", "Not recorded", "None"},
+		{"oldest", "server.start", "Succeeded", "2026-11-23T12:00:00Z", "2026-11-23T12:00:01Z", "None"},
+	}
+	for index, want := range wantRows {
+		got := rows[index]
+		if len(got) != len(want) {
+			t.Errorf("row %d has %d cells, want %d", index, len(got), len(want))
+			continue
 		}
-		for column, value := range []string{operation.OperationID, operation.Action, operation.Phase, operation.StartedAt, operation.CompletedAt} {
-			if value != "" && rows[i][column] != value {
-				t.Errorf("row %d column %d=%q, want %q", i, column, rows[i][column], value)
+		for column, text := range got {
+			if text != want[column] {
+				t.Errorf("row %d column %d=%q, want %q", index, column, text, want[column])
 			}
-		}
-	}
-	failureText := strings.Join(strings.Fields(rows[0][5]), " ")
-	if strings.Contains(failureText, "not retryable") {
-		t.Error("retryable failure rendered as not retryable")
-	}
-	for _, value := range []string{"backup_unavailable", "retryable", "Inspect the backup target."} {
-		if !strings.Contains(rows[0][5], value) {
-			t.Errorf("failure cell %q omits %q", rows[0][5], value)
 		}
 	}
 }
