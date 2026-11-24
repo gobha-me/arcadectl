@@ -45,6 +45,9 @@ func TestSevenDaysObservedWorldSurvivesPlanTransitions(t *testing.T) {
 	if len(opening.DataClaims) != 1 || opening.DataClaims[0].Desired == nil || opening.DataIdentity == "" {
 		t.Fatal("opening plan must identify one world claim")
 	}
+	if opening.Reattach {
+		t.Fatal("fresh server with no observed world claims must not reattach")
+	}
 	world := opening.DataClaims[0].Desired.DeepCopy()
 	const worldUID types.UID = "observed-world-pvc-uid"
 	server.Status.ObservedData = &arcadev1alpha1.RetainedDataReference{

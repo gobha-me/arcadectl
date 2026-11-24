@@ -108,7 +108,7 @@ func TestSevenDaysAcceptanceConfigurationWorldAndRuntimeIdentity(t *testing.T) {
 		t.Fatalf("claim lacks independently retained world identity: %#v", claim)
 	}
 	worldVolume := ""
-	sourceVolumes := make(map[string]bool)
+	sourceVolumes := make(map[string]string)
 	for _, volume := range plan.Workload.Spec.Template.Spec.Volumes {
 		if volume.PersistentVolumeClaim != nil && volume.PersistentVolumeClaim.ClaimName == claim.Name {
 			if worldVolume != "" {
@@ -117,16 +117,19 @@ func TestSevenDaysAcceptanceConfigurationWorldAndRuntimeIdentity(t *testing.T) {
 			worldVolume = volume.Name
 		}
 		if volume.ConfigMap != nil && volume.ConfigMap.Name == plan.Configuration.Name {
-			sourceVolumes[volume.Name] = true
-			if len(volume.ConfigMap.Items) != 0 {
-				found := false
+			projectedFile := target.Name
+			if len(volume.ConfigMap.Items) > 0 {
+				projectedFile = ""
 				for _, item := range volume.ConfigMap.Items {
-					found = found || item.Key == target.Name
-				}
-				if !found {
-					t.Error("configuration volume projection omits the serverconfig key")
+					if item.Key == target.Name {
+						projectedFile = item.Path
+					}
 				}
 			}
+			if projectedFile == "" {
+				t.Fatal("configuration volume projection omits the serverconfig key")
+			}
+			sourceVolumes[volume.Name] = projectedFile
 		}
 	}
 	if worldVolume == "" || len(sourceVolumes) == 0 {
@@ -145,23 +148,23 @@ func TestSevenDaysAcceptanceConfigurationWorldAndRuntimeIdentity(t *testing.T) {
 	materializers := 0
 	for _, init := range pod.InitContainers {
 		sevenDaysAcceptanceNoIdentityOverride(t, init, identity)
-		readsConfiguration := false
-		for _, mount := range init.VolumeMounts {
-			readsConfiguration = readsConfiguration || sourceVolumes[mount.Name] && mount.ReadOnly
+		if !sevenDaysAcceptanceMounts(init, worldVolume, world.MountPath, false) {
+			continue
 		}
-		if readsConfiguration && sevenDaysAcceptanceMounts(init, worldVolume, world.MountPath, false) {
+		for _, mount := range init.VolumeMounts {
+			projected, source := sourceVolumes[mount.Name]
+			if !source || !mount.ReadOnly {
+				continue
+			}
+			if mount.SubPathExpr != "" || mount.SubPath != "" && mount.SubPath != projected {
+				t.Fatalf("configuration mount %q does not expose projected file %q", mount.MountPath, projected)
+			}
+			sourcePath := mount.MountPath
+			if mount.SubPath == "" {
+				sourcePath = path.Join(sourcePath, projected)
+			}
 			materializers++
-			// This checks the public generated plan, not materializer execution.
-			// The destination may be a command argument or literal environment
-			// value; neither a shell syntax nor an init-container name is assumed.
-			artifacts := append(append([]string(nil), init.Command...), init.Args...)
-			for _, environment := range init.Env {
-				artifacts = append(artifacts, environment.Value)
-			}
-			invocation := strings.Join(artifacts, "\x00")
-			if !strings.Contains(invocation, target.MountPath) {
-				t.Errorf("configuration materializer omits declared target %q", target.MountPath)
-			}
+			sevenDaysAcceptanceMaterializerPaths(t, init, world.MountPath, sourcePath, target.MountPath)
 		}
 	}
 	sevenDaysAcceptanceNoIdentityOverride(t, container, identity)
@@ -170,11 +173,29 @@ func TestSevenDaysAcceptanceConfigurationWorldAndRuntimeIdentity(t *testing.T) {
 	}
 }
 
+func sevenDaysAcceptanceMaterializerPaths(t *testing.T, init corev1.Container, root, source, destination string) {
+	t.Helper()
+	// The generated shell invocation takes a script and argv[0], followed by
+	// one path tuple for each projection. This adapter has one projection.
+	if len(init.Args) != 5 {
+		t.Fatalf("configuration materializer has %d arguments, want a script, argv[0], and one path tuple", len(init.Args))
+	}
+	if got := init.Args[2]; got != root {
+		t.Errorf("configuration materializer root = %q, want mounted world %q", got, root)
+	}
+	if got := init.Args[3]; got != source {
+		t.Errorf("configuration materializer source = %q, want projected file %q", got, source)
+	}
+	if got := init.Args[4]; got != destination {
+		t.Errorf("configuration materializer destination = %q, want declared filename %q", got, destination)
+	}
+}
+
 func TestSevenDaysAcceptanceConfigurationHashUsesRenderedMeaning(t *testing.T) {
 	t.Parallel()
 	original, _, _ := sevenDaysAcceptanceBuild(t, sevenDaysAcceptanceSettings)
 	reencoded, _, _ := sevenDaysAcceptanceBuild(t, "{\n  \"visibility\": \"unlisted\", \"description\": \"Original description\",\n  \"name\": \"Acceptance world\"\n}\n")
-	changed, _, _ := sevenDaysAcceptanceBuild(t, `{"name":"Acceptance world","description":"Changed description","visibility":"unlisted"}`)
+	changed, _, _ := sevenDaysAcceptanceBuild(t, `{"name":"Acceptance world","description":"Modified description","visibility":"unlisted"}`)
 	originalHash := sevenDaysAcceptanceConfigurationHash(t, original)
 	reencodedHash := sevenDaysAcceptanceConfigurationHash(t, reencoded)
 	changedHash := sevenDaysAcceptanceConfigurationHash(t, changed)
@@ -192,6 +213,9 @@ func TestSevenDaysAcceptanceConfigurationHashUsesRenderedMeaning(t *testing.T) {
 	}
 	if bytes.Equal(originalBytes, changedBytes) {
 		t.Error("changing only description did not change rendered serverconfig")
+	}
+	if len(originalBytes) != len(changedBytes) {
+		t.Fatalf("hash fixture produced unequal serverconfig lengths: %d and %d bytes", len(originalBytes), len(changedBytes))
 	}
 }
 
