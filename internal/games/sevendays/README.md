@@ -32,10 +32,11 @@ needs a private shutdown protocol, and finishes within a measured bound remain
 
 Cold backup and restore use the existing generic path contract: every declared
 persistent root must be included, currently the complete `/sdtd` tree. The
-renderer fixes `UserDataFolder` below that root and fixes `GameWorld` and
-`GameName`; no settings can select a different world. Image certification must
-still establish that generated worlds, saves, player data and administration
-state actually stay under that root and survive a complete cold restore.
+renderer sets `UserDataFolder` to the persistent root `/sdtd` and fixes
+`GameWorld` and `GameName`, so settings cannot select a different world. Image
+certification must still establish that generated worlds, saves, player data
+and administration state stay under that root and survive a complete cold
+restore.
 Create-only world identity and any future game-secret references require
 separate #32 contract decisions before additional settings become editable.
 
