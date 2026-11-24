@@ -5,6 +5,7 @@ package kube_test
 
 import (
 	"bytes"
+	"encoding/xml"
 	"path"
 	"strings"
 	"testing"
@@ -86,7 +87,7 @@ func TestSevenDaysAcceptanceConfigurationWorldAndRuntimeIdentity(t *testing.T) {
 	t.Parallel()
 	plan, definition, server := sevenDaysAcceptanceBuild(t, sevenDaysAcceptanceSettings)
 	container := sevenDaysAcceptanceContainer(t, plan, definition, server)
-	sevenDaysAcceptanceConfigurationBytes(t, plan)
+	configuration := sevenDaysAcceptanceConfigurationBytes(t, plan)
 	if len(definition.ConfigurationTargets) != 1 || definition.ConfigurationTargets[0].Name != "serverconfig" {
 		t.Fatalf("adapter configuration targets=%#v; want the declared serverconfig target", definition.ConfigurationTargets)
 	}
@@ -100,6 +101,7 @@ func TestSevenDaysAcceptanceConfigurationWorldAndRuntimeIdentity(t *testing.T) {
 	if world.MountPath == "" || target.MountPath == world.MountPath || !strings.HasPrefix(path.Clean(target.MountPath), path.Clean(world.MountPath)+"/") {
 		t.Fatalf("configuration target %q is outside declared world root %q", target.MountPath, world.MountPath)
 	}
+	sevenDaysAcceptanceConfigurationXML(t, configuration, world.MountPath)
 	if len(plan.DataClaims) != 1 || plan.DataClaims[0].Desired == nil {
 		t.Fatal("running plan must contain one world claim")
 	}
@@ -170,6 +172,39 @@ func TestSevenDaysAcceptanceConfigurationWorldAndRuntimeIdentity(t *testing.T) {
 	sevenDaysAcceptanceNoIdentityOverride(t, container, identity)
 	if materializers != 1 {
 		t.Fatalf("source-reading world materializers=%d; want one", materializers)
+	}
+}
+
+func sevenDaysAcceptanceConfigurationXML(t *testing.T, contents []byte, worldRoot string) {
+	t.Helper()
+	var document struct {
+		XMLName    xml.Name `xml:"ServerSettings"`
+		Properties []struct {
+			Name  string `xml:"name,attr"`
+			Value string `xml:"value,attr"`
+		} `xml:"property"`
+	}
+	if err := xml.Unmarshal(contents, &document); err != nil {
+		t.Fatalf("ConfigMap has invalid serverconfig XML: %v", err)
+	}
+	properties := make(map[string]string, len(document.Properties))
+	for _, property := range document.Properties {
+		if _, exists := properties[property.Name]; exists {
+			t.Fatalf("ConfigMap serverconfig declares %q twice", property.Name)
+		}
+		properties[property.Name] = property.Value
+	}
+	for name, want := range map[string]string{
+		"ServerName":          "Acceptance world",
+		"ServerDescription":   "Original description",
+		"ServerVisibility":    "0",
+		"TelnetEnabled":       "false",
+		"WebDashboardEnabled": "false",
+		"UserDataFolder":      worldRoot,
+	} {
+		if got := properties[name]; got != want {
+			t.Errorf("ConfigMap serverconfig %s = %q, want %q", name, got, want)
+		}
 	}
 }
 

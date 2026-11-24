@@ -49,6 +49,27 @@ func TestSevenDaysObservedWorldSurvivesPlanTransitions(t *testing.T) {
 		t.Fatal("fresh server with no observed world claims must not reattach")
 	}
 	world := opening.DataClaims[0].Desired.DeepCopy()
+	t.Run("fresh-stopped", func(t *testing.T) {
+		fresh := server.DeepCopy()
+		fresh.Spec.DesiredState = arcadev1alpha1.DesiredStateStopped
+		stopped, err := platformkube.Build(fresh, definition)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stopped.Workload != nil || stopped.PlayerService != nil || stopped.Configuration != nil {
+			t.Fatal("fresh stopped server produced runtime resources")
+		}
+		if stopped.Reattach || stopped.DataIdentity != opening.DataIdentity || len(stopped.DataClaims) != 1 {
+			t.Fatal("fresh stopped plan must retain the world identity without reattaching")
+		}
+		claim := stopped.DataClaims[0]
+		if claim.Desired == nil || claim.Desired.Name != world.Name || claim.Desired.Namespace != world.Namespace ||
+			claim.RequiredUID != "" || claim.ExternallySelected ||
+			claim.Desired.Labels[platformkube.LabelDataPath] != "world" ||
+			claim.Desired.Labels[platformkube.LabelDataPolicy] != "retain" {
+			t.Fatalf("fresh stopped plan lost the retained world claim: %#v", claim)
+		}
+	})
 	const worldUID types.UID = "observed-world-pvc-uid"
 	server.Status.ObservedData = &arcadev1alpha1.RetainedDataReference{
 		Identity: opening.DataIdentity,
