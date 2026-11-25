@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,11 +27,6 @@ func TestMain(m *testing.M) {
 
 func TestCheckCLIReference(t *testing.T) {
 	committed := os.DirFS("../../docs/generated/cli")
-	current, err := os.ReadFile("../../docs/generated/cli/commands.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	stale := append(bytes.Clone(current), []byte("\n## Obsolete example\n")...)
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -38,25 +34,36 @@ func TestCheckCLIReference(t *testing.T) {
 
 	for _, test := range []struct {
 		name     string
-		wantFile []byte
+		file     string
+		stale    bool
+		missing  bool
 		wantExit int
 	}{
-		{name: "current", wantFile: current},
-		{name: "stale", wantFile: stale, wantExit: 1},
-		{name: "missing", wantExit: 1},
+		{name: "current", file: "commands.md"},
+		{name: "stale", file: "commands.md", stale: true, wantExit: 1},
+		{name: "missing", file: "commands.md", missing: true, wantExit: 1},
+		{name: "stale-bash", file: "arcadectl.bash", stale: true, wantExit: 1},
+		{name: "stale-fish", file: "arcadectl.fish", stale: true, wantExit: 1},
+		{name: "stale-powershell", file: "arcadectl.ps1", stale: true, wantExit: 1},
+		{name: "stale-zsh", file: "_arcadectl", stale: true, wantExit: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			output := t.TempDir()
 			if err := os.CopyFS(output, committed); err != nil {
 				t.Fatal(err)
 			}
-			reference := filepath.Join(output, "commands.md")
-			switch test.name {
-			case "stale":
-				if err := os.WriteFile(reference, test.wantFile, 0o644); err != nil {
+			reference := filepath.Join(output, test.file)
+			wantFile, err := fs.ReadFile(committed, test.file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch {
+			case test.stale:
+				wantFile = append(wantFile, []byte("\n# Obsolete generated artifact\n")...)
+				if err := os.WriteFile(reference, wantFile, 0o644); err != nil {
 					t.Fatal(err)
 				}
-			case "missing":
+			case test.missing:
 				if err := os.Remove(reference); err != nil {
 					t.Fatal(err)
 				}
@@ -78,13 +85,47 @@ func TestCheckCLIReference(t *testing.T) {
 			}
 
 			after, err := os.ReadFile(reference)
-			if test.wantFile == nil {
+			if test.missing {
 				if !errors.Is(err, os.ErrNotExist) {
 					t.Fatalf("check must leave the missing reference absent, read error %v", err)
 				}
-			} else if err != nil || !bytes.Equal(after, test.wantFile) {
+			} else if err != nil || !bytes.Equal(after, wantFile) {
 				t.Fatalf("check changed the reference or made it unreadable: %v", err)
 			}
 		})
+	}
+}
+
+func TestGenerateCLIReferenceFiles(t *testing.T) {
+	committed := os.DirFS("../../docs/generated/cli")
+	wantFiles, err := fs.ReadDir(committed, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(t.TempDir(), "new", "cli")
+	cmd := exec.CommandContext(t.Context(), executable, runCLIDocs, "--output", output)
+	if diagnostic, err := cmd.CombinedOutput(); err != nil || len(diagnostic) != 0 {
+		t.Fatalf("generate CLI artifacts: %v, output %q", err, diagnostic)
+	}
+
+	gotFiles, err := os.ReadDir(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gotFiles) != len(wantFiles) {
+		t.Fatalf("generated %d files, want %d", len(gotFiles), len(wantFiles))
+	}
+	for _, file := range wantFiles {
+		name := file.Name()
+		actual, actualErr := os.ReadFile(filepath.Join(output, name))
+		want, wantErr := fs.ReadFile(committed, name)
+		if actualErr != nil || wantErr != nil || !bytes.Equal(actual, want) {
+			t.Errorf("%s differs from the committed artifact, generated read error %v, committed read error %v",
+				name, actualErr, wantErr)
+		}
 	}
 }
