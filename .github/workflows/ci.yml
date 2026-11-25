@@ -32,7 +32,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
           cache: true
@@ -129,7 +129,7 @@ jobs:
           bash ./hack/kind-runtime-images.sh load "$GITHUB_WORKSPACE" "$RUNNER_TEMP/kind-images"
           echo "ARCADECTL_KIND_IMAGE_DIR=$RUNNER_TEMP/kind-images" >> "$GITHUB_ENV"
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
           cache: true
@@ -161,7 +161,7 @@ jobs:
           bash ./hack/kind-runtime-images.sh load "$GITHUB_WORKSPACE" "$RUNNER_TEMP/kind-images"
           echo "ARCADECTL_KIND_IMAGE_DIR=$RUNNER_TEMP/kind-images" >> "$GITHUB_ENV"
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
           cache: true
@@ -189,7 +189,7 @@ jobs:
           bash ./hack/kind-runtime-images.sh load "$GITHUB_WORKSPACE" "$RUNNER_TEMP/kind-images"
           echo "ARCADECTL_KIND_IMAGE_DIR=$RUNNER_TEMP/kind-images" >> "$GITHUB_ENV"
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
           cache: true
@@ -221,7 +221,7 @@ jobs:
           bash ./hack/kind-runtime-images.sh load "$GITHUB_WORKSPACE" "$RUNNER_TEMP/kind-images"
           echo "ARCADECTL_KIND_IMAGE_DIR=$RUNNER_TEMP/kind-images" >> "$GITHUB_ENV"
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
           cache: true
@@ -254,7 +254,7 @@ jobs:
           bash ./hack/kind-runtime-images.sh load "$GITHUB_WORKSPACE" "$RUNNER_TEMP/kind-images"
           echo "ARCADECTL_KIND_IMAGE_DIR=$RUNNER_TEMP/kind-images" >> "$GITHUB_ENV"
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
           cache: true
@@ -287,7 +287,7 @@ jobs:
           bash ./hack/kind-runtime-images.sh load "$GITHUB_WORKSPACE" "$RUNNER_TEMP/kind-images"
           echo "ARCADECTL_KIND_IMAGE_DIR=$RUNNER_TEMP/kind-images" >> "$GITHUB_ENV"
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
           cache: true
@@ -315,7 +315,7 @@ jobs:
           bash ./hack/kind-runtime-images.sh load "$GITHUB_WORKSPACE" "$RUNNER_TEMP/kind-images"
           echo "ARCADECTL_KIND_IMAGE_DIR=$RUNNER_TEMP/kind-images" >> "$GITHUB_ENV"
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
           cache: true
@@ -343,7 +343,7 @@ jobs:
           bash ./hack/kind-runtime-images.sh load "$GITHUB_WORKSPACE" "$RUNNER_TEMP/kind-images"
           echo "ARCADECTL_KIND_IMAGE_DIR=$RUNNER_TEMP/kind-images" >> "$GITHUB_ENV"
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
           cache: true
@@ -371,7 +371,7 @@ jobs:
           bash ./hack/kind-runtime-images.sh load "$GITHUB_WORKSPACE" "$RUNNER_TEMP/kind-images"
           echo "ARCADECTL_KIND_IMAGE_DIR=$RUNNER_TEMP/kind-images" >> "$GITHUB_ENV"
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
           cache: true
@@ -413,7 +413,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
           cache: true
@@ -443,7 +443,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
           cache: true
@@ -467,7 +467,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
           cache: true
@@ -593,7 +593,7 @@ jobs:
           bash ./hack/kind-runtime-images.sh load "$GITHUB_WORKSPACE" "$RUNNER_TEMP/kind-images"
           echo "ARCADECTL_KIND_IMAGE_DIR=$RUNNER_TEMP/kind-images" >> "$GITHUB_ENV"
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
           cache: true
