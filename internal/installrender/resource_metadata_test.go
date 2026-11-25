@@ -88,4 +88,7 @@ func TestResourceMetadataAllocationProfile(t *testing.T) {
 	whole := testing.AllocsPerRun(3, func() { runtime.KeepAlive(p.Resources()) })
 	metadata := testing.AllocsPerRun(3, func() { runtime.KeepAlive(p.ResourceMetadata()) })
 	t.Logf("allocations per complete read: whole objects=%.0f metadata=%.0f", whole, metadata)
+	if metadata >= whole {
+		t.Fatalf("metadata read allocations=%g, want fewer than whole-resource read allocations=%g", metadata, whole)
+	}
 }

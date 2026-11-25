@@ -73,9 +73,17 @@ func newServers(config options, auditOutput io.Writer) (*http.Server, *http.Serv
 	if err != nil {
 		return nil, nil, nil, errors.New("API boundary configuration unavailable")
 	}
+	// Restrict protocols before authentication to reduce the pre-auth attack surface.
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
 	api := &http.Server{
 		Addr: config.listen, Handler: boundary,
-		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{certificate}},
+		Protocols:    protocols,
+		TLSNextProto: map[string]func(*http.Server, *tls.Conn, http.Handler){},
+		TLSConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{certificate},
+			NextProtos: []string{"http/1.1"},
+		},
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second,
 		WriteTimeout: 15 * time.Second, IdleTimeout: 30 * time.Second,
 		MaxHeaderBytes: 8192,
@@ -85,6 +93,8 @@ func newServers(config options, auditOutput io.Writer) (*http.Server, *http.Serv
 	}
 	health := &http.Server{
 		Addr: config.healthListen, Handler: tlsHealthHandler(boundary.HealthHandler(), leaf, time.Now),
+		Protocols:         protocols,
+		TLSNextProto:      map[string]func(*http.Server, *tls.Conn, http.Handler){},
 		ReadHeaderTimeout: 2 * time.Second, ReadTimeout: 3 * time.Second,
 		WriteTimeout: 3 * time.Second, IdleTimeout: 5 * time.Second,
 		MaxHeaderBytes: 2048, ErrorLog: log.New(io.Discard, "", 0),
