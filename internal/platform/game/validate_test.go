@@ -104,6 +104,47 @@ func TestDefinitionValidate(t *testing.T) {
 	}
 }
 
+func TestDefinitionEndpointPortPairsAtBounds(t *testing.T) {
+	t.Parallel()
+
+	admin := Endpoint{Name: "control", Protocol: ProtocolTCP, ContainerPort: 65535, Scope: ScopeAdmin}
+	internal := Endpoint{Name: "telemetry", Protocol: ProtocolUDP, ContainerPort: 65535, Scope: ScopeInternal}
+	definition := validDefinition()
+	definition.Endpoints[0].ContainerPort = 1
+	definition.Endpoints = append(definition.Endpoints, admin, internal,
+		Endpoint{Name: "discovery", Protocol: ProtocolUDP, ContainerPort: 1, Scope: ScopePlayer})
+	if err := definition.Validate(); err != nil {
+		t.Fatalf("Validate() rejected distinct TCP and UDP endpoints on ports 1 and 65535: %v", err)
+	}
+
+	for _, test := range []struct {
+		original Endpoint
+		scope    EndpointScope
+	}{
+		{original: admin, scope: ScopeInternal},
+		{original: internal, scope: ScopeAdmin},
+	} {
+		t.Run(string(test.original.Protocol), func(t *testing.T) {
+			collision := definition.Clone()
+			collision.Endpoints = append(collision.Endpoints, Endpoint{
+				Name:          "shadow",
+				Protocol:      test.original.Protocol,
+				ContainerPort: test.original.ContainerPort,
+				Scope:         test.scope,
+			})
+			err := collision.Validate()
+			if err == nil {
+				t.Fatalf("Validate() accepted shadow and %s sharing %s port 65535", test.original.Name, test.original.Protocol)
+			}
+			for _, detail := range []string{"shadow", test.original.Name, string(test.original.Protocol), "65535"} {
+				if !strings.Contains(err.Error(), detail) {
+					t.Errorf("Validate() error = %q, want it to identify %q", err, detail)
+				}
+			}
+		})
+	}
+}
+
 func TestResolvedImage(t *testing.T) {
 	t.Parallel()
 

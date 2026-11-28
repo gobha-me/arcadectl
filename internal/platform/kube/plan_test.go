@@ -448,6 +448,46 @@ func TestBuildRejectsInvalidIntent(t *testing.T) {
 	}
 }
 
+func TestBuildRejectsInvalidEndpointDefinitions(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name     string
+		endpoint game.Endpoint
+	}{
+		{
+			name: "duplicate player port",
+			endpoint: game.Endpoint{
+				Name: "extra-player", Protocol: game.ProtocolTCP, ContainerPort: 8080, Scope: game.ScopePlayer,
+			},
+		},
+		{
+			name: "overlong internal port name",
+			endpoint: game.Endpoint{
+				Name: "internal-control", Protocol: game.ProtocolUDP, ContainerPort: 8081, Scope: game.ScopeInternal,
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			definition := synthetic.Definition()
+			definition.Endpoints = append(definition.Endpoints, test.endpoint)
+			server := testServer("echo", definition.ID, arcadev1alpha1.DesiredStateRunning)
+			server.Spec.Settings = structJSON(`{}`)
+			plan, err := Build(server, definition)
+			var validationErr *ValidationError
+			if !errors.As(err, &validationErr) || validationErr.Category != ValidationGame {
+				t.Fatalf("Build() error = %v, want validation category %q", err, ValidationGame)
+			}
+			if !strings.Contains(err.Error(), test.endpoint.Name) {
+				t.Errorf("Build() error = %q, want offending endpoint %q", err, test.endpoint.Name)
+			}
+			if !reflect.DeepEqual(plan, Plan{}) {
+				t.Errorf("Build() plan = %#v, want an empty plan for an invalid definition", plan)
+			}
+		})
+	}
+}
+
 func TestBuildRejectsReservedPersistentVolumeName(t *testing.T) {
 	t.Parallel()
 
