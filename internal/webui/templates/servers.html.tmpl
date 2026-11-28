@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arcadectl server status</title>
+</head>
+<body>
+<a href="#main-content">Skip to server status</a>
+<main id="main-content">
+<h1>Servers</h1>
+<table>
+<caption>Server status</caption>
+<thead><tr><th scope="col">Name</th><th scope="col">Game</th><th scope="col">Phase</th><th scope="col">Desired state</th><th scope="col">Ready</th><th scope="col">Player endpoints</th></tr></thead>
+<tbody>
+{{range .}}<tr><td>{{.Name}}</td><td>{{.Game}}</td><td>{{.Phase}}</td><td>{{.DesiredState}}</td><td>{{.Ready}}</td><td>{{if .Endpoints}}<ul>{{range .Endpoints}}<li>{{.}}</li>{{end}}</ul>{{else}}None{{end}}</td></tr>
+{{else}}<tr><td colspan="6">No servers yet. Use <code>arcadectl server create</code> to create a server.</td></tr>
+{{end}}</tbody>
+</table>
+</main>
+</body>
+</html>
