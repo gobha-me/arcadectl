@@ -32,16 +32,7 @@ func RenderServerList(w io.Writer, list adminv1.ServerList) error {
 	for _, server := range list.Items {
 		row := serverRow{
 			Name: server.Name, Game: server.Game, Phase: server.Phase,
-			DesiredState: server.DesiredState, Ready: "Ready: Unknown",
-		}
-		for _, condition := range server.Conditions {
-			if condition.Type == "Ready" {
-				row.Ready = "Ready: " + condition.Status
-				if condition.Reason != "" {
-					row.Ready += " (" + condition.Reason + ")"
-				}
-				break
-			}
+			DesiredState: server.DesiredState, Ready: serverReadiness(server),
 		}
 		for _, endpoint := range server.Endpoints {
 			address := net.JoinHostPort(endpoint.Address, strconv.Itoa(int(endpoint.Port)))
@@ -53,4 +44,24 @@ func RenderServerList(w io.Writer, list adminv1.ServerList) error {
 		return cmp.Compare(a.Name, b.Name)
 	})
 	return serverListTemplate.Execute(w, rows)
+}
+
+func serverReadiness(server adminv1.Server) string {
+	if server.ObservedGeneration != server.Generation {
+		return "Ready: Unknown (stale status snapshot)"
+	}
+	for _, condition := range server.Conditions {
+		if condition.Type != "Ready" {
+			continue
+		}
+		if condition.ObservedGeneration != server.Generation {
+			return "Ready: Unknown (stale Ready condition)"
+		}
+		ready := "Ready: " + condition.Status
+		if condition.Reason != "" {
+			ready += " (" + condition.Reason + ")"
+		}
+		return ready
+	}
+	return "Ready: Unknown (no Ready condition)"
 }
