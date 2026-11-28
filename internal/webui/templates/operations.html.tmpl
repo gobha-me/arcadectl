@@ -7,13 +7,15 @@
 </head>
 <body>
 <a href="#main-content">Skip to operations</a>
+<nav aria-label="Primary"><a href="/">Servers</a> <a href="/operations">Operations</a></nav>
 <main id="main-content">
 <h1>Operations</h1>
+<p><a href="/operations">Refresh operations</a></p>
 <table>
 <caption>Operation status</caption>
 <thead><tr><th scope="col">Operation ID</th><th scope="col">Action</th><th scope="col">Phase</th><th scope="col">Started</th><th scope="col">Completed</th><th scope="col">Failure</th></tr></thead>
 <tbody>
-{{range .}}<tr><td>{{.OperationID}}</td><td>{{.Action}}</td><td>{{.Phase}}</td><td>{{if .StartedAt}}{{.StartedAt}}{{else}}Not recorded{{end}}</td><td>{{if .CompletedAt}}{{.CompletedAt}}{{else}}Not recorded{{end}}</td><td>{{with .Failure}}{{.Code}}; {{if .Retryable}}retryable{{else}}not retryable{{end}}{{if .SuggestedAction}}; {{.SuggestedAction}}{{end}}{{else}}None{{end}}</td></tr>
+{{range .}}<tr><td>{{if .DetailURL}}<a href="{{.DetailURL}}">{{.OperationID}}</a>{{else}}{{.OperationID}}{{end}}</td><td>{{.Action}}</td><td>{{.Phase}}</td><td>{{if .StartedAt}}{{.StartedAt}}{{else}}Not recorded{{end}}</td><td>{{if .CompletedAt}}{{.CompletedAt}}{{else}}Not recorded{{end}}</td><td>{{with .Failure}}{{.Code}}; {{if .Retryable}}retryable{{else}}not retryable{{end}}{{if .SuggestedAction}}; {{.SuggestedAction}}{{end}}{{else}}None{{end}}</td></tr>
 {{else}}<tr><td colspan="6">No operations yet.</td></tr>
 {{end}}</tbody>
 </table>

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arcadectl operation receipt</title>
+</head>
+<body>
+<a href="#main-content">Skip to operation detail</a>
+<nav aria-label="Primary"><a href="/">Servers</a> <a href="/operations">Operations</a></nav>
+<main id="main-content">
+<h1>Operation receipt</h1>
+<p><a href="{{.DetailURL}}">Refresh receipt</a></p>
+<dl>
+<dt>Operation ID</dt><dd>{{.OperationID}}</dd>
+<dt>Action</dt><dd>{{.Action}}</dd>
+<dt>Reported phase</dt><dd>{{.Phase}}</dd>
+<dt>Currentness</dt><dd>{{.Currentness}}</dd>
+<dt>Status</dt><dd>{{.Status}}</dd>
+<dt>Started</dt><dd>{{if .StartedAt}}{{.StartedAt}}{{else}}Not recorded{{end}}</dd>
+<dt>Completed</dt><dd>{{if .CompletedAt}}{{.CompletedAt}}{{else}}Not recorded{{end}}</dd>
+<dt>Failure</dt><dd>{{with .Failure}}{{.Code}}; {{if .Retryable}}retryable{{else}}not retryable{{end}}{{if .SuggestedAction}}; {{.SuggestedAction}}{{end}}{{else}}None{{end}}</dd>
+</dl>
+<p>{{.NextStep}}</p>
+<p>Receipt admission and progress do not establish current server readiness. Use server status for runtime observations.</p>
+</main>
+</body>
+</html>

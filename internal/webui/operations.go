@@ -23,6 +23,7 @@ var operationListTemplate = template.Must(template.New("operations").Parse(opera
 // In particular, the template never receives the full receipt or its challenge.
 type operationRow struct {
 	OperationID, Action, Phase, StartedAt, CompletedAt string
+	DetailURL                                          string
 	Failure                                            *operationFailure
 	started                                            time.Time
 	startedValid                                       bool
@@ -43,6 +44,7 @@ func RenderOperationList(w io.Writer, list adminv1.OperationList) error {
 			OperationID: operation.OperationID, Action: operation.Action,
 			Phase: operation.Phase, StartedAt: operation.StartedAt,
 			CompletedAt: operation.CompletedAt, started: started, startedValid: err == nil,
+			DetailURL: operationDetailURL(operation.OperationID),
 		}
 		if operation.Failure != nil {
 			row.Failure = &operationFailure{

@@ -168,14 +168,24 @@ also accepted. Hostnames, wildcard binds and non-loopback addresses are refused.
 `--output json` prints a versioned object containing the URL. The command serves
 until interrupted; `--timeout` bounds each API read, not the listener lifetime.
 
-The page reads only the saved context's authenticated `GET /v1/servers` contract.
-It shows status and player endpoints; reload to obtain a new snapshot. A TCP
+The pages read only the saved context's authenticated server and operations
+contracts. Navigation links server status at `/`, operation history at
+`/operations`, and exact receipts at `/operations/{operationID}`. Refresh links
+read a new snapshot; there is no automatic polling. Receipt links are built from
+validated IDs and local routes, never API-provided URLs.
+
+Receipt details distinguish queued/running work, stale observations, current
+success, failure and cancellation. A terminal receipt needs current generation
+and completion-time evidence before it is called complete. Completion of a
+receipt does not establish present runtime health; return to Servers for that.
+Internal UIDs, settings, raw failure messages and destroy challenges are excluded.
+The views show server status and player endpoints. A TCP
 listener or a receipt alone does not establish a playable server. There are no
 forms, controls, live refresh, cookies, browser credentials or direct cluster
 access. The API bearer and private context paths stay in the CLI process.
 
 The local listener requires its exact bound Host and serves only `GET`/`HEAD`
-at `/`, with no-store, a restrictive content security policy, no framing and no
+at the allowlisted paths above, with no-store, a restrictive content security policy, no framing and no
 referrer disclosure. It is intended for a trusted local browser and user account;
 loopback does not isolate hostile local processes or users. Do not expose it
 through a proxy or tunnel. Browser sessions and mutation admission require a
