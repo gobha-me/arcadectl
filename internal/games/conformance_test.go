@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/gobha-me/arcadectl/internal/games/factorio"
+	"github.com/gobha-me/arcadectl/internal/games/sevendays"
 	"github.com/gobha-me/arcadectl/internal/games/synthetic"
 	"github.com/gobha-me/arcadectl/internal/platform/game"
 )
@@ -21,6 +22,7 @@ func TestDefinitionsConform(t *testing.T) {
 	}{
 		{factorio.Definition(), json.RawMessage(`{"name":"test","visibility":"private"}`)},
 		{synthetic.Definition(), json.RawMessage(`{}`)},
+		{sevendays.Definition(), json.RawMessage(`{"name":"test","visibility":"unlisted"}`)},
 	}
 	for _, test := range tests {
 		test := test

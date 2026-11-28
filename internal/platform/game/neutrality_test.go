@@ -14,7 +14,7 @@ import (
 func TestProductionCoreContainsNoReferenceAdapterAssumptions(t *testing.T) {
 	t.Parallel()
 
-	forbidden := []string{"factorio", "/factorio", "rcon", "34197", "27015", "845"}
+	forbidden := []string{"factorio", "/factorio", "rcon", "34197", "27015", "845", "7dtd", "sevendays", "seven-days", "26900", "26901", "26902", "26903", "/sdtd"}
 	err := filepath.WalkDir("..", func(filename string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
