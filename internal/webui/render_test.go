@@ -113,7 +113,7 @@ func TestServerListAccessibleStructure(t *testing.T) {
 func TestServerListSortedRowsAndEveryCell(t *testing.T) {
 	list := adminv1.ServerList{Items: []adminv1.Server{
 		{Name: "zeta", Game: "game-b", Phase: "Stopped", DesiredState: "Stopped", Conditions: []adminv1.Condition{{Type: "Ready", Status: "False", Reason: "Paused"}}, Endpoints: []adminv1.Endpoint{{Address: "host.example", Port: 8080, Protocol: "UDP"}}},
-		{Name: "alpha", Game: "game-a", Phase: "Running", DesiredState: "Running", Conditions: []adminv1.Condition{{Type: "Other", Status: "False", Reason: "not-readiness"}, {Type: "Ready", Status: "True"}}, Endpoints: []adminv1.Endpoint{{Address: "127.0.0.1", Port: 1234, Protocol: "TCP"}, {Address: "::1", Port: 1234, Protocol: "UDP"}}},
+		{Name: "alpha", Game: "game-a", Phase: "Ready", DesiredState: "Running", Conditions: []adminv1.Condition{{Type: "Other", Status: "False", Reason: "not-readiness"}, {Type: "Ready", Status: "True"}}, Endpoints: []adminv1.Endpoint{{Address: "127.0.0.1", Port: 1234, Protocol: "TCP"}, {Address: "::1", Port: 1234, Protocol: "UDP"}}},
 	}}
 	_, doc := renderPage(t, list)
 	bodies := elements(doc, "tbody")
@@ -122,7 +122,7 @@ func TestServerListSortedRowsAndEveryCell(t *testing.T) {
 	}
 	rows := elements(bodies[0], "tr")
 	want := [][]string{
-		{"alpha", "game-a", "Running", "Running", "Ready: True", "127.0.0.1:1234/TCP[::1]:1234/UDP"},
+		{"alpha", "game-a", "Ready", "Running", "Ready: True", "127.0.0.1:1234/TCP[::1]:1234/UDP"},
 		{"zeta", "game-b", "Stopped", "Stopped", "Ready: False (Paused)", "host.example:8080/UDP"},
 	}
 	if len(rows) != len(want) {
@@ -140,6 +140,105 @@ func TestServerListSortedRowsAndEveryCell(t *testing.T) {
 	}
 	if list.Items[0].Name != "zeta" || list.Items[1].Name != "alpha" {
 		t.Fatal("rendering reordered the caller's list")
+	}
+}
+
+func TestServerListReadinessRequiresCurrentGenerations(t *testing.T) {
+	const (
+		generation     = 2
+		staleSnapshot  = "Ready: Unknown (stale status snapshot)"
+		staleCondition = "Ready: Unknown (stale Ready condition)"
+	)
+	readyAt := func(observedGeneration int64) []adminv1.Condition {
+		return []adminv1.Condition{{Type: "Ready", Status: "True", Reason: "WorkloadReady", ObservedGeneration: observedGeneration}}
+	}
+	tests := []struct {
+		name               string
+		observedGeneration int64
+		conditions         []adminv1.Condition
+		want               string
+	}{
+		{
+			name:               "current Ready True",
+			observedGeneration: generation,
+			conditions:         readyAt(generation),
+			want:               "Ready: True (WorkloadReady)",
+		},
+		{
+			name:               "current Ready False",
+			observedGeneration: generation,
+			conditions:         []adminv1.Condition{{Type: "Ready", Status: "False", Reason: "Starting", ObservedGeneration: generation}},
+			want:               "Ready: False (Starting)",
+		},
+		{
+			name:               "older snapshot with current Ready",
+			observedGeneration: generation - 1,
+			conditions:         readyAt(generation),
+			want:               staleSnapshot,
+		},
+		{
+			name:               "snapshot and Ready agree on an older generation",
+			observedGeneration: generation - 1,
+			conditions:         readyAt(generation - 1),
+			want:               staleSnapshot,
+		},
+		{
+			name:               "newer snapshot with current Ready",
+			observedGeneration: generation + 1,
+			conditions:         readyAt(generation),
+			want:               staleSnapshot,
+		},
+		{
+			name:               "current snapshot with older Ready",
+			observedGeneration: generation,
+			conditions:         readyAt(generation - 1),
+			want:               staleCondition,
+		},
+		{
+			name:               "current snapshot with newer Ready",
+			observedGeneration: generation,
+			conditions:         readyAt(generation + 1),
+			want:               staleCondition,
+		},
+		{
+			name:               "snapshot generation unreported",
+			observedGeneration: 0,
+			conditions:         readyAt(generation),
+			want:               staleSnapshot,
+		},
+		{
+			name:               "Ready generation unreported",
+			observedGeneration: generation,
+			conditions:         readyAt(0),
+			want:               staleCondition,
+		},
+		{
+			name:               "current snapshot with unrelated condition only",
+			observedGeneration: generation,
+			conditions:         []adminv1.Condition{{Type: "Available", Status: "True", Reason: "EndpointPublished", ObservedGeneration: generation}},
+			want:               "Ready: Unknown (no Ready condition)",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, doc := renderPage(t, adminv1.ServerList{Items: []adminv1.Server{{
+				Name:               "alpha",
+				Generation:         generation,
+				ObservedGeneration: test.observedGeneration,
+				Conditions:         test.conditions,
+			}}})
+			rows := elements(doc, "tr")
+			if len(rows) != 2 {
+				t.Fatalf("table rows = %d, want one header and one server", len(rows))
+			}
+			cells := elements(rows[1], "td")
+			if len(cells) != 6 {
+				t.Fatalf("server row cells = %d, want 6", len(cells))
+			}
+			if got := nodeText(cells[4]); got != test.want {
+				t.Errorf("Ready cell = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 
