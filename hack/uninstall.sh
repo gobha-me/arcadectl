@@ -285,3 +285,13 @@ destroy_controller_scaled=false
 trap - EXIT
 
 echo "controller removed; admission gates, namespace, CRDs, operation records, and retained PVCs were not deleted"
+cat <<'EOF'
+Recovery: keep the arcadectl-system namespace, retained PVCs, admission protections,
+and backup repository. Deleting the namespace also deletes its retained claims.
+Reinstall the same compatible controller package with hack/install.sh and its
+original digest-pinned image before requesting new lifecycle operations.
+For a decommissioned server, inspect the retained data identity and exact claim
+names and UIDs, then explicitly reattach every adapter path; a matching name is
+not attachment authority. See docs/INSTALL.md and docs/LIFECYCLE.md.
+World deletion requires the separate backup-gated destroy operation.
+EOF

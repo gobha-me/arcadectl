@@ -88,14 +88,16 @@ func TestSnapshotSameJournalBytesDoesNotAllocate(t *testing.T) {
 	s := &Snapshot{body: bytes.Repeat([]byte("j"), 64*1024)}
 	other := &Snapshot{body: bytes.Clone(s.body)}
 	got := testing.AllocsPerRun(100, func() { snapshotBytesComparisonResult = s.SameJournalBytes(other) })
+	candidateResult := snapshotBytesComparisonResult
 	old := testing.AllocsPerRun(100, func() { snapshotBytesComparisonResult = bytes.Equal(s.Bytes(), other.Bytes()) })
-	if got != 0 || old <= got || !snapshotBytesComparisonResult {
-		t.Fatalf("byte comparison allocations new=%g defensive-copy control=%g", got, old)
+	if got != 0 || old <= got || !candidateResult || !snapshotBytesComparisonResult {
+		t.Fatalf("byte comparison allocations new=%g defensive-copy control=%g candidate=%t control=%t", got, old, candidateResult, snapshotBytesComparisonResult)
 	}
 	input := bytes.Clone(s.body)
 	got = testing.AllocsPerRun(100, func() { snapshotBytesComparisonResult = s.MatchesJournalBytes(input) })
+	candidateResult = snapshotBytesComparisonResult
 	old = testing.AllocsPerRun(100, func() { snapshotBytesComparisonResult = bytes.Equal(s.Bytes(), input) })
-	if got != 0 || old <= got || !snapshotBytesComparisonResult {
-		t.Fatalf("owned-byte comparison allocations new=%g defensive-copy control=%g", got, old)
+	if got != 0 || old <= got || !candidateResult || !snapshotBytesComparisonResult {
+		t.Fatalf("owned-byte comparison allocations new=%g defensive-copy control=%g candidate=%t control=%t", got, old, candidateResult, snapshotBytesComparisonResult)
 	}
 }
